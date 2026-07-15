@@ -19,6 +19,8 @@ interface CallerIdentity {
 
 interface PlaybookContext extends ParseContext {
   source_credential_id?: string;
+  credential_execution_binding?: string;
+  credential_execution_binding_identity?: string;
 }
 
 export function parseAwsStsIdentity(
@@ -38,30 +40,60 @@ export function parseAwsStsIdentity(
     return { id: `aws-sts-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }
 
-  if (!identity.Arn || !identity.Account) {
+  const arnAccount = identity.Arn?.match(/^arn:aws[a-zA-Z-]*:(?:iam|sts)::(\d{12}):/)?.[1];
+  if (!identity.Arn || !identity.Account || !/^\d{12}$/.test(identity.Account)
+      || !arnAccount || arnAccount !== identity.Account) {
     return { id: `aws-sts-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }
 
-  // Determine principal type from ARN. The third colon-separated chunk
-  // after `arn:aws:iam::<account>:` tells us role/user/role-session.
+  // Preserve AWS's caller shape while exposing a normalized enumeration kind.
   const arnSuffix = identity.Arn.split(':').pop() ?? '';
-  let principalType: 'user' | 'role' | 'federated' = 'user';
-  // assumed-role sessions are *federated* in the principal_type union;
-  // we keep the raw caller_kind separately for the report.
-  let callerKind: 'user' | 'role' | 'role_session' = 'user';
-  if (arnSuffix.startsWith('assumed-role/')) { principalType = 'federated'; callerKind = 'role_session'; }
-  else if (arnSuffix.startsWith('role/')) { principalType = 'role'; callerKind = 'role'; }
+  let principalType: 'user' | 'role' | 'federated' = 'federated';
+  let callerKind: 'user' | 'role' | 'role_session' | 'root' | 'federated' | 'unknown' = 'unknown';
+  let enumerationPrincipalKind: 'user' | 'role' | 'root' | 'federated' | 'unknown' = 'unknown';
+  let principalName: string | undefined;
+  if (arnSuffix.startsWith('assumed-role/')) {
+    principalType = 'federated';
+    callerKind = 'role_session';
+    enumerationPrincipalKind = 'role';
+    principalName = arnSuffix.split('/')[1];
+  } else if (arnSuffix.startsWith('role/')) {
+    principalType = 'role';
+    callerKind = 'role';
+    enumerationPrincipalKind = 'role';
+    principalName = arnSuffix.slice('role/'.length).split('/').pop();
+  } else if (arnSuffix.startsWith('user/')) {
+    principalType = 'user';
+    callerKind = 'user';
+    enumerationPrincipalKind = 'user';
+    principalName = arnSuffix.slice('user/'.length).split('/').pop();
+  } else if (arnSuffix === 'root') {
+    principalType = 'user';
+    callerKind = 'root';
+    enumerationPrincipalKind = 'root';
+  } else if (arnSuffix.startsWith('federated-user/')) {
+    principalType = 'federated';
+    callerKind = 'federated';
+    enumerationPrincipalKind = 'federated';
+    principalName = arnSuffix.slice('federated-user/'.length);
+  }
 
   const cloudId = cloudIdentityId(identity.Arn);
   nodes.push({
     id: cloudId,
     type: 'cloud_identity',
     label: identity.Arn,
+    provider: 'aws',
     cloud_provider: 'aws',
     cloud_account: identity.Account,
+    account_id: identity.Account,
     arn: identity.Arn,
+    caller_arn: identity.Arn,
     principal_type: principalType,
+    principal_kind: 'aws',
     caller_kind: callerKind,
+    enumeration_principal_kind: enumerationPrincipalKind,
+    principal_name: principalName,
     user_id: identity.UserId,
     discovered_at: now,
     confidence: 1.0,
@@ -76,6 +108,9 @@ export function parseAwsStsIdentity(
         confidence: 1.0,
         discovered_at: now,
         discovered_by: agentId,
+        binding_source: 'aws_sts_get_caller_identity',
+        credential_execution_binding: ctx.credential_execution_binding_identity
+          ?? ctx.credential_execution_binding,
         notes: 'AWS STS get-caller-identity confirmed credential maps to this principal',
       },
     });

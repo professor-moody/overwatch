@@ -4,6 +4,15 @@ import type { ExportedNode } from '../../../lib/types';
 
 const nodes: ExportedNode[] = [
   {
+    id: 'cred-aws-session',
+    type: 'credential',
+    label: 'AWS session',
+    confidence: 1,
+    discovered_at: '2026-05-15T00:00:00.000Z',
+    cred_material_kind: 'aws_session_credentials',
+    cred_value: '{"AccessKeyId":"ASIA…"}',
+  },
+  {
     id: 'cred-okta-cookie',
     type: 'credential',
     label: 'jdoe:Okta session',
@@ -29,18 +38,18 @@ const nodes: ExportedNode[] = [
 
 describe('identity credential derivation', () => {
   it('selects token-shaped credentials for identity context', () => {
-    expect(tokenCredentials(nodes).map(node => node.id)).toEqual(['cred-okta-cookie']);
+    expect(tokenCredentials(nodes).map(node => node.id)).toEqual(['cred-aws-session', 'cred-okta-cookie']);
   });
 
   it('summarizes tokens without exposing secret material', () => {
     const summaries = identityTokenSummaries(nodes);
-    expect(summaries).toEqual([expect.objectContaining({
+    expect(summaries).toEqual(expect.arrayContaining([expect.objectContaining({
       id: 'cred-okta-cookie',
       kind: 'session_cookie',
       status: 'MFA satisfied',
       tone: 'success',
       user: 'jdoe@corp.local',
-    })]);
+    }), expect.objectContaining({ id: 'cred-aws-session', kind: 'aws_session_credentials' })]));
     expect(JSON.stringify(summaries)).not.toContain('secret-cookie-value');
   });
 
@@ -59,7 +68,7 @@ describe('identity credential derivation', () => {
     expect(soon.expiry?.urgency).toBe('soon');
 
     // The session cookie in `nodes` has no expiry timestamp → null.
-    const [cookie] = identityTokenSummaries(nodes, now);
+    const cookie = identityTokenSummaries(nodes, now).find(summary => summary.id === 'cred-okta-cookie')!;
     expect(cookie.expiry).toBeNull();
   });
 });

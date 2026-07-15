@@ -292,6 +292,17 @@ export function cloudPolicyId(provider: string, policyName: string): string {
   return `cloud-policy-${normalizeKeyPart(provider)}-${normalizeKeyPart(policyName)}`;
 }
 
+/** Canonical ID for an exact policy statement identity.
+ *
+ * Statement action/resource strings can be case-sensitive and commonly contain
+ * punctuation that `normalizeKeyPart` intentionally collapses. Hash the exact
+ * identity so two distinct statements can never merge into a Cartesian allow.
+ */
+export function cloudPolicyStatementId(provider: string, exactIdentity: string): string {
+  const digest = createHash('sha256').update(exactIdentity).digest('hex').slice(0, 24);
+  return `cloud-policy-${normalizeKeyPart(provider)}-statement-${digest}`;
+}
+
 export function cloudNetworkId(arnOrLabel: string): string {
   return `cloud-network-${normalizeKeyPart(arnOrLabel)}`;
 }

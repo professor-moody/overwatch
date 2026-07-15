@@ -28,6 +28,7 @@ const KIND_LABELS: Record<string, string> = {
   pat: 'PAT',
   app_password: 'App Password',
   session_cookie: 'Session Cookie',
+  aws_session_credentials: 'AWS Session Credentials',
 };
 
 export function getCredentialMaterialKind(cred: CredentialKindSource): string {
@@ -51,7 +52,7 @@ export function getCredentialKindLabel(credOrKind: CredentialKindSource | string
 
 export function getCredentialKindBadgeClass(kind: string | undefined): string {
   if (!kind || kind === 'unknown') return 'bg-elevated text-muted-foreground';
-  if (kind.includes('oidc') || kind.includes('saml') || kind.includes('oauth') || kind === 'pat' || kind === 'token') {
+  if (kind.includes('oidc') || kind.includes('saml') || kind.includes('oauth') || kind === 'pat' || kind === 'token' || kind === 'aws_session_credentials') {
     return 'bg-accent-dim text-accent';
   }
   if (kind.includes('kerberos') || kind === 'aes256_key' || kind === 'certificate') {
@@ -145,4 +146,28 @@ export function isCredentialReachable(cred: ExportedNode, edges: Pick<ExportedEd
   return edges.some(
     e => e.source === cred.id && CREDENTIAL_REACH_EDGE_TYPES.includes(e.type),
   );
+}
+
+/** A token/cloud credential that can still drive a credential playbook. */
+export function isCredentialExpansionCandidate(
+  cred: CredentialKindSource,
+  nowMs: number = Date.now(),
+  edges: Array<Pick<ExportedEdge, 'source' | 'target' | 'type'> & { binding_source?: unknown }> = [],
+): boolean {
+  const status = getEffectiveCredentialStatus(cred, nowMs);
+  if (status === 'expired' || status === 'rotated') return false;
+  const material = String(cred.cred_material_kind || cred.cred_type || '').toLowerCase();
+  const tokenLike = material === 'token'
+    || ['oidc', 'oauth', 'saml', 'pat', 'session', 'aws', 'github', 'entra'].some(marker => material.includes(marker));
+  if (!tokenLike || typeof cred.cred_value !== 'string' || cred.cred_value.length === 0) return false;
+
+  // Merely generating a playbook is not progress. A confirmed provider replay
+  // or STS caller binding is: once either lands, the credential has left the
+  // "needs first expansion" queue even though it remains usable elsewhere.
+  const meaningfullyExpanded = edges.some(edge =>
+    (edge.source === cred.id && (edge.type === 'VALID_FOR_APP' || edge.type === 'ASSUMES_ROLE'))
+    || (edge.target === cred.id && edge.type === 'OWNS_CRED'
+      && edge.binding_source === 'aws_sts_get_caller_identity'),
+  );
+  return !meaningfullyExpanded;
 }

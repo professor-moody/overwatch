@@ -1,0 +1,9 @@
+{
+  "SummaryMap": {
+    "Users": 12,
+    "Groups": 4,
+    "Roles": 30,
+    "Policies": 17,
+    "AccountMFAEnabled": 1
+  }
+}

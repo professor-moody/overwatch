@@ -33,7 +33,9 @@ export function parseGhApiOrgs(
   let orgs: GhOrg[];
   try {
     const parsed = JSON.parse(output);
-    orgs = Array.isArray(parsed) ? parsed as GhOrg[] : [];
+    orgs = Array.isArray(parsed)
+      ? parsed.flatMap((page: unknown) => Array.isArray(page) ? page : [page]) as GhOrg[]
+      : [];
   } catch {
     return { id: `gh-orgs-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }
@@ -52,19 +54,6 @@ export function parseGhApiOrgs(
       discovered_at: now,
       confidence: 1.0,
     });
-    if (ctx.source_credential_id) {
-      edges.push({
-        source: ctx.source_credential_id,
-        target: id,
-        properties: {
-          type: 'AUTHENTICATES_VIA',
-          confidence: 1.0,
-          discovered_at: now,
-          discovered_by: agentId,
-          notes: `Credential has membership in ${o.login}`,
-        },
-      });
-    }
   }
 
   if (ctx.source_credential_id && orgLogins.length > 0) {
@@ -72,6 +61,7 @@ export function parseGhApiOrgs(
       id: ctx.source_credential_id,
       type: 'credential',
       label: 'gh-orgs-update',
+      preserve_existing_label: true,
       discovered_at: now,
       confidence: 1.0,
       cred_orgs: orgLogins,

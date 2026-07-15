@@ -385,14 +385,18 @@ describe('run_bash tool', () => {
       parse_with: 'definitely-not-a-real-parser',
     });
     const payload = parseTextResult(result);
+    expect(result.isError).toBe(true);
     expect(payload.parse_summary).toBeTruthy();
     expect(String(payload.parse_summary.error)).toContain('No parser found');
+    expect(payload.parse_summary).toMatchObject({
+      parse_status: 'no_parser', parse_outcome: 'validation_failed', isError: true,
+    });
   });
 
   // -----------------------------------------------------------------
-  // Phase I: parse output even on non-zero exit; tag findings partial
+  // Phase I: parse output even on non-zero exit; tag the parse partial
   // -----------------------------------------------------------------
-  it('parses output on non-zero exit and tags the finding partial', async () => {
+  it('parses output on non-zero exit without permanently tagging graph nodes partial', async () => {
     // emit a single line that the nuclei text parser will accept, then exit 7
     const cmd = `echo '[CVE-2099-9999] [http] [high] http://10.10.10.1/x'; exit 7`;
     const result = await handlers.run_bash({
@@ -411,11 +415,13 @@ describe('run_bash tool', () => {
       v => (v as Record<string, unknown>).cve === 'CVE-2099-9999',
     );
     expect(vuln).toBeTruthy();
-    expect((vuln as Record<string, unknown>).partial).toBe(true);
+    expect((vuln as Record<string, unknown>).partial).toBeUndefined();
+    expect(engine.getFullHistory().some(entry => entry.event_type === 'parse_output'
+      && entry.details?.partial === true && entry.details?.exit_code === 7)).toBe(true);
     expect(findingId).toBeTruthy();
   });
 
-  it('treats an acceptable_exit_code (nuclei exit 1 = no match) as non-partial', async () => {
+  it('treats an acceptable_exit_code with zero yield as an explicit parse failure', async () => {
     // nuclei exits 1 when no template matched. Output is empty so the
     // parser will produce no nodes — but partial must NOT be true because
     // exit 1 is whitelisted for nuclei.
@@ -425,9 +431,28 @@ describe('run_bash tool', () => {
       parse_with: 'nuclei',
     });
     const payload = parseTextResult(result);
-    // No bytes produced → parser path is skipped entirely; no parse_summary.
-    // We only assert that the runner did not crash and reported the exit.
+    expect(result.isError).toBe(true);
     expect(payload.executed).toBe(true);
     expect(payload.exit_code).toBe(1);
+    expect(payload.parse_summary).toMatchObject({
+      parsed: false, parse_status: 'no_data', parse_outcome: 'no_data',
+      nodes_parsed: 0, edges_parsed: 0, isError: true,
+    });
+  });
+
+  it('preserves Entra tenant context through inline run_bash parsing', async () => {
+    const output = JSON.stringify({ value: [{
+      id: 'user-object-1', displayName: 'Alice', userPrincipalName: 'alice@acme.onmicrosoft.com',
+    }] });
+    const result = await handlers.run_bash({
+      command: `printf '%s' '${output}'`,
+      validate: false,
+      parse_with: 'msgraph-users',
+      parser_context: { tenant_id: 'acme.onmicrosoft.com', provider_extension: { retained: true } },
+    });
+    const payload = parseTextResult(result);
+    expect(result.isError).toBeFalsy();
+    expect(payload.parse_summary.parse_outcome).toBe('ok');
+    expect(engine.getNodesByType('idp_principal')[0]).toMatchObject({ tenant_id: 'acme.onmicrosoft.com' });
   });
 });

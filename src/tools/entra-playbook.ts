@@ -30,17 +30,50 @@ import { safePlaybookArg } from './_playbook-utils.js';
 
 interface PlaybookStep {
   step: number;
+  step_id?: string;
   description: string;
-  command: string;
+  command: string | null;
   parse_with?: string;
   parser_context?: Record<string, unknown>;
   technique: string;
   est_noise: number;
   expected: string;
   blocking?: boolean;
+  runner?: 'run_bash';
+  /** Adapter hint: bind env var(s) from credential ids in run_bash.env. */
+  env_from_credential?: Record<string, string>;
+  ready?: boolean;
+  status?: 'ready' | 'blocked';
+  depends_on?: string[];
+  blocked_reason?: string;
 }
 
-const ENTRA_TOKEN_KINDS = new Set(['oidc_access_token', 'oidc_refresh_token', 'token']);
+const ENTRA_TOKEN_KINDS = new Set(['oidc_access_token', 'token']);
+
+function concreteTenant(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  return /^(common|organizations|consumers|unknown)$/i.test(value) ? undefined : value;
+}
+
+function jwtTenant(token: unknown): string | undefined {
+  if (typeof token !== 'string') return undefined;
+  try {
+    const segment = token.split('.')[1];
+    if (!segment) return undefined;
+    const claims = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8')) as { tid?: unknown };
+    return concreteTenant(claims.tid);
+  } catch {
+    return undefined;
+  }
+}
+
+function isEntraMarkedCredential(cred: Record<string, unknown>, explicitTenant?: string): boolean {
+  if (concreteTenant(explicitTenant)) return true;
+  if (concreteTenant(cred.tenant_id)) return true;
+  return [cred.provider, cred.cred_provider, cred.cred_audience, cred.cred_issuer, cred.idp_kind]
+    .some(value => typeof value === 'string'
+      && /(microsoftonline\.com|graph\.microsoft\.com|(^|[/:._-])(entra|azure)([/:._-]|$))/i.test(value));
+}
 
 export function registerEntraPlaybookTools(server: McpServer, engine: GraphEngine): void {
   // =========================================================
@@ -63,9 +96,10 @@ source credential is marked credential_status: 'expired'.`,
         client_id: z.string().describe('OAuth client id the refresh token was issued for.'),
         scope: z.string().default('https://graph.microsoft.com/.default offline_access').describe('Requested OAuth scope. Defaults to MS Graph default + offline_access for refresh continuity.'),
         tenant_id: z.string().optional().describe('Tenant id or "common" / "organizations". Defaults to the credential\'s cred_issuer if available, else "common".'),
+        refresh_token_env_var: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).default('OVERWATCH_ENTRA_REFRESH_TOKEN').describe('run_bash.env variable that will be populated from the selected refresh credential.'),
       },
       annotations: {
-        readOnlyHint: false,
+        readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: false,
         openWorldHint: false,
@@ -77,7 +111,9 @@ source credential is marked credential_status: 'expired'.`,
         client_id: string;
         scope: string;
         tenant_id?: string;
+        refresh_token_env_var?: string;
       };
+      const refreshTokenEnvVar = (params as { refresh_token_env_var?: string }).refresh_token_env_var ?? 'OVERWATCH_ENTRA_REFRESH_TOKEN';
       const cred = engine.getNode(credential_id);
       if (!cred) return errorResponse(`Credential ${credential_id} not found`);
       if (cred.type !== 'credential') return errorResponse(`Node ${credential_id} is type=${cred.type}`);
@@ -102,14 +138,37 @@ source credential is marked credential_status: 'expired'.`,
       // The refresh_token value lives in the credential node; the
       // operator passes it explicitly. We do NOT inline it here so the
       // recon plan stays safe to log/audit/share.
-      const command = [
-        `curl -sS -X POST '${tokenUrl}'`,
+      const tokenGuard = `: "\${${refreshTokenEnvVar}:?Pass ${refreshTokenEnvVar} in run_bash.env from selected credential ${credential_id}}"`;
+      const curlCommand = [
+        `curl -sS --fail-with-body -X POST '${tokenUrl}'`,
         `-H 'Content-Type: application/x-www-form-urlencoded'`,
         `--data-urlencode 'grant_type=refresh_token'`,
         `--data-urlencode "client_id=${safePlaybookArg(client_id)}"`,
         `--data-urlencode "scope=${safePlaybookArg(scope)}"`,
-        `--data-urlencode "refresh_token=$REFRESH_TOKEN"`,
+        `--data-urlencode "refresh_token=$${refreshTokenEnvVar}"`,
       ].join(' \\\n  ');
+      const command = `${tokenGuard}; ${curlCommand}`;
+      const parserContext = {
+        source_credential_id: credential_id,
+        tenant_id: tenant,
+        client_id: safePlaybookArg(client_id),
+        requested_scope: safePlaybookArg(scope),
+        credential_execution_binding: `env:${refreshTokenEnvVar}`,
+      };
+      const step: PlaybookStep = {
+        step: 1,
+        step_id: 'exchange-refresh-token',
+        description: 'Exchange the selected Entra refresh token for a new access token.',
+        command,
+        parse_with: 'entra-token-exchange',
+        parser_context: parserContext,
+        runner: 'run_bash',
+        env_from_credential: { [refreshTokenEnvVar]: credential_id },
+        technique: 'token_replay',
+        est_noise: 0.15,
+        expected: 'A derived oidc_access_token credential, or a precise source-credential exchange failure update.',
+        blocking: true,
+      };
 
       return {
         content: [{
@@ -118,7 +177,13 @@ source credential is marked credential_status: 'expired'.`,
             credential_id,
             tenant: tenant,
             command,
-            execution_hint: 'Set REFRESH_TOKEN=<refresh-token-value> in the shell environment before running. Pipe stdout to `parse_with: token_replay_msgraph` to ingest the new access token. Approval-gated by default; the engagement OPSEC blacklist can be set to require explicit approval.',
+            parse_with: 'entra-token-exchange',
+            parser_context: parserContext,
+            credential_binding: `env:${refreshTokenEnvVar}`,
+            env_from_credential: { [refreshTokenEnvVar]: credential_id },
+            step,
+            steps: [step],
+            execution_hint: `Run this step with run_bash.env.${refreshTokenEnvVar} populated from credential ${credential_id}; keep parse_with and parser_context unchanged. The command fails before network access when the binding is absent.`,
             on_success: 'New oidc_access_token credential node lands in graph with cred_token_expires_at set from response.expires_in.',
             on_failure: 'invalid_grant marks the source credential credential_status: expired. invalid_scope / invalid_client surface as errors without status flip.',
           }, null, 2),
@@ -150,9 +215,11 @@ operator\'s responsibility — the plan emits a single page per resource.`,
         credential_id: z.string().min(1).describe('Entra access token credential id.'),
         tenant_id: z.string().optional().describe('Tenant id or domain (overrides credential\'s cred_issuer).'),
         include_groups: z.boolean().default(true).describe('Include /groups enumeration step.'),
+        token_env_var: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).default('OVERWATCH_ENTRA_TOKEN').describe('run_bash.env variable that will be populated from the selected access credential.'),
+        confirm_provider: z.boolean().default(false).describe('Explicitly confirm an otherwise-unmarked access token is an Entra credential.'),
       },
       annotations: {
-        readOnlyHint: false,
+        readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
@@ -163,7 +230,10 @@ operator\'s responsibility — the plan emits a single page per resource.`,
         credential_id: string;
         tenant_id?: string;
         include_groups: boolean;
+        token_env_var?: string;
+        confirm_provider?: boolean;
       };
+      const tokenEnvVar = (params as { token_env_var?: string }).token_env_var ?? 'OVERWATCH_ENTRA_TOKEN';
       const cred = engine.getNode(credential_id);
       if (!cred) return errorResponse(`Credential ${credential_id} not found`);
       if (cred.type !== 'credential') return errorResponse(`Node ${credential_id} is type=${cred.type}`);
@@ -172,97 +242,137 @@ operator\'s responsibility — the plan emits a single page per resource.`,
       if (!kind || !ENTRA_TOKEN_KINDS.has(kind)) {
         return errorResponse(`Credential ${credential_id} has cred_material_kind=${kind}, expected one of: ${[...ENTRA_TOKEN_KINDS].join(', ')}`);
       }
+      if (!isEntraMarkedCredential(cred, tenant_id) && (params as { confirm_provider?: boolean }).confirm_provider !== true) {
+        return errorResponse(`Credential ${credential_id} has no Entra/Microsoft Graph provider marker. Correct its metadata or set confirm_provider=true explicitly.`);
+      }
       if (!isCredentialUsableForAuth(cred)) {
         return errorResponse(`Credential ${credential_id} is not usable for auth`);
       }
 
-      const tenant = tenant_id
-        ?? (cred.cred_issuer as string | undefined)?.match(/login\.microsoftonline\.com\/([^/]+)/)?.[1]
-        ?? (cred.tenant_id as string | undefined)
-        ?? 'common';
+      const issuerTenant = (cred.cred_issuer as string | undefined)?.match(/login\.microsoftonline\.com\/([^/]+)/)?.[1];
+      const tenant = concreteTenant(tenant_id)
+        ?? concreteTenant(cred.tenant_id)
+        ?? concreteTenant(issuerTenant)
+        ?? jwtTenant(cred.cred_value);
+      const tenantResolved = !!tenant;
+      const tenantBlockedReason = 'A concrete Entra tenant is not bound. Run and ingest /me, then re-expand the credential.';
 
       const steps: PlaybookStep[] = [];
       let n = 0;
 
-      const authHeader = `-H 'Authorization: Bearer $ENTRA_TOKEN'`;
+      const credentialBinding = `env:${tokenEnvVar}`;
+      const envFromCredential = { [tokenEnvVar]: credential_id };
+      const tokenGuard = `: "\${${tokenEnvVar}:?Pass ${tokenEnvVar} in run_bash.env from selected credential ${credential_id}}"`;
+      const authHeader = `-H "Authorization: Bearer $${tokenEnvVar}"`;
+      const graphCommand = (args: string): string => `${tokenGuard}; curl -sS ${args}`;
 
       steps.push({
         step: ++n,
+        step_id: 'me',
         description: 'Validate the token and capture UPN/oid via /v1.0/me. Sets cred_mfa_satisfied: true on the source credential when the response is 200.',
-        command: `curl -sS -i ${authHeader} https://graph.microsoft.com/v1.0/me`,
+        command: graphCommand(`-i ${authHeader} https://graph.microsoft.com/v1.0/me`),
         parse_with: 'token_replay_msgraph',
-        parser_context: { source_credential_id: credential_id },
+        parser_context: { source_credential_id: credential_id, ...(tenant ? { tenant_id: tenant } : {}), credential_execution_binding: credentialBinding },
+        runner: 'run_bash',
+        env_from_credential: envFromCredential,
         technique: 'recon_idp_principal',
         est_noise: 0.05,
         expected: 'idp_principal node updated with object_id + UPN; VALID_FOR_APP edge.',
         blocking: true,
+        ready: true,
+        status: 'ready',
+        depends_on: [],
       });
 
       steps.push({
         step: ++n,
+        step_id: 'users',
         description: 'List all directory users (page 1, $top=999). Walk @odata.nextLink for full coverage.',
-        command: `curl -sS ${authHeader} 'https://graph.microsoft.com/v1.0/users?$top=999'`,
+        command: tenantResolved ? graphCommand(`${authHeader} 'https://graph.microsoft.com/v1.0/users?$top=999'`) : null,
         parse_with: 'msgraph-users',
-        parser_context: { tenant_id: tenant, source_credential_id: credential_id },
+        parser_context: { tenant_id: tenant, source_credential_id: credential_id, credential_execution_binding: credentialBinding },
+        runner: 'run_bash',
+        env_from_credential: envFromCredential,
         technique: 'recon_idp_principal',
         est_noise: 0.15,
         expected: 'idp_principal nodes per user.',
+        ready: tenantResolved,
+        status: tenantResolved ? 'ready' : 'blocked',
+        depends_on: ['me'],
+        blocked_reason: tenantResolved ? undefined : tenantBlockedReason,
       });
 
       steps.push({
         step: ++n,
+        step_id: 'applications',
         description: 'List app registrations.',
-        command: `curl -sS ${authHeader} 'https://graph.microsoft.com/v1.0/applications?$top=999'`,
+        command: tenantResolved ? graphCommand(`${authHeader} 'https://graph.microsoft.com/v1.0/applications?$top=999'`) : null,
         parse_with: 'msgraph-applications',
-        parser_context: { tenant_id: tenant },
+        parser_context: { tenant_id: tenant, source_credential_id: credential_id, credential_execution_binding: credentialBinding },
+        runner: 'run_bash',
+        env_from_credential: envFromCredential,
         technique: 'recon_idp_application',
         est_noise: 0.15,
         expected: 'idp_application nodes (entra_application).',
+        ready: tenantResolved,
+        status: tenantResolved ? 'ready' : 'blocked',
+        depends_on: ['me'],
+        blocked_reason: tenantResolved ? undefined : tenantBlockedReason,
       });
 
       steps.push({
         step: ++n,
-        description: 'List service principals (app instances within the tenant). Their oauth2PermissionScopes carry the human-readable scope names CONSENT_ABUSE pattern-matches against.',
-        command: `curl -sS ${authHeader} 'https://graph.microsoft.com/v1.0/servicePrincipals?$top=999'`,
+        step_id: 'service-principals',
+        description: 'List service principals (app instances within the tenant) and retain the scopes and app roles they expose.',
+        command: tenantResolved ? graphCommand(`${authHeader} 'https://graph.microsoft.com/v1.0/servicePrincipals?$top=999'`) : null,
         parse_with: 'msgraph-serviceprincipals',
-        parser_context: { tenant_id: tenant },
+        parser_context: { tenant_id: tenant, source_credential_id: credential_id, credential_execution_binding: credentialBinding },
+        runner: 'run_bash',
+        env_from_credential: envFromCredential,
         technique: 'recon_idp_application',
         est_noise: 0.15,
         expected: 'idp_application nodes (entra_service_principal).',
+        ready: tenantResolved,
+        status: tenantResolved ? 'ready' : 'blocked',
+        depends_on: ['me'],
+        blocked_reason: tenantResolved ? undefined : tenantBlockedReason,
       });
 
       if (include_groups) {
         steps.push({
           step: ++n,
+          step_id: 'groups',
           description: 'List directory groups.',
-          command: `curl -sS ${authHeader} 'https://graph.microsoft.com/v1.0/groups?$top=999'`,
+          command: tenantResolved ? graphCommand(`${authHeader} 'https://graph.microsoft.com/v1.0/groups?$top=999'`) : null,
           parse_with: 'msgraph-groups',
-          parser_context: { tenant_id: tenant },
+          parser_context: { tenant_id: tenant, source_credential_id: credential_id, credential_execution_binding: credentialBinding },
+          runner: 'run_bash',
+          env_from_credential: envFromCredential,
           technique: 'recon_group',
           est_noise: 0.1,
           expected: 'group nodes for security/unified groups.',
+          ready: tenantResolved,
+          status: tenantResolved ? 'ready' : 'blocked',
+          depends_on: ['me'],
+          blocked_reason: tenantResolved ? undefined : tenantBlockedReason,
         });
       }
-
-      engine.addNode({
-        id: credential_id,
-        type: 'credential',
-        label: cred.label as string,
-        discovered_at: cred.discovered_at as string,
-        confidence: cred.confidence as number,
-        recon_playbook_invoked_at: new Date().toISOString(),
-        recon_playbook_step_count: steps.length,
-      });
 
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             credential_id,
-            tenant,
+            plan_version: 2,
+            tenant: tenant ?? null,
+            tenant_status: tenantResolved ? 'resolved' : 'unresolved',
+            credential_binding: credentialBinding,
+            env_from_credential: envFromCredential,
             step_count: steps.length,
             steps,
-            execution_hint: 'Set ENTRA_TOKEN=<access-token-value> in the shell. Each curl uses -sS so progress meter is suppressed but errors propagate. CONSENT_ABUSE inference fires after step 4 lands; review the dashboard FindingsPanel for flagged apps.',
+            execution_hint: !tenantResolved
+              ? `Populate run_bash.env.${tokenEnvVar} from credential ${credential_id}, run and ingest the ready /me step, then re-expand to bind a concrete tenant.`
+              : `Populate run_bash.env.${tokenEnvVar} from credential ${credential_id}. Every command fails before network access when the binding is absent.`,
           }, null, 2),
         }],
       };

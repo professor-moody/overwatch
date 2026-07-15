@@ -1,0 +1,13 @@
+{
+  "AttachedPolicies": [
+    {
+      "PolicyName": "ReadOnlyAccess",
+      "PolicyArn": "arn:aws:iam::aws:policy/ReadOnlyAccess"
+    },
+    {
+      "PolicyName": "DeployPolicy",
+      "PolicyArn": "arn:aws:iam::111122223333:policy/DeployPolicy"
+    }
+  ],
+  "IsTruncated": false
+}

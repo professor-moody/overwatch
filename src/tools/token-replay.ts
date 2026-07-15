@@ -30,6 +30,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialMfaBlocked, isCredentialUsableForAuth, isTokenCredential } from '../services/credential-utils.js';
 import { runInstrumentedProcess, MAX_TIMEOUT_MS } from './_process-runner.js';
+import { cloudIdentityId } from '../services/parser-utils.js';
 
 const PROVIDERS = ['microsoft_graph', 'aws_sts', 'okta', 'github'] as const;
 type Provider = typeof PROVIDERS[number];
@@ -222,6 +223,29 @@ Sensitive token values are NEVER logged in plain text — the action description
             isError: true,
           };
         }
+        let targetCloudIdentityId = params.target_cloud_identity_id;
+        if (targetCloudIdentityId) {
+          const expectedId = cloudIdentityId(params.target_role_arn);
+          const target = engine.getNode(targetCloudIdentityId);
+          const targetProvider = target?.provider ?? target?.cloud_provider;
+          if (!target || target.type !== 'cloud_identity' || targetCloudIdentityId !== expectedId
+              || target.arn !== params.target_role_arn || targetProvider !== 'aws'
+              || !params.target_role_arn.includes(':role/')) {
+            return {
+              content: [{ type: 'text', text: JSON.stringify({
+                error: 'target_cloud_identity_id must name the canonical existing AWS role for target_role_arn',
+              }, null, 2) }],
+              isError: true,
+            };
+          }
+        } else {
+          const expectedId = cloudIdentityId(params.target_role_arn);
+          const candidate = engine.getNode(expectedId);
+          if (candidate?.type === 'cloud_identity' && candidate.arn === params.target_role_arn
+              && (candidate.provider === 'aws' || candidate.cloud_provider === 'aws')) {
+            targetCloudIdentityId = expectedId;
+          }
+        }
         const sessionName = `overwatch-replay-${fp}`;
         const stsArgs = [
           'sts', 'assume-role-with-web-identity',
@@ -242,13 +266,13 @@ Sensitive token values are NEVER logged in plain text — the action description
           tool_name: 'validate_token_credential',
           technique: 'token_replay',
           target_url: endpoint,
-          target_node: params.target_cloud_identity_id,
+          target_node: targetCloudIdentityId,
           validate: true,
           parse_with: cfg.parser,
           parser_context: {
             source_credential_id: params.credential_id,
             target_role_arn: params.target_role_arn,
-            target_cloud_identity_id: params.target_cloud_identity_id,
+            target_cloud_identity_id: targetCloudIdentityId,
           } as Record<string, unknown>,
           noise_estimate: params.noise_estimate,
           timeout_ms: params.timeout_ms,

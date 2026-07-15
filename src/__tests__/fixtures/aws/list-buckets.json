@@ -1,0 +1,15 @@
+{
+  "Buckets": [
+    {
+      "Name": "acme-build-artifacts",
+      "CreationDate": "2025-06-01T12:00:00Z"
+    },
+    {
+      "Name": "acme-audit-logs",
+      "CreationDate": "2025-06-02T12:00:00Z"
+    }
+  ],
+  "Owner": {
+    "ID": "canonical-owner-id"
+  }
+}

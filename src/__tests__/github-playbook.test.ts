@@ -25,7 +25,7 @@ describe('parseGhApiOrgs', () => {
     expect(credUpdate?.cred_orgs).toEqual(['acme-corp', 'acme-tools']);
 
     const edges = finding.edges.filter(e => e.properties.type === 'AUTHENTICATES_VIA');
-    expect(edges).toHaveLength(2);
+    expect(edges).toHaveLength(0);
   });
 
   it('handles empty array', () => {
@@ -76,7 +76,7 @@ describe('parseGhApiBranchProtection', () => {
   it('flags fully unprotected branches as high severity', () => {
     const output = JSON.stringify({ message: 'Branch not protected' });
     const finding = parseGhApiBranchProtection(output, 'test', { repo_full_name: 'acme/webapp', branch_name: 'main' } as any);
-    const node = finding.nodes[0] as any;
+    const node = finding.nodes.find(n => n.type === 'idp_application') as any;
     expect(node.branch_protection.status).toBe('unprotected');
     expect(node.finding_severity).toBe('high');
     expect(node.branch_protection_gaps.length).toBeGreaterThan(0);
@@ -90,7 +90,7 @@ describe('parseGhApiBranchProtection', () => {
       required_signatures: { enabled: false },
     });
     const finding = parseGhApiBranchProtection(output, 'test', { repo_full_name: 'acme/webapp' } as any);
-    const node = finding.nodes[0] as any;
+    const node = finding.nodes.find(n => n.type === 'idp_application') as any;
     expect(node.branch_protection.status).toBe('weak');
     expect(node.branch_protection_gaps).toContain('admins can bypass protection');
     expect(node.finding_severity).toBe('high');
@@ -104,7 +104,7 @@ describe('parseGhApiBranchProtection', () => {
       required_signatures: { enabled: true },
     });
     const finding = parseGhApiBranchProtection(output, 'test', { repo_full_name: 'acme/webapp' } as any);
-    const node = finding.nodes[0] as any;
+    const node = finding.nodes.find(n => n.type === 'idp_application') as any;
     expect(node.branch_protection.status).toBe('strong');
     expect(node.finding_severity).toBeUndefined();
   });
@@ -129,7 +129,7 @@ describe('parseGhApiDeployKeys', () => {
 });
 
 describe('expand_github_credential plan shape', () => {
-  it('produces plan steps with proper parser hints and stamps the credential', async () => {
+  it('produces plan steps without treating plan generation as execution progress', async () => {
     const { GraphEngine } = await import('../services/graph-engine.js');
     const config = {
       id: 'test', name: 'test', created_at: '2026-01-01T00:00:00Z',
@@ -167,7 +167,7 @@ describe('expand_github_credential plan shape', () => {
     expect(payload.steps[1].parse_with).toBe('gh-api-orgs');
     expect(payload.steps[2].parse_with).toBe('gh-api-repos');
 
-    expect(engine.getNode('cred-pat-1')?.recon_playbook_invoked_at).toBeDefined();
+    expect(engine.getNode('cred-pat-1')?.recon_playbook_invoked_at).toBeUndefined();
   });
 
   it('expands per-repo steps when candidate_repos is provided', async () => {
@@ -199,7 +199,7 @@ describe('expand_github_credential plan shape', () => {
           credential_id: 'cred-pat-2',
           max_repos: 200,
           include_orgs: true,
-          candidate_repos: ['acme/webapp'],
+          candidate_repos: [{ repo_full_name: 'acme/webapp', default_branch: 'master' }],
         })).then(r => { captured = r; });
       },
     };
@@ -212,5 +212,12 @@ describe('expand_github_credential plan shape', () => {
     // Repo is single-quoted in the emitted path (injection fencing): /repos/'acme/webapp'/…
     const perRepo = payload.steps.filter((s: any) => /repos\/'acme\/webapp'/.test(s.command));
     expect(perRepo).toHaveLength(4);
+    expect(perRepo.every((step: any) => step.parser_context.repo_full_name === 'acme/webapp')).toBe(true);
+    expect(perRepo.every((step: any) => step.parser_context.source_credential_id === 'cred-pat-2')).toBe(true);
+    const oidc = perRepo.find((step: any) => step.parse_with === 'github-actions-oidc');
+    expect(oidc.expected).toContain('customization metadata');
+    const branch = perRepo.find((step: any) => step.parse_with === 'gh-api-branch-protection');
+    expect(branch.command).toContain("branches/'master'/protection");
+    expect(branch.parser_context.branch_name).toBe('master');
   });
 });

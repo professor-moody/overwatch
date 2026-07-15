@@ -738,9 +738,11 @@ export function buildEvidenceChainsForNode(
       if (typeof det.stdout_dropped_bytes === 'number') stdoutDropped = det.stdout_dropped_bytes;
       if (typeof det.stdout_total_bytes === 'number') stdoutTotal = det.stdout_total_bytes;
       if (typeof det.evidence_capture_error === 'string') evidenceCaptureError = det.evidence_capture_error;
+      if (det.partial === true) partial = true;
+      if (typeof det.partial_reason === 'string') partialReason = det.partial_reason;
       const ps = det.parse_summary as Record<string, unknown> | undefined;
       if (ps) {
-        if (typeof ps.partial === 'boolean') partial = ps.partial;
+        if (ps.partial === true) partial = true;
         if (typeof ps.partial_reason === 'string') partialReason = ps.partial_reason;
       }
     }

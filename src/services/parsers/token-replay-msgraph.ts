@@ -26,21 +26,35 @@
 
 import type { EdgeType, Finding, NodeProperties, ParseContext } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
+import { idpApplicationId, idpId, idpPrincipalId } from '../parser-utils.js';
 
 interface ReplayContext extends ParseContext {
   source_credential_id?: string;
   source_idp_application_id?: string;
+  tenant_id?: string;
   /** Operator-prefixed status code, e.g. "[STATUS:200]\n{...}". */
   status_code?: number;
 }
 
 function extractStatusAndBody(output: string): { status: number; body: string } {
-  // Convention: when the tool fronts the response with "[STATUS:NNN]" we
-  // strip it; otherwise we treat the full input as body and infer status
-  // from JSON shape (best-effort).
-  const m = output.match(/^\[STATUS:(\d{3})\]\s*\n?([\s\S]*)$/);
-  if (m) return { status: parseInt(m[1]), body: m[2] };
-  return { status: 0, body: output };
+  // The live curl path appends the marker with `-w`; prefix markers remain
+  // accepted for compatibility with existing evidence and direct callers.
+  let normalized = output.replace(/\r\n/g, '\n');
+  const trailing = normalized.match(/\n?\[STATUS:(\d{3})\]\s*$/);
+  const trailingStatus = trailing ? parseInt(trailing[1]) : undefined;
+  if (trailing) normalized = normalized.slice(0, trailing.index).trimEnd();
+  const prefixed = normalized.match(/^\[STATUS:(\d{3})\]\s*\n?([\s\S]*)$/);
+  if (prefixed) return { status: trailingStatus ?? parseInt(prefixed[1]), body: prefixed[2] };
+  const headerEnd = normalized.indexOf('\n\n');
+  if (headerEnd > 0 && /^HTTP\//i.test(normalized.slice(0, headerEnd))) {
+    const headers = normalized.slice(0, headerEnd);
+    const statusMatch = headers.match(/^HTTP\/[\d.]+\s+(\d{3})/i);
+    return {
+      status: trailingStatus ?? (statusMatch ? parseInt(statusMatch[1]) : 0),
+      body: normalized.slice(headerEnd + 2),
+    };
+  }
+  return { status: trailingStatus ?? 0, body: normalized };
 }
 
 function isSuccessfulMsGraphMe(body: string): { id?: string; userPrincipalName?: string; mail?: string; displayName?: string } | null {
@@ -55,13 +69,18 @@ function isSuccessfulMsGraphMe(body: string): { id?: string; userPrincipalName?:
   }
 }
 
+function concreteTenant(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  return /^(common|organizations|consumers|unknown)$/i.test(value) ? undefined : value;
+}
+
 export function parseTokenReplayMsGraph(output: string, agentId: string = 'token-replay-msgraph', context?: ParseContext): Finding {
   const nodes: NodeProperties[] = [];
   const edges: Finding['edges'] = [];
   const now = new Date().toISOString();
   const ctx = (context ?? {}) as ReplayContext;
   const credId = ctx.source_credential_id;
-  const appId = ctx.source_idp_application_id;
+  let appId = ctx.source_idp_application_id;
 
   const { status, body } = extractStatusAndBody(output);
 
@@ -72,6 +91,7 @@ export function parseTokenReplayMsGraph(output: string, agentId: string = 'token
         id: credId,
         type: 'credential',
         label: 'replay-result',
+        preserve_existing_label: true,
         discovered_at: now,
         confidence: 1.0,
         // The replay returned auth-rejected — propagate to the credential
@@ -80,7 +100,6 @@ export function parseTokenReplayMsGraph(output: string, agentId: string = 'token
         cred_mfa_required: status === 403 ? true : undefined,
         cred_mfa_satisfied: status === 403 ? false : undefined,
         notes: `msgraph replay returned ${status}`,
-        partial: true,
       });
     }
     return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
@@ -93,18 +112,73 @@ export function parseTokenReplayMsGraph(output: string, agentId: string = 'token
         id: credId,
         type: 'credential',
         label: 'replay-result',
+        preserve_existing_label: true,
         discovered_at: now,
         confidence: 0.5,
-        partial: true,
         notes: `msgraph replay returned ${status} — inconclusive`,
       });
     }
-    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges,
+      partial: true, partial_reason: `msgraph_http_${status}_inconclusive` };
   }
 
   const me = isSuccessfulMsGraphMe(body);
   if (!me) {
     return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+  }
+
+  const tenant = concreteTenant(ctx.tenant_id)
+    ?? concreteTenant(me.userPrincipalName?.split('@')[1])
+    ?? concreteTenant(me.mail?.split('@')[1]);
+  if (!tenant) {
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+  }
+  const tenantNodeId = idpId('entra', tenant);
+  const principalKey = me.id ?? me.userPrincipalName ?? me.mail!;
+  const principalId = idpPrincipalId('entra', tenant, principalKey);
+  nodes.push({
+    id: tenantNodeId,
+    type: 'idp',
+    label: `entra:${tenant}`,
+    idp_kind: 'entra',
+    tenant_id: tenant,
+    discovered_at: now,
+    confidence: 1.0,
+  });
+  nodes.push({
+    id: principalId,
+    type: 'idp_principal',
+    label: me.userPrincipalName ?? me.mail ?? me.displayName ?? principalKey,
+    idp_id: tenantNodeId,
+    idp_kind: 'entra',
+    tenant_id: tenant,
+    idp_principal_kind: 'user',
+    idp_user_id: me.id,
+    object_id: me.id,
+    upn: me.userPrincipalName,
+    mail: me.mail,
+    display_name: me.displayName,
+    discovered_at: now,
+    confidence: 1.0,
+  });
+
+  // The playbook probes Microsoft Graph itself. Materialize that canonical
+  // target when callers did not provide a more specific application node.
+  if (!appId) {
+    appId = idpApplicationId('entra', tenant, 'microsoft-graph');
+    nodes.push({
+      id: appId,
+      type: 'idp_application',
+      label: 'Microsoft Graph',
+      idp_id: tenantNodeId,
+      idp_kind: 'entra',
+      tenant_id: tenant,
+      app_kind: 'entra_service_principal',
+      client_id: '00000003-0000-0000-c000-000000000000',
+      audience: 'https://graph.microsoft.com',
+      discovered_at: now,
+      confidence: 1.0,
+    });
   }
 
   // Success: mark the credential MFA-satisfied and refresh principal info.
@@ -113,17 +187,22 @@ export function parseTokenReplayMsGraph(output: string, agentId: string = 'token
       id: credId,
       type: 'credential',
       label: 'replay-result',
+      preserve_existing_label: true,
       discovered_at: now,
       confidence: 1.0,
       cred_usable_for_auth: true,
       cred_mfa_satisfied: true,
       credential_status: 'active',
+      partial: false,
+      cred_user: me.userPrincipalName ?? me.mail,
+      credential_principal_id: principalId,
+      tenant_id: tenant,
       notes: `msgraph /me replay succeeded for ${me.userPrincipalName ?? me.id ?? 'user'}`,
     });
   }
 
   // Emit the VALID_FOR_APP edge when the operator named a target app.
-  if (credId && appId) {
+  if (credId) {
     edges.push({
       source: credId,
       target: appId,

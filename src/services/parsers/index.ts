@@ -42,6 +42,10 @@ export { parseTokenReplayOkta } from './token-replay-okta.js';
 export { parseTokenReplayGitHub } from './token-replay-github.js';
 export { parseAwsStsIdentity } from './aws-sts-identity.js';
 export { parseAwsIamSummary } from './aws-iam-summary.js';
+export { parseAwsIamAttachedPolicies } from './aws-iam-attached-policies.js';
+export { parseAwsS3ListBuckets } from './aws-s3-list-buckets.js';
+export { parseAwsLambdaListFunctions } from './aws-lambda-list-functions.js';
+export { parseEntraTokenExchange } from './entra-token-exchange.js';
 export { parseGhApiOrgs } from './gh-api-orgs.js';
 export { parseGhApiRepos } from './gh-api-repos.js';
 export { parseGhApiSecrets } from './gh-api-secrets.js';
@@ -106,6 +110,10 @@ import { parseTokenReplayOkta } from './token-replay-okta.js';
 import { parseTokenReplayGitHub } from './token-replay-github.js';
 import { parseAwsStsIdentity } from './aws-sts-identity.js';
 import { parseAwsIamSummary } from './aws-iam-summary.js';
+import { parseAwsIamAttachedPolicies } from './aws-iam-attached-policies.js';
+import { parseAwsS3ListBuckets } from './aws-s3-list-buckets.js';
+import { parseAwsLambdaListFunctions } from './aws-lambda-list-functions.js';
+import { parseEntraTokenExchange } from './entra-token-exchange.js';
 import { parseGhApiOrgs } from './gh-api-orgs.js';
 import { parseGhApiRepos } from './gh-api-repos.js';
 import { parseGhApiSecrets } from './gh-api-secrets.js';
@@ -225,6 +233,14 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'aws-sts-get-caller-identity': parseAwsStsIdentity,
   'aws-iam-summary': parseAwsIamSummary,
   'aws-iam-get-account-summary': parseAwsIamSummary,
+  'aws-iam-attached-policies': parseAwsIamAttachedPolicies,
+  'aws-iam-list-attached-user-policies': parseAwsIamAttachedPolicies,
+  'aws-iam-list-attached-role-policies': parseAwsIamAttachedPolicies,
+  'aws-s3-list-buckets': parseAwsS3ListBuckets,
+  'aws-s3api-list-buckets': parseAwsS3ListBuckets,
+  'aws-lambda-list-functions': parseAwsLambdaListFunctions,
+  'entra-token-exchange': parseEntraTokenExchange,
+  'microsoft-oauth-token-exchange': parseEntraTokenExchange,
   // A.2 — GitHub playbook step parsers.
   'gh-api-orgs': parseGhApiOrgs,
   'gh-api-repos': parseGhApiRepos,

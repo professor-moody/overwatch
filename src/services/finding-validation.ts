@@ -23,13 +23,34 @@ export function prepareFindingForIngest(
   finding: Finding,
   getExistingNode: (nodeId: string) => NodeProperties | null,
 ): PreparedFinding {
-  const normalizedNodes = finding.nodes.map(node => normalizeFindingNode(node));
-  const nodeMap = new Map<string, NodeProperties>();
   const errors: MutationValidationError[] = [];
+  const normalizedNodes = finding.nodes.map(node => {
+    const normalized = normalizeFindingNode(node) as NodeProperties & { preserve_existing_label?: boolean };
+    const preserveExistingLabel = normalized.preserve_existing_label === true;
+    delete normalized.preserve_existing_label;
+    if (!preserveExistingLabel) return normalized;
+
+    const existing = getExistingNode(normalized.id);
+    if (!existing) {
+      errors.push({
+        code: 'missing_node_reference',
+        message: `Node patch ${normalized.id} requires an existing graph node.`,
+        node_id: normalized.id,
+        details: { patch_target_missing: true },
+      });
+      return normalized;
+    }
+    return { ...normalized, label: existing.label };
+  });
+  const nodeMap = new Map<string, NodeProperties>();
 
   for (const node of normalizedNodes) {
-    nodeMap.set(node.id, node as NodeProperties);
-    errors.push(...validateFindingNode(node));
+    const existing = getExistingNode(node.id);
+    const effectiveNode = existing
+      ? { ...existing, ...node, id: existing.id, type: existing.type }
+      : node;
+    nodeMap.set(node.id, effectiveNode as NodeProperties);
+    errors.push(...validateFindingNode(effectiveNode));
   }
 
   for (const edge of finding.edges) {

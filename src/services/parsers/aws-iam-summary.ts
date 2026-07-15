@@ -21,6 +21,7 @@ interface PlaybookContext extends ParseContext {
   target_cloud_identity_id?: string;
   /** AWS account id when the source credential or target identity isn't in the graph yet. */
   aws_account?: string;
+  caller_arn?: string;
 }
 
 export function parseAwsIamSummary(
@@ -45,33 +46,29 @@ export function parseAwsIamSummary(
     return { id: `aws-iam-summary-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }
 
-  // Pick a target node: explicit context override > synthesized account placeholder.
-  let targetId = ctx.target_cloud_identity_id;
+  // An account summary does not prove that the root principal was observed.
+  // Require the caller identity that the STS step explicitly bound.
+  const targetId = ctx.target_cloud_identity_id;
   let nodeProps: Partial<NodeProperties> = {};
-  if (!targetId) {
-    const account = ctx.aws_account;
-    if (!account) {
-      // No way to anchor the summary — emit it as a free-floating
-      // observation under a placeholder that downstream correlators
-      // can merge if a real cloud_identity lands later.
-      targetId = cloudIdentityId('aws-account-unknown');
-    } else {
-      targetId = cloudIdentityId(`arn:aws:iam::${account}:root`);
-      nodeProps = {
-        cloud_provider: 'aws',
-        cloud_account: account,
-        // 'user' is the closest principal_type for an account-root proxy.
-        principal_type: 'user',
-        caller_kind: 'account_root',
-        arn: `arn:aws:iam::${account}:root`,
-      };
-    }
+  if (!targetId || !ctx.caller_arn) {
+    return { id: `aws-iam-summary-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }
+  const account = ctx.aws_account ?? ctx.cloud_account ?? ctx.account_id;
+  const arnAccount = ctx.caller_arn.match(/^arn:aws[a-zA-Z-]*:(?:iam|sts)::(\d{12}):/)?.[1];
+  if (!account || arnAccount !== account || targetId !== cloudIdentityId(ctx.caller_arn)) {
+    return { id: `aws-iam-summary-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  }
+  nodeProps = {
+    provider: 'aws',
+    cloud_account: account,
+    arn: ctx.caller_arn,
+  };
 
   const node: NodeProperties = {
-    id: targetId!,
+    id: targetId,
     type: 'cloud_identity',
-    label: targetId!.replace(/^cloud-identity-/, ''),
+    label: typeof nodeProps.arn === 'string' ? nodeProps.arn : targetId,
+    preserve_existing_label: true,
     discovered_at: now,
     confidence: 1.0,
     ...nodeProps,

@@ -138,9 +138,11 @@ describe.skipIf(!supportsLocalListen)('Archetype capability evals (fake claude)'
       scopeSeededNodes: true,
     });
     expect(result.task?.status).toBe('completed');
-    // expand_aws_credential stamps the credential node with recon_playbook_invoked_at.
+    // Plan generation is deliberately stateless until durable PlaybookRun state
+    // lands; completing this capability must not retire the credential.
     const cred = result.app.engine.getNodesByType('credential').find(n => JSON.stringify(n).includes('svc-deploy'));
-    expect(JSON.stringify(cred ?? {})).toContain('recon_playbook_invoked_at');
+    expect(cred).toBeDefined();
+    expect(cred?.recon_playbook_invoked_at).toBeUndefined();
   });
 
   it('post_exploit records a lateral admin-access edge and completes', async () => {

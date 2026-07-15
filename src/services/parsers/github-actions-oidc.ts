@@ -66,15 +66,37 @@ function tryParseTrustPolicy(output: string): IamTrustPolicy | null {
   }
 }
 
-function tryParseRepoCustomization(output: string, _context?: ParseContext): { repo: string; pattern?: string } | null {
+interface ParsedRepoCustomization {
+  repo: string;
+  branch?: string;
+  pattern?: string;
+  useDefault?: boolean;
+  includeClaimKeys?: string[];
+}
+
+function tryParseRepoCustomization(output: string, context?: ParseContext): ParsedRepoCustomization | null {
   try {
     const obj = JSON.parse(output) as RepoOidcCustom & { repo?: string; full_name?: string };
+    const customizationShaped = typeof obj.use_default === 'boolean'
+      || Array.isArray(obj.include_claim_keys)
+      || typeof obj.sub_claim_pattern === 'string';
+    if (!customizationShaped) return null;
     // Repo identifier comes either from the parser context or from a
     // `repo`/`full_name` field operators sometimes inject before piping.
-    const repo = (obj as { repo?: string; full_name?: string }).repo ?? obj.full_name;
+    const repo = context?.repo_full_name
+      ?? context?.repository
+      ?? (obj as { repo?: string; full_name?: string }).repo
+      ?? obj.full_name;
     if (!repo) return null;
-    const pattern = obj.sub_claim_pattern;
-    return { repo, pattern };
+    return {
+      repo,
+      branch: context?.branch_name ?? context?.branch,
+      pattern: obj.sub_claim_pattern,
+      useDefault: obj.use_default,
+      includeClaimKeys: Array.isArray(obj.include_claim_keys)
+        ? obj.include_claim_keys.filter((key): key is string => typeof key === 'string')
+        : undefined,
+    };
   } catch {
     return null;
   }
@@ -230,6 +252,10 @@ export function parseGitHubActionsOidc(output: string, agentId: string = 'github
         audience: GHA_ISSUER,
         idp_id: idpNodeId,
         sub_claim_pattern: repoCust.pattern,
+        repo_full_name: repoCust.repo,
+        branch_name: repoCust.branch,
+        oidc_use_default: repoCust.useDefault,
+        oidc_include_claim_keys: repoCust.includeClaimKeys,
         discovered_at: now,
         confidence: 0.9,
       });
@@ -240,9 +266,15 @@ export function parseGitHubActionsOidc(output: string, agentId: string = 'github
         properties: { type: 'TRUSTS' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId },
       });
     } else {
-      // Update existing node with the customized pattern.
+      // Update an app already materialized through the trust-policy path.
       const existing = nodes.find(n => n.id === appNodeId);
-      if (existing && repoCust.pattern) existing.sub_claim_pattern = repoCust.pattern;
+      if (existing) {
+        if (repoCust.pattern) existing.sub_claim_pattern = repoCust.pattern;
+        existing.repo_full_name = repoCust.repo;
+        existing.branch_name = repoCust.branch;
+        existing.oidc_use_default = repoCust.useDefault;
+        existing.oidc_include_claim_keys = repoCust.includeClaimKeys;
+      }
     }
   }
 

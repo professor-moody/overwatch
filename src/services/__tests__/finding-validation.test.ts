@@ -253,6 +253,37 @@ describe('finding-validation', () => {
       expect(cred.cred_type).toBe('ntlm');
     });
 
+    it('treats preserve_existing_label findings as patches without replacing credential identity', () => {
+      const existing = makeCredNode('cred-1', {
+        label: 'captured GitHub PAT', cred_type: 'token', cred_material_kind: 'pat',
+        cred_value: 'secret-material', credential_status: 'active',
+      }) as NodeProperties;
+      const finding = makeFinding({
+        nodes: [{
+          id: 'cred-1', type: 'credential' as NodeType, label: 'replay-result',
+          preserve_existing_label: true, credential_status: 'expired',
+        } as any],
+      });
+      const result = prepareFindingForIngest(finding, id => id === existing.id ? existing : null);
+      expect(result.errors).toEqual([]);
+      expect(result.finding.nodes[0]).toMatchObject({
+        id: 'cred-1', label: 'captured GitHub PAT', credential_status: 'expired',
+      });
+      expect(result.finding.nodes[0]).not.toHaveProperty('preserve_existing_label');
+      expect(existing).toMatchObject({ cred_material_kind: 'pat', cred_value: 'secret-material' });
+    });
+
+    it('rejects a patch-only node when its target does not exist', () => {
+      const finding = makeFinding({ nodes: [{
+        id: 'missing-cred', type: 'credential' as NodeType, label: 'replay-result',
+        preserve_existing_label: true, credential_status: 'expired',
+      } as any] });
+      const result = prepareFindingForIngest(finding, noExistingNode);
+      expect(result.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'missing_node_reference', node_id: 'missing-cred' }),
+      ]));
+    });
+
     it('handles empty finding (no nodes, no edges) cleanly', () => {
       const finding = makeFinding();
       const result = prepareFindingForIngest(finding, noExistingNode);

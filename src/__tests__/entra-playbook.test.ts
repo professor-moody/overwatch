@@ -18,7 +18,7 @@ describe('parseMsGraphUsers', () => {
         { id: '22222222-2222-2222-2222-222222222222', userPrincipalName: 'bob@acme.local', displayName: 'Bob' },
       ],
     });
-    const finding = parseMsGraphUsers(output, 'test', { tenant_id: TENANT } as any);
+    const finding = parseMsGraphUsers(output, 'test', { tenant_id: TENANT });
     const principals = finding.nodes.filter(n => n.type === 'idp_principal');
     expect(principals).toHaveLength(2);
     expect(principals[0].upn).toBe('alice@acme.local');
@@ -34,7 +34,7 @@ describe('parseMsGraphUsers', () => {
 });
 
 describe('parseMsGraphApplications', () => {
-  it('emits idp_application with multi_tenant flag and aggregated scope IDs', () => {
+  it('emits idp_application with multi_tenant flag and requested permission IDs', () => {
     const output = JSON.stringify({
       value: [
         {
@@ -51,12 +51,14 @@ describe('parseMsGraphApplications', () => {
         },
       ],
     });
-    const finding = parseMsGraphApplications(output, 'test', { tenant_id: TENANT } as any);
+    const finding = parseMsGraphApplications(output, 'test', { tenant_id: TENANT });
     const apps = finding.nodes.filter(n => n.type === 'idp_application');
     expect(apps).toHaveLength(2);
     const internal = apps.find(a => a.label === 'Internal')!;
+    expect(internal.tenant_id).toBe(TENANT);
     expect(internal.multi_tenant).toBe(false);
-    expect(internal.app_scopes).toEqual(['scope-1']);
+    expect(internal.requested_permission_ids).toEqual(['scope-1']);
+    expect(internal.app_scopes).toBeUndefined();
     const mt = apps.find(a => a.label === 'Multi-Tenant')!;
     expect(mt.multi_tenant).toBe(true);
     expect((mt.redirect_uris as string[])[0]).toBe('https://app.example.com/cb');
@@ -64,7 +66,7 @@ describe('parseMsGraphApplications', () => {
 });
 
 describe('parseMsGraphServicePrincipals', () => {
-  it('captures human-readable scope names from oauth2PermissionScopes', () => {
+  it('captures scopes and roles exposed by a service principal without treating them as grants', () => {
     const output = JSON.stringify({
       value: [
         {
@@ -79,12 +81,15 @@ describe('parseMsGraphServicePrincipals', () => {
         },
       ],
     });
-    const finding = parseMsGraphServicePrincipals(output, 'test', { tenant_id: TENANT } as any);
+    const finding = parseMsGraphServicePrincipals(output, 'test', { tenant_id: TENANT });
     const sp = finding.nodes.find(n => n.type === 'idp_application')!;
     expect(sp.app_kind).toBe('entra_service_principal');
-    expect(sp.app_scopes).toContain('Mail.ReadWrite');
-    expect(sp.app_scopes).toContain('Directory.ReadWrite.All');
-    expect(sp.external_app).toBe(true);
+    expect(sp.tenant_id).toBe(TENANT);
+    expect(sp.exposed_oauth_scopes).toContain('Mail.ReadWrite');
+    expect(sp.exposed_app_roles).toContain('Directory.ReadWrite.All');
+    expect(sp.app_scopes).toBeUndefined();
+    // Domain aliases and owner GUIDs are not directly comparable.
+    expect(sp.external_app).toBeUndefined();
   });
 });
 
@@ -97,9 +102,10 @@ describe('parseMsGraphGroups', () => {
         { id: 'g3', displayName: 'Newsletter', securityEnabled: false, mailEnabled: true, groupTypes: [] },
       ],
     });
-    const finding = parseMsGraphGroups(output, 'test', { tenant_id: TENANT } as any);
+    const finding = parseMsGraphGroups(output, 'test', { tenant_id: TENANT });
     const groups = finding.nodes.filter(n => n.type === 'group');
     expect(groups).toHaveLength(2);
+    expect(groups.every(group => group.tenant_id === TENANT)).toBe(true);
     expect(groups.find(g => g.label === 'IT Admins')!.group_kind).toBe('security');
     expect(groups.find(g => g.label === 'M365 Group')!.group_kind).toBe('unified');
     // Distribution-only group is skipped.
@@ -146,8 +152,10 @@ describe('exchange_refresh_token', () => {
     if (!payload.command) throw new Error(`unexpected payload: ${JSON.stringify(payload)}`);
     expect(payload.command).toContain(`login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`);
     expect(payload.command).toContain('grant_type=refresh_token');
-    // Refresh-token value is referenced via $REFRESH_TOKEN, never inlined.
-    expect(payload.command).toContain('$REFRESH_TOKEN');
+    // Refresh-token value is referenced via the run_bash.env binding, never inlined.
+    expect(payload.command).toContain('$OVERWATCH_ENTRA_REFRESH_TOKEN');
+    expect(payload.command).toContain('--fail-with-body');
+    expect(payload.env_from_credential).toEqual({ OVERWATCH_ENTRA_REFRESH_TOKEN: 'cred-rt-1' });
   });
 });
 
@@ -192,7 +200,9 @@ describe('expand_entra_credential', () => {
     expect(payload.steps[1].parse_with).toBe('msgraph-users');
     expect(payload.steps[4].parse_with).toBe('msgraph-groups');
     expect(payload.tenant).toBe(TENANT);
-    expect(engine.getNode('cred-at-1')?.recon_playbook_invoked_at).toBeDefined();
+    expect(payload.steps.every((step: any) => step.parser_context.tenant_id === TENANT)).toBe(true);
+    expect(payload.steps.every((step: any) => step.parser_context.source_credential_id === 'cred-at-1')).toBe(true);
+    expect(engine.getNode('cred-at-1')?.recon_playbook_invoked_at).toBeUndefined();
   });
 
   it('skips groups step when include_groups is false', async () => {

@@ -1,0 +1,141 @@
+{
+  "format": "cloudfox-json-files-v1",
+  "records": [
+    {
+      "module": "principals",
+      "record": {
+        "Account": "111122223333",
+        "Type": "Role",
+        "Name": "AppRole",
+        "Arn": "arn:aws:iam::111122223333:role/AppRole",
+        "IsAdmin?": "No",
+        "CanPrivEscToAdmin?": "Yes"
+      }
+    },
+    {
+      "module": "lambda",
+      "record": {
+        "Account": "111122223333",
+        "Region": "us-east-1",
+        "Name": "orders",
+        "Arn": "arn:aws:lambda:us-east-1:111122223333:function:orders",
+        "Role": "arn:aws:iam::111122223333:role/LambdaOrdersRole",
+        "IsAdminRole?": "No",
+        "CanPrivEscToAdmin?": "Yes"
+      }
+    },
+    {
+      "module": "buckets",
+      "record": {
+        "Account": "111122223333",
+        "Name": "public-assets",
+        "Region": "us-east-1",
+        "Public?": "Yes",
+        "Resource Policy Summary": "Public"
+      }
+    },
+    {
+      "module": "buckets",
+      "record": {
+        "Account": "111122223333",
+        "Name": "private-assets",
+        "Region": "us-east-1",
+        "Public?": "No"
+      }
+    },
+    {
+      "module": "instances",
+      "record": {
+        "Account": "111122223333",
+        "Name": "worker",
+        "ID": "i-0123456789abcdef0",
+        "Zone": "us-west-2b",
+        "IsAdmin?": "No",
+        "CanPrivEscToAdmin?": "No"
+      }
+    },
+    {
+      "module": "role-trusts-principals",
+      "record": {
+        "Account": "111122223333",
+        "Role Arn": "arn:aws:iam::111122223333:role/DeployRole",
+        "Trusted Principal": "arn:aws:iam::444455556666:root (Vendor Corp)",
+        "ExternalID": "vendor-123"
+      }
+    },
+    {
+      "module": "role-trusts-services",
+      "record": {
+        "Account": "111122223333",
+        "Role Arn": "arn:aws:iam::111122223333:role/DeployRole",
+        "Trusted Service": "lambda.amazonaws.com"
+      }
+    },
+    {
+      "module": "role-trusts-federated",
+      "record": {
+        "Account": "111122223333",
+        "Role Arn": "arn:aws:iam::111122223333:role/DeployRole",
+        "Trusted Provider": "arn:aws:iam::111122223333:oidc-provider/token.actions.githubusercontent.com",
+        "Trusted Subject": "repo:acme/app:ref:refs/heads/main"
+      }
+    },
+    {
+      "module": "role-trusts-federated",
+      "record": {
+        "Account": "111122223333",
+        "Role Arn": "arn:aws:iam::111122223333:role/DeployRole",
+        "Trusted Provider": "arn:aws:iam::111122223333:oidc-provider/token.actions.githubusercontent.com",
+        "Trusted Subject": "repo:acme/app:environment:prod"
+      }
+    },
+    {
+      "module": "permissions",
+      "record": {
+        "Account": "111122223333",
+        "Type": "Role",
+        "Name": "AppRole",
+        "Arn": "arn:aws:iam::111122223333:role/AppRole",
+        "Policy": "Managed",
+        "Policy Name": "DataRead",
+        "Policy Arn": "arn:aws:iam::111122223333:policy/DataRead",
+        "Effect": "Allow",
+        "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::private-data/*",
+        "Condition": "No"
+      }
+    },
+    {
+      "module": "permissions",
+      "record": {
+        "Account": "111122223333",
+        "Type": "Role",
+        "Name": "AppRole",
+        "Arn": "arn:aws:iam::111122223333:role/AppRole",
+        "Policy": "Managed",
+        "Policy Name": "DataRead",
+        "Policy Arn": "arn:aws:iam::111122223333:policy/DataRead",
+        "Effect": "Allow",
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::private-data",
+        "Condition": "Yes"
+      }
+    },
+    {
+      "module": "permissions",
+      "record": {
+        "Account": "111122223333",
+        "Type": "Role",
+        "Name": "AppRole",
+        "Arn": "arn:aws:iam::111122223333:role/AppRole",
+        "Policy": "Inline",
+        "Policy Name": "Guardrail",
+        "Policy Arn": "Guardrail",
+        "Effect": "Deny",
+        "Action": "[NotAction] iam:GetRole",
+        "Resource": "*",
+        "Condition": "No"
+      }
+    }
+  ]
+}

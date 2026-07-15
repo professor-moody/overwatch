@@ -46,6 +46,9 @@ const BASE = [
 // Instrumented, OPSEC-gated target execution + the action lifecycle around it.
 const EXECUTE = ['run_bash', 'run_tool', 'validate_action', 'log_action_event', 'parse_output', 'report_finding', 'check_tools', 'track_process', 'check_processes'];
 const SESSIONS = ['open_session', 'send_to_session', 'write_session', 'read_session', 'close_session', 'list_sessions', 'resize_session', 'signal_session', 'update_session'];
+// The expand/exchange entries are read-only, stateless plan generators. They
+// grant an archetype the ability to plan credential work; the emitted runner
+// or direct-tool descriptors still pass through the normal execution surface.
 const CRED = ['validate_token_credential', 'exchange_refresh_token', 'expand_aws_credential', 'expand_entra_credential', 'expand_github_credential', 'expand_oidc_capture'];
 const RECON = ['update_scope', 'find_paths', 'run_graph_health'];
 // Passive external-recon execution surface: the public-source OSINT binaries run
@@ -96,7 +99,7 @@ const ARCHETYPES: Record<AgentArchetypeId, AgentArchetype> = {
   },
   credential_operator: {
     id: 'credential_operator', label: 'Credential operator', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'password-spraying',
-    description: 'Validate, spray, and expand credentials/tokens (AWS/Entra/GitHub/OIDC). Focused on credential lifecycle, not broad recon.',
+    description: 'Validate, spray, and expand credentials/tokens (AWS/Entra/GitHub/OIDC), executing only non-blocked playbook descriptors with explicit credential bindings.',
     defaultObjective: 'Validate and expand the credentials around {target}; map what access they unlock.',
     suitableFor: { frontierTypes: ['credential_test', 'inferred_edge'], nodeTypes: ['credential'] },
     tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...CRED, 'test_webapp_credential']) },
@@ -131,7 +134,7 @@ const ARCHETYPES: Record<AgentArchetypeId, AgentArchetype> = {
   },
   cloud_cartographer: {
     id: 'cloud_cartographer', label: 'Cloud cartographer', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'cloud-federation-mapping',
-    description: 'Enumerate cloud + identity (AWS/Entra/GitHub/OIDC): expand captured credentials, map federation and cloud-to-on-prem pivots.',
+    description: 'Enumerate cloud + identity (AWS/Entra/GitHub/OIDC): resolve dependency-aware credential plans, then map federation and cloud-to-on-prem pivots.',
     defaultObjective: 'Expand the cloud credentials around {target} and map the access + federation they unlock.',
     suitableFor: { nodeTypes: ['credential', 'cloud_identity', 'cloud_resource', 'idp_application'] },
     tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...CRED]) },
@@ -197,7 +200,7 @@ const MISSIONS: Record<AgentArchetypeId, string> = {
   web_tester:
     `YOUR ROLE IS WEB APPLICATION TESTING. Probe the target's web surface — endpoints, auth, and web vulnerabilities — via validate_action + run_tool/run_bash, and open_session/send_to_session for interactive exploitation when warranted. To test a credential against a web app (form / basic / bearer / cookie), use test_webapp_credential with an explicit success criterion. Ingest response headers (parse_output security-headers) for CORS / missing-header findings, and after a login persists a session (test_webapp_credential session_jar_id) crawl the app authenticated and parse_output the crawl (katana) to reach the post-login endpoint surface. Record findings with parse_output/report_finding. Done when the target's endpoints and auth surface are mapped as nodes/edges and each candidate weakness is a finding with evidence.`,
   credential_operator:
-    `YOUR ROLE IS CREDENTIAL OPERATIONS. Validate, spray, and expand credentials and tokens, and map the access they unlock. Match the tool to the target: IdP / cloud SSO tokens → validate_token_credential + the expand_* tools; a credential against a web app (http/https) → test_webapp_credential (with an explicit success criterion). Record findings with report_finding. You have NO interactive sessions — credential lifecycle only. Done when each credential's validity and the access it unlocks is recorded as findings/edges (or the credential is marked invalid).`,
+    `YOUR ROLE IS CREDENTIAL OPERATIONS. Validate, spray, and expand credentials and tokens, and map the access they unlock. Match the tool to the target: IdP / cloud SSO tokens → validate_token_credential + the expand_* tools; a credential against a web app (http/https) → test_webapp_credential (with an explicit success criterion). Treat expand/exchange results as stateless plans: never execute a blocked, ready:false, or null-command descriptor; honor its returned runner (run_bash or run_tool) or direct tool. For run_bash, resolve env_from_credential to the selected credential's actual value in run_bash.env — never the node id — and preserve parser_context/parse_with/parse_stream. Ingest prerequisite output and re-expand to resolve dependent steps. Record findings with report_finding. You have NO interactive sessions — credential lifecycle only. Done when each credential's validity and the access it unlocks is recorded as findings/edges (or the credential is marked invalid).`,
   post_exploit:
     `YOUR ROLE IS POST-EXPLOITATION FROM A FOOTHOLD. Work interactively via open_session/send_to_session: enumerate locally, move laterally, and capture credentials and reachable assets. Route execution through validate_action and record findings with report_finding. Done when the foothold's reachable assets, captured credentials, and lateral edges are recorded as graph findings.`,
   cve_researcher: CVE_MISSION,
@@ -206,7 +209,7 @@ const MISSIONS: Record<AgentArchetypeId, string> = {
   report_scribe:
     `YOUR ROLE IS REPORT DRAFTING (READ-ONLY). Read the confirmed graph state and evidence in scope (query_graph, get_evidence, explain_action, get_timeline) and draft report sections with generate_report. You CANNOT execute against targets or mutate the graph — synthesis only. Done when the requested report sections are drafted from confirmed findings and evidence via generate_report.`,
   cloud_cartographer:
-    `YOUR ROLE IS CLOUD + IDENTITY CARTOGRAPHY. Expand captured cloud credentials/tokens with the expand_* tools (AWS/Entra/GitHub/OIDC), run the resulting recon via validate_action + run_tool, and turn output into graph data with parse_output/report_finding. Map federation (OIDC/SAML role assumption) and cloud-to-on-prem pivots. Done when each cloud credential's reachable resources, roles, and federation edges are recorded as graph findings.`,
+    `YOUR ROLE IS CLOUD + IDENTITY CARTOGRAPHY. Expand captured cloud credentials/tokens with the stateless expand_* tools (AWS/Entra/GitHub/OIDC). Execute only non-null descriptors that are not explicitly blocked (status:blocked or ready:false), via validate_action and the returned runner (run_bash or run_tool) or direct tool. Resolve env_from_credential to actual credential material in run_bash.env, preserve parser_context/parse_with/parse_stream, ingest prerequisite output, and re-expand to resolve blocked dependencies. Turn output into graph data with parse_output/report_finding. Map federation (OIDC/SAML role assumption) and cloud-to-on-prem pivots. Done when each cloud credential's reachable resources, roles, and federation edges are recorded as graph findings.`,
   opsec_sentinel:
     `YOUR ROLE IS READ-ONLY OPSEC MONITORING. Use get_opsec_status (+ query_graph) to assess the noise budget spent, the defensive signals observed (lockouts, rate limits, honeypots, resets), and the recommended approach. You CANNOT execute against targets or mutate the graph. Done when you have reported the current OPSEC posture and any risk (budget near exhaustion, active defensive signals) as a finding/note for the operator.`,
   session_shepherd:

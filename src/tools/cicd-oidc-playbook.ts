@@ -18,6 +18,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialUsableForAuth, isTokenCredential } from '../services/credential-utils.js';
+import { cloudIdentityId } from '../services/parser-utils.js';
 
 interface ReplayStep {
   step: number;
@@ -49,7 +50,7 @@ provided args.`,
         max_targets: z.number().int().min(1).max(20).default(10).describe('Cap on candidate roles. Highest-confidence ISSUES_TOKENS_FOR matches first.'),
       },
       annotations: {
-        readOnlyHint: false,
+        readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
@@ -72,7 +73,8 @@ provided args.`,
 
       // Walk the graph for idp_application nodes whose audience matches,
       // then collect their ISSUES_TOKENS_FOR → cloud_identity targets.
-      const candidates: Array<{ cloudId: string; roleArn?: string; appLabel?: string; confidence: number }> = [];
+      const candidates: Array<{ cloudId: string; roleArn: string; appLabel?: string; confidence: number }> = [];
+      const blockedCandidates: Array<{ cloud_identity_id: string; role_arn?: string; reason: string }> = [];
       const seen = new Set<string>();
 
       const apps = engine.getNodesByType('idp_application');
@@ -88,9 +90,20 @@ provided args.`,
           seen.add(e.target);
           const tgt = engine.getNode(e.target);
           if (!tgt || tgt.type !== 'cloud_identity') continue;
+          const roleArn = typeof tgt.arn === 'string' ? tgt.arn : undefined;
+          const provider = tgt.provider ?? tgt.cloud_provider;
+          if (!roleArn || !/^arn:(?:aws|aws-us-gov|aws-cn):iam::\d{12}:role\/.+/.test(roleArn)
+              || provider !== 'aws' || cloudIdentityId(roleArn) !== e.target) {
+            blockedCandidates.push({
+              cloud_identity_id: e.target,
+              role_arn: roleArn,
+              reason: 'Target must be the canonical cloud_identity for a valid AWS IAM role ARN.',
+            });
+            continue;
+          }
           candidates.push({
             cloudId: e.target,
-            roleArn: tgt.arn as string | undefined,
+            roleArn,
             appLabel: app.label as string | undefined,
             confidence: (e.properties.confidence as number | undefined) ?? 0.7,
           });
@@ -114,28 +127,22 @@ provided args.`,
         est_noise: 0.15,
       }));
 
-      engine.addNode({
-        id: credential_id,
-        type: 'credential',
-        label: cred.label as string,
-        discovered_at: cred.discovered_at as string,
-        confidence: cred.confidence as number,
-        recon_playbook_invoked_at: new Date().toISOString(),
-        recon_playbook_step_count: steps.length,
-      });
-
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             credential_id,
             audience,
-            candidates_considered: candidates.length,
+            candidates_considered: candidates.length + blockedCandidates.length,
+            eligible_candidates: candidates.length,
+            blocked_candidates: blockedCandidates,
             step_count: steps.length,
             steps,
             execution_hint: 'Each step calls validate_token_credential. Successful replays mint temp AWS creds — chain into expand_aws_credential for follow-on enumeration.',
             no_targets: candidates.length === 0
-              ? 'No idp_application nodes match this credential\'s audience. Run github-actions-oidc / gitlab-ci-oidc / circleci-oidc parsers first to ingest the federation graph.'
+              ? blockedCandidates.length > 0
+                ? 'Matching federation targets exist, but none has a canonical valid AWS IAM role identity. Repair or re-ingest those targets before replay.'
+                : 'No idp_application nodes match this credential\'s audience. Run github-actions-oidc / gitlab-ci-oidc / circleci-oidc parsers first to ingest the federation graph.'
               : undefined,
           }, null, 2),
         }],

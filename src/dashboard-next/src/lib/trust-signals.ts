@@ -21,21 +21,37 @@ export function extractActivityTrustSignals(entry: ActivityEntry): TrustSignal[]
   const parsedEdges = numberValue(details.parsed_edges) ?? numberValue(parseSummary?.edges_parsed);
   const isParseEvent = entry.event_type === 'parse_output';
 
-  if (parseStatus === 'no_data' || (isParseEvent && parsedNodes === 0 && parsedEdges === 0)) {
+  if (parseStatus === 'validation_failed' || (isParseEvent && Array.isArray(details.validation_errors))) {
+    addSignal(signals, {
+      id: 'parse-validation-failed',
+      severity: 'error',
+      label: 'Parse rejected',
+      detail: 'Parsed data or parser context failed validation and was not ingested.',
+      action: 'Inspect validation errors and parser format assumptions.',
+    });
+  } else if (parseStatus === 'no_parser') {
+    addSignal(signals, {
+      id: 'parse-no-parser',
+      severity: 'error',
+      label: 'Parser unavailable',
+      detail: 'No registered parser matched the requested parser name.',
+      action: 'Choose a supported parser or ingest the structured result explicitly.',
+    });
+  } else if (parseStatus === 'parser_exception') {
+    addSignal(signals, {
+      id: 'parse-exception',
+      severity: 'error',
+      label: 'Parser exception',
+      detail: 'The selected parser threw before it could produce graph data.',
+      action: 'Inspect the parser error and source format before retrying.',
+    });
+  } else if (parseStatus === 'no_data' || (isParseEvent && !parseStatus && parsedNodes === 0 && parsedEdges === 0)) {
     addSignal(signals, {
       id: 'parse-no-data',
       severity: 'error',
       label: 'No parser data',
       detail: 'The parser ran but extracted zero graph nodes or edges.',
       action: 'Verify the source output before treating this as no finding.',
-    });
-  } else if (parseStatus === 'validation_failed' || (isParseEvent && Array.isArray(details.validation_errors))) {
-    addSignal(signals, {
-      id: 'parse-validation-failed',
-      severity: 'error',
-      label: 'Parse rejected',
-      detail: 'Parsed data failed graph validation and was not ingested.',
-      action: 'Inspect validation errors and parser format assumptions.',
     });
   } else if (isParseEvent && entry.result_classification === 'failure') {
     addSignal(signals, {
@@ -110,13 +126,14 @@ export function extractActivityTrustSignals(entry: ActivityEntry): TrustSignal[]
     || details.stderr_truncated === true
     || typeof details.stdout_dropped_bytes === 'number'
     || typeof details.stderr_dropped_bytes === 'number'
+    || details.partial === true
     || parseSummary?.partial === true;
   if (truncated) {
     addSignal(signals, {
       id: 'output-truncated',
       severity: 'warning',
       label: 'Output truncated',
-      detail: stringValue(parseSummary?.partial_reason) || 'Captured output or parsed evidence was incomplete.',
+      detail: stringValue(details.partial_reason) || stringValue(parseSummary?.partial_reason) || 'Captured output or parsed evidence was incomplete.',
       action: 'Open the full evidence artifact before relying on parsed coverage.',
     });
   }

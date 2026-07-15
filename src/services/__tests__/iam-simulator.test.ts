@@ -69,6 +69,58 @@ describe('IAM Simulator', () => {
       expect(result.reason).toContain('Implicitly denied');
     });
 
+    it('returns indeterminate when only a conditional allow could match', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::123456789:user/viewer' });
+      addNode(graph, 'conditional-allow', {
+        type: 'cloud_policy', policy_name: 'MfaOnlyRead', effect: 'allow',
+        actions: ['s3:GetObject'], resources: ['arn:aws:s3:::private/*'], condition_present: true,
+      });
+      addEdge(graph, 'user-1', 'conditional-allow', 'HAS_POLICY');
+
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const result = evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::private/key', ctx);
+      expect(result).toMatchObject({ allowed: false, decision: 'indeterminate' });
+      expect(result.reason).toContain('conditional allow');
+    });
+
+    it('does not claim an unconditional allow when a matching conditional deny may apply', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::123456789:user/viewer' });
+      addNode(graph, 'allow', {
+        type: 'cloud_policy', policy_name: 'Read', effect: 'allow', actions: ['s3:GetObject'], resources: ['*'],
+      });
+      addNode(graph, 'conditional-deny', {
+        type: 'cloud_policy', policy_name: 'DenyOutsideNetwork', effect: 'deny',
+        actions: ['s3:GetObject'], resources: ['*'], condition_present: true,
+      });
+      addEdge(graph, 'user-1', 'allow', 'HAS_POLICY');
+      addEdge(graph, 'user-1', 'conditional-deny', 'HAS_POLICY');
+
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const result = evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::private/key', ctx);
+      expect(result).toMatchObject({ allowed: false, decision: 'indeterminate' });
+      expect(result.deny_policies).toContain('DenyOutsideNetwork');
+    });
+
+    it('returns indeterminate for an attached policy whose document was not expanded', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::123456789:user/viewer' });
+      addNode(graph, 'attached', {
+        type: 'cloud_policy', policy_name: 'AdministratorAccess',
+        policy_arn: 'arn:aws:iam::aws:policy/AdministratorAccess',
+        permission_expansion: 'unevaluable',
+      });
+      addEdge(graph, 'user-1', 'attached', 'HAS_POLICY');
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+
+      const result = evaluateIAM('user-1', 'iam:CreateUser', '*', ctx);
+      expect(result).toMatchObject({
+        allowed: false, decision: 'indeterminate',
+        enumerated_only_policies: ['AdministratorAccess'],
+      });
+    });
+
     it('traverses group membership for policies', () => {
       const graph = makeGraph();
       addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::123456789:user/dev' });

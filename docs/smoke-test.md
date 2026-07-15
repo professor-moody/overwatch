@@ -75,10 +75,13 @@ If any of these are missing, hard-refresh the page (Cmd-Shift-R / Ctrl-F5) — V
 In your MCP-connected Claude Code session (or via any MCP client):
 
 ```jsonc
-{ "tool": "expand_aws_credential", "args": { "credential_id": "cred-aws-power" } }
+{ "tool": "expand_aws_credential",
+  "args": { "credential_id": "cred-aws-power", "use_ambient_credentials": true } }
 ```
 
-You should get back a 6-step plan starting with `aws sts get-caller-identity`. The credential should now be stamped with `recon_playbook_invoked_at` (re-load the dashboard's Identity tab; the credential row reflects this).
+The smoke walk does not execute the AWS command; `use_ambient_credentials: true` explicitly exercises the ambient-binding plan path. In a real engagement, set it only when the active AWS environment/default chain is known to represent this selected credential. Otherwise supply a bound `aws_profile`, or use an `aws_session_credentials` credential and populate the returned `run_bash.env.OVERWATCH_AWS_SESSION_CREDENTIALS` binding with its actual JSON value.
+
+You should get back a dependency-aware plan starting with a ready `aws sts get-caller-identity` step. The remaining descriptors are blocked, have `ready: false`, and intentionally use `command: null` until caller attribution exists. Plan generation does not stamp or retire the credential. Never execute a blocked/null descriptor; honor each ready descriptor's returned `runner` and environment binding.
 
 Now drive step 1 with a canned response. Pipe the fixture below through `parse_output`:
 
@@ -96,13 +99,26 @@ Call:
 { "tool": "parse_output",
   "args": {
     "tool_name": "aws-sts-identity",
-    "raw_output": "<paste the JSON above>",
+    "output": "<paste the JSON above>",
     "agent_id": "smoke-aws",
-    "context": { "source_credential_id": "cred-aws-power" }
+    "context": {
+      "source_credential_id": "cred-aws-power",
+      "cloud_provider": "aws",
+      "credential_execution_binding": "ambient:explicit"
+    }
   }}
 ```
 
 **Expected:** a new `cloud_identity` for the assumed-role session lands in the graph; an `OWNS_CRED` edge connects it to `cred-aws-power`. Refresh the Identity tab — the new principal appears.
+
+Call `expand_aws_credential` again with the same execution binding:
+
+```jsonc
+{ "tool": "expand_aws_credential",
+  "args": { "credential_id": "cred-aws-power", "use_ambient_credentials": true } }
+```
+
+It now resolves the STS bindings, selects the role-policy branch, and returns executable account-summary, attached-policy, CloudFox, S3, and Lambda steps. Pass each returned `parser_context`, `parse_with`, and `parse_stream` through unchanged.
 
 **Fixture: `aws iam get-account-summary`**
 ```json
@@ -114,11 +130,11 @@ Call:
 }
 ```
 
-Pipe through `parse_output` with `tool_name: "aws-iam-summary"` and `context: { aws_account: "111122223333" }`.
+Pipe through `parse_output` with `tool_name: "aws-iam-summary"` and the `parser_context` returned for the account-summary step (it includes the account, caller ARN, and target cloud-identity id).
 
-**Expected:** a synthesized account-root cloud_identity carries `account_summary` + `account_summary_observed_at`.
+**Expected:** the confirmed caller `cloud_identity` carries `account_summary` + `account_summary_observed_at`.
 
-(The remaining steps —`list-attached-*-policies`, `cloudfox`, `s3 list-buckets`, `lambda list-functions` — follow the same pattern. Skip them for the smoke unless you want to see the inventory parser populate.)
+(The remaining steps use dedicated `aws-iam-attached-policies`, `aws-s3-list-buckets`, and `aws-lambda-list-functions` parsers. The CloudFox step reads CloudFox's generated JSON files and emits a normalized JSON envelope; it does not parse CloudFox console text.)
 
 ---
 
@@ -132,19 +148,28 @@ Returns a 3-step plan (validate → /user/orgs → /user/repos). Pre-expand a si
 
 ```jsonc
 { "tool": "expand_github_credential",
-  "args": { "credential_id": "cred-gh-pat", "candidate_repos": ["acme-corp/webapp"] } }
+  "args": {
+    "credential_id": "cred-gh-pat",
+    "candidate_repos": [
+      { "repo_full_name": "acme-corp/webapp", "default_branch": "main" }
+    ]
+  } }
 ```
 
-You'll get the 4 per-repo steps too (secrets, branch protection, deploy keys, OIDC trust customization).
+You'll get the 4 per-repo steps too (secrets, branch protection, deploy keys, OIDC trust customization). Each uses `runner: "run_bash"`; real execution must populate `run_bash.env.OVERWATCH_GITHUB_TOKEN` with the selected token value from the returned `env_from_credential` mapping.
 
-**Fixture: `gh api /user/orgs --paginate`**
+The legacy string form (`"acme-corp/webapp"`) is still accepted. If the graph does not already know its default branch, it emits a ready repo-details descriptor and a blocked branch-protection descriptor with `command: null`; ingest repo details and re-expand before branch inspection.
+
+**Fixture: `gh api /user/orgs --paginate --slurp`**
 ```json
 [
-  { "login": "acme-corp", "id": 1001, "url": "https://api.github.com/orgs/acme-corp" }
+  [
+    { "login": "acme-corp", "id": 1001, "url": "https://api.github.com/orgs/acme-corp" }
+  ]
 ]
 ```
 
-`parse_output` with `tool_name: "gh-api-orgs"`, context `{ source_credential_id: "cred-gh-pat" }`.
+`--slurp` produces one valid JSON array containing the paginated page arrays; the parser flattens them. `parse_output` with `tool_name: "gh-api-orgs"`, context `{ source_credential_id: "cred-gh-pat" }`.
 
 **Fixture: `gh api /repos/acme-corp/webapp/branches/main/protection` (unprotected)**
 ```json
@@ -194,14 +219,14 @@ You don't have to actually run the replay (no real STS endpoint). The plan-outpu
   "args": { "credential_id": "cred-entra-rt", "client_id": "1950a258-227b-4e31-a9cf-717495945fc2" } }
 ```
 
-Returns a single curl POST step against `https://login.microsoftonline.com/acme.onmicrosoft.com/oauth2/v2.0/token`. The refresh-token value is referenced via `$REFRESH_TOKEN`; check `payload.command` does not contain the literal value.
+Returns a single `run_bash` curl POST step against `https://login.microsoftonline.com/acme.onmicrosoft.com/oauth2/v2.0/token`. The refresh-token value is referenced via `$OVERWATCH_ENTRA_REFRESH_TOKEN`; check `payload.command` does not contain the literal value. At real execution, resolve `env_from_credential` and place the selected refresh-token value in `run_bash.env.OVERWATCH_ENTRA_REFRESH_TOKEN`.
 
 ```jsonc
 { "tool": "expand_entra_credential",
   "args": { "credential_id": "cred-entra-at", "include_groups": true } }
 ```
 
-Returns a 5-step plan (`/me`, `/users`, `/applications`, `/servicePrincipals`, `/groups`).
+Returns a 5-step plan (`/me`, `/users`, `/applications`, `/servicePrincipals`, `/groups`). The seeded credential already has a concrete tenant, so all five commands are ready; real execution binds its selected access-token value through `run_bash.env.OVERWATCH_ENTRA_TOKEN`. If a credential has no concrete tenant, only `/me` is ready—ingest it and re-expand before executing the other null-command descriptors.
 
 **Fixture: `/v1.0/users?$top=999`**
 ```json
@@ -215,7 +240,7 @@ Returns a 5-step plan (`/me`, `/users`, `/applications`, `/servicePrincipals`, `
 
 `parse_output` with `tool_name: "msgraph-users"`, context `{ tenant_id: "acme.onmicrosoft.com" }`.
 
-**Fixture: `/v1.0/servicePrincipals` (with high-priv scope to trigger CONSENT_ABUSE)**
+**Fixture: `/v1.0/servicePrincipals` (scopes and app-role metadata)**
 ```json
 {
   "value": [
@@ -234,7 +259,7 @@ Returns a 5-step plan (`/me`, `/users`, `/applications`, `/servicePrincipals`, `
 
 `parse_output` with `tool_name: "msgraph-serviceprincipals"`, context `{ tenant_id: "acme.onmicrosoft.com" }`.
 
-**Note:** `CONSENT_ABUSE` requires `assigned_user_count >= 10` to fire. The fixture above only seeds the app — to trigger the rule, separately add `assigned_user_count: 25` via a `report_finding` updating the same node, or run the `assigned_user_count`-aware path. For the smoke, just confirm the SP node lands with `app_kind: "entra_service_principal"` and `external_app: true`.
+**Expected:** the service-principal node lands with `app_kind: "entra_service_principal"` and `exposed_oauth_scopes: ["Mail.ReadWrite", "Files.ReadWrite.All"]`. This parser records the API metadata without asserting an inferred finding. If a response contains `@odata.nextLink`, fetch and ingest each subsequent page before treating the tenant inventory as complete.
 
 ---
 

@@ -10,6 +10,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { getSupportedParsers } from '../services/parsers/index.js';
+import { ParserContextSchema } from '../types.js';
 import {
   runInstrumentedProcess,
   DEFAULT_TIMEOUT_MS,
@@ -63,10 +64,7 @@ process and pair with \`track_process\`.`,
         allow_unverified_scope: z.boolean().optional().describe('Operator override: skip the fail-closed check for host/service/share targets that cannot be verified against the engagement scope. Use only with explicit operator intent.'),
         operator_infra: z.boolean().optional().describe('Mark this as local operator infrastructure setup (listeners, bridges, port cleanup). Local bind IPs in argv are not treated as target scan scope.'),
         parse_with: z.string().optional().describe(`Built-in parser to apply to stdout on success. Supported: ${getSupportedParsers().join(', ')}`),
-        parser_context: z.object({
-          domain: z.string().optional(),
-          source_host: z.string().optional(),
-        }).optional().describe('Optional context passed to the parser'),
+        parser_context: ParserContextSchema.optional().describe('Optional credential, tenant, repository, branch, cloud, target, domain, host, or provider-specific parser context'),
         parse_stream: z.enum(['stdout', 'stderr', 'combined', 'auto']).optional().describe("Which captured stream feeds the parser. 'stdout' (default), 'stderr' for tools that emit on stderr, 'combined' to concat, 'auto' to pick stdout if non-empty else stderr."),
         noise_estimate: z.number().min(0).max(1).optional().describe('Predicted noise level (overrides validation estimate when present)'),
       },
