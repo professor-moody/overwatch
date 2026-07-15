@@ -13,6 +13,7 @@ const graph: ExportedGraph = {
     { id: 'cred-1', type: 'credential', label: 'jdoe:NTLM', cred_user: 'jdoe', confidence: 1, discovered_at: 'now' },
   ],
   edges: [],
+  coldInventory: [],
 };
 
 const finding: FindingDto = {

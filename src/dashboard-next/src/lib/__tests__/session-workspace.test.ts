@@ -36,13 +36,16 @@ const action = (props: Partial<PendingAction>): PendingAction => ({
   ...props,
 });
 
-const frontier = (props: Partial<FrontierItem>): FrontierItem => ({
+const frontier = (props: Record<string, unknown> = {}): FrontierItem => ({
   id: 'fi-1',
   type: 'incomplete_node',
-  priority: 1,
+  node_id: 'host-a',
   description: 'frontier',
+  graph_metrics: { hops_to_objective: 1, fan_out_estimate: 1, node_degree: 1, confidence: 1 },
+  opsec_noise: 0.2,
+  staleness_seconds: 0,
   ...props,
-});
+} as FrontierItem);
 
 const activity = (props: Partial<ActivityEntry>): ActivityEntry => ({
   id: 'evt-1',
@@ -120,7 +123,7 @@ describe('session workspace helpers', () => {
 
     expect(relatedSessionFrontier(s, [
       frontier({ id: 'fi-1' }),
-      frontier({ id: 'fi-2', target_node: 'host-z' }),
+      frontier({ id: 'fi-2', node_id: 'host-z' }),
     ]).map(item => item.id)).toEqual(['fi-1']);
 
     expect(relatedSessionActivity(s, [

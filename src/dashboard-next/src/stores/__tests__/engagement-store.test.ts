@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useEngagementStore } from '../engagement-store';
-import type { Campaign, FullStateData, PendingAction, SessionInfo } from '../../lib/types';
+import type { Campaign, FullStateData, GraphUpdateData, PendingAction, SessionInfo } from '../../lib/types';
 
 const initialState = useEngagementStore.getState();
 
@@ -10,7 +10,7 @@ describe('engagement store hydration', () => {
       ...initialState,
       connected: false,
       initialized: false,
-      graph: { nodes: [], edges: [] },
+      graph: { nodes: [], edges: [], coldInventory: [] },
       graphVersion: 0,
       graphSummary: null,
       frontier: [],
@@ -48,6 +48,8 @@ describe('engagement store hydration', () => {
       agents_active: 1,
       agents_total: 3,
       progress: { total: 2, completed: 1, succeeded: 1, failed: 0, consecutive_failures: 0 },
+      abort_conditions: [],
+      findings: ['finding-1', 'finding-2'],
     } as Campaign;
     const session = {
       id: 'sess-1',
@@ -111,5 +113,52 @@ describe('engagement store hydration', () => {
     expect(s.engagement).toMatchObject({ id: 'eng-42', name: 'Prod Engagement', profile: 'goad_ad' });
     expect(s.engagement?.id).toBe('eng-42'); // the per-engagement graph-layout storage key
     expect(s.accessLevel).toBe('domain_admin');
+  });
+
+  it('replaces cold inventory only when a graph delta supplies a replacement snapshot', () => {
+    const cold = {
+      id: 'cold-1', type: 'host', label: 'cold', discovered_at: '2026-07-15T00:00:00Z',
+      last_seen_at: '2026-07-15T00:00:00Z',
+    };
+    useEngagementStore.getState().loadFullState({
+      state: {}, graph: { nodes: [], edges: [], cold_nodes: [cold] }, history_count: 0,
+    } as FullStateData);
+
+    const baseDelta = {
+      state: {}, history_count: 0, detail: {},
+      delta: { nodes: [], edges: [], removed_nodes: [], removed_edges: [] },
+    } as GraphUpdateData;
+    useEngagementStore.getState().applyGraphUpdate(baseDelta);
+    expect(useEngagementStore.getState().graph.coldInventory.map(node => node.id)).toEqual(['cold-1']);
+
+    useEngagementStore.getState().applyGraphUpdate({
+      ...baseDelta, delta: { ...baseDelta.delta, cold_nodes: [] },
+    });
+    expect(useEngagementStore.getState().graph.coldInventory).toEqual([]);
+  });
+
+  it('projects cold-to-hot promotion and later hot removal without folding inventories together', () => {
+    const cold = {
+      id: 'host-1', type: 'host', label: 'candidate', discovered_at: '2026-07-15T00:00:00Z',
+      last_seen_at: '2026-07-15T00:00:00Z',
+    };
+    useEngagementStore.getState().loadFullState({
+      state: {}, graph: { nodes: [], edges: [], cold_nodes: [cold] }, history_count: 0,
+    } as FullStateData);
+    useEngagementStore.getState().applyGraphUpdate({
+      state: {}, history_count: 0, detail: { new_nodes: ['host-1'] },
+      delta: {
+        nodes: [{ id: 'host-1', properties: { type: 'host', label: 'promoted' } }],
+        edges: [], removed_nodes: [], removed_edges: [], cold_nodes: [],
+      },
+    } as GraphUpdateData);
+    expect(useEngagementStore.getState().graph.nodes.map(node => node.id)).toEqual(['host-1']);
+    expect(useEngagementStore.getState().graph.coldInventory).toEqual([]);
+
+    useEngagementStore.getState().applyGraphUpdate({
+      state: {}, history_count: 0, detail: { removed_nodes: ['host-1'] },
+      delta: { nodes: [], edges: [], removed_nodes: ['host-1'], removed_edges: [], cold_nodes: [] },
+    } as GraphUpdateData);
+    expect(useEngagementStore.getState().graph.nodes).toEqual([]);
   });
 });

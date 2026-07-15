@@ -12,6 +12,7 @@ import { EmptyState } from '../shared';
 import { ActionButton, FilterBar, PageHeader, PanelSection, SegmentedControl, StatusPill } from '../shared/primitives';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { useNavigation } from '../../hooks/useNavigation';
+import { createDashboardWebSocket } from '../../lib/dashboard-transport';
 
 const MAX_BYTES_INITIAL = 64 * 1024;
 const MAX_BYTES_CEIL = 1024 * 1024; // server clamps reads to 1 MiB
@@ -130,7 +131,7 @@ export function AnalysisPanel() {
         </PanelSection>
 
         {/* key on actionId: switching runs remounts, cleanly resetting stream/
-            find/maxBytes and issuing a single fetch (no stale-maxBytes double-fetch). */}
+            find/maxBytes and issuing a single request (no stale-maxBytes duplicate). */}
         <AssessmentView key={selected?.actionId ?? 'none'} run={selected} outOfWindow={selectedOutOfWindow} />
       </div>
     </div>
@@ -199,13 +200,11 @@ function AssessmentView({ run, outOfWindow }: { run: ActionRun | null; outOfWind
   // pull the durable, full-fidelity output via the refetch nonce.
   useEffect(() => {
     if (!run || !output?.isRunning) { setLive(null); return; }
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${window.location.host}/ws/actions/${encodeURIComponent(run.actionId)}/output`;
     let so = '';
     let se = '';
     let dropped = false;
     let ws: WebSocket;
-    try { ws = new WebSocket(url); } catch { return; }
+    try { ws = createDashboardWebSocket(`/ws/actions/${encodeURIComponent(run.actionId)}/output`); } catch { return; }
     setLive({ stdout: '', stderr: '', done: false, dropped: false });
     ws.onmessage = (ev) => {
       if (typeof ev.data !== 'string') return;

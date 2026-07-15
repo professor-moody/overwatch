@@ -9,6 +9,7 @@ import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, Sta
 import { useNavigation } from '../../hooks/useNavigation';
 import type { SessionInfo } from '../../lib/types';
 import { deriveNodeRelationships } from '../../lib/relationships';
+import { createDashboardWebSocket } from '../../lib/dashboard-transport';
 import {
   SESSION_GROUP_LABELS,
   addAttachedSession,
@@ -158,9 +159,7 @@ export function SessionsPanel() {
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
-    const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const wsUrl = `${wsProto}://${window.location.host}/ws/session/${sessionId}`;
-    const ws = new WebSocket(wsUrl);
+    const ws = createDashboardWebSocket(`/ws/session/${encodeURIComponent(sessionId)}`);
 
     ws.binaryType = 'arraybuffer';
 

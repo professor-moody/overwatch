@@ -8,6 +8,7 @@ import {
   updateObjective,
   deleteObjective,
   getSettings,
+  updateSettings,
   getHealth,
   getFrontierWeights,
   updateFrontierWeights,
@@ -28,12 +29,20 @@ import type {
   EngagementTemplate,
   OperatorPolicy,
   OperatorApprovalRule,
+  OpsecConfig,
 } from '../../lib/types';
+import {
+  OBJECTIVE_EDGE_TYPES,
+  OBJECTIVE_NODE_TYPES,
+  type ObjectiveCreateRequest,
+  type SettingsDto,
+} from '@overwatch/dashboard-contracts';
+import { downloadDashboardResource } from '../../lib/dashboard-transport';
 import { ActionButton, PageHeader, PanelSection } from '../shared/primitives';
 
 export function SettingsPanel() {
   const [config, setConfig] = useState<EngagementConfig | null>(null);
-  const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
+  const [settings, setSettings] = useState<SettingsDto | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [weights, setWeights] = useState<FrontierWeights | null>(null);
   const [toolCheck, setToolCheck] = useState<ToolCheckResult | null>(null);
@@ -51,7 +60,7 @@ export function SettingsPanel() {
         getTemplates().then(r => r.templates).catch(() => null),
       ]);
       setConfig(cfg);
-      setSettings(sets as Record<string, unknown>);
+      setSettings(sets);
       setHealth(h);
       setWeights(w);
       setTemplates(tpl);
@@ -91,7 +100,7 @@ export function SettingsPanel() {
         try { await updateConfig({ failure_patterns: fp } as Partial<EngagementConfig>); flash('Saved ✓'); load(); } catch { flash('Error saving', false); }
       }} />}
       {settings && <OpsecSection settings={settings} onSave={async (body) => {
-        try { await updateConfig(body); flash('Saved ✓'); load(); } catch { flash('Error saving', false); }
+        try { await updateSettings(body); flash('Saved ✓'); load(); } catch { flash('Error saving', false); }
       }} />}
       {config && <OperatorPolicySection policy={config.operator_policy} onSave={async (p) => {
         try { await updateConfig({ operator_policy: p } as Partial<EngagementConfig>); flash('Saved ✓'); load(); } catch { flash('Error saving', false); }
@@ -167,20 +176,24 @@ function IdentitySection({ config, onSave }: { config: EngagementConfig; onSave:
 function ObjectivesSection({ objectives, onReload }: { objectives: Objective[]; onReload: () => void }) {
   const [showForm, setShowForm] = useState(false);
   const [desc, setDesc] = useState('');
-  const [nodeType, setNodeType] = useState('');
-  const [edgeTypes, setEdgeTypes] = useState('');
+  const [nodeType, setNodeType] = useState<NonNullable<ObjectiveCreateRequest['target_node_type']> | ''>('');
+  const [edgeTypes, setEdgeTypes] = useState<NonNullable<ObjectiveCreateRequest['achievement_edge_types']>>([]);
+  const [formError, setFormError] = useState('');
 
   const submit = async () => {
     if (!desc.trim()) return;
     try {
+      setFormError('');
       await addObjective({
         description: desc.trim(),
         target_node_type: nodeType || undefined,
-        achievement_edge_types: edgeTypes ? edgeTypes.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+        achievement_edge_types: edgeTypes.length > 0 ? edgeTypes : undefined,
       });
-      setDesc(''); setNodeType(''); setEdgeTypes(''); setShowForm(false);
+      setDesc(''); setNodeType(''); setEdgeTypes([]); setShowForm(false);
       onReload();
-    } catch { /* silent */ }
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Unable to add objective');
+    }
   };
 
   const toggle = async (obj: Objective) => {
@@ -218,9 +231,26 @@ function ObjectivesSection({ objectives, onReload }: { objectives: Objective[]; 
         <div className="space-y-2 p-3 rounded border border-border bg-elevated mt-2">
           <input value={desc} onChange={e => setDesc(e.target.value)} placeholder="Objective description" className="settings-input w-full" />
           <div className="grid grid-cols-2 gap-2">
-            <input value={nodeType} onChange={e => setNodeType(e.target.value)} placeholder="Target node type (optional)" className="settings-input w-full" />
-            <input value={edgeTypes} onChange={e => setEdgeTypes(e.target.value)} placeholder="Edge types, comma-sep (optional)" className="settings-input w-full" />
+            <select
+              value={nodeType}
+              onChange={e => setNodeType(e.target.value as typeof nodeType)}
+              className="settings-input w-full"
+              aria-label="Target node type"
+            >
+              <option value="">Any target node type</option>
+              {OBJECTIVE_NODE_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
+            </select>
+            <select
+              multiple
+              value={edgeTypes}
+              onChange={e => setEdgeTypes(Array.from(e.currentTarget.selectedOptions, option => option.value) as typeof edgeTypes)}
+              className="settings-input w-full min-h-24"
+              aria-label="Achievement edge types"
+            >
+              {OBJECTIVE_EDGE_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
+            </select>
           </div>
+          {formError && <p role="alert" className="text-xs text-destructive">{formError}</p>}
           <div className="flex gap-2">
             <button onClick={submit} className="settings-save-btn">Add</button>
             <button onClick={() => setShowForm(false)} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
@@ -293,19 +323,20 @@ function FailurePatternsSection({ patterns, onSave }: { patterns: FailurePattern
 
 /* ============ OPSEC Settings ============ */
 
-function OpsecSection({ settings, onSave }: { settings: Record<string, unknown>; onSave: (b: Partial<EngagementConfig>) => Promise<void> }) {
-  const opsec = (settings as { opsec?: Record<string, unknown> }).opsec || {};
-  const noiseState = (settings as { noise_state?: Record<string, number> }).noise_state || {};
-  const opsecStatus = (settings as { opsec_status?: { enabled: boolean; configured_fields: string[]; inert: boolean } }).opsec_status;
+function OpsecSection({ settings, onSave }: { settings: SettingsDto; onSave: (b: Partial<OpsecConfig>) => Promise<void> }) {
+  const opsec = settings.opsec;
+  const noiseState = settings.noise_state;
+  const opsecStatus = settings.opsec_status;
 
-  const [maxNoise, setMaxNoise] = useState<number>((opsec.max_noise as number) ?? 0.7);
-  const [approvalMode, setApprovalMode] = useState<string>((opsec.approval_mode as string) || 'approve-critical');
-  const [timeout, setTimeout_] = useState<number>(Math.round(((opsec.approval_timeout_ms as number) || 300000) / 1000));
-  const [twStart, setTwStart] = useState<string>((opsec.time_window as { start_hour?: number })?.start_hour?.toString() ?? '');
-  const [twEnd, setTwEnd] = useState<string>((opsec.time_window as { end_hour?: number })?.end_hour?.toString() ?? '');
-  const [blacklist, setBlacklist] = useState<string>(((opsec.blacklisted_techniques as string[]) || []).join('\n'));
+  const [enabled, setEnabled] = useState(opsec.enabled);
+  const [maxNoise, setMaxNoise] = useState<number>(opsec.max_noise ?? 0.7);
+  const [approvalMode, setApprovalMode] = useState<string>(opsec.approval_mode || 'approve-critical');
+  const [timeout, setTimeout_] = useState<number>(Math.round((opsec.approval_timeout_ms || 300000) / 1000));
+  const [twStart, setTwStart] = useState<string>(opsec.time_window?.start_hour?.toString() ?? '');
+  const [twEnd, setTwEnd] = useState<string>(opsec.time_window?.end_hour?.toString() ?? '');
+  const [blacklist, setBlacklist] = useState<string>((opsec.blacklisted_techniques || []).join('\n'));
 
-  const spent = (noiseState.global_noise_spent as number) || 0;
+  const spent = noiseState.global_noise_spent || 0;
   const max = maxNoise || 1;
   const pct = Math.min(100, (spent / max) * 100);
 
@@ -317,19 +348,25 @@ function OpsecSection({ settings, onSave }: { settings: Record<string, unknown>;
     // route now rejects unknown keys, so the client must match exactly.
     const tw = twStart && twEnd ? { start_hour: parseInt(twStart), end_hour: parseInt(twEnd) } : null;
     onSave({
-      opsec: {
-        max_noise: maxNoise,
-        approval_mode: approvalMode as 'auto-approve' | 'approve-critical' | 'approve-all',
-        approval_timeout_ms: timeout * 1000,
-        time_window: tw ?? undefined,
-        blacklisted_techniques: blacklist.split('\n').map(s => s.trim()).filter(Boolean),
-      },
+      enabled,
+      max_noise: maxNoise,
+      approval_mode: approvalMode as 'auto-approve' | 'approve-critical' | 'approve-all',
+      approval_timeout_ms: timeout * 1000,
+      time_window: tw,
+      blacklisted_techniques: blacklist.split('\n').map(s => s.trim()).filter(Boolean),
     });
   };
 
   return (
     <Section title="OPSEC">
       <div className="space-y-3">
+        <label className="flex items-center justify-between gap-3 rounded border border-border bg-elevated px-3 py-2 text-xs">
+          <span>
+            <span className="block font-medium text-foreground">Enforce OPSEC policy</span>
+            <span className="text-muted-foreground">Apply the configured approval, noise, blacklist, and time-window controls.</span>
+          </span>
+          <input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} className="h-4 w-4 accent-accent" />
+        </label>
         {/* Phase B: inert badge — config has noise/blacklist/time_window set but enabled=false. */}
         {opsecStatus?.inert && (
           <div className="rounded border border-warning bg-warning/10 px-3 py-2 text-xs">
@@ -474,14 +511,15 @@ function OperatorPolicySection({ policy, onSave }: { policy?: OperatorPolicy; on
 function HealthSection({ health, onRefresh }: { health: HealthStatus | null; onRefresh: () => Promise<void> }) {
   const stats = health?.graph_stats;
   const checks = health?.health_checks;
-  const warnings = checks?.warnings || [];
-  const errors = checks?.errors || [];
-  const totalIssues = warnings.length + errors.length;
+  const issues = checks?.issues || [];
+  const warnings = issues.filter(issue => issue.severity === 'warning');
+  const critical = issues.filter(issue => issue.severity === 'critical');
+  const totalIssues = issues.length;
 
   return (
     <Section title="Health">
       <div className="flex items-center gap-2">
-        <span className={cn('w-2 h-2 rounded-full', totalIssues === 0 ? 'bg-success' : errors.length > 0 ? 'bg-destructive' : 'bg-warning')} />
+        <span className={cn('w-2 h-2 rounded-full', totalIssues === 0 ? 'bg-success' : critical.length > 0 ? 'bg-destructive' : 'bg-warning')} />
         <span className="text-xs">
           {stats ? `${stats.nodes} nodes, ${stats.edges} edges${health?.ad_context ? ' (AD)' : ''}` : 'Loading…'}
         </span>
@@ -494,7 +532,7 @@ function HealthSection({ health, onRefresh }: { health: HealthStatus | null; onR
       )}
       {totalIssues > 0 && (
         <div className="mt-2 space-y-0.5">
-          {errors.map((e, i) => <div key={i} className="text-xs text-destructive">{'\u2715'} {e.message}</div>)}
+          {critical.map((e, i) => <div key={i} className="text-xs text-destructive">{'\u2715'} {e.message}</div>)}
           {warnings.map((w, i) => <div key={i} className="text-xs text-warning">{'\u26a0'} {w.message}</div>)}
         </div>
       )}
@@ -791,22 +829,10 @@ function BundleSection() {
     setStatus('building');
     setDetail(null);
     try {
-      const res = await fetch('/api/bundle', { method: 'GET' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error((body as { error?: string }).error || `HTTP ${res.status}`);
-      }
-      const blob = await res.blob();
-      const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
-      const cd = res.headers.get('Content-Disposition') || '';
-      const nameMatch = cd.match(/filename="([^"]+)"/);
-      const filename = nameMatch ? nameMatch[1] : `bundle-${Date.now()}.tar.gz`;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename; a.click();
-      URL.revokeObjectURL(url);
+      const result = await downloadDashboardResource('/api/bundle');
+      const sizeMB = result.bytes > 0 ? `${(result.bytes / 1024 / 1024).toFixed(2)} MB — ` : '';
       setStatus('done');
-      setDetail(`${sizeMB} MB — ${filename}`);
+      setDetail(`${sizeMB}${result.filename}`);
     } catch (err) {
       setStatus('error');
       setDetail(err instanceof Error ? err.message : String(err));

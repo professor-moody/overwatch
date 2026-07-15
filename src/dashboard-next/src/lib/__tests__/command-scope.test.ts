@@ -11,7 +11,7 @@ import {
 import type { AgentInfo } from '../types';
 
 function agent(o: Partial<AgentInfo> = {}): AgentInfo {
-  return { id: 't1', agent_id: 'recon-1', status: 'running', task: 'recon', ...o };
+  return { task_id: 't1', agent_label: 'recon-1', id: 't1', agent_id: 'recon-1', status: 'running', assigned_at: '2026-06-17T11:59:00Z', queued: false, lifecycle: 'live', live: true, subgraph_node_ids: [], findings_count: 0, ...o };
 }
 
 describe('command-scope', () => {

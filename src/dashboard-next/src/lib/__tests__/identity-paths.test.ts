@@ -67,6 +67,7 @@ describe('identity and attack path demo helpers', () => {
         edge('gha-app', 'deploy-role', 'ISSUES_TOKENS_FOR'),
         edge('deploy-role', 'admin-role', 'ASSUMES_ROLE'),
       ],
+      coldInventory: [],
     };
     const byId = new Map(graph.nodes.map(n => [n.id, n]));
     const computed = computePaths(graph.nodes, graph.edges, 'confidence', 6, byId);

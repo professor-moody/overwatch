@@ -56,11 +56,13 @@ describe('graph target navigation', () => {
     const frontier: FrontierItem[] = [{
       id: 'frontier-1',
       type: 'inferred_edge',
-      priority: 1,
       description: 'Test TESTED_CRED',
       edge_source: 'cred-jdoe-ntlm',
       edge_target: 'svc-rdp-ws01',
       edge_type: 'TESTED_CRED',
+      graph_metrics: { hops_to_objective: 1, fan_out_estimate: 1, node_degree: 1, confidence: 1 },
+      opsec_noise: 0.2,
+      staleness_seconds: 0,
     }];
 
     expect(resolveGraphTarget(graph, { kind: 'node', nodeId: 'cred-jdoe-ntlm' }).primaryNode)

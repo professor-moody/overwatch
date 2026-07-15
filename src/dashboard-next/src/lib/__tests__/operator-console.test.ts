@@ -16,10 +16,18 @@ function activity(partial: Partial<ActivityEntry>): ActivityEntry {
 
 function agent(partial: Partial<AgentInfo>): AgentInfo {
   return {
+    task_id: partial.id || 'task-1',
+    agent_label: partial.agent_id || 'agent-web-1',
     id: partial.id || 'task-1',
     agent_id: partial.agent_id || 'agent-web-1',
     status: partial.status || 'running',
-    task: partial.task || 'Enumerate web app',
+    assigned_at: '2026-06-13T09:59:00Z',
+    queued: false,
+    lifecycle: 'live',
+    live: true,
+    subgraph_node_ids: [],
+    findings_count: 0,
+    objective: 'Enumerate web app',
     ...partial,
   };
 }

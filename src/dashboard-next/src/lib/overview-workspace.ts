@@ -1,7 +1,7 @@
 import type { AccessSummary, ActivityEntry, Campaign, ExportedNode, FrontierItem, PendingAction, SessionInfo } from './types';
 import type { TrustSignalDto } from './api';
 import { getEffectiveCredentialStatus } from './credential-display';
-import { getFrontierKey, getFrontierNodeIds } from './frontier-workspace';
+import { getFrontierKey, getFrontierNodeIds, getFrontierTargetCidr } from './frontier-workspace';
 
 export interface AttentionItem {
   id: string;
@@ -34,7 +34,7 @@ export interface NextActionItem {
   id: string;
   label: string;
   type: FrontierItem['type'];
-  priority: number;
+  scoreMultiplier: number;
   reason: string;
   context: string;
   nodeIds: string[];
@@ -117,14 +117,13 @@ export function deriveAttentionItems(args: Parameters<typeof deriveNowItems>[0] 
     tone: 'default' as const,
     route: 'frontier' as const,
     nodeId: item.primaryNode,
-    meta: item.priority.toFixed(1),
+    meta: `×${item.scoreMultiplier.toFixed(2)}`,
   }));
   return nowItems.concat(frontierItems);
 }
 
 export function deriveNextActionItems(frontier: FrontierItem[], limit = 5): NextActionItem[] {
-  return [...frontier]
-    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || getFrontierKey(a).localeCompare(getFrontierKey(b)))
+  return frontier
     .slice(0, limit)
     .map(item => {
       const nodeIds = getFrontierNodeIds(item);
@@ -132,12 +131,12 @@ export function deriveNextActionItems(frontier: FrontierItem[], limit = 5): Next
         id: getFrontierKey(item),
         label: item.description || item.id,
         type: item.type,
-        priority: item.priority ?? 0,
+        scoreMultiplier: item.graph_metrics.confidence,
         reason: rankReason(item),
         context: actionContext(item),
         nodeIds,
-        primaryNode: nodeIds[0] || item.target_node || item.node_id || item.edge_target,
-        frontierItemId: item.frontier_item_id || item.id,
+        primaryNode: nodeIds[0],
+        frontierItemId: item.id,
       };
     });
 }
@@ -263,14 +262,17 @@ function rankReason(item: FrontierItem): string {
   if (typeof confidence === 'number' && confidence > 1) parts.push('planner boost');
   if (item.chain_id) parts.push('chain item');
   if (item.opsec_noise != null && item.opsec_noise <= 0.3) parts.push('low noise');
-  return parts.length > 0 ? parts.join(' · ') : 'ranked by priority and graph context';
+  return parts.length > 0 ? parts.join(' · ') : 'candidate order supplied by the engine';
 }
 
 function actionContext(item: FrontierItem): string {
-  if (item.edge_source && item.edge_target) return `${item.edge_source} -> ${item.edge_target}`;
-  if (item.node_id) return item.node_id;
-  if (item.target_node) return item.target_node;
-  if (item.source_node) return item.source_node;
+  const nodeIds = getFrontierNodeIds(item);
+  if (item.type === 'untested_edge' || item.type === 'inferred_edge' || item.type === 'cross_tier_pivot') {
+    return `${nodeIds[0] ?? 'unknown'} -> ${nodeIds[1] ?? 'unknown'}`;
+  }
+  if (nodeIds[0]) return nodeIds[0];
+  const cidr = getFrontierTargetCidr(item);
+  if (cidr) return cidr;
   if (item.chain_id) return item.chain_id;
   return item.type.replace(/_/g, ' ');
 }

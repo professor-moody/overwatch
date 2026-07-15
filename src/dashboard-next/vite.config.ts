@@ -14,6 +14,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, 'src'),
       '@overwatch/types': path.resolve(__dirname, '..', 'types.ts'),
+      '@overwatch/dashboard-contracts': path.resolve(__dirname, '..', 'contracts', 'dashboard-v1.ts'),
     },
   },
   build: {

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { flattenNode, flattenEdge } from '../lib/graph-flatten';
+import { flattenNode, flattenEdge, projectRawGraph } from '../lib/graph-flatten';
 import type {
   EngagementState,
   ExportedGraph,
@@ -96,7 +96,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   historyCount: 0,
 
   // Graph
-  graph: { nodes: [], edges: [] },
+  graph: { nodes: [], edges: [], coldInventory: [] },
   graphSummary: null,
   graphVersion: 0,
   lastDelta: null,
@@ -143,10 +143,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
     // flat fields. Normalize once on load so every consumer sees the
     // same shape (fixes IdentityPanel + AttackPathsPanel rendering
     // empty against real engagements).
-    const flatGraph: ExportedGraph = {
-      nodes: data.graph.nodes.map(flattenNode),
-      edges: data.graph.edges.map(flattenEdge),
-    };
+    const flatGraph = projectRawGraph(data.graph);
     set({
       // The backend sends `config` + `access_summary`, NOT top-level `engagement`/
       // `access_level`. Derive the toolbar/layout view-model from the real fields —
@@ -208,10 +205,18 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       graph: {
         nodes: Array.from(nodeMap.values()),
         edges: Array.from(edgeMap.values()),
+        coldInventory: data.delta.cold_nodes
+          ? [...data.delta.cold_nodes]
+          : prev.coldInventory,
       },
       graphSummary: s.graph_summary || get().graphSummary,
       graphVersion: get().graphVersion + 1,
-      lastDelta: data.delta,
+      lastDelta: {
+        nodes: data.delta.nodes.map(flattenNode),
+        edges: data.delta.edges.map(flattenEdge),
+        removed_nodes: data.delta.removed_nodes,
+        removed_edges: data.delta.removed_edges,
+      },
       frontier: s.frontier || get().frontier,
       frontierHidden: s.frontier_hidden ?? get().frontierHidden,
       objectives: s.objectives || get().objectives,

@@ -10,6 +10,7 @@ import { useState } from 'react';
 import * as api from '../../lib/api';
 import { formatReportBytes, reportEvidenceLabel, reportPrimaryActionLabel, reportProfileLabel } from '../../lib/report-display';
 import { cn, formatTimestamp } from '../../lib/utils';
+import { downloadDashboardResource, openDashboardResource } from '../../lib/dashboard-transport';
 
 interface Props {
   onClose: () => void;
@@ -255,21 +256,18 @@ function ReportResult({ result, onClose, onRenderAnother }: {
         >
           Close
         </button>
-        <a
-          href={openUrl}
-          target="_blank"
-          rel="noopener noreferrer"
+        <button
+          onClick={() => void openDashboardResource(openUrl)}
           className="text-xs px-3 py-1.5 rounded bg-accent/10 text-accent hover:bg-accent/20"
         >
           {reportPrimaryActionLabel(report.format)}
-        </a>
-        <a
-          href={downloadUrl}
-          download={report.filename}
+        </button>
+        <button
+          onClick={() => void downloadDashboardResource(downloadUrl, { filename: report.filename })}
           className="text-xs px-3 py-1.5 rounded bg-accent text-background hover:bg-accent/90"
         >
           Download
-        </a>
+        </button>
       </div>
     </div>
   );

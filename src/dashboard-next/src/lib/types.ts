@@ -1,6 +1,21 @@
-// Re-export and extend types from the backend for dashboard use.
-// We define dashboard-specific interfaces here rather than importing
-// directly from ../../types.ts (which uses Node16 module resolution).
+import type {
+  AgentDto,
+  CampaignAbortCondition,
+  CampaignDto,
+  ColdNodeDto,
+  FrontierItemDto,
+  FrontierWeightsDto,
+  GraphEdgeViewModel,
+  GraphNodeViewModel,
+  GraphViewModel,
+  HealthDto,
+  ObjectiveDto,
+  RawGraphDto,
+  RawGraphEdgeDto,
+  RawGraphNodeDto,
+} from '@overwatch/dashboard-contracts';
+
+export type { ColdNodeDto, RawGraphDto, RawGraphEdgeDto, RawGraphNodeDto } from '@overwatch/dashboard-contracts';
 
 // --- Node Types ---
 
@@ -21,7 +36,7 @@ export type NodeType = typeof NODE_TYPES[number];
 
 // --- Graph Export Format (matches GraphEngine.exportGraph()) ---
 
-export interface ExportedNode {
+export interface ExportedNode extends GraphNodeViewModel {
   id: string;
   type: NodeType;
   label: string;
@@ -31,7 +46,7 @@ export interface ExportedNode {
   [key: string]: unknown;
 }
 
-export interface ExportedEdge {
+export interface ExportedEdge extends GraphEdgeViewModel {
   id?: string;
   source: string;
   target: string;
@@ -42,77 +57,23 @@ export interface ExportedEdge {
   [key: string]: unknown;
 }
 
-export interface ExportedGraph {
+export interface ExportedGraph extends GraphViewModel {
   nodes: ExportedNode[];
   edges: ExportedEdge[];
+  coldInventory: ColdNodeDto[];
 }
 
 // --- Frontier ---
 
-export interface FrontierItem {
-  id: string;
-  type: 'incomplete_node' | 'untested_edge' | 'inferred_edge' | 'network_discovery' | 'credential_test';
-  priority: number;
-  description: string;
-  target_node?: string;
-  source_node?: string;
-  node_id?: string;
-  edge_source?: string;
-  edge_target?: string;
-  edge_type?: string;
-  chain_id?: string;
-  chain_depth?: number;
-  chain_completion_pct?: number;
-  frontier_item_id?: string;
-  opsec_noise?: number;
-  missing_properties?: string[];
-  graph_metrics?: {
-    hops_to_objective?: number;
-    fan_out_estimate?: number;
-    confidence?: number;
-    node_degree?: number;
-    [key: string]: unknown;
-  };
-}
+export type FrontierItem = FrontierItemDto;
 
 // --- Objectives ---
 
-export interface Objective {
-  id: string;
-  description: string;
-  achieved: boolean;
-  achieved_at?: string;
-  target_node_type?: string;
-  achievement_edge_types?: string[];
-}
+export type Objective = ObjectiveDto;
 
 // --- Agents ---
 
-export interface AgentInfo {
-  id: string;
-  agent_id?: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
-  role?: 'default' | 'research' | 'planner' | 'orchestrator';
-  task: string;
-  skill?: string;
-  scope_node_ids?: string[];
-  subgraph_node_ids?: string[];
-  started_at?: string;
-  assigned_at?: string;
-  completed_at?: string;
-  elapsed_ms?: number;
-  findings_count?: number;
-  result_summary?: string;
-  campaign_id?: string;
-  campaign?: { id: string; name: string; strategy: string };
-  frontier_item_id?: string;
-  // 3C "see everything": the agent's most recent activity, derived server-side.
-  current_action?: string;
-  current_action_type?: string;
-  current_action_at?: string;
-  last_finding_at?: string;
-  queued?: boolean;
-}
+export type AgentInfo = AgentDto;
 
 export type AgentConsoleKind =
   | 'thought'
@@ -152,23 +113,7 @@ export interface AgentConsoleEvent {
 
 // --- Campaigns ---
 
-export interface Campaign {
-  id: string;
-  name: string;
-  strategy: 'credential_spray' | 'enumeration' | 'post_exploitation' | 'network_discovery' | 'custom';
-  status: 'draft' | 'active' | 'paused' | 'completed' | 'aborted';
-  items: Array<FrontierItem | string>;
-  abort_conditions?: AbortCondition[];
-  progress?: {
-    total: number;
-    completed: number;
-    succeeded: number;
-    failed: number;
-    consecutive_failures: number;
-  };
-  created_at: string;
-  started_at?: string;
-  completed_at?: string;
+export type Campaign = CampaignDto & {
   completion_pct?: number;
   findings_count?: number;
   agents_active?: number;
@@ -179,13 +124,10 @@ export interface Campaign {
   /** Per-campaign OPSEC budget snapshot (this campaign's noise contribution
    * vs. the global budget). Present on enriched campaign DTOs. */
   opsec?: OpsecBudget;
-}
+  child_count?: number;
+};
 
-export interface AbortCondition {
-  type: 'max_failures' | 'timeout' | 'custom';
-  value: number | string;
-  description?: string;
-}
+export type AbortCondition = CampaignAbortCondition;
 
 // --- Sessions ---
 
@@ -495,10 +437,11 @@ export interface ScopeConfig {
 }
 
 export interface OpsecConfig {
+  enabled?: boolean;
   max_noise?: number;
   approval_mode?: 'auto-approve' | 'approve-critical' | 'approve-all';
   approval_timeout_ms?: number;
-  time_window?: { start_hour: number; end_hour: number };
+  time_window?: { start_hour: number; end_hour: number } | null;
   blacklisted_techniques?: string[];
 }
 
@@ -530,7 +473,7 @@ export interface WsMessage {
 
 export interface FullStateData {
   state: EngagementState;
-  graph: ExportedGraph;
+  graph: RawGraphDto;
   history_count: number;
 }
 
@@ -547,10 +490,11 @@ export interface GraphUpdateData {
     removed_edges?: string[];
   };
   delta: {
-    nodes: ExportedNode[];
-    edges: ExportedEdge[];
+    nodes: RawGraphNodeDto[];
+    edges: RawGraphEdgeDto[];
     removed_nodes: string[];
     removed_edges: string[];
+    cold_nodes?: ColdNodeDto[];
   };
 }
 
@@ -663,20 +607,7 @@ export interface FindPathsResponse {
 
 // --- Health ---
 
-export interface HealthStatus {
-  status: 'healthy' | 'warnings' | 'errors';
-  checks: { name: string; status: string; message?: string }[];
-  graph_stats?: {
-    nodes: number;
-    edges: number;
-    node_types: Record<string, number>;
-  };
-  health_checks?: {
-    warnings?: { message: string }[];
-    errors?: { message: string }[];
-  };
-  ad_context?: boolean;
-}
+export type HealthStatus = HealthDto;
 
 export interface EngagementConfig {
   id?: string;
@@ -716,10 +647,7 @@ export interface FailurePattern {
   warning: string;
 }
 
-export interface FrontierWeights {
-  fan_out: Record<string, number>;
-  noise: Record<string, number>;
-}
+export type FrontierWeights = FrontierWeightsDto;
 
 export interface EngagementListItem {
   id: string;

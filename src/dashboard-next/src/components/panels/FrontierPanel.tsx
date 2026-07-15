@@ -12,20 +12,27 @@ import {
   getFrontierKey,
   getFrontierPrimaryNodeId,
   getFrontierNodeIds,
+  getFrontierTargetCidr,
+  formatFrontierScore,
 } from '../../lib/frontier-workspace';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { getFindings, dispatchAgent, type FindingDto } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 
-const SECTION_PRIORITY_LIMIT = 8;
-const SECTION_DEFAULT_LIMIT = 5;
+const SECTION_DEFAULT_LIMIT = 12;
 
 const TYPE_BADGE: Record<string, { label: string; cls: string }> = {
   incomplete_node: { label: 'node', cls: 'bg-elevated text-muted-foreground' },
   untested_edge: { label: 'test', cls: 'bg-warning/10 text-warning' },
   inferred_edge: { label: 'infer', cls: 'bg-purple-dim text-purple' },
   network_discovery: { label: 'net', cls: 'bg-accent-dim text-accent' },
+  network_pivot: { label: 'pivot', cls: 'bg-purple-dim text-purple' },
   credential_test: { label: 'cred', cls: 'bg-success/10 text-success' },
+  idp_enumeration: { label: 'idp', cls: 'bg-accent-dim text-accent' },
+  mfa_bypass_candidate: { label: 'mfa', cls: 'bg-warning/10 text-warning' },
+  cross_tier_pivot: { label: 'tier', cls: 'bg-purple-dim text-purple' },
+  cve_research: { label: 'cve', cls: 'bg-destructive/10 text-destructive' },
+  domain_enumeration: { label: 'osint', cls: 'bg-accent-dim text-accent' },
 };
 
 const TYPE_FILTER_OPTIONS = [
@@ -34,7 +41,13 @@ const TYPE_FILTER_OPTIONS = [
   { value: 'untested_edge', label: 'Edges' },
   { value: 'inferred_edge', label: 'Inferred' },
   { value: 'network_discovery', label: 'Network' },
+  { value: 'network_pivot', label: 'Pivots' },
   { value: 'credential_test', label: 'Creds' },
+  { value: 'idp_enumeration', label: 'IdP' },
+  { value: 'mfa_bypass_candidate', label: 'MFA' },
+  { value: 'cross_tier_pivot', label: 'Cross-tier' },
+  { value: 'cve_research', label: 'CVEs' },
+  { value: 'domain_enumeration', label: 'OSINT' },
 ] as const;
 type TypeFilterValue = typeof TYPE_FILTER_OPTIONS[number]['value'];
 
@@ -60,14 +73,17 @@ function rankReason(item: FrontierItem): string {
   if (typeof confidence === 'number' && confidence > 1) parts.push('planner boost');
   if (item.chain_id) parts.push('chain item');
   if (item.opsec_noise != null && item.opsec_noise <= 0.3) parts.push('low noise');
-  return parts.length > 0 ? parts.join(' · ') : 'ranked by priority and graph context';
+  return parts.length > 0 ? parts.join(' · ') : 'candidate order supplied by the engine';
 }
 
 function actionContext(item: FrontierItem): string {
-  if (item.edge_source && item.edge_target) return `${item.edge_source} → ${item.edge_target}`;
-  if (item.node_id) return item.node_id;
-  if (item.target_node) return item.target_node;
-  if (item.source_node) return item.source_node;
+  const nodeIds = getFrontierNodeIds(item);
+  if (item.type === 'untested_edge' || item.type === 'inferred_edge' || item.type === 'cross_tier_pivot') {
+    return `${nodeIds[0] ?? 'unknown'} → ${nodeIds[1] ?? 'unknown'}`;
+  }
+  if (nodeIds[0]) return nodeIds[0];
+  const cidr = getFrontierTargetCidr(item);
+  if (cidr) return cidr;
   if (item.chain_id) return item.chain_id;
   return item.type.replace(/_/g, ' ');
 }
@@ -106,7 +122,7 @@ export function FrontierPanel() {
   }, []);
 
   const sections = useMemo(
-    () => buildFrontierSections(frontier, { typeFilter, nodeFilter, priorityLimit: SECTION_PRIORITY_LIMIT }),
+    () => buildFrontierSections(frontier, { typeFilter, nodeFilter }),
     [frontier, typeFilter, nodeFilter],
   );
 
@@ -176,7 +192,7 @@ export function FrontierPanel() {
           {sections.map(section => {
             const isCollapsed = collapsed.has(section.key);
             const isExpanded = expanded.has(section.key);
-            const limit = section.key === 'priority' ? SECTION_PRIORITY_LIMIT : SECTION_DEFAULT_LIMIT;
+            const limit = SECTION_DEFAULT_LIMIT;
             const visible = isExpanded ? section.items : section.items.slice(0, limit);
             const hasMore = section.items.length > limit;
 
@@ -197,7 +213,7 @@ export function FrontierPanel() {
                   <div className="border-t border-border">
                     {visible.map((item, idx) => (
                       <FrontierItemCard
-                        key={item.frontier_item_id || item.id || idx}
+                        key={item.id || idx}
                         item={item}
                         related={(() => {
                           const nodeId = getFrontierPrimaryNodeId(item);
@@ -234,23 +250,27 @@ function FrontierItemCard({
   const { navigateToGraphTarget } = useNavigation();
   const addToast = useToastStore(s => s.addToast);
   const [dispatching, setDispatching] = useState(false);
+  const [inspecting, setInspecting] = useState(false);
   const badge = TYPE_BADGE[item.type] || TYPE_BADGE.incomplete_node;
   const noise = item.opsec_noise ?? 0;
   const noisePercent = Math.round(noise * 100);
   const hops = metric(item, 'hops_to_objective');
   const fanOut = metric(item, 'fan_out_estimate');
-  const confidence = Number(metric(item, 'confidence') || 0);
-  const confStr = confidence ? confidence.toFixed(1) : '—';
-  const degree = item.graph_metrics?.node_degree;
+  const degree = item.graph_metrics.node_degree;
 
   const label = item.description || item.id;
   const chips: { text: string; cls: string }[] = [];
-  if (item.missing_properties?.length) {
-    for (const prop of item.missing_properties) {
+  const raw = item as Record<string, unknown>;
+  const missingProperties = Array.isArray(raw.missing_properties)
+    ? raw.missing_properties.filter((value): value is string => typeof value === 'string')
+    : [];
+  const edgeType = typeof raw.edge_type === 'string' ? raw.edge_type : undefined;
+  if (missingProperties.length > 0) {
+    for (const prop of missingProperties) {
       chips.push({ text: prop, cls: 'bg-warning/10 text-warning' });
     }
   }
-  if (item.edge_type) chips.push({ text: item.edge_type, cls: 'bg-accent-dim text-accent' });
+  if (edgeType) chips.push({ text: edgeType, cls: 'bg-accent-dim text-accent' });
   if (degree != null) chips.push({ text: `deg ${degree}`, cls: 'bg-elevated text-muted-foreground' });
   if (related?.sessions.length) chips.push({ text: `${related.sessions.length} session`, cls: 'bg-success/10 text-success' });
   if (related?.pendingActions.length) chips.push({ text: `${related.pendingActions.length} action`, cls: 'bg-warning/10 text-warning' });
@@ -261,10 +281,10 @@ function FrontierItemCard({
   // Quick-dispatch a headless agent scoped to this frontier item (lease links
   // via frontier_item_id). Reuses the validated /api/agents/dispatch path.
   const dispatch = async () => {
-    if (nodeIds.length === 0 || dispatching) return;
+    if (dispatching) return;
     setDispatching(true);
     try {
-      const res = await dispatchAgent({ target_node_ids: nodeIds, frontier_item_id: frontierKey });
+      const res = await dispatchAgent({ frontier_item_id: frontierKey });
       addToast({ type: res.dispatched ? 'success' : 'warning', title: res.dispatched ? 'Agent dispatched' : 'Not dispatched', message: res.dispatched ? res.task?.agent_id : res.reason });
     } catch (err) {
       addToast({ type: 'error', title: 'Dispatch failed', message: err instanceof Error ? err.message : String(err) });
@@ -278,29 +298,30 @@ function FrontierItemCard({
         <span className="text-xs text-foreground flex-1 min-w-0 leading-snug whitespace-normal break-words" title={item.description}>
           {label}
         </span>
+        <ActionButton onClick={() => setInspecting(value => !value)} variant="secondary" size="xs" className="flex-shrink-0">
+          {inspecting ? 'Close' : 'Inspect'}
+        </ActionButton>
         {nodeIds.length > 0 && (
-          <>
-            <ActionButton
-              onClick={() => navigateToGraphTarget({ kind: 'frontier', frontierItemId: frontierKey, nodeIds, label: 'Frontier item' })}
-              variant="secondary"
-              size="xs"
-              className="flex-shrink-0"
-            >
-              Inspect
-            </ActionButton>
-            <ActionButton
-              onClick={dispatch}
-              variant="purple"
-              size="xs"
-              disabled={dispatching}
-              className="flex-shrink-0"
-              title="Dispatch a headless agent scoped to this frontier item"
-            >
-              {dispatching ? '…' : 'Dispatch'}
-            </ActionButton>
-          </>
+          <ActionButton
+            onClick={() => navigateToGraphTarget({ kind: 'frontier', frontierItemId: frontierKey, nodeIds, label: 'Frontier item' })}
+            variant="secondary"
+            size="xs"
+            className="flex-shrink-0"
+          >
+            Graph
+          </ActionButton>
         )}
-        <span className="text-xs font-mono text-foreground flex-shrink-0">{(item.priority ?? 0).toFixed(1)}</span>
+        <ActionButton
+          onClick={dispatch}
+          variant="purple"
+          size="xs"
+          disabled={dispatching}
+          className="flex-shrink-0"
+          title="Dispatch a headless agent scoped to this frontier item"
+        >
+          {dispatching ? '…' : 'Dispatch'}
+        </ActionButton>
+        <span className="text-xs font-mono text-foreground flex-shrink-0" title="Relative score multiplier">{formatFrontierScore(item)}</span>
       </div>
 
       <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
@@ -313,6 +334,15 @@ function FrontierItemCard({
           {chips.map((c, i) => (
             <span key={i} className={cn('text-[10px] px-1 py-0.5 rounded', c.cls)}>{c.text}</span>
           ))}
+        </div>
+      )}
+
+      {inspecting && (
+        <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 rounded border border-border bg-background/60 p-2 text-[10px] text-muted-foreground">
+          <span>Frontier ID</span><span className="font-mono text-foreground break-all">{frontierKey}</span>
+          <span>Target</span><span className="font-mono text-foreground">{actionContext(item)}</span>
+          <span>Score multiplier</span><span className="font-mono text-foreground">{formatFrontierScore(item)}</span>
+          <span>Staleness</span><span className="font-mono text-foreground">{Math.round(item.staleness_seconds)}s</span>
         </div>
       )}
 
@@ -343,7 +373,7 @@ function FrontierItemCard({
           </span>
           <span>hops {hops}</span>
           <span>fan {fanOut}</span>
-          <span>conf {confStr}</span>
+          <span>score {formatFrontierScore(item)}</span>
         </div>
       </div>
     </div>

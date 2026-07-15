@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Columns3, Copy, LayoutList, Pause, Play, Plus, RefreshCw, Send, Square } from 'lucide-react';
+import { Columns3, Copy, LayoutList, Pause, Play, Plus, RefreshCw, Scissors, Send, Square, Trash2 } from 'lucide-react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { EmptyState, OpsecGauge } from '../shared';
@@ -9,8 +9,12 @@ import {
   cloneCampaign,
   createCampaign,
   dispatchCampaign,
+  deleteCampaign,
   getAgentQueries,
+  getCampaignChildren,
   getCampaigns,
+  splitCampaign,
+  updateCampaign,
   type AgentQuery,
 } from '../../lib/api';
 import type { Campaign, FrontierItem } from '../../lib/types';
@@ -215,10 +219,29 @@ function CampaignRow({ campaign, selected, onSelect }: { campaign: Campaign; sel
 function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign; frontier: FrontierItem[]; onRefresh: () => void }) {
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [children, setChildren] = useState<Campaign[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(campaign.name);
+  const [splitCount, setSplitCount] = useState(2);
   const actions = campaignLifecycleActions(campaign);
   const ready = isCampaignDispatchReady(campaign);
   const itemDetails = useMemo(() => resolveCampaignItems(campaign.items || [], frontier), [campaign.items, frontier]);
   const metrics = deriveCampaignPreviewMetrics(itemDetails);
+
+  useEffect(() => {
+    setName(campaign.name);
+    setEditing(false);
+    setSplitCount(Math.min(2, Math.max(2, campaign.items.length)));
+    if (campaign.parent_id || (campaign.child_count ?? 0) === 0) {
+      setChildren([]);
+      return;
+    }
+    let cancelled = false;
+    getCampaignChildren(campaign.id)
+      .then(result => { if (!cancelled) setChildren(result.children); })
+      .catch(() => { if (!cancelled) setChildren([]); });
+    return () => { cancelled = true; };
+  }, [campaign.id, campaign.name, campaign.parent_id, campaign.child_count, campaign.items.length]);
 
   const runLifecycleAction = async (action: typeof actions[number]['action']) => {
     setBusy(action);
@@ -238,6 +261,37 @@ function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign;
     finally { setBusy(null); }
   };
 
+  const saveDraft = async () => {
+    if (!name.trim()) return;
+    setBusy('save');
+    try {
+      await updateCampaign(campaign.id, { name: name.trim() });
+      setEditing(false);
+      onRefresh();
+    } catch { /* keep the draft editor open */ }
+    finally { setBusy(null); }
+  };
+
+  const split = async () => {
+    setBusy('split');
+    try {
+      const result = await splitCampaign(campaign.id, { count: splitCount });
+      setChildren(result.children);
+      onRefresh();
+    } catch { /* leave the structural parent unchanged */ }
+    finally { setBusy(null); }
+  };
+
+  const remove = async () => {
+    if (!confirm(`Delete draft campaign “${campaign.name}”?`)) return;
+    setBusy('delete');
+    try {
+      await deleteCampaign(campaign.id);
+      onRefresh();
+    } catch { /* server explains child/non-draft guards */ }
+    finally { setBusy(null); }
+  };
+
   return (
     <div className="min-w-0 min-h-0 flex flex-col gap-3 overflow-y-auto">
       <PanelSection>
@@ -248,7 +302,15 @@ function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign;
               <span className="text-xs text-muted-foreground">{campaign.strategy}</span>
               {campaign.parent_id && <StatusPill className="bg-elevated text-muted-foreground">child</StatusPill>}
             </div>
-            <h3 className="text-base font-semibold truncate">{campaign.name || campaign.id}</h3>
+            {editing ? (
+              <div className="flex items-center gap-2">
+                <input value={name} onChange={event => setName(event.target.value)} className="settings-input w-full" aria-label="Campaign name" />
+                <button onClick={saveDraft} disabled={busy === 'save' || !name.trim()} className="settings-save-btn">Save</button>
+                <button onClick={() => { setEditing(false); setName(campaign.name); }} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+              </div>
+            ) : (
+              <h3 className="text-base font-semibold truncate">{campaign.name || campaign.id}</h3>
+            )}
             <div className="text-[11px] text-muted-foreground font-mono truncate">{campaign.id}</div>
           </div>
           <div className="flex flex-wrap justify-end gap-1.5">
@@ -275,13 +337,23 @@ function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign;
               <Copy className="h-3.5 w-3.5" />
               Clone
             </button>
+            {campaign.status === 'draft' && (
+              <button onClick={() => setEditing(true)} disabled={editing} className="text-xs px-2 py-1 rounded bg-elevated text-muted-foreground border border-border hover:text-foreground">
+                Edit
+              </button>
+            )}
+            {campaign.status === 'draft' && (
+              <button onClick={remove} disabled={busy === 'delete' || (campaign.child_count ?? 0) > 0} className="text-xs px-2 py-1 rounded border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-40 inline-flex items-center gap-1">
+                <Trash2 className="h-3.5 w-3.5" /> Delete
+              </button>
+            )}
           </div>
         </div>
 
         <div className="mt-3 grid grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
           <DetailFact label="Items" value={String((campaign.items || []).length)} />
           <DetailFact label="Agents" value={`${campaign.agents_active ?? 0}/${campaign.agents_total ?? metrics.expectedAgentCount}`} />
-          <DetailFact label="Priority" value={metrics.maxPriority.toFixed(1)} />
+          <DetailFact label="Max Score" value={`×${metrics.maxScoreMultiplier.toFixed(2)}`} />
           <DetailFact label="Avg Noise" value={metrics.avgNoise.toFixed(2)} />
           <DetailFact label="Started" value={campaign.started_at ? formatRelativeTime(campaign.started_at) : '—'} />
         </div>
@@ -294,6 +366,44 @@ function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign;
       </PanelSection>
 
       {dispatchOpen && <DispatchPanel campaign={campaign} onDone={() => { setDispatchOpen(false); onRefresh(); }} />}
+
+      {campaign.status === 'draft' && !campaign.parent_id && campaign.items.length >= 2 && (campaign.child_count ?? 0) === 0 && (
+        <PanelSection title="Split Campaign" meta="Create independently dispatchable child campaigns">
+          <div className="flex items-center gap-2 text-xs">
+            <label className="text-muted-foreground">Children</label>
+            <input
+              type="number"
+              min={2}
+              max={campaign.items.length}
+              value={splitCount}
+              onChange={event => setSplitCount(Math.max(2, Math.min(campaign.items.length, Number(event.target.value) || 2)))}
+              className="settings-input w-20"
+            />
+            <button onClick={split} disabled={busy === 'split'} className="settings-save-btn inline-flex items-center gap-1">
+              <Scissors className="h-3.5 w-3.5" /> {busy === 'split' ? 'Splitting…' : 'Split'}
+            </button>
+          </div>
+        </PanelSection>
+      )}
+
+      {children.length > 0 && (
+        <PanelSection title="Child Campaigns" meta={`(${children.length})`}>
+          <div className="space-y-1.5">
+            {children.map(child => (
+              <div key={child.id} className="rounded border border-border bg-background/40 px-3 py-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <StatusPill className={statusClass(child.status)}>{child.status}</StatusPill>
+                  <span className="min-w-0 flex-1 truncate font-medium">{child.name}</span>
+                  <span className="font-mono text-muted-foreground">{child.progress.completed}/{child.progress.total}</span>
+                </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  {child.items.length} items · {child.findings_count ?? child.findings.length} unique findings · {child.completion_pct ?? 0}% complete
+                </div>
+              </div>
+            ))}
+          </div>
+        </PanelSection>
+      )}
 
       {campaign.opsec && (
         <OpsecGauge
@@ -344,7 +454,7 @@ function CampaignBuilder({ frontier, onCancel, onCreated }: {
   const [search, setSearch] = useState('');
   const [type, setType] = useState('');
   const [node, setNode] = useState('');
-  const [minPriority, setMinPriority] = useState(0);
+  const [minScoreMultiplier, setMinScoreMultiplier] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
 
@@ -352,8 +462,8 @@ function CampaignBuilder({ frontier, onCancel, onCreated }: {
     search,
     type: type || undefined,
     node,
-    minPriority,
-  }), [frontier, search, type, node, minPriority]);
+    minScoreMultiplier,
+  }), [frontier, search, type, node, minScoreMultiplier]);
   const selectedItems = useMemo(() => frontier.filter(item => selected.has(getFrontierKey(item))), [frontier, selected]);
   const metrics = useMemo(() => deriveCampaignPreviewMetrics(selectedItems), [selectedItems]);
 
@@ -402,11 +512,17 @@ function CampaignBuilder({ frontier, onCancel, onCreated }: {
             <option value="untested_edge">Untested</option>
             <option value="inferred_edge">Inferred</option>
             <option value="network_discovery">Network</option>
+            <option value="network_pivot">Network Pivot</option>
             <option value="credential_test">Credential</option>
+            <option value="idp_enumeration">Identity Provider</option>
+            <option value="mfa_bypass_candidate">MFA Bypass</option>
+            <option value="cross_tier_pivot">Cross-tier Pivot</option>
+            <option value="cve_research">CVE Research</option>
+            <option value="domain_enumeration">Domain Enumeration</option>
           </select>
           <label className="text-[11px] text-muted-foreground inline-flex items-center gap-1">
-            Min priority
-            <input type="number" min={0} step={0.5} value={minPriority} onChange={e => setMinPriority(Number(e.target.value) || 0)} className="settings-input w-20" />
+            Min score
+            <input type="number" min={0} step={0.1} value={minScoreMultiplier} onChange={e => setMinScoreMultiplier(Number(e.target.value) || 0)} className="settings-input w-20" />
           </label>
         </FilterBar>
 
@@ -432,7 +548,7 @@ function CampaignBuilder({ frontier, onCancel, onCreated }: {
                     <div className="text-xs text-foreground line-clamp-2">{item.description}</div>
                     <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
                       <span>{item.type}</span>
-                      <span>priority {(item.priority ?? 0).toFixed(1)}</span>
+                      <span>score ×{item.graph_metrics.confidence.toFixed(2)}</span>
                       <span>noise {(item.opsec_noise ?? 0).toFixed(2)}</span>
                       <span className="font-mono">{campaignItemNodeLabel(item)}</span>
                     </div>
@@ -448,7 +564,7 @@ function CampaignBuilder({ frontier, onCancel, onCreated }: {
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
           <DetailFact label="Selected" value={String(metrics.selectedCount)} />
           <DetailFact label="Expected Agents" value={String(metrics.expectedAgentCount)} />
-          <DetailFact label="Max Priority" value={metrics.maxPriority.toFixed(1)} />
+          <DetailFact label="Max Score" value={`×${metrics.maxScoreMultiplier.toFixed(2)}`} />
           <DetailFact label="Avg Noise" value={metrics.avgNoise.toFixed(2)} />
           <DetailFact label="Nodes" value={String(metrics.nodeIds.length)} />
         </div>
@@ -514,7 +630,7 @@ function CampaignItemRow({ item }: { item: FrontierItem }) {
       <div className="text-xs text-foreground line-clamp-2">{item.description}</div>
       <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
         <StatusPill className="bg-elevated text-muted-foreground">{item.type}</StatusPill>
-        <span>priority {(item.priority ?? 0).toFixed(1)}</span>
+        <span>score ×{item.graph_metrics.confidence.toFixed(2)}</span>
         <span>noise {(item.opsec_noise ?? 0).toFixed(2)}</span>
         <span className="font-mono">{campaignItemNodeLabel(item)}</span>
       </div>

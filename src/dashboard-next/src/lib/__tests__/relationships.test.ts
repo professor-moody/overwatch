@@ -31,11 +31,14 @@ describe('relationship helpers', () => {
     } as PendingAction;
     const frontier = {
       id: 'f1',
-      type: 'incomplete_node',
-      priority: 1,
+      type: 'inferred_edge',
       description: 'x',
       edge_source: 'host-1',
       edge_target: 'svc-1',
+      edge_type: 'RUNS',
+      graph_metrics: { hops_to_objective: 1, fan_out_estimate: 1, node_degree: 1, confidence: 1 },
+      opsec_noise: 0.2,
+      staleness_seconds: 0,
     } as FrontierItem;
 
     expect(getSessionNodeIds(session)).toEqual(['host-1', 'user-1', 'cred-1']);
@@ -49,6 +52,7 @@ describe('relationship helpers', () => {
         { id: 'host-1', type: 'host', label: 'DC01.corp.local', confidence: 1, discovered_at: 'now', hostname: 'DC01' },
       ],
       edges: [],
+      coldInventory: [],
     };
     const matches = buildAssetNodeMatcher(graph);
 
@@ -75,13 +79,14 @@ describe('relationship helpers', () => {
         { id: 'host-1', type: 'host', label: 'DC01.corp.local', confidence: 1, discovered_at: 'now' },
       ],
       edges: [],
+      coldInventory: [],
     };
 
     const relationships = deriveNodeRelationships('host-1', {
       graph,
       sessions: [{ id: 's1', kind: 'pty', state: 'connected', title: 'shell', target_node: 'host-1' }],
       pendingActions: [{ action_id: 'a1', technique: 'nmap', target: 'host-1', noise_level: 0.2, description: 'scan', submitted_at: 'now' }],
-      frontier: [{ id: 'f1', type: 'incomplete_node', priority: 1, description: 'enrich', node_id: 'host-1' }],
+      frontier: [{ id: 'f1', type: 'incomplete_node', description: 'enrich', node_id: 'host-1', graph_metrics: { hops_to_objective: 1, fan_out_estimate: 1, node_degree: 1, confidence: 1 }, opsec_noise: 0.2, staleness_seconds: 0 }],
       findings: [finding],
     });
 
