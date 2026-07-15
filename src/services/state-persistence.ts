@@ -229,8 +229,14 @@ export class StatePersistence {
     try {
       physicalHighest = journal?.getHighestPhysicalSeq();
     } catch (error) {
+      const accessReason = this.describeJournalAccessFailure(error);
+      const reason = this.recoveryReadOnlyReason
+        ? this.recoveryReadOnlyReason.includes(accessReason)
+          ? this.recoveryReadOnlyReason
+          : `${this.recoveryReadOnlyReason}; additionally, ${accessReason}`
+        : accessReason;
       this.latchJournalRecoveryFailure({
-        reason: this.describeJournalAccessFailure(error),
+        reason,
         error,
         malformed: false,
         accessFailure: true,
@@ -282,6 +288,26 @@ export class StatePersistence {
     const path = this.ctx.mutationJournal?.getPath()
       ?? MutationJournal.pathForState(this.ctx.stateFilePath);
     return `persisted WAL could not be read at ${path}: ${message}`;
+  }
+
+  /** Status assembly must itself remain available when the WAL cannot be read.
+   * Record the access failure and return the best previously known physical
+   * sequence without recursively entering the recovery-status builder. */
+  private highestPhysicalSeqOr(fallback: number): number {
+    const journal = this.ctx.mutationJournal;
+    if (!journal) return fallback;
+    try {
+      return journal.getHighestPhysicalSeq();
+    } catch (error) {
+      this.journalAccessError ??= error;
+      const accessReason = this.describeJournalAccessFailure(error);
+      this.recoveryReadOnlyReason ??= accessReason;
+      journal.blockAppends(this.recoveryReadOnlyReason);
+      this.lastPersistenceError ??= error instanceof Error ? error.message : String(error);
+      const previous = (this.recoveryStatus as PersistenceRecoveryStatus | undefined)
+        ?.highest_on_disk_seq ?? 0;
+      return Math.max(fallback, previous);
+    }
   }
 
   /** Permanently close this process's durable-mutation gate after discovering
@@ -926,14 +952,15 @@ export class StatePersistence {
       }
       try {
         const data = JSON.parse(raw) as unknown;
-        const { checkpoint, trusted } = this.validateStateBase(data);
+        const { checkpoint, trusted } = this.validateCompactionAnchor(data);
         // A legacy snapshot may contain an allocation-based overclaim. It is a
         // usable graph base, but not authority to delete *any* retained WAL
         // records. Disabling compaction preserves the suffix it may need and
         // any records at/below its unproven cursor.
         if (!trusted) return undefined;
         oldest = oldest === undefined ? checkpoint : Math.min(oldest, checkpoint);
-      } catch {
+      } catch (error) {
+        if (error instanceof JournalRecoveryGateError) throw error;
         // An invalid snapshot is not a recovery anchor and therefore cannot
         // justify discarding any WAL prefix.
       }
@@ -1093,6 +1120,16 @@ export class StatePersistence {
   private writeRollbackAuthority(intent: RollbackIntentV1): void {
     const path = this.rollbackAuthorityPath();
     const dir = dirname(path);
+    if (existsSync(path)) {
+      const existing = this.validateStandaloneRollbackIntent(
+        JSON.parse(readFileSync(path, 'utf-8')) as unknown,
+      );
+      if (existing.intent_checksum !== intent.intent_checksum) {
+        throw new Error('an existing rollback authority names a different target');
+      }
+      fsyncDirectory(dir);
+      return;
+    }
     const tmp = `${path}.tmp`;
     const json = JSON.stringify(intent);
     const fd = openSync(tmp, 'w');
@@ -1259,12 +1296,6 @@ export class StatePersistence {
    * the post-snapshot journal.
    */
   restoreBaseAndReplay(mutators?: ReplayMutators): RestoreResult {
-    if (this.journalAccessError !== undefined) {
-      return this.enterJournalAccessFailure(
-        this.journalAccessError,
-        existsSync(this.ctx.stateFilePath) ? 'state' : 'fresh',
-      );
-    }
     const pendingRollback = this.resumePendingRollback();
     if (pendingRollback) return pendingRollback;
 
@@ -1286,8 +1317,8 @@ export class StatePersistence {
   }
 
   /** A checksummed sidecar is the durable authority for an explicit rollback.
-   * The marked primary is preferred when valid, but the retained selected
-   * snapshot can rebuild it if the primary was corrupted mid-operation. */
+   * While it exists, the retained selected snapshot is canonical and rebuilds
+   * the replaceable marked primary regardless of that primary's contents. */
   private resumePendingRollback(): RestoreResult | undefined {
     const authorityPath = this.rollbackAuthorityPath();
     const hasAuthoritySidecar = existsSync(authorityPath);
@@ -1364,8 +1395,8 @@ export class StatePersistence {
       }
 
       // Marker-only pending states are upgraded to the independently durable
-      // authority before any cleanup. Existing sidecars are rewritten
-      // idempotently so their directory entry is freshly synchronized.
+      // authority before any cleanup. Existing matching sidecars are reused and
+      // their directory entry is freshly synchronized.
       this.writeRollbackAuthority(intent);
       this.rollbackIntent = intent;
       this._restoreFromData(rollbackData, this.builtinRules);
@@ -1476,6 +1507,9 @@ export class StatePersistence {
       const journal = this.ctx.mutationJournal;
       let replay: MutationReplayResult | undefined;
       if (journal) {
+        if (this.journalAccessError !== undefined) {
+          return this.enterJournalAccessFailure(this.journalAccessError, candidate.source);
+        }
         journal.unblockAppends();
         journal.setNextSeq(restoredCheckpoint.checkpoint, {
           appliedThroughSeq: restoredCheckpoint.trusted ? restoredCheckpoint.checkpoint : 0,
@@ -1580,6 +1614,32 @@ export class StatePersistence {
       checkpoint,
       trusted: record.journalCheckpointSemantics === JOURNAL_CHECKPOINT_SEMANTICS,
     };
+  }
+
+  /** Compaction requires more than a rankable config/graph/checkpoint. Exercise
+   * the exact full-state deserializer, then restore the current live baseline,
+   * so an auxiliary-field-corrupt snapshot can never authorize WAL deletion. */
+  private validateCompactionAnchor(data: unknown): RestoredCheckpoint {
+    const validated = this.validateStateBase(data);
+    const baseline = this.captureRestoreBaseline();
+    let candidateError: unknown;
+    try {
+      this._restoreFromData(data, this.builtinRules);
+    } catch (error) {
+      candidateError = error;
+    }
+
+    try {
+      this.restoreRejectedCandidateBaseline(baseline, this.builtinRules);
+    } catch (error) {
+      throw this.latchJournalRecoveryFailure({
+        reason: `compaction anchor validation could not restore the live engine baseline: ${error instanceof Error ? error.message : String(error)}`,
+        error,
+        malformed: false,
+      });
+    }
+    if (candidateError !== undefined) throw candidateError;
+    return validated;
   }
 
   private validateRollbackIntent(
@@ -1851,6 +1911,9 @@ export class StatePersistence {
     path: string,
     error: unknown,
   ): RestoreResult {
+    if (this.journalAccessError !== undefined) {
+      return this.enterJournalAccessFailure(this.journalAccessError, source);
+    }
     const message = error instanceof Error ? error.message : String(error);
     const reason = `persisted ${source} recovery base could not be read at ${path}: ${message}`;
     this.recoveryReadOnlyReason = reason;
@@ -1967,7 +2030,7 @@ export class StatePersistence {
       highest_allocated_seq: checkpoint,
       highest_on_disk_seq: Math.max(
         this.recoveryStatus.highest_on_disk_seq,
-        journal?.getHighestPhysicalSeq() ?? 0,
+        this.highestPhysicalSeqOr(0),
       ),
       highest_contiguous_applied_seq: checkpoint,
       journal: { ...this.recoveryStatus.journal, preserved: false },
@@ -1995,7 +2058,8 @@ export class StatePersistence {
       ...(input.reason ? { reason: input.reason } : {}),
       base_checkpoint: input.checkpoint,
       highest_allocated_seq: journal?.getHighestAllocatedSeq() ?? input.checkpoint,
-      highest_on_disk_seq: replay?.highest_on_disk_seq ?? journal?.getHighestPhysicalSeq() ?? input.checkpoint,
+      highest_on_disk_seq: replay?.highest_on_disk_seq
+        ?? this.highestPhysicalSeqOr(input.checkpoint),
       highest_contiguous_applied_seq: input.highestContiguousAppliedSeq
         ?? replay?.highest_contiguous_applied_seq
         ?? journal?.getAppliedThroughSeq()

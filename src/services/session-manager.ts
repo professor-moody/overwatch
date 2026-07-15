@@ -701,6 +701,10 @@ export class SessionManager {
   }
 
   close(sessionId: string, claimedBy?: string, force?: boolean): { metadata: SessionMetadata; final: SessionReadResult } {
+    // A degraded manager performs runtime cleanup through freezeForPersistence,
+    // which deliberately avoids claiming durable audit/graph updates. Direct
+    // service callers must not receive a falsely durable ordinary close.
+    this.assertPersistenceWritable();
     const session = this.getSessionOrThrow(sessionId);
     this.assertOwnership(session, claimedBy, force);
 

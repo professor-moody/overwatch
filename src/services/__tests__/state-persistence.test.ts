@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Graph from 'graphology';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { NodeProperties, EdgeProperties, InferenceRule } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
 import { StatePersistence, MAX_SNAPSHOTS, FLUSH_DEBOUNCE_MS } from '../state-persistence.js';
+import { mkdirDurable } from '../durable-fs.js';
 
 function makeGraph(): OverwatchGraph {
   return new (Graph as any)({ multi: true, type: 'directed', allowSelfLoops: true }) as OverwatchGraph;
@@ -57,6 +58,51 @@ describe('StatePersistence', () => {
     instances.push(persistence);
     return { ctx, persistence, graph };
   }
+
+  it('fsyncs every newly created ancestor for a recursively created state path', () => {
+    const levelOne = join(tempDir, 'one');
+    const levelTwo = join(levelOne, 'two');
+    const levelThree = join(levelTwo, 'three');
+    const synchronized: string[] = [];
+
+    mkdirDurable(levelThree, directory => synchronized.push(directory));
+
+    expect(existsSync(levelThree)).toBe(true);
+    expect(synchronized).toEqual([levelThree, levelTwo, levelOne, tempDir]);
+  });
+
+  it('retries ancestor fsyncs after recursive creation succeeded but durability failed', () => {
+    const levelOne = join(tempDir, 'retry-one');
+    const levelTwo = join(levelOne, 'retry-two');
+    const levelThree = join(levelTwo, 'retry-three');
+    let calls = 0;
+
+    expect(() => mkdirDurable(levelThree, () => {
+      calls++;
+      if (calls === 2) throw new Error('synthetic ancestor fsync failure');
+    })).toThrow('synthetic ancestor fsync failure');
+    expect(existsSync(levelThree)).toBe(true);
+
+    const retried: string[] = [];
+    mkdirDurable(levelThree, directory => retried.push(directory));
+    expect(retried).toEqual([levelThree, levelTwo, levelOne, tempDir]);
+  });
+
+  it('does not fsync arbitrary ancestors of an already-existing writable state directory', () => {
+    if (process.platform === 'win32') return;
+    const parent = join(tempDir, 'execute-only-parent');
+    const stateDirectory = join(parent, 'state');
+    mkdirSync(stateDirectory, { recursive: true });
+    chmodSync(parent, 0o111);
+    try {
+      // Traverse-only access to the parent is sufficient for ordinary writes
+      // inside the writable state directory.
+      writeFileSync(join(stateDirectory, 'ordinary-write'), 'ok');
+      expect(() => mkdirDurable(stateDirectory)).not.toThrow();
+    } finally {
+      chmodSync(parent, 0o700);
+    }
+  });
 
   // =============================================
   // persist + loadState round-trip

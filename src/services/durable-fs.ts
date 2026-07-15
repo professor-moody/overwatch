@@ -5,6 +5,11 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync } from 'fs';
 import { dirname, resolve } from 'path';
 
+/** Ancestor fsync work that must be retried when recursive mkdir succeeded but
+ * a later sync failed. The directory already exists on retry, so existence
+ * alone is not proof that its parent entries reached stable storage. */
+const pendingDirectorySyncs = new Map<string, string[]>();
+
 /**
  * Persist directory-entry changes (create, rename, unlink) on POSIX.
  * Windows does not support opening directories through Node in the same
@@ -33,25 +38,38 @@ export function mkdirDurable(
   syncDirectory: (directory: string) => void = fsyncDirectory,
 ): void {
   const target = resolve(path);
-  if (existsSync(target)) return;
+  const pending = pendingDirectorySyncs.get(target);
+  const targetExists = existsSync(target);
+  if (targetExists && !pending) return;
 
-  const missing: string[] = [];
-  let cursor = target;
-  while (!existsSync(cursor)) {
-    missing.push(cursor);
-    const parent = dirname(cursor);
-    if (parent === cursor) break;
-    cursor = parent;
+  let directoriesToSync = pending;
+  if (!directoriesToSync || !targetExists) {
+    const missing: string[] = [];
+    let cursor = target;
+    while (!existsSync(cursor)) {
+      missing.push(cursor);
+      const parent = dirname(cursor);
+      if (parent === cursor) break;
+      cursor = parent;
+    }
+
+    mkdirSync(target, { recursive: true });
+
+    // Deepest-first sync persists each new directory's own contents, then the
+    // parent entry that names it. A Set avoids repeated parent fsyncs.
+    const uniqueDirectories = new Set<string>();
+    for (const directory of missing) {
+      uniqueDirectories.add(directory);
+      uniqueDirectories.add(dirname(directory));
+    }
+    directoriesToSync = [...uniqueDirectories];
   }
 
-  mkdirSync(target, { recursive: true });
-
-  // Deepest-first sync persists each new directory's own contents, then the
-  // parent entry that names it. A Set avoids repeated parent fsyncs.
-  const directoriesToSync = new Set<string>();
-  for (const directory of missing) {
-    directoriesToSync.add(directory);
-    directoriesToSync.add(dirname(directory));
+  try {
+    for (const directory of directoriesToSync) syncDirectory(directory);
+    pendingDirectorySyncs.delete(target);
+  } catch (error) {
+    pendingDirectorySyncs.set(target, directoriesToSync);
+    throw error;
   }
-  for (const directory of directoriesToSync) syncDirectory(directory);
 }

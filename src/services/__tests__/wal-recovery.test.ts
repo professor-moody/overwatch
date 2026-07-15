@@ -450,6 +450,67 @@ describe('WAL recovery integration', () => {
     closeEngine(degraded);
   });
 
+  it('starts inspectable and read-only when the WAL itself cannot be read', () => {
+    const writer = openEngine();
+    writer.addNode(host('durable-before-unreadable-wal'));
+    writer.persist();
+    writer.flushNow();
+    closeEngine(writer);
+    const primaryBefore = readFileSync(statePath);
+
+    rmSync(journalPath(), { recursive: true, force: true });
+    mkdirSync(journalPath());
+
+    const degraded = openEngine();
+    expect(degraded.getNode('durable-before-unreadable-wal')).toBeDefined();
+    expect(degraded.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      source: 'state',
+      complete: false,
+      writable: false,
+      journal: { enabled: true, preserved: true },
+    });
+    expect(degraded.getPersistenceRecoveryStatus().reason).toContain(
+      'persisted WAL could not be read',
+    );
+    expect(() => degraded.addNode(host('must-not-append-to-unreadable-wal'))).toThrow(
+      /Durable mutations are disabled while persistence is degraded/,
+    );
+    expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(existsSync(journalPath())).toBe(true);
+    closeEngine(degraded);
+  });
+
+  it('keeps recovery status inspectable when an unreadable WAL and invalid rollback authority coexist', () => {
+    const writer = openEngine();
+    writer.addNode(host('durable-before-combined-recovery-failure'));
+    writer.persist();
+    writer.flushNow();
+    closeEngine(writer);
+    const primaryBefore = readFileSync(statePath);
+
+    rmSync(journalPath(), { recursive: true, force: true });
+    mkdirSync(journalPath());
+    const authorityPath = `${statePath}.rollback-intent.json`;
+    writeFileSync(authorityPath, '{}');
+
+    const degraded = openEngine();
+    expect(degraded.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      source: 'state',
+      complete: false,
+      writable: false,
+      journal: { enabled: true, preserved: true },
+    });
+    expect(degraded.getPersistenceRecoveryStatus().reason).toContain('rollback');
+    expect(() => degraded.addNode(host('must-not-mutate-combined-failure'))).toThrow(
+      /Durable mutations are disabled while persistence is degraded/,
+    );
+    expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(readFileSync(authorityPath, 'utf-8')).toBe('{}');
+    closeEngine(degraded);
+  });
+
   it('detects a physical WAL even when the incoming config has no engagement nonce', () => {
     delete config.engagement_nonce;
     const wal = new MutationJournal(statePath);
@@ -693,13 +754,15 @@ describe('WAL recovery integration', () => {
     }
   });
 
-  it('retains enough WAL after compaction to recover through multiple snapshot fallbacks', () => {
+  it('retains WAL needed by a legacy fallback alongside newer trusted snapshots', () => {
     const writer = openEngine();
     (writer as any).ctx.lastSnapshotTime = Date.now();
     writer.addNode(host('oldest-base-node'));
     writer.persist();
     writer.flushNow();
-    const oldestSnapshotBytes = readFileSync(statePath);
+    const oldestSnapshot = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+    delete oldestSnapshot.journalCheckpointSemantics;
+    const oldestSnapshotBytes = Buffer.from(JSON.stringify(oldestSnapshot));
     const oldestCheckpoint = checkpoint(statePath);
 
     writer.addNode(host('middle-node'));
@@ -730,7 +793,9 @@ describe('WAL recovery integration', () => {
       .split('\n')
       .filter(Boolean)
       .map(line => (JSON.parse(line) as { seq: number }).seq);
-    expect(retainedSeqs).toEqual([oldestCheckpoint + 1, oldestCheckpoint + 2]);
+    expect(retainedSeqs).toContain(oldestCheckpoint + 1);
+    expect(retainedSeqs).toContain(oldestCheckpoint + 2);
+    const walBeforeFallback = readFileSync(journalPath());
 
     writeFileSync(statePath, '{corrupt primary');
     for (const snapshotName of readdirSync(snapshotDir)) {
@@ -741,16 +806,45 @@ describe('WAL recovery integration', () => {
 
     const recovered = openEngine();
     expect(recovered.getNode('oldest-base-node')).toBeDefined();
-    expect(recovered.getNode('middle-node')).toBeDefined();
-    expect(recovered.getNode('tail-node')).toBeDefined();
+    // The retained record at/below an unmarked legacy cursor is deliberately
+    // ambiguous, so recovery stays read-only rather than guessing. Crucially,
+    // the newer committed suffix remains available for explicit recovery.
+    expect(recovered.getNode('middle-node')).toBeNull();
+    expect(recovered.getNode('tail-node')).toBeNull();
     expect(recovered.getPersistenceRecoveryStatus()).toMatchObject({
-      outcome: 'recovered',
+      outcome: 'incomplete',
       source: 'snapshot',
-      complete: true,
-      writable: true,
-      base_checkpoint: recoveredCheckpoint,
+      complete: false,
+      writable: false,
+      journal: { preserved: true },
     });
+    expect(readFileSync(journalPath())).toEqual(walBeforeFallback);
     closeEngine(recovered);
+  });
+
+  it('does not compact WAL when a retained snapshot cannot be read', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('unreadable-snapshot-anchor'));
+    writer.persist();
+    writer.flushNow();
+    const anchorCheckpoint = checkpoint(statePath);
+
+    writer.addNode(host('unreadable-snapshot-tail'));
+    const snapshotDir = join(tempDir, '.snapshots');
+    mkdirSync(snapshotDir, { recursive: true });
+    mkdirSync(join(snapshotDir, 'state.snap-2026-01-01T00-00-00-000Z-1.json'));
+    (writer as any).ctx.lastSnapshotTime = 0;
+    writer.persist();
+    writer.flushNow();
+
+    const retainedSeqs = readFileSync(journalPath(), 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => (JSON.parse(line) as { seq: number }).seq);
+    expect(retainedSeqs).toContain(anchorCheckpoint);
+    expect(retainedSeqs).toContain(anchorCheckpoint + 1);
+    closeEngine(writer);
   });
 
   it('keeps WAL newer than the durable primary during pre-rename snapshot rotation', () => {
@@ -845,7 +939,54 @@ describe('WAL recovery integration', () => {
     vi.useRealTimers();
   });
 
-  it('propagates WAL compaction refusal without replacing the primary', () => {
+  it('does not compact against an auxiliary-corrupt snapshot before a failed primary replacement', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('aux-corrupt-seq-one'));
+    writer.persist();
+    writer.flushNow();
+    const firstCheckpoint = checkpoint(statePath);
+    rmSync(join(tempDir, '.snapshots'), { recursive: true, force: true });
+
+    // Keep live memory valid while making the durable primary rankable by
+    // config/graph/checkpoint but impossible for the full deserializer.
+    const corruptPrimary = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+    corruptPrimary.agents = {};
+    const corruptPrimaryBytes = Buffer.from(JSON.stringify(corruptPrimary));
+    writeFileSync(statePath, corruptPrimaryBytes);
+
+    writer.addNode(host('aux-corrupt-seq-two'));
+    const walBefore = readFileSync(journalPath());
+    const walSeqsBefore = walBefore.toString('utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => (JSON.parse(line) as { seq: number }).seq);
+    expect(walSeqsBefore).toContain(firstCheckpoint);
+    expect(walSeqsBefore).toContain(firstCheckpoint + 1);
+
+    // Rotation copies the corrupt primary. The replacement then fails after
+    // anchor validation, which must not have let that copy authorize compaction.
+    mkdirSync(`${statePath}.tmp`);
+    (writer as any).ctx.lastSnapshotTime = 0;
+    writer.persist();
+    expect(() => writer.flushNow()).toThrow();
+    expect(readFileSync(statePath)).toEqual(corruptPrimaryBytes);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    closeEngine(writer);
+
+    rmSync(`${statePath}.tmp`, { recursive: true, force: true });
+    const restarted = openEngine();
+    expect(restarted.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      journal: { preserved: true },
+    });
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    closeEngine(restarted);
+  });
+
+  it('immediately gates writes when snapshot rotation detects a corrupt WAL', () => {
     const writer = openEngine();
     (writer as any).ctx.lastSnapshotTime = Date.now();
     writer.addNode(host('compaction-anchor'));
@@ -859,11 +1000,23 @@ describe('WAL recovery integration', () => {
     const journal = (writer as any).ctx.mutationJournal as MutationJournal;
     journal.append({ type: 'future_mutation' as MutationType, payload: {}, ts: NOW });
     const walBefore = readFileSync(journalPath());
+    const snapshotsBefore = writer.listSnapshots();
     (writer as any).ctx.lastSnapshotTime = 0;
     writer.persist();
 
-    expect(() => writer.flushNow()).toThrow(/snapshot WAL compaction refused/);
+    expect(() => writer.flushNow()).toThrow(/snapshot WAL integrity preflight failed/);
     expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(writer.listSnapshots()).toEqual(snapshotsBefore);
+    expect(writer.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      journal: { preserved: true },
+    });
+    expect(() => writer.addNode(host('must-not-append-after-integrity-failure'))).toThrow(
+      /Durable mutations are disabled while persistence is degraded/,
+    );
     expect(readFileSync(journalPath())).toEqual(walBefore);
     closeEngine(writer);
   });

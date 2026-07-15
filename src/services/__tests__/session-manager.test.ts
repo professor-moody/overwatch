@@ -1255,6 +1255,29 @@ describe('Session Idle Timeout', () => {
 });
 
 describe('SessionManager persistence freeze', () => {
+  it('routes a direct close through the persistence freeze when durability is degraded', async () => {
+    let writable = true;
+    const durableEvents: unknown[] = [];
+    const engine = {
+      isPersistenceWritable: () => writable,
+      logActionEvent: (event: unknown) => { durableEvents.push(event); },
+      onSessionClosed: () => { durableEvents.push('graph-session-close'); },
+    };
+    const mgr = new SessionManager(engine as any);
+    const mock = createMockAdapter();
+    mgr.registerAdapter(mock.adapter);
+    const result = await mgr.create({ kind: 'local_pty', title: 'direct-close', initial_wait_ms: 0 });
+    const eventCountBeforeFreeze = durableEvents.length;
+
+    writable = false;
+    expect(() => mgr.close(result.metadata.id)).toThrow(/persistence is read-only/i);
+
+    expect(mock.wasClosed()).toBe(true);
+    expect(mgr.getSession(result.metadata.id)?.state).toBe('closed');
+    expect(durableEvents).toHaveLength(eventCountBeforeFreeze);
+    await mgr.shutdown();
+  });
+
   it('closes live handles without durable callbacks and rejects later operations', async () => {
     let writable = true;
     const durableEvents: unknown[] = [];
