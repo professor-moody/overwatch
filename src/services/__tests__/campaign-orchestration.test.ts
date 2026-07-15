@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../graph-engine.js';
 import { registerAgentTools } from '../../tools/agents.js';
 import type { EngagementConfig } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-campaign-orch.json';
 
 function makeConfig(overrides?: Partial<EngagementConfig>): EngagementConfig {
   return {
@@ -21,12 +21,6 @@ function makeConfig(overrides?: Partial<EngagementConfig>): EngagementConfig {
     opsec: { name: 'pentest', max_noise: 0.7 },
     ...overrides,
   } as EngagementConfig;
-}
-
-function cleanup(): void {
-  try {
-    if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-  } catch {}
 }
 
 const now = new Date().toISOString();
@@ -62,11 +56,12 @@ function _addCredential(engine: GraphEngine, id: string, hostId: string) {
 
 describe('dispatch_campaign_agents', () => {
   let engine: GraphEngine;
+  let testDir: string;
   let handlers: Record<string, (args: any) => Promise<any>>;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-campaign-orchestration-'));
+    engine = new GraphEngine(makeConfig(), join(testDir, 'state.json'));
     handlers = {};
 
     const fakeServer = {
@@ -79,7 +74,8 @@ describe('dispatch_campaign_agents', () => {
   });
 
   afterEach(() => {
-    cleanup();
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('rejects dispatch for nonexistent campaign', async () => {
@@ -231,11 +227,12 @@ describe('dispatch_campaign_agents', () => {
 
 describe('campaign agent completion aggregation', () => {
   let engine: GraphEngine;
+  let testDir: string;
   let handlers: Record<string, (args: any) => Promise<any>>;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-campaign-completion-'));
+    engine = new GraphEngine(makeConfig(), join(testDir, 'state.json'));
     handlers = {};
 
     const fakeServer = {
@@ -248,7 +245,8 @@ describe('campaign agent completion aggregation', () => {
   });
 
   afterEach(() => {
-    cleanup();
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('agent completion updates campaign progress', async () => {

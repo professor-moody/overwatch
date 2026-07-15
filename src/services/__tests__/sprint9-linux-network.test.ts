@@ -1,11 +1,15 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import { parseLinpeas } from '../parsers/index.js';
 import { parseOutput } from '../parsers/index.js';
 import type { EngagementConfig, Finding } from '../../types.js';
-import { unlinkSync, existsSync } from 'fs';
 
-const TEST_STATE_FILE = './state-test-sprint9.json';
+let testDir: string;
+let engineIndex = 0;
+const engines = new Set<GraphEngine>();
 
 function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig {
   return {
@@ -29,9 +33,22 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
   };
 }
 
-function cleanup() {
-  if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
+function createEngine(config: EngagementConfig): GraphEngine {
+  const engine = new GraphEngine(config, join(testDir, `state-${engineIndex++}.json`));
+  engines.add(engine);
+  return engine;
 }
+
+beforeEach(() => {
+  testDir = mkdtempSync(join(tmpdir(), 'overwatch-sprint9-'));
+  engineIndex = 0;
+});
+
+afterEach(() => {
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  rmSync(testDir, { recursive: true, force: true });
+});
 
 const now = new Date().toISOString();
 
@@ -43,7 +60,6 @@ function makeFinding(nodes: Finding['nodes'], edges: Finding['edges'] = []): Fin
 // 9.0: SSH Session Confirmation Fix
 // ============================================================
 describe('9.0 — SSH session confirmation fix', () => {
-  afterEach(cleanup);
 
   it('detectSshAuthFailure patterns are present in SessionManager', async () => {
     // Verify the session manager module exports correctly (structural test)
@@ -56,10 +72,9 @@ describe('9.0 — SSH session confirmation fix', () => {
 // 9.1: Linux Host Enrichment — NodeProperties + Frontier
 // ============================================================
 describe('9.1 — Linux host enrichment', () => {
-  afterEach(cleanup);
 
   it('NodeProperties accepts Linux enrichment fields', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding([{
       id: 'host-10-10-10-5', type: 'host', label: 'linux-box', ip: '10.10.10.5',
       discovered_at: now, confidence: 1.0, alive: true, os: 'Linux',
@@ -77,7 +92,7 @@ describe('9.1 — Linux host enrichment', () => {
   });
 
   it('frontier flags Linux-specific missing properties for compromised hosts', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding([{
       id: 'host-10-10-10-6', type: 'host', label: 'linux-bare', ip: '10.10.10.6',
       discovered_at: now, confidence: 1.0, alive: true, os: 'Linux',
@@ -101,7 +116,7 @@ describe('9.1 — Linux host enrichment', () => {
   });
 
   it('frontier does NOT flag Linux properties for Windows hosts', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-7', type: 'host', label: 'win-box', ip: '10.10.10.7', discovered_at: now, confidence: 1.0, alive: true, os: 'Windows Server 2019' },
@@ -118,7 +133,7 @@ describe('9.1 — Linux host enrichment', () => {
   });
 
   it('fully enriched Linux host has no Linux-specific missing properties', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-8', type: 'host', label: 'linux-full', ip: '10.10.10.8', discovered_at: now, confidence: 1.0, alive: true, os: 'Linux', suid_checked: true, cron_checked: true, capabilities_checked: true },
@@ -132,7 +147,7 @@ describe('9.1 — Linux host enrichment', () => {
   });
 
   it('NodeProperties accepts no_root_squash on share nodes', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding([{
       id: 'share-nfs-1', type: 'share', label: '/export', share_name: '/export',
       discovered_at: now, confidence: 1.0, no_root_squash: true,
@@ -142,7 +157,7 @@ describe('9.1 — Linux host enrichment', () => {
   });
 
   it('NodeProperties accepts linked_servers on service nodes', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding([{
       id: 'svc-mssql-1', type: 'service', label: 'mssql/1433', port: 1433,
       protocol: 'tcp', service_name: 'mssql',
@@ -153,7 +168,7 @@ describe('9.1 — Linux host enrichment', () => {
   });
 
   it('NodeProperties accepts subnet_cidr on subnet nodes', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     // Subnet nodes are seeded from config CIDRs
     const node = engine.getNode('subnet-10-10-10-0-24');
     expect(node).toBeDefined();
@@ -166,10 +181,9 @@ describe('9.1 — Linux host enrichment', () => {
 // 9.2: Linux Inference Rules
 // ============================================================
 describe('9.2 — Linux inference rules', () => {
-  afterEach(cleanup);
 
   it('rule-suid-privesc: SUID root → ADMIN_TO from session holders', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     // Create host with session and SUID
     engine.ingestFinding(makeFinding(
       [
@@ -190,7 +204,7 @@ describe('9.2 — Linux inference rules', () => {
   });
 
   it('rule-ssh-key-reuse: SSH key → POTENTIAL_AUTH to SSH services', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-21', type: 'host', label: 'ssh-host-1', ip: '10.10.10.21', discovered_at: now, confidence: 1.0, alive: true },
@@ -210,7 +224,7 @@ describe('9.2 — Linux inference rules', () => {
   });
 
   it('rule-docker-escape: Docker socket → ADMIN_TO from session holders', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-22', type: 'host', label: 'docker-host', ip: '10.10.10.22', discovered_at: now, confidence: 1.0, alive: true, os: 'Linux' },
@@ -229,7 +243,7 @@ describe('9.2 — Linux inference rules', () => {
   });
 
   it('rule-nfs-root-squash: no_root_squash host → ADMIN_TO from session holders', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-23', type: 'host', label: 'nfs-host', ip: '10.10.10.23', discovered_at: now, confidence: 1.0, alive: true, os: 'Linux' },
@@ -248,7 +262,7 @@ describe('9.2 — Linux inference rules', () => {
   });
 
   it('session_holders_on_host returns empty when no sessions exist', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding([{
       id: 'host-10-10-10-24', type: 'host', label: 'no-session', ip: '10.10.10.24',
       discovered_at: now, confidence: 1.0, alive: true, os: 'Linux', has_suid_root: true,
@@ -264,10 +278,9 @@ describe('9.2 — Linux inference rules', () => {
 // 9.3: MSSQL Linked Server Inference
 // ============================================================
 describe('9.3 — MSSQL linked server inference', () => {
-  afterEach(cleanup);
 
   it('rule-mssql-linked-server: MSSQL with linked_servers → REACHABLE to matching hosts', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     // Create MSSQL service with linked server + the linked host
     engine.ingestFinding(makeFinding(
       [
@@ -296,7 +309,7 @@ describe('9.3 — MSSQL linked server inference', () => {
   });
 
   it('linked_server_hosts selector matches by hostname', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     // Create host with known hostname, then MSSQL with that hostname in linked_servers
     engine.ingestFinding(makeFinding([
       { id: 'host-10-10-10-32', type: 'host', label: 'target-ls', hostname: 'target-ls', ip: '10.10.10.32', discovered_at: now, confidence: 1.0, alive: true },
@@ -317,10 +330,9 @@ describe('9.3 — MSSQL linked server inference', () => {
 // 9.4: Network Zone / Pivot Tracking
 // ============================================================
 describe('9.4 — Network pivot tracking', () => {
-  afterEach(cleanup);
 
   it('subnet nodes are seeded from scope CIDRs', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     const subnet = engine.getNode('subnet-10-10-10-0-24');
     expect(subnet).toBeDefined();
     expect(subnet!.type).toBe('subnet');
@@ -328,7 +340,7 @@ describe('9.4 — Network pivot tracking', () => {
   });
 
   it('pivot reachability creates REACHABLE edges with via_pivot', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     // Two hosts in same subnet
     engine.ingestFinding(makeFinding(
       [
@@ -347,7 +359,7 @@ describe('9.4 — Network pivot tracking', () => {
   });
 
   it('pivot reachability does NOT fire without HAS_SESSION', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding([
       { id: 'host-10-10-10-52', type: 'host', label: 'no-pivot-a', ip: '10.10.10.52', discovered_at: now, confidence: 1.0, alive: true },
       { id: 'host-10-10-10-53', type: 'host', label: 'no-pivot-b', ip: '10.10.10.53', discovered_at: now, confidence: 1.0, alive: true },
@@ -358,7 +370,7 @@ describe('9.4 — Network pivot tracking', () => {
   });
 
   it('pivot peer is represented in frontier (inferred_edge or network_pivot, not both)', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     // Host A has session, host B does not → peer should appear in frontier exactly once
     engine.ingestFinding(makeFinding(
       [
@@ -377,7 +389,7 @@ describe('9.4 — Network pivot tracking', () => {
   });
 
   it('network_pivot not generated for hosts that already have sessions', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-70', type: 'host', label: 'both-a', ip: '10.10.10.70', discovered_at: now, confidence: 1.0, alive: true },
@@ -400,7 +412,7 @@ describe('9.4 — Network pivot tracking', () => {
   });
 
   it('EdgeProperties supports via_pivot field', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-80', type: 'host', label: 'vp-a', ip: '10.10.10.80', discovered_at: now, confidence: 1.0, alive: true },
@@ -525,10 +537,9 @@ describe('9.5 — Linpeas parser', () => {
 // 9.6: OPSEC-Weighted Path Analysis
 // ============================================================
 describe('9.6 — OPSEC-weighted path analysis', () => {
-  afterEach(cleanup);
 
   it('findPaths returns total_opsec_noise in results', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-90', type: 'host', label: 'pa-a', ip: '10.10.10.90', hostname: 'pa-a', discovered_at: now, confidence: 1.0, alive: true },
@@ -543,7 +554,7 @@ describe('9.6 — OPSEC-weighted path analysis', () => {
   });
 
   it('stealth optimize prefers low-noise path', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     const startId = 'host-10-10-10-100';
     const relayId = 'host-10-10-10-101';
     const targetId = 'host-10-10-10-102';
@@ -574,7 +585,7 @@ describe('9.6 — OPSEC-weighted path analysis', () => {
   });
 
   it('balanced optimize blends confidence and noise', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-110', type: 'host', label: 'bal-a', ip: '10.10.10.110', hostname: 'bal-a', discovered_at: now, confidence: 1.0, alive: true },
@@ -589,7 +600,7 @@ describe('9.6 — OPSEC-weighted path analysis', () => {
   });
 
   it('default optimize is confidence', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-120', type: 'host', label: 'def-a', ip: '10.10.10.120', hostname: 'def-a', discovered_at: now, confidence: 1.0, alive: true },
@@ -604,7 +615,7 @@ describe('9.6 — OPSEC-weighted path analysis', () => {
   });
 
   it('findPathsToObjective accepts optimize parameter', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     // No matching objectives for test — just verify it doesn't throw
     const paths = engine.findPathsToObjective('obj-1', 5, 'stealth');
     expect(Array.isArray(paths)).toBe(true);
@@ -615,7 +626,6 @@ describe('9.6 — OPSEC-weighted path analysis', () => {
 // Regression: P1 — Linpeas parser must not corrupt existing host metadata
 // ============================================================
 describe('regression — Linpeas parser host metadata preservation', () => {
-  afterEach(cleanup);
 
   it('does not overwrite label when context.source_host is provided', () => {
     const result = parseLinpeas('Linux version 5.15.0\n', 'agent', { source_host: 'host-10-10-10-5' });
@@ -638,7 +648,7 @@ describe('regression — Linpeas parser host metadata preservation', () => {
   });
 
   it('preserves existing host label and confidence after ingestion', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding([{
       id: 'host-10-10-10-40', type: 'host', label: 'my-server', ip: '10.10.10.40',
       discovered_at: now, confidence: 1.0, alive: true, os: 'Linux',
@@ -660,10 +670,9 @@ describe('regression — Linpeas parser host metadata preservation', () => {
 // Regression: P2 — Frontier deduplication (no double pivot items)
 // ============================================================
 describe('regression — frontier pivot deduplication', () => {
-  afterEach(cleanup);
 
   it('does not emit network_pivot for hosts already covered by inferred_edge REACHABLE', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine(makeConfig());
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-130', type: 'host', label: 'pivot-src', ip: '10.10.10.130', discovered_at: now, confidence: 1.0, alive: true },
@@ -687,7 +696,6 @@ describe('regression — frontier pivot deduplication', () => {
 // Regression: P2 — Path sort respects optimize strategy
 // ============================================================
 describe('regression — path sort by strategy', () => {
-  afterEach(cleanup);
 
   it('findPathsToObjective stealth mode sorts by lowest noise', () => {
     const config = makeConfig({
@@ -699,7 +707,7 @@ describe('regression — path sort by strategy', () => {
         achieved: false,
       }],
     });
-    const engine = new GraphEngine(config, TEST_STATE_FILE);
+    const engine = createEngine(config);
     // Create two paths to the same credential: one noisy+high-confidence, one quiet+low-confidence
     engine.ingestFinding(makeFinding(
       [

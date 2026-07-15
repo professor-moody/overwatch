@@ -6,6 +6,7 @@
 // src/dashboard-next/src/lib/api.ts / types.ts.
 
 import { bold, cyan, dim, green, red, yellow, blue, gray, formatTable, keyValues, heading } from './format.js';
+import type { PersistenceRecoveryStatus } from '../../types.js';
 
 const sev = (s: string): ((x: string) => string) => {
   switch (s) {
@@ -39,6 +40,7 @@ interface StateResponse {
     access_level?: string;
     access_summary?: { current_access_level?: string; compromised_hosts?: string[]; valid_credentials?: string[] };
     lab_readiness?: { status: string; top_issues: string[] };
+    persistence_recovery?: PersistenceRecoveryStatus;
   };
   history_count?: number;
 }
@@ -50,6 +52,34 @@ interface PendingAction { action_id: string; technique?: string; target?: string
 interface SessionInfo { id: string; kind: string; state: string; title?: string; host?: string; agent_id?: string }
 interface AgentQuery { query_id: string; agent_id?: string; question: string }
 interface OpsecBudget { global_noise_spent: number; noise_budget_remaining: number; max_noise: number; recommended_approach: string; time_window_remaining_hours?: number; warning?: string }
+
+function renderPersistenceRecovery(recovery: PersistenceRecoveryStatus): string {
+  const writable = recovery.writable ? 'writable' : 'read-only';
+  const source = recovery.outcome === 'clean' ? '' : ` from ${recovery.source}`;
+  const sequence = recovery.journal.enabled
+    ? ` · seq ${recovery.highest_contiguous_applied_seq}/${recovery.highest_on_disk_seq}`
+    : '';
+  const failures = recovery.consecutive_persistence_failures > 0
+    ? ` · ${recovery.consecutive_persistence_failures} write failure${recovery.consecutive_persistence_failures === 1 ? '' : 's'}`
+    : '';
+  const reason = recovery.reason || recovery.last_persistence_error;
+  const reasonDetail = reason && (recovery.outcome === 'incomplete' || recovery.outcome === 'reinitialized' || !recovery.writable)
+    ? ` · ${reason}`
+    : '';
+  const summary = `${recovery.outcome}${source} · ${writable}${sequence}${failures}${reasonDetail}`;
+
+  if (recovery.outcome === 'incomplete' || recovery.outcome === 'reinitialized' || !recovery.writable) {
+    return red(summary);
+  }
+  if (
+    recovery.consecutive_persistence_failures > 0
+    || recovery.journal.preserved
+    || (recovery.outcome === 'recovered' && recovery.source === 'snapshot')
+  ) {
+    return yellow(summary);
+  }
+  return green(summary);
+}
 
 export function renderStatus(data: StateResponse): string {
   const s = data.state || {};
@@ -78,6 +108,7 @@ export function renderStatus(data: StateResponse): string {
   pairs.push(['approvals', pendingCount > 0 ? yellow(`${pendingCount} pending`) : dim('0 pending')]);
   if (typeof data.history_count === 'number') pairs.push(['activity', `${data.history_count} events`]);
   if (s.lab_readiness) pairs.push(['readiness', s.lab_readiness.status]);
+  if (s.persistence_recovery) pairs.push(['recovery', renderPersistenceRecovery(s.persistence_recovery)]);
   out.push(keyValues(pairs));
 
   if (objs.length) {

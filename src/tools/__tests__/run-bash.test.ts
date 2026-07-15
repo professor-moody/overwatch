@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, unlinkSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerRunBashTool } from '../run-bash.js';
 import { startAgentKeepalive } from '../_process-runner.js';
 import type { EngagementConfig } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-run-bash.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -23,11 +23,6 @@ function makeConfig(): EngagementConfig {
   };
 }
 
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { rmSync('./evidence-test-run-bash', { recursive: true, force: true }); } catch {}
-}
-
 function parseTextResult(result: any): any {
   return JSON.parse(result.content[0].text);
 }
@@ -35,10 +30,18 @@ function parseTextResult(result: any): any {
 describe('run_bash tool', () => {
   let engine: GraphEngine;
   let handlers: Record<string, (args: any) => Promise<any>>;
+  let testDir: string;
+  const engines = new Set<GraphEngine>();
+
+  function createEngine(config = makeConfig(), filename = 'state.json'): GraphEngine {
+    const created = new GraphEngine(config, join(testDir, filename));
+    engines.add(created);
+    return created;
+  }
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-run-bash-'));
+    engine = createEngine();
     handlers = {};
     const fakeServer = {
       registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
@@ -49,7 +52,9 @@ describe('run_bash tool', () => {
   });
 
   afterEach(() => {
-    cleanup();
+    for (const created of engines) created.dispose();
+    engines.clear();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('executes a simple command and logs the full lifecycle', async () => {
@@ -237,11 +242,10 @@ describe('run_bash tool', () => {
 
   it('rejects direct actions whose noise_estimate exceeds the OPSEC ceiling (P1 max_noise)', async () => {
     // Build a fresh engine with OPSEC enforcement enabled and a tight ceiling.
-    cleanup();
-    const tightEngine = new GraphEngine({
+    const tightEngine = createEngine({
       ...makeConfig(),
       opsec: { name: 'tight', max_noise: 0.2, enabled: true } as any,
-    }, TEST_STATE_FILE);
+    }, 'tight.json');
     const tightHandlers: Record<string, (a: any) => Promise<any>> = {};
     const fakeServer = {
       registerTool(name: string, _config: unknown, handler: (a: any) => Promise<any>) {
@@ -308,11 +312,10 @@ describe('run_bash tool', () => {
     // spend back onto each subsequent action. With OPSEC enabled, the runner
     // now uses a per-technique default (enum_smb → 0.15), not the accumulated
     // total. With OPSEC disabled this whole branch is skipped (covered above).
-    cleanup();
-    const opsecEngine = new GraphEngine({
+    const opsecEngine = createEngine({
       ...makeConfig(),
       opsec: { name: 'pentest', max_noise: 1.0, enabled: true } as any,
-    }, TEST_STATE_FILE);
+    }, 'opsec.json');
     const opsecHandlers: Record<string, (a: any) => Promise<any>> = {};
     const fakeServer = {
       registerTool(name: string, _config: unknown, handler: (a: any) => Promise<any>) {

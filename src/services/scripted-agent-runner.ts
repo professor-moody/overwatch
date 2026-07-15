@@ -51,6 +51,10 @@ export class ScriptedAgentRunner {
   /** task IDs currently being processed to avoid double-pickup */
   private processing = new Set<string>();
   private heartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
+  /** One cancellation source per running scripted action.  Stopping the runner
+   *  must terminate the process group owned by runInstrumentedProcess, not just
+   *  stop future queue drains. */
+  private abortControllers = new Map<string, AbortController>();
   // Predicate deciding which tasks this runner should pick up. Defaults to the
   // legacy "scripted-or-unset backend" rule for standalone use; TaskExecution-
   // Service injects a backend-routing-aware predicate so open-ended work goes
@@ -80,9 +84,12 @@ export class ScriptedAgentRunner {
     this.running = false;
     for (const timer of this.heartbeatTimers.values()) clearInterval(timer);
     this.heartbeatTimers.clear();
+    for (const controller of this.abortControllers.values()) controller.abort();
+    this.abortControllers.clear();
   }
 
   private drainQueue(): void {
+    if (!this.running || !this.engine.isPersistenceWritable()) return;
     const tasks = this.engine.getAgentTasks();
     for (const task of tasks) {
       if (task.status !== 'running') continue;
@@ -109,7 +116,21 @@ export class ScriptedAgentRunner {
         this.heartbeatTimers.delete(task.id);
         return;
       }
-      this.engine.agentHeartbeat(task.id);
+      if (!this.engine.isPersistenceWritable()) {
+        clearInterval(timer);
+        this.heartbeatTimers.delete(task.id);
+        this.abortControllers.get(task.id)?.abort();
+        return;
+      }
+      // A gate transition can race the check above.  Heartbeats are maintenance,
+      // so a late read-only error stops this timer instead of escaping from it.
+      try {
+        this.engine.agentHeartbeat(task.id);
+      } catch {
+        clearInterval(timer);
+        this.heartbeatTimers.delete(task.id);
+        this.abortControllers.get(task.id)?.abort();
+      }
     }, HEARTBEAT_INTERVAL_MS);
     this.heartbeatTimers.set(task.id, timer);
   }
@@ -123,6 +144,12 @@ export class ScriptedAgentRunner {
   }
 
   private async runTask(task: AgentTask): Promise<void> {
+    if (!this.running || !this.engine.isPersistenceWritable()) {
+      this.processing.delete(task.id);
+      return;
+    }
+    const abortController = new AbortController();
+    this.abortControllers.set(task.id, abortController);
     this.startHeartbeat(task);
     // Send initial heartbeat with TTL so the watchdog knows this task is live.
     // We set heartbeat_ttl_seconds on the task by doing one heartbeat; the
@@ -141,7 +168,8 @@ export class ScriptedAgentRunner {
     }
 
     try {
-      const summary = await this.dispatchByType(task, frontierItem);
+      const summary = await this.dispatchByType(task, frontierItem, abortController.signal);
+      if (!this.running || !this.engine.isPersistenceWritable()) return;
       if (summary === null) {
         // Reached only when an operator forced backend:'scripted' on a task the
         // scripted runner can't handle. Fail loudly instead of a false success.
@@ -150,18 +178,23 @@ export class ScriptedAgentRunner {
         this.engine.updateAgentStatus(task.id, 'completed', summary);
       }
     } catch (err) {
-      this.engine.updateAgentStatus(task.id, 'failed', `Scripted runner error: ${err}`);
+      // A persistence freeze deliberately aborts the child while durable state is
+      // unavailable.  Leave the task untouched for restart reconciliation.
+      if (this.running && this.engine.isPersistenceWritable()) {
+        this.engine.updateAgentStatus(task.id, 'failed', `Scripted runner error: ${err}`);
+      }
     } finally {
       this.stopHeartbeat(task.id);
+      this.abortControllers.delete(task.id);
       this.processing.delete(task.id);
     }
   }
 
   /** Returns a completion summary, or null when there is no scripted handler. */
-  private async dispatchByType(task: AgentTask, item: FrontierItem): Promise<string | null> {
+  private async dispatchByType(task: AgentTask, item: FrontierItem, signal: AbortSignal): Promise<string | null> {
     switch (item.type) {
       case 'credential_test':
-        return this.runCredentialTest(task, item);
+        return this.runCredentialTest(task, item, signal);
 
       case 'incomplete_node':
       case 'untested_edge':
@@ -171,7 +204,7 @@ export class ScriptedAgentRunner {
         if (targetId) {
           const node = this.engine.getNode(targetId);
           if (node?.type === 'credential' && isTokenCredential(node) && isCredentialUsableForAuth(node)) {
-            return this.runTokenValidationForNode(task, item, node);
+            return this.runTokenValidationForNode(task, item, node, signal);
           }
         }
         return null; // no scripted handler — caller fails the task loudly
@@ -186,7 +219,7 @@ export class ScriptedAgentRunner {
   // ----------------------------------------------------------------
   // credential_test handler
   // ----------------------------------------------------------------
-  private async runCredentialTest(task: AgentTask, item: FrontierItem): Promise<string> {
+  private async runCredentialTest(task: AgentTask, item: FrontierItem, signal: AbortSignal): Promise<string> {
     const credId = item.credential_id ?? item.node_id;
     if (!credId) return 'credential_test item has no credential_id; skipped';
 
@@ -196,7 +229,7 @@ export class ScriptedAgentRunner {
     if (!isCredentialUsableForAuth(cred)) return `Credential ${credId} is not usable for auth; skipped`;
     if (!isTokenCredential(cred)) return `Credential ${credId} is not a token credential; skipped`;
 
-    return this.runTokenValidationForNode(task, item, cred);
+    return this.runTokenValidationForNode(task, item, cred, signal);
   }
 
   // ----------------------------------------------------------------
@@ -206,6 +239,7 @@ export class ScriptedAgentRunner {
     task: AgentTask,
     item: FrontierItem,
     cred: NodeProperties,
+    signal: AbortSignal,
   ): Promise<string> {
     const credValue = cred.cred_value as string | undefined;
     if (!credValue) {
@@ -235,6 +269,7 @@ export class ScriptedAgentRunner {
       parse_with: parser,
       noise_estimate: 0.05,
       invoking_tool: 'run_tool',
+      abortSignal: signal,
     });
 
     const text = result.content[0]?.text ?? '';

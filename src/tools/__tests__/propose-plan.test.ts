@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { recordProposedPlan, validateProposedOps } from '../propose-plan.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 import type { OperatorOp } from '../../services/command-interpreter.js';
-
-const TEST_STATE_FILE = './state-test-propose-plan.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -14,7 +14,6 @@ function makeConfig(): EngagementConfig {
     objectives: [], opsec: { name: 'pentest', max_noise: 0.7 },
   };
 }
-function cleanup() { try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch { /* ignore */ } }
 
 const runningTask = (id: string, agent_id: string): AgentTask => ({
   id, agent_id, assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [],
@@ -22,8 +21,15 @@ const runningTask = (id: string, agent_id: string): AgentTask => ({
 
 describe('propose_plan — validation + recording', () => {
   let engine: GraphEngine;
-  beforeEach(() => { cleanup(); engine = new GraphEngine(makeConfig(), TEST_STATE_FILE); });
-  afterEach(() => { cleanup(); });
+  let testDir: string;
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-propose-plan-'));
+    engine = new GraphEngine(makeConfig(), join(testDir, 'state.json'));
+  });
+  afterEach(() => {
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   it('validates + stores a plan that targets a real running task', () => {
     engine.registerAgent(runningTask('task-1', 'a1'));

@@ -11,12 +11,16 @@
 // ============================================================
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, rmSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../services/graph-engine.js';
 import { AgentWatchdog } from '../services/agent-watchdog.js';
 import type { AgentTask, EngagementConfig, FrontierItem } from '../types.js';
 
-const TEST_STATE_FILE = './state-test-dispatch-lease.json';
+let testDir: string;
+let testStateFile: string;
+const engines = new Set<GraphEngine>();
 
 function makeConfig(): EngagementConfig {
   return {
@@ -29,10 +33,10 @@ function makeConfig(): EngagementConfig {
   };
 }
 
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { rmSync('./evidence-test-dispatch-lease', { recursive: true, force: true }); } catch {}
-  try { rmSync(TEST_STATE_FILE + '.journal.jsonl', { force: true }); } catch {}
+function createEngine(): GraphEngine {
+  const engine = new GraphEngine(makeConfig(), testStateFile);
+  engines.add(engine);
+  return engine;
 }
 
 function makeRunningTask(overrides: Partial<AgentTask> = {}): AgentTask {
@@ -62,12 +66,19 @@ function makeFrontierItem(id: string, nodeId: string): FrontierItem {
 }
 
 describe('Dispatch / lease / heartbeat lifecycle', () => {
-  beforeEach(cleanup);
-  afterEach(cleanup);
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-dispatch-lease-'));
+    testStateFile = join(testDir, 'state.json');
+  });
+  afterEach(() => {
+    for (const engine of engines) engine.dispose();
+    engines.clear();
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   // F1
   it('filterFrontier excludes items currently leased to another task', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.addNode({ id: 'host-1', type: 'host', label: 'host-1', ip: '10.10.10.5', alive: true, discovered_at: new Date().toISOString(), confidence: 1 });
     const task = makeRunningTask({ id: 'task-running', frontier_item_id: 'fi-running' });
     engine.registerAgent(task);
@@ -82,7 +93,7 @@ describe('Dispatch / lease / heartbeat lifecycle', () => {
 
   // F2 — register refusal contract is observable
   it('registerAgent refuses a second task on a leased frontier item', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     const t1 = makeRunningTask({ id: 'task-1', frontier_item_id: 'fi-shared' });
     const t2 = makeRunningTask({ id: 'task-2', agent_id: 'agent-2', frontier_item_id: 'fi-shared' });
     const r1 = engine.registerAgent(t1);
@@ -95,7 +106,7 @@ describe('Dispatch / lease / heartbeat lifecycle', () => {
   // F3 — heartbeat_at is auto-initialized so tasks that crash before
   // the first heartbeat are reaped after TTL elapses.
   it('initializes heartbeat_at on register so the watchdog can reap stale never-heartbeated tasks', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     const past = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago
     const task = makeRunningTask({
       id: 'pre-crash',
@@ -105,9 +116,10 @@ describe('Dispatch / lease / heartbeat lifecycle', () => {
       // after the fact to model "never heartbeated since registration").
     });
     engine.registerAgent(task);
-    const persisted = engine.getTask('pre-crash')!;
-    expect(persisted.heartbeat_at).toBeDefined();
-    persisted.heartbeat_at = past;
+    expect(engine.getTask('pre-crash')?.heartbeat_at).toBeDefined();
+    // Public getters are detached snapshots. Reach into the test fixture's
+    // durable task map only to model five minutes passing without a heartbeat.
+    (engine as any).ctx.agents.get('pre-crash').heartbeat_at = past;
 
     const watchdog = new AgentWatchdog(engine);
     const reaped = watchdog.tick();
@@ -118,16 +130,13 @@ describe('Dispatch / lease / heartbeat lifecycle', () => {
 
   // F4
   it('reconcileOnStartup releases the frontier lease on each interrupted task', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     const t = makeRunningTask({ id: 'task-r', frontier_item_id: 'fi-r' });
     engine.registerAgent(t);
     // Simulate "fresh restart": call reconcile again and check the lease is gone.
     // The first reconcileOnStartup ran in the constructor when the engine loaded
-    // (no-op here since nothing was running pre-load). Manually flip the task
-    // back to running to simulate a stale persisted task, then trigger
-    // reconciliation.
-    const task = engine.getTask('task-r')!;
-    task.status = 'running';
+    // (no-op here since nothing was running pre-load). The newly registered
+    // task is running, so trigger reconciliation against that stale-live shape.
     const reconciled = engine.reconcileAgentsOnStartup();
     expect(reconciled).toBeGreaterThan(0);
     // Now register a different task on the same frontier item — should succeed

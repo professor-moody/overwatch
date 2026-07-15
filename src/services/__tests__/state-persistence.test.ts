@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Graph from 'graphology';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { NodeProperties, EdgeProperties, InferenceRule } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
 import { StatePersistence, MAX_SNAPSHOTS, FLUSH_DEBOUNCE_MS } from '../state-persistence.js';
+import { mkdirDurable } from '../durable-fs.js';
 
 function makeGraph(): OverwatchGraph {
   return new (Graph as any)({ multi: true, type: 'directed', allowSelfLoops: true }) as OverwatchGraph;
@@ -57,6 +58,51 @@ describe('StatePersistence', () => {
     instances.push(persistence);
     return { ctx, persistence, graph };
   }
+
+  it('fsyncs every newly created ancestor for a recursively created state path', () => {
+    const levelOne = join(tempDir, 'one');
+    const levelTwo = join(levelOne, 'two');
+    const levelThree = join(levelTwo, 'three');
+    const synchronized: string[] = [];
+
+    mkdirDurable(levelThree, directory => synchronized.push(directory));
+
+    expect(existsSync(levelThree)).toBe(true);
+    expect(synchronized).toEqual([levelThree, levelTwo, levelOne, tempDir]);
+  });
+
+  it('retries ancestor fsyncs after recursive creation succeeded but durability failed', () => {
+    const levelOne = join(tempDir, 'retry-one');
+    const levelTwo = join(levelOne, 'retry-two');
+    const levelThree = join(levelTwo, 'retry-three');
+    let calls = 0;
+
+    expect(() => mkdirDurable(levelThree, () => {
+      calls++;
+      if (calls === 2) throw new Error('synthetic ancestor fsync failure');
+    })).toThrow('synthetic ancestor fsync failure');
+    expect(existsSync(levelThree)).toBe(true);
+
+    const retried: string[] = [];
+    mkdirDurable(levelThree, directory => retried.push(directory));
+    expect(retried).toEqual([levelThree, levelTwo, levelOne, tempDir]);
+  });
+
+  it('does not fsync arbitrary ancestors of an already-existing writable state directory', () => {
+    if (process.platform === 'win32') return;
+    const parent = join(tempDir, 'execute-only-parent');
+    const stateDirectory = join(parent, 'state');
+    mkdirSync(stateDirectory, { recursive: true });
+    chmodSync(parent, 0o111);
+    try {
+      // Traverse-only access to the parent is sufficient for ordinary writes
+      // inside the writable state directory.
+      writeFileSync(join(stateDirectory, 'ordinary-write'), 'ok');
+      expect(() => mkdirDurable(stateDirectory)).not.toThrow();
+    } finally {
+      chmodSync(parent, 0o700);
+    }
+  });
 
   // =============================================
   // persist + loadState round-trip
@@ -251,6 +297,99 @@ describe('StatePersistence', () => {
       expect(ctx.graph.hasNode('host-1')).toBe(true);
       // host-2 should be gone after rollback
       expect(ctx.graph.hasNode('host-2')).toBe(false);
+      expect(existsSync(`${ctx.stateFilePath}.rollback-intent.json`)).toBe(false);
+    });
+
+    it('rejects an unrestorable snapshot before committing rollback authority or cancelling dirty persistence', async () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', {
+        id: 'host-1', type: 'host', label: 'durable-head',
+        discovered_at: now, confidence: 1.0,
+      } as NodeProperties);
+      persistence.persist();
+      persistence.flushNow();
+
+      ctx.lastSnapshotTime = 0;
+      persistence.persist();
+      persistence.flushNow();
+      const rollbackSnapshot = persistence.listSnapshots()[0];
+      const snapshotPath = join(tempDir, rollbackSnapshot);
+      const malformed = JSON.parse(readFileSync(snapshotPath, 'utf-8')) as Record<string, unknown>;
+      malformed.agents = {}; // graph/config validate, but complete restore cannot construct this Map
+      writeFileSync(snapshotPath, JSON.stringify(malformed));
+
+      graph.addNode('host-dirty', {
+        id: 'host-dirty', type: 'host', label: 'must-still-flush',
+        discovered_at: now, confidence: 1.0,
+      } as NodeProperties);
+      persistence.persist();
+
+      expect(() => persistence.rollbackToSnapshot(rollbackSnapshot, BUILTIN_RULES)).toThrow(
+        /did not start/,
+      );
+      expect(ctx.graph.hasNode('host-dirty')).toBe(true);
+      expect(existsSync(`${ctx.stateFilePath}.rollback-intent.json`)).toBe(false);
+
+      await new Promise(resolve => setTimeout(resolve, FLUSH_DEBOUNCE_MS + 50));
+      const primary = JSON.parse(readFileSync(ctx.stateFilePath, 'utf-8')) as Record<string, any>;
+      expect((primary.graph.nodes as Array<{ key: string }>).map(node => node.key))
+        .toContain('host-dirty');
+      expect(persistence.isDirty()).toBe(false);
+    });
+
+    it('does not let a superseded snapshot resurrect state after rollback and restart', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', {
+        id: 'host-1', type: 'host', label: 'rollback-target',
+        discovered_at: now, confidence: 1.0,
+      } as NodeProperties);
+      persistence.persist();
+      persistence.flushNow();
+
+      ctx.lastSnapshotTime = 0;
+      persistence.persist();
+      persistence.flushNow();
+      const rollbackSnapshot = persistence.listSnapshots()[0];
+
+      graph.addNode('host-2', {
+        id: 'host-2', type: 'host', label: 'must-stay-rolled-back',
+        discovered_at: now, confidence: 1.0,
+      } as NodeProperties);
+      persistence.persist();
+      persistence.flushNow();
+      ctx.lastSnapshotTime = 0;
+      persistence.persist();
+      persistence.flushNow();
+      expect(persistence.listSnapshots().length).toBeGreaterThan(1);
+      const supersededSnapshot = persistence.listSnapshots()
+        .find(snapshot => snapshot !== rollbackSnapshot)!;
+      const supersededPath = join(tempDir, supersededSnapshot);
+      const integrityMismatched = JSON.parse(
+        readFileSync(supersededPath, 'utf-8'),
+      ) as Record<string, any>;
+      integrityMismatched.graph.nodes.push({
+        key: 'host-integrity-mismatch',
+        attributes: {
+          id: 'host-integrity-mismatch',
+          type: 'host',
+          label: 'must-be-superseded',
+          discovered_at: now,
+          confidence: 1.0,
+        },
+      });
+      writeFileSync(supersededPath, JSON.stringify(integrityMismatched));
+
+      expect(persistence.rollbackToSnapshot(rollbackSnapshot, BUILTIN_RULES)).toBe(true);
+      expect(ctx.graph.hasNode('host-2')).toBe(false);
+      expect(persistence.listSnapshots()).toEqual([rollbackSnapshot]);
+
+      // Force startup to use the retained rollback anchor. A newer/equal
+      // snapshot left behind by rollback would resurrect host-2 here.
+      writeFileSync(ctx.stateFilePath, '{corrupt rolled-back primary');
+      const { ctx: restarted, persistence: restartedPersistence } = buildPersistence(ctx.stateFilePath);
+      restartedPersistence.loadState();
+      expect(restarted.graph.hasNode('host-1')).toBe(true);
+      expect(restarted.graph.hasNode('host-2')).toBe(false);
     });
 
     it('returns false for nonexistent snapshot', () => {
@@ -471,9 +610,12 @@ describe('StatePersistence', () => {
     });
 
     it('scheduled flush errors are logged rather than escaping the timer', async () => {
-      const parentFile = join(tempDir, 'not-a-directory');
-      writeFileSync(parentFile, 'occupied');
-      const { ctx, persistence, graph } = buildPersistence(join(parentFile, 'state.json'));
+      const { ctx, persistence, graph } = buildPersistence();
+      // Keep the durable primary/snapshot paths inspectable and fail only the
+      // replacement temp write. Read-access failures are recovery gates, not
+      // transient flush failures.
+      mkdirSync(`${ctx.stateFilePath}.tmp`);
+      ctx.lastSnapshotTime = Date.now();
       graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
 
       persistence.persist();

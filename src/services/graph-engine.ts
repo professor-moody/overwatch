@@ -36,6 +36,11 @@ import { BUILTIN_RULES } from './builtin-inference-rules.js';
 import { BloodHoundPathEnricher } from './bloodhound-paths.js';
 import type { HVTResult, PreComputedPath } from './bloodhound-paths.js';
 import { KnowledgeBase } from './knowledge-base.js';
+import {
+  deterministicCollisionEdgeKey,
+  edgeIdentityMatches,
+  preferredEdgeKey,
+} from './edge-identity.js';
 import { WebChainEnricher } from './web-attack-chains.js';
 import type { MatchedChain } from './web-attack-chains.js';
 import type { OpsecContext } from './opsec-tracker.js';
@@ -97,7 +102,15 @@ import type {
   Finding, InferenceRule, GraphQuery, GraphQueryResult,
   AgentTask, ExportedGraph, HealthReport, GraphCorrectionOperation,
   ScopeSuggestion, InferenceRuleEffectiveness,
+  PersistenceRecoveryStatus,
 } from '../types.js';
+
+/** Public read surfaces must not leak mutable references into durable engine
+ * state. A caller holding one of those references could otherwise bypass the
+ * persistence gate simply by assigning a property. */
+function detached<T>(value: T): T {
+  return structuredClone(value);
+}
 
 export interface RecentOutcome {
   target: string;
@@ -186,34 +199,33 @@ export class GraphEngine {
     });
     this.evidenceStore = new EvidenceStore(filePath);
 
-    // Attempt to load existing state
-    if (existsSync(this.ctx.stateFilePath)) {
+    // One recovery state machine owns both primary and snapshot fallback.  A
+    // nonempty WAL without a complete replay never falls through to config
+    // seeding: the engine stays available for inspection in read-only mode.
+    const hadPersistedBase = existsSync(this.ctx.stateFilePath) || this.persistence.listSnapshots().length > 0;
+    const restore = this.persistence.restoreBaseAndReplay(this);
+    const degraded = restore.status === 'degraded';
+    let seededFromConfig = false;
+    if (restore.status === 'restored') {
+      this.log(
+        restore.source === 'snapshot'
+          ? 'Recovered engagement from persisted snapshot and WAL'
+          : 'Resumed engagement from persisted state',
+        undefined,
+        { category: 'system', event_type: 'system' },
+      );
+    } else if (restore.status === 'seed_required') {
       try {
-        // Pass the engine's guarded mutators so WAL replay re-applies state via
-        // the same code path (guards) as the live write, not a raw-graph copy.
-        this.persistence.loadState(this);
-        this.log('Resumed engagement from persisted state', undefined, { category: 'system', event_type: 'system' });
-      } catch (err) {
-        console.error(`Failed to load state file: ${err instanceof Error ? err.message : String(err)}`);
-        // Attempt recovery from most recent snapshot
-        const recovered = this.persistence.recoverFromSnapshot(BUILTIN_RULES);
-        if (recovered) {
-          this.log('Recovered engagement from snapshot after corrupted state file', undefined, { category: 'system', event_type: 'system' });
-        } else {
-          console.error('No valid snapshot found, re-seeding from config');
-          try {
-            this.seedFromConfig();
-          } catch (seedErr) {
-            throw new Error(
-              `State recovery failed for engagement ${this.ctx.config.id} ` +
-              `(state: ${this.ctx.stateFilePath}): ${seedErr instanceof Error ? seedErr.message : String(seedErr)}`
-            );
-          }
-          this.log('Engagement re-initialized from config after corrupted state', undefined, { category: 'system', event_type: 'system' });
-        }
+        this.seedFromConfig();
+      } catch (seedErr) {
+        this.persistence.dispose();
+        throw new Error(
+          `State recovery failed for engagement ${this.ctx.config.id} ` +
+          `(state: ${this.ctx.stateFilePath}): ${seedErr instanceof Error ? seedErr.message : String(seedErr)}`
+        );
       }
-    } else {
-      this.seedFromConfig();
+      seededFromConfig = true;
+      this.persistence.markConfigInitialization(hadPersistedBase);
       // P2.2: pin the construction-time timestamp to `created_at` so the
       // initial log event is deterministic across replays. Without this,
       // wall-clock leaks into the activity-log digest and breaks the
@@ -221,34 +233,64 @@ export class GraphEngine {
       const seedAt = this.ctx.config.created_at;
       if (seedAt) {
         this.ctx.withClock(seedAt, () => {
-          this.log('Engagement initialized from config', undefined, { category: 'system', event_type: 'system' });
+          this.log(
+            hadPersistedBase
+              ? 'Engagement re-initialized from config after invalid persisted state'
+              : 'Engagement initialized from config',
+            undefined,
+            { category: 'system', event_type: 'system' },
+          );
         });
       } else {
-        this.log('Engagement initialized from config', undefined, { category: 'system', event_type: 'system' });
+        this.log(
+          hadPersistedBase
+            ? 'Engagement re-initialized from config after invalid persisted state'
+            : 'Engagement initialized from config',
+          undefined,
+          { category: 'system', event_type: 'system' },
+        );
       }
     }
 
-    this.syncObjectiveNodes();
-
-    // Reconcile runtime-dependent state on startup
-    this.reconcileSessionEdgesOnStartup();
-    this.agentMgr.reconcileOnStartup();
-    this.reconcilePendingApprovalsOnStartup();
-    // The campaign planner built its reverse indexes in its constructor, BEFORE
-    // loadState/recover reassigned ctx.campaigns — rebuild them now against the loaded
-    // campaigns so findCampaignForItem works and campaigns aren't regenerated as dupes.
+    // The campaign planner built its reverse indexes before restoration replaced
+    // ctx.campaigns. Reindexing is read-only and is safe even in degraded mode.
     this.campaignPlanner.reindex();
-    this.persistence.persistImmediate();
 
-    // 7.7: Auto health check on startup
-    this.runAutoHealthCheck('startup');
+    if (!degraded) {
+      this.syncObjectiveNodes();
 
-    // Phase B: surface "OPSEC inert" state at startup. OPSEC enforcement is
-    // intentionally opt-in; a config that sets max_noise/blacklist/time_window
-    // but omits enabled is an easy false-sense-of-security trap. We emit a
-    // single WARN log line so operators don't think 0.4 noise ceiling is
-    // active when it isn't.
-    this.warnIfOpsecInert();
+      // Reconcile runtime-dependent state on startup only when the resulting
+      // mutations can be durably checkpointed.
+      this.reconcileSessionEdgesOnStartup();
+      this.agentMgr.reconcileOnStartup();
+      this.reconcilePendingApprovalsOnStartup();
+      // Do not rotate a corrupt primary into the snapshot set when config was
+      // the only usable initialization source.
+      if (seededFromConfig && hadPersistedBase) this.ctx.lastSnapshotTime = Date.now(); // clock-ok: snapshot rotation is wall-clock I/O scheduling, not durable deterministic state
+      try {
+        this.persistence.persistImmediate();
+      } catch (error) {
+        // StatePersistence retains the dirty state and owns the 250ms/1s/5s/
+        // 30s retry schedule. The engine stays observable; its write gate
+        // closes automatically after three consecutive failures.
+        console.error(
+          `[persistence] initial state write failed; retry scheduled: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      // 7.7: Auto health check on startup
+      this.runAutoHealthCheck('startup');
+
+      // Phase B: surface "OPSEC inert" state at startup.
+      this.warnIfOpsecInert();
+    } else {
+      const status = this.persistence.getRecoveryStatus();
+      console.error(
+        `[persistence] degraded read-only startup: ${status.reason ?? 'WAL recovery is incomplete'}`,
+      );
+      // Populate the health cache without recording or persisting a new event.
+      this.runHealthChecks();
+    }
   }
 
   /** Lazy-load the cross-engagement knowledge base (returns null if file not found). */
@@ -326,80 +368,87 @@ export class GraphEngine {
       // Journal the GUARDED result (post type-strip), so WAL replay records what
       // was actually applied — not the raw incoming props whose conflicting type
       // the live path refused. (updateNode already journals post-guard.)
-      this.ctx.journalMutation('merge_node_attrs', { props: merged });
-      // A property change on an existing node can add or resolve frontier work — e.g.
-      // filling `services` clears an incomplete_node item, setting `cve_checked_at`
-      // retires a cve_research item, a new `version` creates one. Previously the merge
-      // branch cleared only the health report, so the frontier cache went stale:
-      // resolved work stayed visible and newly-relevant work stayed hidden. Invalidate
-      // the frontier too, but only when the merge actually changes an attribute (a no-op
-      // re-observation shouldn't churn the cache). Shallow compare — arrays/objects
-      // compare by ref, conservatively counting as changed (safe over-invalidation).
-      const attrsChanged = Object.keys(merged).some(
-        k => (existing as Record<string, unknown>)[k] !== (merged as Record<string, unknown>)[k],
-      );
-      this.ctx.graph.mergeNodeAttributes(props.id, merged);
-      this.invalidateHealthReport();
-      if (attrsChanged) this.invalidateFrontierCache();
+      this.ctx.applyJournaledMutation('merge_node_attrs', { props: merged }, () => {
+        // A property change on an existing node can add or resolve frontier work — e.g.
+        // filling `services` clears an incomplete_node item, setting `cve_checked_at`
+        // retires a cve_research item, a new `version` creates one. Previously the merge
+        // branch cleared only the health report, so the frontier cache went stale:
+        // resolved work stayed visible and newly-relevant work stayed hidden. Invalidate
+        // the frontier too, but only when the merge actually changes an attribute (a no-op
+        // re-observation shouldn't churn the cache). Shallow compare — arrays/objects
+        // compare by ref, conservatively counting as changed (safe over-invalidation).
+        const attrsChanged = Object.keys(merged).some(
+          k => (existing as Record<string, unknown>)[k] !== (merged as Record<string, unknown>)[k],
+        );
+        this.ctx.graph.mergeNodeAttributes(props.id, merged);
+        this.invalidateHealthReport();
+        if (attrsChanged) this.invalidateFrontierCache();
+      });
     } else {
-      this.ctx.journalMutation('add_node', { props });
-      this.ctx.graph.addNode(props.id, props);
-      this.invalidatePathGraph();
-      this.invalidateAllCaches();
+      this.ctx.applyJournaledMutation('add_node', { props }, () => {
+        this.ctx.graph.addNode(props.id, props);
+        this.invalidatePathGraph();
+        this.invalidateAllCaches();
+      });
     }
     return props.id;
   }
 
-  addEdge(source: string, target: string, props: EdgeProperties): { id: string; isNew: boolean } {
-    // P2.1: journal the intent. We can't tell yet whether this will be a
-    // new edge or a property-merge on an existing one, so the entry is
-    // type=add_edge with the full props. Replay code re-runs addEdge so
-    // it independently makes the same determination.
-    this.ctx.journalMutation('add_edge', { source, target, props });
-    // Check for duplicate edge of same type
-    const existingEdges = this.ctx.graph.edges(source, target);
-    // For scope-bearing Azure RBAC edges, dedupe must include `scope` so
-    // distinct role assignments at different scopes do not collapse and
-    // silently overwrite each other's scope properties.
-    const scopeAware = props.type === 'HAS_POLICY' || props.type === 'POLICY_ALLOWS';
-    const incomingScope = scopeAware ? (props as unknown as { scope?: string }).scope : undefined;
-    for (const edgeId of existingEdges) {
+  addEdge(
+    source: string,
+    target: string,
+    props: EdgeProperties,
+    replayEdgeId?: string,
+  ): { id: string; isNew: boolean } {
+    // Validate the only condition Graphology can reject before the WAL append.
+    // A durable record for an impossible edge would otherwise poison every
+    // subsequent restart even though no live mutation ever succeeded.
+    if (!this.ctx.graph.hasNode(source) || !this.ctx.graph.hasNode(target)) {
+      throw new Error(`Cannot add edge with missing endpoint(s): ${source} -> ${target}`);
+    }
+    // Resolve merge-vs-add and the exact graph-wide edge key before appending.
+    // Persisting that identity makes later drop/merge records replay-stable.
+    for (const edgeId of this.ctx.graph.edges(source, target)) {
       const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
-      if (attrs.type !== props.type) continue;
-      if (scopeAware) {
-        const existingScope = (attrs as { scope?: string }).scope;
-        if ((existingScope || undefined) !== (incomingScope || undefined)) continue;
-      }
-      // Detect confirmation of inferred edge
-      if (attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0) {
-        props = { ...props, confirmed_at: this.ctx.nowIso() };
-        if (!this.ctx.suppressMutationEvents) {
-          this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
-        }
-      }
-      // Update existing edge — property-only change, no topology change
-      this.ctx.graph.mergeEdgeAttributes(edgeId, props as Partial<EdgeProperties>);
-      this.invalidateHealthReport();
-      return { id: edgeId, isNew: false };
+      if (!edgeIdentityMatches(attrs, props)) continue;
+      let effectiveProps = props;
+      const confirmedRule = attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0
+        ? attrs.inferred_by_rule
+        : undefined;
+      if (confirmedRule) effectiveProps = { ...props, confirmed_at: this.ctx.nowIso() };
+      return this.ctx.applyJournaledMutation(
+        'add_edge',
+        { source, target, props: effectiveProps, edge_id: edgeId },
+        () => {
+          if (confirmedRule && !this.ctx.suppressMutationEvents) {
+            this.log(`Confirmed inferred edge [${confirmedRule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
+          }
+          this.ctx.graph.mergeEdgeAttributes(edgeId, effectiveProps as Partial<EdgeProperties>);
+          this.invalidateHealthReport();
+          return { id: edgeId, isNew: false };
+        },
+      );
     }
-    // New edge — topology change
-    this.invalidatePathGraph();
-    this.invalidateAllCaches();
-    // Scope-aware edge keys keep distinct role assignments separate.
-    const baseKey = `${source}--${props.type}--${target}`;
-    const edgeId = scopeAware && incomingScope
-      ? `${baseKey}--${createHash('sha1').update(incomingScope).digest('hex').slice(0, 10)}`
-      : baseKey;
-    try {
-      return { id: this.ctx.graph.addEdgeWithKey(edgeId, source, target, props), isNew: true };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('already exists')) {
-        const fallbackId = `${edgeId}-${uuidv4().slice(0, 8)}`;
-        return { id: this.ctx.graph.addEdgeWithKey(fallbackId, source, target, props), isNew: true };
-      }
-      throw err;
+
+    const preferredId = preferredEdgeKey(source, target, props);
+    const edgeId = replayEdgeId
+      ?? (this.ctx.graph.hasEdge(preferredId)
+        ? deterministicCollisionEdgeKey(source, target, props)
+        : preferredId);
+    // Fail before the WAL append if even the deterministic identity is owned by
+    // another tuple. Continuing with another random suffix would be unreplayable.
+    if (this.ctx.graph.hasEdge(edgeId)) {
+      throw new Error(`Deterministic edge key collision for ${source} --[${props.type}]--> ${target}: ${edgeId}`);
     }
+    return this.ctx.applyJournaledMutation(
+      'add_edge',
+      { source, target, props, edge_id: edgeId },
+      () => {
+        this.invalidatePathGraph();
+        this.invalidateAllCaches();
+        return { id: this.ctx.graph.addEdgeWithKey(edgeId, source, target, props), isNew: true };
+      },
+    );
   }
 
   findEdgeId(source: string, target: string, type: EdgeType): string | null {
@@ -418,10 +467,11 @@ export class GraphEngine {
     const edgeId = this.findEdgeId(source, target, type);
     if (!edgeId) return null;
     // P2.1: journal the drop before applying.
-    this.ctx.journalMutation('drop_edge', { source, target, edge_type: type, edge_id: edgeId });
-    this.ctx.graph.dropEdge(edgeId);
-    this.invalidatePathGraph();
-    this.invalidateAllCaches();
+    this.ctx.applyJournaledMutation('drop_edge', { source, target, edge_type: type, edge_id: edgeId }, () => {
+      this.ctx.graph.dropEdge(edgeId);
+      this.invalidatePathGraph();
+      this.invalidateAllCaches();
+    });
     return edgeId;
   }
 
@@ -467,22 +517,23 @@ export class GraphEngine {
     // semantics of patch — including REMOVING keys cleared via unsetProperties.
     // A merge_node_attrs replay could only add/overwrite keys, leaving a cleared
     // key stale after crash recovery.
-    this.ctx.journalMutation('replace_node_attrs', { props: nextAttrs });
-    this.ctx.graph.replaceNodeAttributes(nodeId, nextAttrs as NodeProperties);
-    this.invalidateAllCaches();
+    this.ctx.applyJournaledMutation('replace_node_attrs', { props: nextAttrs }, () => {
+      this.ctx.graph.replaceNodeAttributes(nodeId, nextAttrs as NodeProperties);
+      this.invalidateAllCaches();
+    });
     return this.ctx.graph.getNodeAttributes(nodeId);
   }
 
   getNode(id: string): NodeProperties | null {
     if (!this.ctx.graph.hasNode(id)) return null;
-    return this.ctx.graph.getNodeAttributes(id);
+    return detached(this.ctx.graph.getNodeAttributes(id));
   }
 
   getNodesByType(type: NodeType): NodeProperties[] {
     const results: NodeProperties[] = [];
     this.ctx.graph.forEachNode((_id, attrs) => {
       if (attrs.type === type && attrs.identity_status !== 'superseded') {
-        results.push(attrs);
+        results.push(detached(attrs));
       }
     });
     return results;
@@ -495,6 +546,7 @@ export class GraphEngine {
   private static readonly DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
   ingestFinding(finding: Finding): { new_nodes: string[]; new_edges: string[]; updated_nodes: string[]; updated_edges: string[]; inferred_edges: string[]; deduplicated?: boolean } {
+    this.assertPersistenceWritable();
     // --- Finding Deduplication (7.8) ---
     const now = Date.now(); // clock-ok: dedup-window elapsed-time check (transient cache; not a stored timestamp)
 
@@ -605,11 +657,13 @@ export class GraphEngine {
   // =============================================
 
   addInferenceRule(rule: InferenceRule): void {
+    this.assertPersistenceWritable();
     this.inference.addRule(rule);
     this.persist();
   }
 
   backfillRule(rule: InferenceRule): string[] {
+    this.assertPersistenceWritable();
     const inferred = this.inference.backfillRule(rule);
     if (inferred.length > 0) this.persist();
     return inferred;
@@ -694,6 +748,7 @@ export class GraphEngine {
   }
 
   degradeExpiredCredentialEdges(credNodeId: string): string[] {
+    this.assertPersistenceWritable();
     return _degradeExpiredCredentialEdges(this.imperativeHost, credNodeId);
   }
 
@@ -735,7 +790,9 @@ export class GraphEngine {
       const chainGroups = this.chainScorer.scoreChains(all);
 
       // Generate campaigns from frontier + chain groups (phase-aware)
-      const campaigns = this.campaignPlanner.generateCampaigns(all, chainGroups, this.getCurrentPhaseId());
+      const campaigns = this.persistence.isWritable()
+        ? this.campaignPlanner.generateCampaigns(all, chainGroups, this.getCurrentPhaseId())
+        : Array.from(this.ctx.campaigns.values());
 
       const { passed, filtered } = this.filterFrontier(all);
       this.frontierCache = { all, passed, campaigns, hidden: this.summarizeFilteredFrontier(filtered) };
@@ -755,7 +812,7 @@ export class GraphEngine {
     if (!this.frontierCache) {
       this.computeFrontier();
     }
-    return this.frontierCache!.hidden;
+    return detached(this.frontierCache!.hidden);
   }
 
   private getCachedFilteredFrontier(): FrontierItem[] {
@@ -773,24 +830,27 @@ export class GraphEngine {
     if (!this.frontierCache) {
       this.computeFrontier();
     }
-    return this.frontierCache!.campaigns;
+    return detached(this.frontierCache!.campaigns);
   }
 
   getCampaign(id: string): import('../types.js').Campaign | null {
-    return this.campaignPlanner.getCampaign(id);
+    const campaign = this.campaignPlanner.getCampaign(id);
+    return campaign ? detached(campaign) : null;
   }
 
   listCampaigns(filter?: { status?: string }): import('../types.js').Campaign[] {
-    return this.campaignPlanner.listCampaigns(filter);
+    return detached(this.campaignPlanner.listCampaigns(filter));
   }
 
   pauseCampaign(id: string): import('../types.js').Campaign | null {
+    this.assertPersistenceWritable();
     const c = this.campaignPlanner.pauseCampaign(id);
     if (c) this.persist();
     return c;
   }
 
   resumeCampaign(id: string): import('../types.js').Campaign | null {
+    this.assertPersistenceWritable();
     const c = this.campaignPlanner.resumeCampaign(id);
     if (c) this.persist();
     return c;
@@ -820,6 +880,7 @@ export class GraphEngine {
   }
 
   abortCampaign(id: string): import('../types.js').Campaign | null {
+    this.assertPersistenceWritable();
     const c = this.campaignPlanner.abortCampaign(id);
     if (c) {
       // A manual abort must actually STOP the campaign's in-flight work — otherwise
@@ -834,30 +895,35 @@ export class GraphEngine {
   }
 
   activateCampaign(id: string): import('../types.js').Campaign | null {
+    this.assertPersistenceWritable();
     const c = this.campaignPlanner.activateCampaign(id);
     if (c) this.persist();
     return c;
   }
 
   createCampaign(params: import('../services/campaign-planner.js').CreateCampaignParams): import('../types.js').Campaign {
+    this.assertPersistenceWritable();
     const c = this.campaignPlanner.createCampaign(params);
     this.persist();
     return c;
   }
 
   updateCampaign(id: string, patch: import('../services/campaign-planner.js').UpdateCampaignParams): import('../types.js').Campaign | null {
+    this.assertPersistenceWritable();
     const c = this.campaignPlanner.updateCampaign(id, patch);
     if (c) this.persist();
     return c;
   }
 
   deleteCampaign(id: string): boolean {
+    this.assertPersistenceWritable();
     const ok = this.campaignPlanner.deleteCampaign(id);
     if (ok) this.persist();
     return ok;
   }
 
   cloneCampaign(id: string): import('../types.js').Campaign | null {
+    this.assertPersistenceWritable();
     const c = this.campaignPlanner.cloneCampaign(id);
     if (c) this.persist();
     return c;
@@ -866,6 +932,7 @@ export class GraphEngine {
   updateCampaignProgress(
     campaignId: string, frontierItemId: string, result: 'success' | 'failure', findingId?: string,
   ): import('../types.js').Campaign | null {
+    this.assertPersistenceWritable();
     const c = this.campaignPlanner.updateCampaignProgress(campaignId, frontierItemId, result, findingId);
     if (c) this.persist();
     return c;
@@ -880,6 +947,7 @@ export class GraphEngine {
   }
 
   splitCampaign(id: string, count?: number): import('../types.js').Campaign[] | null {
+    this.assertPersistenceWritable();
     const cs = this.campaignPlanner.splitCampaign(id, count);
     if (cs) this.persist();
     return cs;
@@ -899,6 +967,7 @@ export class GraphEngine {
     note?: string;
     issued_by?: string;
   }): import('../types.js').AgentDirective {
+    this.assertPersistenceWritable();
     const list = this.ctx.agentDirectives.get(params.task_id) ?? [];
     for (const d of list) {
       if (d.status === 'pending') d.status = 'superseded';
@@ -949,16 +1018,17 @@ export class GraphEngine {
     const list = this.ctx.agentDirectives.get(task_id);
     if (!list) return null;
     for (let i = list.length - 1; i >= 0; i--) {
-      if (list[i].status === 'pending') return list[i];
+      if (list[i].status === 'pending') return detached(list[i]);
     }
     return null;
   }
 
   getAgentDirectives(task_id: string): import('../types.js').AgentDirective[] {
-    return this.ctx.agentDirectives.get(task_id) ?? [];
+    return detached(this.ctx.agentDirectives.get(task_id) ?? []);
   }
 
   acknowledgeAgentDirective(task_id: string, directive_id: string): import('../types.js').AgentDirective | null {
+    this.assertPersistenceWritable();
     const list = this.ctx.agentDirectives.get(task_id);
     if (!list) return null;
     const d = list.find(x => x.id === directive_id);
@@ -981,11 +1051,12 @@ export class GraphEngine {
   }
 
   getCampaignChildren(parentId: string): import('../types.js').Campaign[] {
-    return this.campaignPlanner.getChildren(parentId);
+    return detached(this.campaignPlanner.getChildren(parentId));
   }
 
   getCampaignParentProgress(parentId: string): import('../types.js').CampaignProgress | null {
-    return this.campaignPlanner.getParentProgress(parentId);
+    const progress = this.campaignPlanner.getParentProgress(parentId);
+    return progress ? detached(progress) : null;
   }
 
   deriveCampaignParentStatus(parentId: string): import('../types.js').CampaignStatus | null {
@@ -1021,6 +1092,7 @@ export class GraphEngine {
    * Called after BloodHound/AzureHound ingestion.
    */
   enrichBloodHoundPaths(optimize?: PathOptimize): { hvts: HVTResult[]; paths: PreComputedPath[] } {
+    this.assertPersistenceWritable();
     const enricher = new BloodHoundPathEnricher(this.ctx);
     const hvts = enricher.computeHighValueTargets();
     const paths = enricher.preComputeAttackPaths(this.paths, optimize);
@@ -1035,6 +1107,7 @@ export class GraphEngine {
    * Called after web parser ingestion when webapp/vulnerability nodes change.
    */
   enrichWebAttackChains(): MatchedChain[] {
+    this.assertPersistenceWritable();
     const enricher = new WebChainEnricher(this.ctx);
     const chains = enricher.matchChainTemplates();
     if (chains.length > 0) {
@@ -1060,10 +1133,14 @@ export class GraphEngine {
       resolution: this.ctx.config.community_resolution,
     });
     this.ctx.communityCache = communities;
-    // Write community_id onto node properties so it flows through graph exports
-    for (const [nodeId, cid] of communities) {
-      if (this.ctx.graph.hasNode(nodeId)) {
-        this.ctx.graph.setNodeAttribute(nodeId, 'community_id', cid);
+    // Writing presentation metadata onto graph nodes is still an in-memory
+    // mutation. Preserve the compatibility behavior during normal operation,
+    // but never alter the recovered graph through a degraded read surface.
+    if (this.isPersistenceWritable()) {
+      for (const [nodeId, cid] of communities) {
+        if (this.ctx.graph.hasNode(nodeId)) {
+          this.ctx.graph.setNodeAttribute(nodeId, 'community_id', cid);
+        }
       }
     }
     return communities;
@@ -1664,14 +1741,17 @@ export class GraphEngine {
     action_id?: string;
     frontier_item_id?: string;
   }): void {
+    this.assertPersistenceWritable();
     _ingestSessionResult(this.sessionHost, result);
   }
 
   onSessionClosed(_sessionId: string, targetNode?: string, principalNode?: string): void {
+    this.assertPersistenceWritable();
     _onSessionClosed(this.sessionHost, _sessionId, targetNode, principalNode);
   }
 
   reconcileSessionEdgesOnStartup(): void {
+    this.assertPersistenceWritable();
     _reconcileSessionEdgesOnStartup(this.sessionHost);
   }
 
@@ -1719,6 +1799,7 @@ export class GraphEngine {
   }
 
   recomputeObjectives(): { before: Array<{ id: string; achieved: boolean; achieved_at?: string }>; after: Array<{ id: string; achieved: boolean; achieved_at?: string }> } {
+    this.assertPersistenceWritable();
     return _recomputeObjectives(this.objectiveHost);
   }
 
@@ -1731,6 +1812,7 @@ export class GraphEngine {
     replaced_edges: Array<{ old_edge_id: string; new_edge_id: string }>;
     patched_nodes: string[];
   } {
+    this.assertPersistenceWritable();
     const droppedEdges: string[] = [];
     const replacedEdges: Array<{ old_edge_id: string; new_edge_id: string }> = [];
     const patchedNodes: string[] = [];
@@ -1896,6 +1978,7 @@ export class GraphEngine {
     node_conflict?: { existing_task_id: string; existing_agent_id: string; node_id: string };
     cap_exceeded?: { scope: 'subnet' | 'target'; key: string; limit: number; current: number };
   } {
+    this.assertPersistenceWritable();
     // Operator-policy dispatch cap: refuse (don't register) when a target-facing
     // agent would exceed the per-subnet / per-target limit. Checked BEFORE
     // register() so no lease is taken and — critically — no event is logged, so
@@ -1965,16 +2048,18 @@ export class GraphEngine {
   }
 
   getRunningTaskForFrontierItem(frontierItemId: string): AgentTask | null {
-    return this.agentMgr.getRunningTaskForFrontierItem(frontierItemId);
+    const task = this.agentMgr.getRunningTaskForFrontierItem(frontierItemId);
+    return task ? detached(task) : null;
   }
 
   getTask(taskId: string): AgentTask | null {
-    return this.agentMgr.getTask(taskId);
+    const task = this.agentMgr.getTask(taskId);
+    return task ? detached(task) : null;
   }
 
   /** All known agent tasks (running, completed, failed, interrupted). */
   getAgentTasks(): AgentTask[] {
-    return this.agentMgr.getAll();
+    return detached(this.agentMgr.getAll());
   }
 
   /**
@@ -1983,6 +2068,7 @@ export class GraphEngine {
    * that bypass `register_agent` still surface on the dashboard.
    */
   ensureRunningAgent(agentId: string | undefined): AgentTask | null {
+    this.assertPersistenceWritable();
     const task = this.agentMgr.ensureRunningAgent(agentId, this.ctx.nowIso());
     if (task) this.persist();
     return task;
@@ -2010,6 +2096,7 @@ export class GraphEngine {
    * counter. Caller passes the value into `deterministicActionId(...)`.
    */
   nextDeterministicSeq(): number {
+    this.assertPersistenceWritable();
     return this.ctx.nextDeterministicSeq();
   }
 
@@ -2019,6 +2106,7 @@ export class GraphEngine {
    *  memory, and on restart the startup sweep interrupts running headless tasks anyway,
    *  so a persisted keepalive beat is moot. */
   agentHeartbeat(taskId: string, now?: string, opts?: { silent?: boolean }): boolean {
+    this.assertPersistenceWritable();
     const ok = this.agentMgr.heartbeat(taskId, now, opts);
     if (ok && !opts?.silent) this.persist();
     return ok;
@@ -2030,6 +2118,7 @@ export class GraphEngine {
    * MCP bootstrap + first heartbeat complete. Returns false for an unknown task.
    */
   setAgentHeartbeatTtl(taskId: string, seconds: number): boolean {
+    this.assertPersistenceWritable();
     const task = this.agentMgr.getTask(taskId);
     if (!task) return false;
     task.heartbeat_ttl_seconds = seconds;
@@ -2037,7 +2126,21 @@ export class GraphEngine {
     return true;
   }
 
+  /** Update durable scheduler flags without exposing the live AgentTask object.
+   * These fields are intentionally narrow: lifecycle transitions continue to
+   * go through updateAgentStatus(), which enforces terminal monotonicity. */
+  updateAgentSchedulerFlags(taskId: string, patch: { no_retry?: boolean; reoffered?: boolean }): boolean {
+    this.assertPersistenceWritable();
+    const task = this.agentMgr.getTask(taskId);
+    if (!task) return false;
+    if (patch.no_retry !== undefined) task.no_retry = patch.no_retry;
+    if (patch.reoffered !== undefined) task.reoffered = patch.reoffered;
+    this.persist();
+    return true;
+  }
+
   reapStaleAgents(now?: string): number {
+    this.assertPersistenceWritable();
     const reaped = this.agentMgr.reapStaleHeartbeats(now);
     if (reaped > 0) this.persist();
     return reaped;
@@ -2050,6 +2153,7 @@ export class GraphEngine {
    * 'interrupted' and release the frontier leases they held.
    */
   reconcileAgentsOnStartup(): number {
+    this.assertPersistenceWritable();
     const count = this.agentMgr.reconcileOnStartup();
     if (count > 0) this.persist();
     return count;
@@ -2077,6 +2181,7 @@ export class GraphEngine {
    * watchdog. Returns the dropped frontier_item_ids.
    */
   reapExpiredFrontierLeases(now?: string): string[] {
+    this.assertPersistenceWritable();
     return this.ctx.frontierLeases.reapExpired(now ?? this.ctx.nowIso());
   }
 
@@ -2124,8 +2229,8 @@ export class GraphEngine {
   getEffectiveOpsec(): typeof this.ctx.config.opsec {
     const phase = _getCurrentPhase(this.objectiveHost);
     const overrides = phase?.opsec_overrides;
-    if (!overrides) return this.ctx.config.opsec;
-    return { ...this.ctx.config.opsec, ...overrides } as typeof this.ctx.config.opsec;
+    if (!overrides) return detached(this.ctx.config.opsec);
+    return detached({ ...this.ctx.config.opsec, ...overrides } as typeof this.ctx.config.opsec);
   }
 
   /**
@@ -2228,6 +2333,7 @@ export class GraphEngine {
   }
 
   updateAgentStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {
+    this.assertPersistenceWritable();
     const task = this.agentMgr.getTask(taskId);
     const ok = this.agentMgr.updateStatus(taskId, status, summary);
     if (ok) {
@@ -2255,6 +2361,7 @@ export class GraphEngine {
    * a snapshot so the removal survives a restart (agent tasks aren't WAL-replayed).
    */
   dismissAgent(taskId: string): boolean {
+    this.assertPersistenceWritable();
     const ok = this.agentMgr.dismiss(taskId);
     if (ok) this.persist();
     return ok;
@@ -2415,7 +2522,7 @@ export class GraphEngine {
     const healthReport = contextualFilterHealthReport(rawHealthReport, profile, adContext);
     const labReadiness = summarizeInlineLabReadiness(this);
 
-    return {
+    const state: EngagementState = {
       config: this.ctx.config,
       graph_summary: {
         total_nodes: Object.values(nodesByType).reduce((a, b) => a + b, 0),
@@ -2447,12 +2554,14 @@ export class GraphEngine {
       },
       warnings: summarizeHealthReport(healthReport),
       lab_readiness: labReadiness,
+      persistence_recovery: this.getPersistenceRecoveryStatus(),
       scope_suggestions: this.collectScopeSuggestions(),
       phases: this.getPhaseStatuses(),
       current_phase: this.getCurrentPhaseId(),
       inference_rule_effectiveness: this.getInferenceRuleStats(),
-    credential_coverage: this.getCredentialCoverage(),
+      credential_coverage: this.getCredentialCoverage(),
     };
+    return detached(state);
   }
 
   // --- Phase orchestration ---
@@ -2521,6 +2630,7 @@ export class GraphEngine {
     remove_exclusions?: string[];
     reason: string;
   }): { applied: boolean; errors: string[]; before: EngagementConfig['scope']; after: EngagementConfig['scope']; affected_node_count: number } {
+    this.assertPersistenceWritable();
     return _updateScope(this.scopeHost, changes);
   }
 
@@ -2555,6 +2665,7 @@ export class GraphEngine {
    * Batches can nest — only the outermost triggers the flush.
    */
   batchMutate(fn: () => void): void {
+    this.assertPersistenceWritable();
     this.persistence.beginBatch();
     try {
       fn();
@@ -2567,6 +2678,7 @@ export class GraphEngine {
    * Async version of batchMutate for async operations.
    */
   async batchMutateAsync(fn: () => Promise<void>): Promise<void> {
+    this.assertPersistenceWritable();
     this.persistence.beginBatch();
     try {
       await fn();
@@ -2599,6 +2711,21 @@ export class GraphEngine {
     return this.persistence.getMetrics();
   }
 
+  /** Per-boot persistence recovery state used by MCP, dashboard, preflight,
+   *  and CLI read surfaces.  It is intentionally not itself persisted. */
+  getPersistenceRecoveryStatus(): PersistenceRecoveryStatus {
+    return this.persistence.getRecoveryStatus();
+  }
+
+  /** Whether a new durable mutation may be accepted right now. */
+  isPersistenceWritable(): boolean {
+    return this.persistence.isWritable();
+  }
+
+  assertPersistenceWritable(): void {
+    this.persistence.assertWritable();
+  }
+
   /**
    * Tear down timers and process listeners.
    * Call during graceful shutdown or in tests to avoid leaked state.
@@ -2615,6 +2742,7 @@ export class GraphEngine {
   // =============================================
 
   recordOpsecNoise(opts: { action_id?: string; host_id?: string; domain?: string; campaign_id?: string; agent_id?: string; frontier_item_id?: string; noise_estimate: number; noise_actual?: number }): void {
+    this.assertPersistenceWritable();
     // Per-campaign noise aggregation: callers in the action lifecycle carry an
     // agent_id and/or frontier_item_id but not the campaign directly. Resolve
     // it here (one place) so the tracker can attribute noise to a campaign for
@@ -2656,6 +2784,7 @@ export class GraphEngine {
   }
 
   recordDefensiveSignal(signal: import('./opsec-tracker.js').DefensiveSignal): void {
+    this.assertPersistenceWritable();
     this.ctx.opsecTracker.recordDefensiveSignal(signal);
   }
 
@@ -2703,6 +2832,7 @@ export class GraphEngine {
   }
 
   recordApprovalRequest(action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>): DurableApprovalRecord {
+    this.assertPersistenceWritable();
     const now = new Date(); // clock-ok: approval submitted_at/timeout_at is real-time (approval records aren't in the graph hash)
     const timeoutMs = this.ctx.config.opsec.approval_timeout_ms ?? 300_000;
     const record: DurableApprovalRecord = {
@@ -2718,6 +2848,7 @@ export class GraphEngine {
   }
 
   resolveApprovalRequest(resolution: ActionResolution): DurableApprovalRecord | null {
+    this.assertPersistenceWritable();
     const existing = this.ctx.approvalRequests.get(resolution.action_id);
     if (!existing) return null;
     const record: DurableApprovalRecord = {
@@ -2761,6 +2892,7 @@ export class GraphEngine {
    * aborted.
    */
   abortApprovalsForTask(task_id: string, reason = 'requesting agent terminated'): number {
+    this.assertPersistenceWritable();
     const task = this.getTask(task_id);
     if (!task) return 0;
     const aborted = this.ctx.pendingActionQueue.abortByAgent(task.agent_id, reason);
@@ -2775,6 +2907,7 @@ export class GraphEngine {
    * into a live, awaiting tool call). Mirrors `reconcileOnStartup` for agents.
    */
   reconcilePendingApprovalsOnStartup(): number {
+    this.assertPersistenceWritable();
     let count = 0;
     const now = new Date().toISOString(); // clock-ok: startup reconciliation timestamp (daemon restart; not on the replay path)
     for (const [id, rec] of this.ctx.approvalRequests) {
@@ -2796,14 +2929,14 @@ export class GraphEngine {
 
   getApprovalRequests(options?: { includeResolved?: boolean; resolvedSinceMs?: number }): DurableApprovalRecord[] {
     const now = Date.now(); // clock-ok: read-only query filter (resolvedSinceMs window; writes no state)
-    return [...this.ctx.approvalRequests.values()]
+    return detached([...this.ctx.approvalRequests.values()]
       .filter(record => {
         if (record.status === 'pending') return true;
         if (options?.includeResolved) return true;
         if (options?.resolvedSinceMs == null || !record.resolved_at) return false;
         return now - new Date(record.resolved_at).getTime() <= options.resolvedSinceMs; // clock-ok: parses a STORED timestamp for a read-only filter (not a clock read)
       })
-      .sort((a, b) => (b.submitted_at || '').localeCompare(a.submitted_at || ''));
+      .sort((a, b) => (b.submitted_at || '').localeCompare(a.submitted_at || '')));
   }
 
   getPendingApprovalRequests(): DurableApprovalRecord[] {
@@ -2811,7 +2944,8 @@ export class GraphEngine {
   }
 
   getApprovalRequest(actionId: string): DurableApprovalRecord | undefined {
-    return this.ctx.approvalRequests.get(actionId);
+    const record = this.ctx.approvalRequests.get(actionId);
+    return record ? detached(record) : undefined;
   }
 
   listSnapshots(): string[] {
@@ -2819,9 +2953,14 @@ export class GraphEngine {
   }
 
   rollbackToSnapshot(snapshotName: string): boolean {
-    const ok = this.persistence.rollbackToSnapshot(snapshotName, BUILTIN_RULES);
-    if (ok) this.invalidateAllCaches();
-    return ok;
+    this.assertPersistenceWritable();
+    try {
+      return this.persistence.rollbackToSnapshot(snapshotName, BUILTIN_RULES);
+    } finally {
+      // A failed rollback may already have installed the selected state in
+      // memory before durable cleanup failed and the write gate closed.
+      this.invalidateAllCaches();
+    }
   }
 
   // =============================================
@@ -2829,7 +2968,7 @@ export class GraphEngine {
   // =============================================
 
   getFullHistory(): ActivityLogEntry[] {
-    return [...this.ctx.activityLog];
+    return detached(this.ctx.activityLog);
   }
 
   /** Frontier linkage tracker: lifecycle status of every surfaced frontier item. */
@@ -2858,35 +2997,39 @@ export class GraphEngine {
   }
 
   getInferenceRules(): InferenceRule[] {
-    return [...this.ctx.inferenceRules];
+    return detached(this.ctx.inferenceRules);
   }
 
   getConfig(): EngagementConfig {
-    return this.ctx.config;
+    return detached(this.ctx.config);
   }
 
   updateConfig(partial: Record<string, unknown>): EngagementConfig {
+    this.assertPersistenceWritable();
     return _updateConfig(this.configHost, partial);
   }
 
   addObjective(obj: { description: string; target_node_type?: string; target_criteria?: Record<string, unknown>; achievement_edge_types?: string[] }): EngagementConfig['objectives'][0] {
+    this.assertPersistenceWritable();
     return _addObjective(this.objectiveHost, obj);
   }
 
   updateObjective(id: string, updates: Record<string, unknown>): boolean {
+    this.assertPersistenceWritable();
     return _updateObjective(this.objectiveHost, id, updates);
   }
 
   removeObjective(id: string): boolean {
+    this.assertPersistenceWritable();
     return _removeObjective(this.objectiveHost, id);
   }
 
   getAllAgents(): AgentTask[] {
-    return Array.from(this.ctx.agents.values());
+    return detached(Array.from(this.ctx.agents.values()));
   }
 
   getTrackedProcesses(): import('./process-tracker.js').TrackedProcess[] {
-    return this.ctx.trackedProcesses;
+    return detached(this.ctx.trackedProcesses);
   }
 
   getHealthReport(): HealthReport {
@@ -2909,17 +3052,20 @@ export class GraphEngine {
   }
 
   setFrontierWeights(weights: { fan_out?: Record<string, number>; noise?: Record<string, number> }): void {
+    this.assertPersistenceWritable();
     if (weights.fan_out) this.frontierComputer.setFanOutEstimates(weights.fan_out);
     if (weights.noise) this.frontierComputer.setNoiseEstimates(weights.noise);
     this.invalidateFrontierCache();
   }
 
   resetFrontierWeights(): void {
+    this.assertPersistenceWritable();
     this.frontierComputer.resetWeightsToDefaults();
     this.invalidateFrontierCache();
   }
 
   logActionEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry {
+    this.assertPersistenceWritable();
     return this.ctx.logEvent(event);
   }
 
@@ -2962,6 +3108,7 @@ export class GraphEngine {
   }
 
   setTrackedProcesses(processes: import('./process-tracker.js').TrackedProcess[]): void {
+    this.assertPersistenceWritable();
     this.ctx.trackedProcesses = processes;
   }
 
@@ -2978,7 +3125,9 @@ export class GraphEngine {
 
     this.ctx.graph.forEachNode((id, attrs) => {
       if (!includeSuperseded && attrs.identity_status === 'superseded') return;
-      nodes.push({ id, properties: withTrust ? { ...attrs, source_trust: sourceTrust(attrs) } : attrs });
+      const properties = detached(attrs);
+      if (withTrust) properties.source_trust = sourceTrust(attrs);
+      nodes.push({ id, properties });
     });
 
     this.ctx.graph.forEachEdge((edgeId, attrs, source, target) => {
@@ -2987,7 +3136,9 @@ export class GraphEngine {
         const tgtAttrs = this.ctx.graph.getNodeAttributes(target);
         if (srcAttrs?.identity_status === 'superseded' || tgtAttrs?.identity_status === 'superseded') return;
       }
-      edges.push({ id: edgeId, source, target, properties: withTrust ? { ...attrs, source_trust: sourceTrust(attrs) } : attrs });
+      const properties = detached(attrs);
+      if (withTrust) properties.source_trust = sourceTrust(attrs);
+      edges.push({ id: edgeId, source, target, properties });
     });
 
     // P3.2: include cold-store hosts in exports so reports and downstream

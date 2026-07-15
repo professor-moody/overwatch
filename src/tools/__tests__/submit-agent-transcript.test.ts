@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerAgentTools } from '../agents.js';
 import type { EngagementConfig } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-submit-transcript.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -16,11 +16,6 @@ function makeConfig(): EngagementConfig {
     objectives: [],
     opsec: { name: 'pentest', max_noise: 0.7 },
   };
-}
-
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { rmSync('./evidence-test-submit-transcript', { recursive: true, force: true }); } catch {}
 }
 
 function parse(result: any): any {
@@ -48,10 +43,11 @@ async function registerAgent(handlers: Record<string, any>, engine: GraphEngine,
 describe('submit_agent_transcript', () => {
   let engine: GraphEngine;
   let handlers: Record<string, (args: any) => Promise<any>>;
+  let testDir: string;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-submit-transcript-'));
+    engine = new GraphEngine(makeConfig(), join(testDir, 'state.json'));
     handlers = {};
     const fakeServer = {
       registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
@@ -62,7 +58,8 @@ describe('submit_agent_transcript', () => {
   });
 
   afterEach(() => {
-    cleanup();
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('stores transcript as evidence and emits a linked event', async () => {

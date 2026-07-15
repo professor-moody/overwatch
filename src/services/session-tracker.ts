@@ -192,8 +192,9 @@ export function onSessionClosed(host: SessionTrackerHost, sessionId: string, tar
       // what gates liveness; the scalar is cosmetic on a historical edge.
       props.session_closed_at = new Date().toISOString();
     }
-    host.ctx.journalMutation('merge_edge_attrs', { edge_id: edgeId, props });
-    host.ctx.graph.mergeEdgeAttributes(edgeId, props);
+    host.ctx.applyJournaledMutation('merge_edge_attrs', { edge_id: edgeId, props }, () => {
+      host.ctx.graph.mergeEdgeAttributes(edgeId, props);
+    });
   }
 
   if (edgesToDowngrade.length > 0) {
@@ -225,8 +226,9 @@ export function reconcileSessionEdgesOnStartup(host: SessionTrackerHost): void {
         session_closed_at: attrs.session_closed_at || new Date().toISOString(),
         live_session_ids: [] as string[],
       };
-      host.ctx.journalMutation('merge_edge_attrs', { edge_id: _edgeId, props });
-      host.ctx.graph.mergeEdgeAttributes(_edgeId, props);
+      host.ctx.applyJournaledMutation('merge_edge_attrs', { edge_id: _edgeId, props }, () => {
+        host.ctx.graph.mergeEdgeAttributes(_edgeId, props);
+      });
       downgraded++;
     }
   });

@@ -9,6 +9,7 @@ import type {
   LabReadinessCheck,
   LabReadinessStatus,
   LabReadinessSummary,
+  PersistenceRecoveryStatus,
 } from '../types.js';
 import type { GraphEngine } from './graph-engine.js';
 import { contextualFilterHealthReport } from './graph-health.js';
@@ -44,7 +45,8 @@ export function summarizeInlineLabReadiness(engine: GraphEngine): LabReadinessSu
   const profile = inferProfile(inputs.config);
   const adContext = engine.checkADContext();
   const filteredHealth = contextualFilterHealthReport(inputs.health, profile, adContext);
-  const issues = buildInlineIssues({ ...inputs, health: filteredHealth }, profile);
+  const recovery = engine.getPersistenceRecoveryStatus();
+  const issues = buildInlineIssues({ ...inputs, health: filteredHealth }, profile, recovery);
   return {
     status: deriveStatusFromIssues(issues),
     top_issues: issues.slice(0, 3),
@@ -202,9 +204,20 @@ function getSyncReadinessInputs(engine: GraphEngine): SyncReadinessInputs {
   };
 }
 
-function buildInlineIssues(inputs: SyncReadinessInputs, profile: LabProfile): string[] {
+function buildInlineIssues(
+  inputs: SyncReadinessInputs,
+  profile: LabProfile,
+  recovery: PersistenceRecoveryStatus | undefined,
+): string[] {
   const issues: string[] = [];
   const graphStage = determineGraphStage(inputs.graph);
+  const recoveryAssessment = recovery ? assessPersistenceRecovery(recovery) : undefined;
+
+  if (recoveryAssessment?.status === 'fail') {
+    issues.push(`[CRITICAL] ${recoveryAssessment.message}`);
+  } else if (recoveryAssessment?.status === 'warning') {
+    issues.push(recoveryAssessment.message);
+  }
 
   if (inputs.health.counts_by_severity.critical > 0) {
     issues.push(`[CRITICAL] ${inputs.health.counts_by_severity.critical} graph health issue(s) need attention.`);
@@ -326,25 +339,27 @@ function evaluatePersistence(engine: GraphEngine): LabReadinessCheck {
   const stateFilePath = engine.getStateFilePath();
 
   try {
+    const recovery = engine.getPersistenceRecoveryStatus();
+
     accessSync(dirname(stateFilePath), constants.R_OK | constants.W_OK);
 
     if (existsSync(stateFilePath)) {
       const persisted = JSON.parse(readFileSync(stateFilePath, 'utf-8'));
       const validShape = persisted && typeof persisted === 'object' && persisted.config && persisted.graph;
       if (!validShape) {
-        return {
+        return applyPersistenceRecovery({
           name: 'persistence',
           status: 'fail',
           message: 'Persisted state file exists but is missing required top-level fields.',
           details: { state_file: stateFilePath },
-        };
+        }, recovery);
       }
-      return {
+      return applyPersistenceRecovery({
         name: 'persistence',
         status: 'pass',
         message: 'Persisted state file is readable and restart-safe.',
         details: { state_file: stateFilePath, snapshots: engine.listSnapshots().length },
-      };
+      }, recovery);
     }
 
     JSON.stringify({
@@ -355,12 +370,12 @@ function evaluatePersistence(engine: GraphEngine): LabReadinessCheck {
       trackedProcesses: engine.getTrackedProcesses(),
     });
 
-    return {
+    return applyPersistenceRecovery({
       name: 'persistence',
       status: 'pass',
       message: 'State file path is writable and current state shape is serializable.',
       details: { state_file: stateFilePath },
-    };
+    }, recovery);
   } catch (error) {
     return {
       name: 'persistence',
@@ -369,6 +384,78 @@ function evaluatePersistence(engine: GraphEngine): LabReadinessCheck {
       details: { state_file: stateFilePath },
     };
   }
+}
+
+function applyPersistenceRecovery(
+  check: LabReadinessCheck,
+  recovery: PersistenceRecoveryStatus | undefined,
+): LabReadinessCheck {
+  if (!recovery) return check;
+
+  const assessment = assessPersistenceRecovery(recovery);
+  const recoveryMessage = assessment.status === 'pass'
+    ? recovery.outcome === 'recovered'
+      ? `Recovery completed through sequence ${recovery.highest_contiguous_applied_seq}.`
+      : undefined
+    : assessment.message;
+  const status = check.status === 'fail' || assessment.status === 'fail'
+    ? 'fail'
+    : assessment.status;
+
+  return {
+    ...check,
+    status,
+    message: recoveryMessage
+      ? check.status === 'fail' || assessment.status === 'pass'
+        ? `${check.message} ${recoveryMessage}`
+        : recoveryMessage
+      : check.message,
+    details: { ...(check.details || {}), recovery },
+  };
+}
+
+export function assessPersistenceRecovery(recovery: PersistenceRecoveryStatus): {
+  status: 'pass' | 'warning' | 'fail';
+  message: string;
+} {
+  const reason = recovery.reason || recovery.last_persistence_error;
+  const reasonSuffix = reason ? `: ${reason}` : '';
+  const sequenceIncomplete = recovery.highest_contiguous_applied_seq < recovery.highest_on_disk_seq;
+  const recoveryBlocked = recovery.outcome === 'incomplete'
+    || recovery.outcome === 'reinitialized'
+    || !recovery.complete
+    || !recovery.writable
+    || recovery.journal.malformed
+    || recovery.journal.skipped > 0
+    || recovery.journal.failed > 0
+    || sequenceIncomplete;
+
+  if (recoveryBlocked) {
+    const message = recovery.outcome === 'reinitialized'
+      ? `Persistence state was reinitialized from ${recovery.source}${reasonSuffix}.`
+      : `Persistence recovery is incomplete or not writable${reasonSuffix}.`;
+    return {
+      status: 'fail',
+      message,
+    };
+  }
+
+  const recoveryWarning = (recovery.outcome === 'recovered' && recovery.source === 'snapshot')
+    || recovery.consecutive_persistence_failures > 0
+    || recovery.journal.preserved;
+  if (recoveryWarning) {
+    const message = recovery.consecutive_persistence_failures > 0
+      ? `Persistence has ${recovery.consecutive_persistence_failures} consecutive write failure(s)${reasonSuffix}.`
+      : recovery.journal.preserved
+        ? 'The mutation journal remains preserved for inspection after persistence recovery.'
+        : 'Persistence recovered from a snapshot; review the recovery details before continuing.';
+    return {
+      status: 'warning',
+      message,
+    };
+  }
+
+  return { status: 'pass', message: 'Persistence recovery is healthy.' };
 }
 
 function evaluateProcessTracker(engine: GraphEngine): LabReadinessCheck {

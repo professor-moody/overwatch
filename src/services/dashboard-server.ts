@@ -20,7 +20,13 @@ import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, t
 import { interpretQuery, executeQuery, type QueryAnswer } from './query-interpreter.js';
 import { getArchetype, isArchetypeId, listArchetypes, recommendArchetype, recommendExploreArchetype } from './agent-archetypes.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
-import { opsecPartialUpdateSchema, operatorPolicyUpdateSchema, type Campaign, type AgentDirectiveKind, type AgentTask } from '../types.js';
+import {
+  opsecPartialUpdateSchema,
+  operatorPolicyUpdateSchema,
+  type AgentDirectiveKind,
+  type AgentTask,
+  type Campaign,
+} from '../types.js';
 import type { DefensiveSignal, OpsecContext } from './opsec-tracker.js';
 import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
@@ -34,6 +40,7 @@ import type { DurableApprovalRecord, PendingAction } from './pending-action-queu
 import type { ToolEntry } from './prompt-generator.js';
 import { buildTrustSignalsResponse, type TrustSignalSeverity } from './trust-signal-summary.js';
 import { activityToAgentConsoleEvent, buildAgentConsoleEvents, type AgentConsoleEvent } from './agent-console.js';
+import { assessPersistenceRecovery } from './lab-preflight.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -262,6 +269,11 @@ export class DashboardServer {
       const sessionMatch = pathname.match(/^\/ws\/session\/([a-f0-9-]{36})$/);
       const actionOutputMatch = pathname.match(/^\/ws\/actions\/([A-Za-z0-9_-]+)\/output$/);
       if (sessionMatch) {
+        if (!this.engine.isPersistenceWritable()) {
+          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+          socket.destroy();
+          return;
+        }
         if (!this.sessionManager) {
           socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
           socket.destroy();
@@ -531,6 +543,21 @@ export class DashboardServer {
     // errors back over the WS so the user sees something change.
     ws.on('message', (raw) => {
       try {
+        // The persistence gate can close after the WebSocket was upgraded
+        // (for example, after a third consecutive snapshot failure). Recheck
+        // every command-shaped message so an existing socket cannot outlive
+        // the service's writable generation.
+        if (!this.engine.isPersistenceWritable()) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            op: 'persistence',
+            code: 'PERSISTENCE_READ_ONLY',
+            error: 'Durable mutations are disabled while persistence recovery is incomplete.',
+            recovery: this.engine.getPersistenceRecoveryStatus(),
+          }));
+          ws.close(4503, 'Persistence is read-only');
+          return;
+        }
         const msg = JSON.parse(String(raw));
         if (msg.type === 'input' && typeof msg.data === 'string') {
           try {
@@ -754,6 +781,27 @@ export class DashboardServer {
     // Origin); this gate covers GET endpoints that would otherwise leak
     // graph/state/history to anyone able to reach the dashboard host.
     if (pathname.startsWith('/api/') && !this.checkReadAuth(req, res)) {
+      return;
+    }
+
+    // A partial WAL recovery remains inspectable, but no dashboard command may
+    // start target work or create a new durable mutation until recovery is
+    // complete.  Keep the two POST-shaped pure-read operations available.
+    const readOnlyPost = pathname === '/api/config/scope/preview' || pathname === '/api/graph/export';
+    // Bundle generation records a durable audit event after streaming, so it
+    // is a mutating operation even though its historical route uses GET.
+    const mutatingGet = method === 'GET' && pathname === '/api/bundle';
+    if (
+      pathname.startsWith('/api/')
+      && ((['POST', 'PATCH', 'DELETE'].includes(method) && !readOnlyPost) || mutatingGet)
+      && !this.engine.isPersistenceWritable()
+    ) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: 'Durable mutations are disabled while persistence recovery is incomplete.',
+        code: 'PERSISTENCE_READ_ONLY',
+        recovery: this.engine.getPersistenceRecoveryStatus(),
+      }));
       return;
     }
 
@@ -1065,6 +1113,7 @@ export class DashboardServer {
   private handleCreateFromTemplate(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body?.template_id || typeof body.template_id !== 'string') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'template_id (string) is required' }));
@@ -1092,6 +1141,7 @@ export class DashboardServer {
         return;
       }
       try {
+        if (!this.requireWritablePersistence(res)) return;
         const config = mergeTemplateWithConfig(template, overrides as any);
         // Persist so a created-from-template engagement actually lands on disk
         // (it previously only returned the config). persistConfig is the shared
@@ -1104,6 +1154,10 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: err.message }));
       }
     }).catch(() => {
+      if (!this.engine.isPersistenceWritable()) {
+        this.requireWritablePersistence(res);
+        return;
+      }
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
     });
@@ -1141,13 +1195,15 @@ export class DashboardServer {
   private handleUpdateSettings(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Expected JSON object' }));
         return;
       }
-      const config = this.engine.getConfig();
-      const opsec = config.opsec;
+      if (!this.requireWritablePersistence(res)) return;
+      const current = this.engine.getConfig().opsec;
+      const opsec = { ...current };
       let changed = false;
 
       if (typeof body.enabled === 'boolean') {
@@ -1183,12 +1239,19 @@ export class DashboardServer {
       }
 
       if (changed) {
-        this.engine.persist();
+        this.engine.updateConfig({ opsec });
       }
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ updated: changed, opsec }));
     }).catch(() => {
+      // updateConfig performs its own final guard. If the gate crossed after
+      // our post-body check, preserve the recovery status instead of
+      // misreporting the guarded failure as malformed JSON.
+      if (!this.engine.isPersistenceWritable()) {
+        this.requireWritablePersistence(res);
+        return;
+      }
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
     });
@@ -1209,6 +1272,7 @@ export class DashboardServer {
   private handleUpdateConfig(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Expected JSON object' }));
@@ -1268,6 +1332,7 @@ export class DashboardServer {
   private handleUpdateScope(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Expected JSON object' }));
@@ -1413,6 +1478,7 @@ export class DashboardServer {
   private handleAddObjective(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object' || typeof (body as Record<string, unknown>).description !== 'string') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'description is required' }));
@@ -1436,6 +1502,7 @@ export class DashboardServer {
   private handleUpdateObjective(id: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Expected JSON object' }));
@@ -1501,6 +1568,7 @@ export class DashboardServer {
   private handleAgentDispatch(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Expected JSON object' }));
@@ -1647,6 +1715,7 @@ export class DashboardServer {
   private handleAgentDispatchBatch(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Expected JSON object' }));
@@ -1759,6 +1828,7 @@ export class DashboardServer {
   private handleQuickDeploy(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Expected JSON object' }));
@@ -1985,6 +2055,7 @@ export class DashboardServer {
   private handleAnswerAgentQuery(queryId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const b = (body ?? {}) as Record<string, unknown>;
       const answer = typeof b.answer === 'string' ? b.answer.trim() : '';
       if (!answer) {
@@ -2037,6 +2108,7 @@ export class DashboardServer {
   private handleAnswerAgentQueryBatch(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const b = (body ?? {}) as Record<string, unknown>;
       const answer = typeof b.answer === 'string' ? b.answer.trim() : '';
       const queryIds = Array.isArray(b.query_ids)
@@ -2094,6 +2166,7 @@ export class DashboardServer {
   private handleCommand(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const b = (body ?? {}) as Record<string, unknown>;
       this.pruneCommandPlans();
 
@@ -2234,6 +2307,7 @@ export class DashboardServer {
   private handleUpdateFrontierWeights(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Expected JSON object with fan_out and/or noise' }));
@@ -2632,6 +2706,7 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     const JSON_HEADERS = { 'Content-Type': 'application/json' };
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const toolName = typeof body?.tool_name === 'string' ? body.tool_name.trim()
         : (typeof body?.tool === 'string' ? body.tool.trim() : '');
       if (!toolName) {
@@ -2792,6 +2867,9 @@ export class DashboardServer {
       return;
     }
     this.readJsonBody(req).then(body => {
+      // Request routing checked the gate before body I/O. Recheck after the
+      // await and immediately before touching SessionManager metadata.
+      if (!this.requireWritablePersistence(res)) return;
       const updates: { title?: string; notes?: string } = {};
       if (typeof body?.title === 'string') updates.title = body.title;
       if (typeof body?.notes === 'string') updates.notes = body.notes;
@@ -2799,6 +2877,10 @@ export class DashboardServer {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ metadata }));
     }).catch((err) => {
+      if (!this.engine.isPersistenceWritable()) {
+        this.requireWritablePersistence(res);
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       const notFound = /not found/i.test(message);
       res.writeHead(notFound ? 404 : 400, { 'Content-Type': 'application/json' });
@@ -2968,7 +3050,7 @@ export class DashboardServer {
       // Operator cancel is a DELIBERATE stop — mark it (on EVERY path, including an
       // already-terminal one) so the Phase 3.1 re-offer sweep doesn't re-dispatch the
       // work the operator just called off.
-      task.no_retry = true;
+      this.engine.updateAgentSchedulerFlags(taskId, { no_retry: true });
       // Best-effort kill on EVERY path. A task can be 'interrupted' in the graph while
       // its OS process is still alive (the exact stuck case) — so kill even when
       // already terminal, not just when running/pending. cancelHeadless is safe on a
@@ -3015,6 +3097,7 @@ export class DashboardServer {
     // one step, so a wedged sub-agent can always be cleared without a cancel→dismiss
     // dance that can dead-end. No body → legacy behavior (terminal-only).
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       try {
         const force = !!(body && typeof body === 'object' && (body as Record<string, unknown>).force === true);
         const task = this.engine.getTask(taskId);
@@ -3034,7 +3117,7 @@ export class DashboardServer {
           // even for an already-terminal task, whose OS process may still be alive
           // (the stuck case). Removing the card without killing would orphan a zombie.
           const REASON = 'Force-removed by operator';
-          task.no_retry = true;
+          this.engine.updateAgentSchedulerFlags(taskId, { no_retry: true });
           try { this.taskExecution?.cancelHeadless(taskId, REASON); } catch { /* fall through to force terminal */ }
           const t = this.engine.getTask(taskId);
           if (t && (t.status === 'running' || t.status === 'pending')) {
@@ -3072,6 +3155,7 @@ export class DashboardServer {
   private handleAgentDirective(taskId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const b = (body ?? {}) as Record<string, unknown>;
       const kind = typeof b.kind === 'string' ? b.kind : '';
       if (!DashboardServer.DIRECTIVE_KINDS.includes(kind as AgentDirectiveKind)) {
@@ -3128,6 +3212,7 @@ export class DashboardServer {
   private handleFleetDirective(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const b = (body ?? {}) as Record<string, unknown>;
       const kind = typeof b.kind === 'string' ? b.kind : '';
       // Lifecycle kinds fan out with no argument; 'instruct' broadcasts a
@@ -3175,6 +3260,7 @@ export class DashboardServer {
   private handleFleetDismiss(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const b = (body ?? {}) as Record<string, unknown>;
       const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
       const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
@@ -3227,6 +3313,7 @@ export class DashboardServer {
   private handleCampaignAction(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const action = body?.action;
       const validActions = ['activate', 'pause', 'resume', 'abort'];
       if (!validActions.includes(action)) {
@@ -3263,6 +3350,7 @@ export class DashboardServer {
   private handleCampaignDispatch(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const result = dispatchCampaignAgents(this.engine, campaignId, {
         max_agents: typeof body?.max_agents === 'number' ? body.max_agents : undefined,
         hops: typeof body?.hops === 'number' ? body.hops : undefined,
@@ -3284,6 +3372,7 @@ export class DashboardServer {
   private handleCampaignCreate(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body?.name || typeof body.name !== 'string') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'name (string) is required' }));
@@ -3327,6 +3416,7 @@ export class DashboardServer {
   private handleCampaignUpdate(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'JSON body required' }));
@@ -3389,6 +3479,7 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     try {
       const body = await this.readJsonBody(req);
+      if (!this.requireWritablePersistence(res)) return;
       const children = this.engine.splitCampaign(campaignId, body.count);
       if (!children) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -3483,6 +3574,20 @@ export class DashboardServer {
       return false;
     }
     return true;
+  }
+
+  /** Recheck at the actual mutation boundary. Request authentication happens
+   *  before body/PDF/process awaits, while persistence can become read-only
+   *  during those waits after repeated storage failures. */
+  private requireWritablePersistence(res: ServerResponse): boolean {
+    if (this.engine.isPersistenceWritable()) return true;
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'Durable mutations are disabled while persistence recovery is incomplete.',
+      code: 'PERSISTENCE_READ_ONLY',
+      recovery: this.engine.getPersistenceRecoveryStatus(),
+    }));
+    return false;
   }
 
   private readJsonBody(req: IncomingMessage, maxBytes: number = 64 * 1024): Promise<any> {
@@ -3599,6 +3704,7 @@ export class DashboardServer {
   private handleActionApprove(actionId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const queue = this.engine.getPendingActionQueue();
       const result = queue.approve(actionId, body?.notes);
       if (!result) {
@@ -3619,6 +3725,7 @@ export class DashboardServer {
   private handleActionDeny(actionId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const queue = this.engine.getPendingActionQueue();
       const result = queue.deny(actionId, body?.reason);
       if (!result) {
@@ -3643,6 +3750,7 @@ export class DashboardServer {
   private handleActionApproveBatch(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const b = (body ?? {}) as Record<string, unknown>;
       const ids = Array.isArray(b.action_ids) ? (b.action_ids as unknown[]).filter(x => typeof x === 'string') as string[] : [];
       if (ids.length === 0) {
@@ -3670,6 +3778,7 @@ export class DashboardServer {
   private handleActionDenyBatch(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       const b = (body ?? {}) as Record<string, unknown>;
       const ids = Array.isArray(b.action_ids) ? (b.action_ids as unknown[]).filter(x => typeof x === 'string') as string[] : [];
       const reason = typeof b.reason === 'string' ? b.reason.trim() : '';
@@ -3944,12 +4053,14 @@ export class DashboardServer {
       return;
     }
     this.readJsonBody(req, 256 * 1024).then(input => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!input || !input.name || typeof input.name !== 'string') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'name is required' }));
         return;
       }
       try {
+        if (!this.requireWritablePersistence(res)) return;
         const summary = this.engagementManager!.createEngagement({
           name: input.name,
           profile: input.profile,
@@ -4004,11 +4115,13 @@ export class DashboardServer {
       return;
     }
     this.readJsonBody(req, 256 * 1024).then(body => {
+      if (!this.requireWritablePersistence(res)) return;
       if (!body || typeof body !== 'object') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Expected JSON object' }));
         return;
       }
+      if (!this.requireWritablePersistence(res)) return;
       const updated = this.engagementManager!.updateEngagement(id, body);
       if (!updated) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -4073,16 +4186,19 @@ export class DashboardServer {
       const sessions = this.sessionManager?.list(false) ?? (Array.isArray((state as any).sessions) ? (state as any).sessions : []);
       const tapeStatus = this.tape?.getStatus() ?? { enabled: false, attached: false };
       const persistence = this.engine.getPersistMetrics();
+      const recovery = state.persistence_recovery;
+      const recoveryReadiness = recovery ? assessPersistenceRecovery(recovery) : undefined;
       const activeSessions = sessions.filter((session: any) => session.state === 'connected' || session.state === 'pending').length;
       const runningAgents = agents.filter(agent => agent.status === 'running').length;
       const failedAgents = agents.filter(agent => agent.status === 'failed' || agent.status === 'interrupted').length;
       const issues = [
+        ...(recoveryReadiness && recoveryReadiness.status !== 'pass' ? [recoveryReadiness.message] : []),
         ...health.issues.slice(0, 3).map(issue => issue.message),
         ...(failedAgents > 0 ? [`${failedAgents} agent${failedAgents === 1 ? '' : 's'} failed or interrupted`] : []),
       ];
       const status =
-        health.status === 'critical' ? 'critical' :
-        health.status === 'warning' || failedAgents > 0 ? 'warning' :
+        health.status === 'critical' || recoveryReadiness?.status === 'fail' ? 'critical' :
+        health.status === 'warning' || recoveryReadiness?.status === 'warning' || failedAgents > 0 ? 'warning' :
         'ready';
 
       const payload: Record<string, unknown> = {
@@ -4119,6 +4235,7 @@ export class DashboardServer {
           last_flush_at: persistence.lastFlushAt,
           flush_count: persistence.flushCount,
           last_flush_ms: persistence.lastFlushMs,
+          recovery,
         },
         issues,
       };
@@ -4248,6 +4365,7 @@ export class DashboardServer {
       const dir = (body as { dir?: string }).dir;
       const file = (body as { file?: string }).file;
       const sessionId = (body as { session_id?: string }).session_id;
+      if (!this.requireWritablePersistence(res)) return;
       let status;
       if (action === 'enable') {
         status = this.tape.enable({ defaultDir: dir, file, sessionId, startedBy: 'dashboard' });
@@ -4376,6 +4494,7 @@ export class DashboardServer {
     // DELETE is a mutation — enforce the same CSRF/Origin + token gate every
     // other mutation does (this endpoint previously skipped it).
     if (!this.checkMutationAuth(req, res)) return;
+    if (!this.requireWritablePersistence(res)) return;
     const archive = this.engine.getReportArchive();
     const ok = archive.delete(id);
     res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
@@ -4441,6 +4560,10 @@ export class DashboardServer {
         }
       }
 
+      // Rendering can take seconds. Persistence may have crossed the failure
+      // threshold while Chromium was running, so gate the actual archive write
+      // rather than trusting the request-entry check.
+      if (!this.requireWritablePersistence(res)) return;
       const archive = this.engine.getReportArchive();
       const record: ReportRecord = archive.add(stored, {
         generated_at: new Date().toISOString(),
@@ -4482,6 +4605,7 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     try {
       const body = await this.readJsonBody(req);
+      if (!this.requireWritablePersistence(res)) return;
       const { reason, operations } = body;
       if (!reason || !Array.isArray(operations) || operations.length === 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });

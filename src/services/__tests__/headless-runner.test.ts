@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { existsSync, rmSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
@@ -8,8 +8,6 @@ import { ProcessTracker } from '../process-tracker.js';
 import { TaskExecutionService } from '../task-execution-service.js';
 import { allowedToolsFor } from '../headless-mcp-runner.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-headless-runner.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -61,14 +59,29 @@ describe('Headless runner mechanics (injected spawn)', () => {
   let spawned: FakeChild[];
   let spawnedArgs: string[][];
   let spawnedCmds: string[];
+  let testDir: string;
   let logDir: string;
   let nextPid: number;
+  const engines = new Set<GraphEngine>();
 
-  function makeService(opts: { maxConcurrentHeadless?: number; engineOverride?: GraphEngine; orchestratorHealthyMs?: number; orchestratorWedgedCeilingMs?: number } = {}) {
+  function createEngine(config = makeConfig(), filename = 'state.json'): GraphEngine {
+    const created = new GraphEngine(config, join(testDir, filename));
+    engines.add(created);
+    return created;
+  }
+
+  // Public task getters intentionally return detached read models. Tests that
+  // simulate stale persisted runtime state must shape the owned fixture map.
+  function liveTask(id: string): AgentTask {
+    return (engine as any).ctx.agents.get(id) as AgentTask;
+  }
+
+  function makeService(opts: { maxConcurrentHeadless?: number; engineOverride?: GraphEngine; orchestratorHealthyMs?: number; orchestratorWedgedCeilingMs?: number; persistenceGatePollMs?: number } = {}) {
     return new TaskExecutionService(opts.engineOverride ?? engine, new ProcessTracker(), {
       maxConcurrentHeadless: opts.maxConcurrentHeadless,
       orchestratorHealthyMs: opts.orchestratorHealthyMs,
       orchestratorWedgedCeilingMs: opts.orchestratorWedgedCeilingMs,
+      persistenceGatePollMs: opts.persistenceGatePollMs,
       headless: {
         logDir,
         spawnFn: (cmd: string, args: string[]) => {
@@ -83,9 +96,9 @@ describe('Headless runner mechanics (injected spawn)', () => {
   }
 
   beforeEach(() => {
-    try { if (existsSync(TEST_STATE_FILE)) rmSync(TEST_STATE_FILE); } catch { /* ignore */ }
-    logDir = mkdtempSync(join(tmpdir(), 'ow-headless-log-'));
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-headless-runner-'));
+    logDir = mkdtempSync(join(testDir, 'logs-'));
+    engine = createEngine();
     spawned = [];
     spawnedArgs = [];
     spawnedCmds = [];
@@ -94,8 +107,9 @@ describe('Headless runner mechanics (injected spawn)', () => {
 
   afterEach(() => {
     svc?.stop();
-    try { if (existsSync(TEST_STATE_FILE)) rmSync(TEST_STATE_FILE); } catch { /* ignore */ }
-    try { rmSync(logDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    for (const created of engines) created.dispose();
+    engines.clear();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('does NOT launch headless tasks until an HTTP endpoint is set', async () => {
@@ -115,6 +129,42 @@ describe('Headless runner mechanics (injected spawn)', () => {
     await settle();
     expect(svc.activeHeadlessCount()).toBe(1);
     expect(spawned).toHaveLength(1);
+  });
+
+  it('freezes owned execution when persistence becomes read-only after launch', async () => {
+    svc = makeService({ persistenceGatePollMs: 5 });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-persistence-freeze' }));
+    await settle();
+    expect(spawned).toHaveLength(1);
+    expect(svc.activeHeadlessCount()).toBe(1);
+
+    let writable = true;
+    const gate = vi.spyOn(engine, 'isPersistenceWritable').mockImplementation(() => writable);
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const historyCount = engine.getFullHistory().length;
+    writable = false;
+
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(spawned[0].signals).toContain('SIGTERM');
+      expect(() => svc.tickWatchdog()).not.toThrow();
+      expect(svc.tickWatchdog()).toBe(0);
+
+      // Late process callbacks only clean runtime resources. They must not stamp
+      // task/process lifecycle state that cannot be persisted.
+      spawned[0].simulateExit(null, 'SIGTERM');
+      spawned[0].simulateClose(null, 'SIGTERM');
+      await settle();
+      expect(svc.activeHeadlessCount()).toBe(0);
+      expect(engine.getTask('h-persistence-freeze')?.status).toBe('running');
+      expect(engine.getFullHistory()).toHaveLength(historyCount);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('task execution frozen'));
+    } finally {
+      stderr.mockRestore();
+      gate.mockRestore();
+    }
   });
 
   it('passes --model <id> to the spawn when the task specifies a model', async () => {
@@ -249,7 +299,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   it('starts exactly one orchestrator when enabled + headless available (idempotent)', async () => {
     svc = makeService();
     svc.start();
-    engine.getConfig().orchestrator = { enabled: true };
+    engine.updateConfig({ orchestrator: { enabled: true } });
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' }); // headless available → reconcileOrchestrator
     await settle();
     const orchs = runningOrchestrators();
@@ -265,7 +315,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   it('backs off (no hot-loop) when the orchestrator dies fast', async () => {
     svc = makeService(); // default 5-min healthy threshold
     svc.start();
-    engine.getConfig().orchestrator = { enabled: true };
+    engine.updateConfig({ orchestrator: { enabled: true } });
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
     await settle();
     expect(spawned.length).toBe(1);
@@ -280,7 +330,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   it('restarts the orchestrator after a healthy run ends', async () => {
     svc = makeService({ orchestratorHealthyMs: 0 }); // every run counts as healthy → no backoff
     svc.start();
-    engine.getConfig().orchestrator = { enabled: true };
+    engine.updateConfig({ orchestrator: { enabled: true } });
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
     await settle();
     expect(spawned.length).toBe(1);
@@ -297,7 +347,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   it('supervisor liveness: a LIVE orchestrator is not reaped even when its beat goes stale past the TTL', async () => {
     svc = makeService({ orchestratorHealthyMs: 0 }); // healthy → a real reap would respawn (we assert it does NOT)
     svc.start();
-    engine.getConfig().orchestrator = { enabled: true };
+    engine.updateConfig({ orchestrator: { enabled: true } });
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
     await settle();
     const orch = runningOrchestrators()[0];
@@ -306,7 +356,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
     // Simulate a busy-but-quiet orchestrator: its process is still alive (never
     // exited → still in the registry), but the model hasn't called agent_heartbeat,
     // so its beat is now 700s old against the 600s TTL — a reap without the fix.
-    engine.getTask(orch.id)!.heartbeat_at = new Date(Date.now() - 700_000).toISOString();
+    liveTask(orch.id).heartbeat_at = new Date(Date.now() - 700_000).toISOString();
     svc.tickWatchdog();               // beforeTick refresh must land before the reap
     await settle();
     // Not reaped, not churned: same task, same single process.
@@ -320,7 +370,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   it('supervisor liveness stops once the process exits — a dead orchestrator still reaps + respawns', async () => {
     svc = makeService({ orchestratorHealthyMs: 0 });
     svc.start();
-    engine.getConfig().orchestrator = { enabled: true };
+    engine.updateConfig({ orchestrator: { enabled: true } });
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
     await settle();
     const first = runningOrchestrators()[0];
@@ -339,7 +389,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   it('runs the orchestrator OUTSIDE the concurrency cap (no sub-agent starvation)', async () => {
     svc = makeService({ maxConcurrentHeadless: 1 });      // one sub-agent slot
     svc.start();
-    engine.getConfig().orchestrator = { enabled: true };
+    engine.updateConfig({ orchestrator: { enabled: true } });
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
     await settle();
     expect(runningOrchestrators().length).toBe(1);
@@ -409,7 +459,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
     // Simulate the queued task waiting past its 120s TTL: age its beat beyond the
     // TTL. Before the fix the watchdog reaped it (heartbeat_timeout) before it ever
     // ran; now the supervisor refreshes it (before the reap) while it waits.
-    engine.getTask('q-B')!.heartbeat_at = new Date(Date.now() - 130_000).toISOString();
+    liveTask('q-B').heartbeat_at = new Date(Date.now() - 130_000).toISOString();
     svc.tickWatchdog();
     await settle();
     expect(engine.getTask('q-B')?.status).toBe('running');                 // not reaped
@@ -456,7 +506,9 @@ describe('Headless runner mechanics (injected spawn)', () => {
     engine.registerAgent(headlessTask({ id: 'wedged-sub', agent_id: 'osint' }));
     await settle();
     expect(spawned.length).toBe(1);
-    const t = engine.getTask('wedged-sub')!;
+    // Deliberately shape persisted internals to simulate a process that has not
+    // emitted output or heartbeats; public getters return detached read models.
+    const t = (engine as any).ctx.agents.get('wedged-sub')!;
     t.assigned_at = new Date(Date.now() - 5000).toISOString();               // no output ever → falls back to assigned_at, past the 1s ceiling
     t.heartbeat_at = new Date(Date.now() - 310_000).toISOString();           // beat also stale past the 300s TTL
     svc.tickWatchdog();
@@ -467,7 +519,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   it('restarts a WEDGED orchestrator (alive but no genuine heartbeat) instead of propping it up forever', async () => {
     svc = makeService({ orchestratorHealthyMs: 0, orchestratorWedgedCeilingMs: 1000 });
     svc.start();
-    engine.getConfig().orchestrator = { enabled: true };
+    engine.updateConfig({ orchestrator: { enabled: true } });
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
     await settle();
     const first = runningOrchestrators()[0];
@@ -475,7 +527,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(spawned.length).toBe(1);
     // Wedged: process still alive, but has produced NO output for longer than the
     // ceiling (no last_output_at → liveness falls back to assigned_at).
-    engine.getTask(first.id)!.assigned_at = new Date(Date.now() - 5000).toISOString();
+    liveTask(first.id).assigned_at = new Date(Date.now() - 5000).toISOString();
     svc.tickWatchdog();
     await settle();
     expect(engine.getFullHistory().some(e => (e.details as { reason?: string })?.reason === 'orchestrator_wedged')).toBe(true);
@@ -488,12 +540,12 @@ describe('Headless runner mechanics (injected spawn)', () => {
   it('does NOT treat a genuinely-active orchestrator as wedged (recent process output resets the ceiling)', async () => {
     svc = makeService({ orchestratorHealthyMs: 0, orchestratorWedgedCeilingMs: 1000 });
     svc.start();
-    engine.getConfig().orchestrator = { enabled: true };
+    engine.updateConfig({ orchestrator: { enabled: true } });
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
     await settle();
     const orch = runningOrchestrators()[0];
     // Old start, but the process is streaming output NOW → healthy, not wedged.
-    engine.getTask(orch.id)!.assigned_at = new Date(Date.now() - 5000).toISOString();
+    liveTask(orch.id).assigned_at = new Date(Date.now() - 5000).toISOString();
     spawned[0].stdout.emit('data', Buffer.from('{"type":"assistant"}\n')); // process alive + producing
     svc.tickWatchdog();
     await settle();
@@ -518,7 +570,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   it('does NOT clobber the orchestrator\'s configured 600s TTL with the sub-agent cold-start grace', async () => {
     svc = makeService();
     svc.start();
-    engine.getConfig().orchestrator = { enabled: true };
+    engine.updateConfig({ orchestrator: { enabled: true } });
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
     await settle();
     const orch = runningOrchestrators()[0];
@@ -877,9 +929,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   });
 
   it('does NOT auto-dispatch cve_research when cve_research.enabled is false (air-gapped)', async () => {
-    const offlineStateFile = './state-test-headless-runner-offline.json';
-    try { if (existsSync(offlineStateFile)) rmSync(offlineStateFile); } catch { /* ignore */ }
-    const offlineEngine = new GraphEngine({ ...makeConfig(), cve_research: { enabled: false } }, offlineStateFile);
+    const offlineEngine = createEngine({ ...makeConfig(), cve_research: { enabled: false } }, 'offline.json');
     const offlineSvc = makeService({ engineOverride: offlineEngine });
     try {
       offlineSvc.start();
@@ -889,11 +939,10 @@ describe('Headless runner mechanics (injected spawn)', () => {
       expect(offlineSvc.activeHeadlessCount()).toBe(0);
     } finally {
       offlineSvc.stop();
-      try { if (existsSync(offlineStateFile)) rmSync(offlineStateFile); } catch { /* ignore */ }
     }
   });
 
-  it('killAll on stop() terminates live headless children', async () => {
+  it('killAll on writable stop() terminates children and retains exit finalization', async () => {
     svc = makeService();
     svc.start();
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
@@ -902,6 +951,14 @@ describe('Headless runner mechanics (injected spawn)', () => {
     const child = spawned[0];
     svc.stop();
     expect(child.signals).toContain('SIGTERM');
+    child.simulateExit(1, 'SIGTERM');
+    child.simulateClose(1, 'SIGTERM');
+    await settle();
+    expect(engine.getTask('h-shutdown')?.status).toBe('interrupted');
+    expect(engine.getFullHistory().some(event =>
+      event.linked_agent_task_id === 'h-shutdown'
+      && (event.details as { reason?: string })?.reason === 'headless_exited'
+    )).toBe(true);
   });
 
   it('CVE auto-dispatch budget counts non-CVE headless agents (cap honored, no over-registration)', async () => {

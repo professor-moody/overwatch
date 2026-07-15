@@ -70,6 +70,18 @@ describe('Session Adapters', () => {
       await expect(adapter.spawn({ mode: 'connect', port: 4444 })).rejects.toThrow('Socket adapter connect mode requires a host');
     });
 
+    it('rejects before opening a transport when the persistence signal is already aborted', async () => {
+      const adapter = new SocketAdapter();
+      const controller = new AbortController();
+      controller.abort(new Error('persistence read-only'));
+      await expect(adapter.spawn({
+        mode: 'connect',
+        host: '127.0.0.1',
+        port: 4444,
+        abort_signal: controller.signal,
+      })).rejects.toThrow('persistence read-only');
+    });
+
     it('cleanup is idempotent for unknown session', () => {
       const adapter = new SocketAdapter();
       // Should not throw
@@ -112,6 +124,27 @@ describe('Session Adapters', () => {
 
       expect(exits).toBe(0);
       handle.close();
+    });
+
+    it('closes an active listener when the persistence signal aborts', async () => {
+      const adapter = new SocketAdapter();
+      const controller = new AbortController();
+      const port = await getFreePort();
+      const handle = await adapter.spawn({
+        mode: 'listen',
+        bind_host: '127.0.0.1',
+        port,
+        sessionId: 'abort-listener-test',
+        abort_signal: controller.signal,
+      });
+
+      controller.abort(new Error('persistence read-only'));
+      const outcome = await Promise.race([
+        connectAndClose(port).then(() => 'connected').catch(() => 'rejected'),
+        new Promise<string>(resolve => setTimeout(() => resolve('timeout'), 1500)),
+      ]);
+      expect(outcome).toBe('rejected');
+      expect(() => handle.close()).not.toThrow();
     });
   });
 });

@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import {
   deterministicActionId,
@@ -8,8 +10,6 @@ import {
   eventIdOrUuid,
 } from '../deterministic-id.js';
 import type { EngagementConfig } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-deterministic-id.json';
 
 const NONCE = 'a'.repeat(64);
 
@@ -23,10 +23,6 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
     opsec: { name: 'pentest', max_noise: 0.7 },
     ...overrides,
   };
-}
-
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
 }
 
 describe('deterministic-id (P1.2)', () => {
@@ -108,14 +104,24 @@ describe('deterministic-id (P1.2)', () => {
 
 describe('engine-context clock injection (P1.3)', () => {
   let engine: GraphEngine;
+  let testDir: string;
+  const engines = new Set<GraphEngine>();
+
+  function createEngine(config: EngagementConfig, filename = 'state.json'): GraphEngine {
+    const created = new GraphEngine(config, join(testDir, filename));
+    engines.add(created);
+    return created;
+  }
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-deterministic-id-'));
+    engine = createEngine(makeConfig({ engagement_nonce: NONCE }));
   });
 
   afterEach(() => {
-    cleanup();
+    for (const created of engines) created.dispose();
+    engines.clear();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('engine.now() honors withClock injection', () => {
@@ -136,9 +142,8 @@ describe('engine-context clock injection (P1.3)', () => {
   });
 
   it('event_ids are deterministic when nonce + pinned clock are both present', () => {
-    cleanup();
     const pinned = '2026-05-06T17:00:00.000Z';
-    const eng1 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE_FILE);
+    const eng1 = createEngine(makeConfig({ engagement_nonce: NONCE }), 'first.json');
     const idA = eng1.withClock(pinned, () => {
       const e = eng1.logActionEvent({
         description: 'identical event', event_type: 'system', provenance: 'system',
@@ -146,8 +151,7 @@ describe('engine-context clock injection (P1.3)', () => {
       return e.event_id;
     });
 
-    cleanup();
-    const eng2 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE_FILE);
+    const eng2 = createEngine(makeConfig({ engagement_nonce: NONCE }), 'second.json');
     const idB = eng2.withClock(pinned, () => {
       const e = eng2.logActionEvent({
         description: 'identical event', event_type: 'system', provenance: 'system',
@@ -160,8 +164,7 @@ describe('engine-context clock injection (P1.3)', () => {
   });
 
   it('legacy engagements (no nonce) keep uuidv4 event_ids', () => {
-    cleanup();
-    const eng = new GraphEngine(makeConfig(), TEST_STATE_FILE); // no nonce
+    const eng = createEngine(makeConfig(), 'legacy.json'); // no nonce
     const e = eng.logActionEvent({
       description: 'legacy event',
       event_type: 'system',

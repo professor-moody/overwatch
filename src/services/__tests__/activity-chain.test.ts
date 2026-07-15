@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, unlinkSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerStateTools } from '../../tools/state.js';
 import { registerTranscriptTools } from '../../tools/transcripts.js';
 import { verifyChain, computeEventHash, GENESIS_HASH, shouldChainEntry } from '../activity-chain.js';
 import type { EngagementConfig } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-activity-chain.json';
 
 function makeConfig(hash_chain_enabled: boolean): EngagementConfig {
   return {
@@ -21,18 +21,31 @@ function makeConfig(hash_chain_enabled: boolean): EngagementConfig {
   };
 }
 
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { rmSync('./evidence-test-activity-chain', { recursive: true, force: true }); } catch {}
+let testDir: string;
+const engines = new Set<GraphEngine>();
+
+function createEngine(config: EngagementConfig, filename = 'state.json'): GraphEngine {
+  const engine = new GraphEngine(config, join(testDir, filename));
+  engines.add(engine);
+  return engine;
 }
+
+beforeEach(() => {
+  testDir = mkdtempSync(join(tmpdir(), 'overwatch-activity-chain-'));
+});
+
+afterEach(() => {
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  rmSync(testDir, { recursive: true, force: true });
+});
 
 describe('activity-chain (Phase 6)', () => {
   let engine: GraphEngine;
   let handlers: Record<string, (args: any) => Promise<any>>;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(true), TEST_STATE_FILE);
+    engine = createEngine(makeConfig(true));
     handlers = {};
     const fakeServer = {
       registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
@@ -41,10 +54,6 @@ describe('activity-chain (Phase 6)', () => {
     } as unknown as McpServer;
     registerStateTools(fakeServer, engine);
     registerTranscriptTools(fakeServer, engine);
-  });
-
-  afterEach(() => {
-    cleanup();
   });
 
   it('shouldChainEntry rule matches plan: agent/system non-thought participate; ingested/inferred/thought excluded', () => {
@@ -128,7 +137,10 @@ describe('activity-chain (Phase 6)', () => {
 
     // Force persistence then reload
     engine.persist();
-    const engine2 = new GraphEngine(makeConfig(true), TEST_STATE_FILE);
+    engine.flushNow();
+    engine.dispose();
+    engines.delete(engine);
+    const engine2 = createEngine(makeConfig(true));
 
     // Engine init logs a 'Resumed engagement from persisted state' system event;
     // it is itself part of the chain. We just need the chain to remain valid and
@@ -145,8 +157,7 @@ describe('activity-chain (Phase 6)', () => {
   });
 
   it('hash_chain_enabled=false: no hashes emitted, verify_activity_chain reports chain_disabled', async () => {
-    cleanup();
-    const e2 = new GraphEngine(makeConfig(false), TEST_STATE_FILE);
+    const e2 = createEngine(makeConfig(false), 'disabled.json');
     const h2: Record<string, any> = {};
     const fakeServer = {
       registerTool(name: string, _c: unknown, handler: any) { h2[name] = handler; },
@@ -166,7 +177,10 @@ describe('activity-chain (Phase 6)', () => {
   it('verify_activity_chain tool returns isError=true on tamper', async () => {
     engine.logActionEvent({ description: 'one', event_type: 'action_started', provenance: 'agent' });
     engine.logActionEvent({ description: 'two', event_type: 'action_completed', provenance: 'agent' });
-    engine.getFullHistory()[0].description = 'TAMPER';
+    // Public read surfaces are detached so callers cannot mutate durable state.
+    // Reach through the test-only internal context to simulate on-disk/runtime
+    // corruption for the verifier itself.
+    (engine as any).ctx.activityLog[0].description = 'TAMPER';
 
     const result = await handlers.verify_activity_chain({});
     expect(result.isError).toBe(true);
@@ -180,8 +194,7 @@ describe('activity-chain (Phase 6)', () => {
     const kp = generateCheckpointKeypair();
     const prev = process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY;
     process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = Buffer.from(kp.publicKeyPem, 'utf8').toString('base64');
-    const stateFile = './state-test-ac-empty.json';
-    const e3 = new GraphEngine(makeConfig(true), stateFile);
+    const e3 = createEngine(makeConfig(true), 'empty.json');
     const h3: Record<string, any> = {};
     registerStateTools({ registerTool(n: string, _c: unknown, fn: any) { h3[n] = fn; } } as unknown as McpServer, e3);
     try {
@@ -193,7 +206,6 @@ describe('activity-chain (Phase 6)', () => {
       expect(payload.checkpoint_attestation.reason).toMatch(/no checkpoints/i);
     } finally {
       if (prev === undefined) delete process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY; else process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = prev;
-      try { if (existsSync(stateFile)) unlinkSync(stateFile); } catch {}
     }
   });
 
@@ -229,11 +241,10 @@ describe('activity-chain (Phase 6)', () => {
     const prevNonce = process.env.OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE;
     process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = Buffer.from(kp.privateKeyPem, 'utf8').toString('base64');
     process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = Buffer.from(kp.publicKeyPem, 'utf8').toString('base64');
-    const stateFile = './state-test-ac-anchor.json';
     // Engagement with a specific nonce; the external anchor will DISAGREE (splice).
     const cfg = makeConfig(true);
     (cfg as any).engagement_nonce = 'engagement-A';
-    const eA = new GraphEngine(cfg, stateFile);
+    const eA = createEngine(cfg, 'anchor.json');
     const hA: Record<string, any> = {};
     registerStateTools({ registerTool(n: string, _c: unknown, fn: any) { hA[n] = fn; } } as unknown as McpServer, eA);
     try {
@@ -252,7 +263,6 @@ describe('activity-chain (Phase 6)', () => {
       restore('OVERWATCH_CHECKPOINT_PUBLIC_KEY', prevPub);
       restore('OVERWATCH_CHECKPOINT_SIGNING_KEY', prevSign);
       restore('OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE', prevNonce);
-      try { if (existsSync(stateFile)) unlinkSync(stateFile); } catch {}
     }
   });
 
@@ -263,8 +273,7 @@ describe('activity-chain (Phase 6)', () => {
     const prevPub = process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY;
     process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = Buffer.from(kp.privateKeyPem, 'utf8').toString('base64');
     process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = Buffer.from(kp.publicKeyPem, 'utf8').toString('base64');
-    const stateFile = './state-test-ac-signed-verify.json';
-    const e4 = new GraphEngine(makeConfig(true), stateFile);
+    const e4 = createEngine(makeConfig(true), 'signed-verify.json');
     const h4: Record<string, any> = {};
     registerStateTools({ registerTool(n: string, _c: unknown, fn: any) { h4[n] = fn; } } as unknown as McpServer, e4);
     try {
@@ -280,7 +289,6 @@ describe('activity-chain (Phase 6)', () => {
     } finally {
       if (prevSign === undefined) delete process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY; else process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = prevSign;
       if (prevPub === undefined) delete process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY; else process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = prevPub;
-      try { if (existsSync(stateFile)) unlinkSync(stateFile); } catch {}
     }
   });
 
@@ -347,8 +355,7 @@ describe('activity-chain P0.2 (checkpoints)', () => {
   });
 
   it('engine emits a checkpoint after first chained event when chain is enabled', () => {
-    cleanup();
-    const eng = new GraphEngine(makeConfig(true), TEST_STATE_FILE);
+    const eng = createEngine(makeConfig(true));
     // The engine may already have emitted the first checkpoint from init-time
     // chained events (engagement creation logs a system event). What we
     // assert is that AT LEAST ONE checkpoint exists once the chain is non-empty.
@@ -365,8 +372,7 @@ describe('activity-chain P0.2 (checkpoints)', () => {
   });
 
   it('verifyCheckpoints flags mismatches against tampered events', () => {
-    cleanup();
-    const eng = new GraphEngine(makeConfig(true), TEST_STATE_FILE);
+    const eng = createEngine(makeConfig(true));
     eng.logActionEvent({ description: 'first', event_type: 'action_started', provenance: 'agent' });
     const log = eng.getFullHistory();
     const checkpoints = (eng as any).ctx.chainCheckpoints as ReturnType<typeof buildCheckpoint>[];
@@ -378,8 +384,7 @@ describe('activity-chain P0.2 (checkpoints)', () => {
   });
 
   it('verifyChain accepts a starting point so it does not have to walk from genesis', () => {
-    cleanup();
-    const eng = new GraphEngine(makeConfig(true), TEST_STATE_FILE);
+    const eng = createEngine(makeConfig(true));
     for (let i = 0; i < 5; i++) {
       eng.logActionEvent({
         description: `e${i}`,
@@ -514,9 +519,8 @@ describe('checkpoint signing (Ed25519)', () => {
     const kp = generateCheckpointKeypair();
     const prev = process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY;
     process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = Buffer.from(kp.privateKeyPem, 'utf8').toString('base64');
-    const stateFile = './state-test-activity-chain-signed.json';
     try {
-      const signedEngine = new GraphEngine(makeConfig(true), stateFile);
+      const signedEngine = createEngine(makeConfig(true), 'signed.json');
       signedEngine.logActionEvent({ description: 'agent action', event_type: 'action_started', provenance: 'agent' });
       const cps = signedEngine.getChainCheckpoints();
       expect(cps.length).toBeGreaterThan(0);
@@ -526,7 +530,6 @@ describe('checkpoint signing (Ed25519)', () => {
       expect(verifyCheckpointSignature(cp, kp.publicKeyPem)).toBe(true);
     } finally {
       if (prev === undefined) delete process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY; else process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = prev;
-      try { if (existsSync(stateFile)) unlinkSync(stateFile); } catch {}
     }
   });
 });

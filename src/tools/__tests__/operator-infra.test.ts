@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerOperatorInfraTools, mockServiceId, registerMockServiceCore } from '../operator-infra.js';
 import type { EngagementConfig } from '../../types.js';
 
-const TEST_STATE_FILE = './state-test-operator-infra.json';
+let testDir: string;
+let testStateFile: string;
+const engines = new Set<GraphEngine>();
 
 function makeConfig(): EngagementConfig {
   return {
@@ -18,9 +22,22 @@ function makeConfig(): EngagementConfig {
   };
 }
 
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
+function createEngine(): GraphEngine {
+  const engine = new GraphEngine(makeConfig(), testStateFile);
+  engines.add(engine);
+  return engine;
 }
+
+beforeEach(() => {
+  testDir = mkdtempSync(join(tmpdir(), 'overwatch-operator-infra-'));
+  testStateFile = join(testDir, 'state.json');
+});
+
+afterEach(() => {
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  rmSync(testDir, { recursive: true, force: true });
+});
 
 function parse(result: any): any {
   return JSON.parse(result.content[0].text);
@@ -31,8 +48,7 @@ describe('register_mock_service', () => {
   let handlers: Record<string, (args: any) => Promise<any>>;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine = createEngine();
     handlers = {};
     const fakeServer = {
       registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
@@ -40,10 +56,6 @@ describe('register_mock_service', () => {
       },
     } as unknown as McpServer;
     registerOperatorInfraTools(fakeServer, engine);
-  });
-
-  afterEach(() => {
-    cleanup();
   });
 
   it('creates a mock_service node and emits mock_service_registered event', async () => {
@@ -144,11 +156,8 @@ describe('BAITED inference rule', () => {
   let engine: GraphEngine;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine = createEngine();
   });
-
-  afterEach(() => cleanup());
 
   it('emits BAITED edge when a credential is reported with via_mock_service_id', () => {
     const nowIso = new Date().toISOString();

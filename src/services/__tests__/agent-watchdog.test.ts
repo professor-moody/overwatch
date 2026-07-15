@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import { AgentWatchdog } from '../agent-watchdog.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-agent-watchdog.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -15,10 +15,6 @@ function makeConfig(): EngagementConfig {
     objectives: [],
     opsec: { name: 'pentest', max_noise: 0.7 },
   };
-}
-
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
 }
 
 function makeRunningTask(overrides: Partial<AgentTask> = {}): AgentTask {
@@ -37,14 +33,24 @@ function makeRunningTask(overrides: Partial<AgentTask> = {}): AgentTask {
 
 describe('AgentWatchdog (P0.3)', () => {
   let engine: GraphEngine;
+  let testDir: string;
+  const engines = new Set<GraphEngine>();
+
+  function createEngine(config = makeConfig(), filename = 'state.json'): GraphEngine {
+    const created = new GraphEngine(config, join(testDir, filename));
+    engines.add(created);
+    return created;
+  }
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-agent-watchdog-'));
+    engine = createEngine();
   });
 
   afterEach(() => {
-    cleanup();
+    for (const created of engines) created.dispose();
+    engines.clear();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('reaps tasks whose heartbeat is older than TTL', () => {
@@ -168,9 +174,8 @@ describe('AgentWatchdog (P0.3)', () => {
   });
 
   it('heartbeat events are NOT chained when hash chain is on', () => {
-    cleanup();
     const cfg = { ...makeConfig(), hash_chain_enabled: true };
-    const eng = new GraphEngine(cfg, TEST_STATE_FILE);
+    const eng = createEngine(cfg, 'hash-chain-state.json');
     const task = makeRunningTask({ id: 'chain-1' });
     eng.registerAgent(task);
     eng.agentHeartbeat('chain-1');

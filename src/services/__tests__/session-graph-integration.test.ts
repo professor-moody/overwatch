@@ -1,9 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import type { EngagementConfig } from '../../types.js';
-import { unlinkSync, existsSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, unlinkSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
-const TEST_STATE_FILE = './state-test-session-graph.json';
+const engines = new Set<GraphEngine>();
+const testDirs = new Set<string>();
+const statePaths = new WeakMap<GraphEngine, string>();
 
 function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig {
   return {
@@ -28,9 +32,24 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
 }
 
 function cleanup() {
-  for (const f of [TEST_STATE_FILE, `${TEST_STATE_FILE}.snapshot`]) {
-    if (existsSync(f)) unlinkSync(f);
-  }
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  for (const dir of testDirs) rmSync(dir, { recursive: true, force: true });
+  testDirs.clear();
+}
+
+function createEngine(config: EngagementConfig = makeConfig()): GraphEngine {
+  const dir = mkdtempSync(join(tmpdir(), 'overwatch-session-graph-'));
+  testDirs.add(dir);
+  const statePath = join(dir, 'state.json');
+  const engine = new GraphEngine(config, statePath);
+  engines.add(engine);
+  statePaths.set(engine, statePath);
+  return engine;
+}
+
+function statePathFor(engine: GraphEngine): string {
+  return statePaths.get(engine)!;
 }
 
 function seedHostAndUser(engine: GraphEngine) {
@@ -62,7 +81,7 @@ describe('ingestSessionResult success path', () => {
   afterEach(cleanup);
 
   it('creates HAS_SESSION edge with correct attributes', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
 
     engine.ingestSessionResult({
@@ -89,7 +108,7 @@ describe('ingestSessionResult success path', () => {
   });
 
   it('keeps the HAS_SESSION edge live when one of two concurrent sessions closes (ref-count)', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
     const base = { success: true, confirmed: true, target_node: 'host-10-10-10-1', principal_node: 'user-root' };
     engine.ingestSessionResult({ ...base, session_id: 'sess-A' });
@@ -110,7 +129,7 @@ describe('ingestSessionResult success path', () => {
   });
 
   it('logs session_access_confirmed with correct top-level action_id and frontier_item_id', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
 
     engine.ingestSessionResult({
@@ -135,7 +154,7 @@ describe('ingestSessionResult success path', () => {
   });
 
   it('does NOT create HAS_SESSION edge when confirmed=false', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
 
     engine.ingestSessionResult({
@@ -159,7 +178,7 @@ describe('ingestSessionResult success path', () => {
   });
 
   it('creates HAS_SESSION edge when principal_node is a credential', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndCredential(engine);
 
     engine.ingestSessionResult({
@@ -184,7 +203,7 @@ describe('ingestSessionResult failure path', () => {
   afterEach(cleanup);
 
   it('logs session_error NOT session_access_confirmed', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
 
     engine.ingestSessionResult({
@@ -207,7 +226,7 @@ describe('ingestSessionResult failure path', () => {
   });
 
   it('includes action_id and frontier_item_id at top level on failure', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
 
     engine.ingestSessionResult({
@@ -229,7 +248,7 @@ describe('ingestSessionResult failure path', () => {
   });
 
   it('marks frontier edge as tested with failure', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding({
       id: 'f-edge-setup', agent_id: 'test', timestamp: new Date().toISOString(),
       nodes: [
@@ -262,7 +281,7 @@ describe('ingestSessionResult failure path', () => {
   });
 
   it('does NOT create HAS_SESSION edge on failure', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
 
     engine.ingestSessionResult({
@@ -285,7 +304,7 @@ describe('ingestSessionResult with non-eligible principal type', () => {
   afterEach(cleanup);
 
   it('does NOT create HAS_SESSION edge when principal is a host', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding({
       id: 'f-two-hosts', agent_id: 'test', timestamp: new Date().toISOString(),
       nodes: [
@@ -312,7 +331,7 @@ describe('ingestSessionResult with non-eligible principal type', () => {
   });
 
   it('still logs session_access_confirmed even without HAS_SESSION edge', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding({
       id: 'f-host-only', agent_id: 'test', timestamp: new Date().toISOString(),
       nodes: [
@@ -338,7 +357,7 @@ describe('ingestSessionResult with non-eligible principal type', () => {
   });
 
   it('still calls persist after ingest with non-eligible principal', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding({
       id: 'f-host-persist', agent_id: 'test', timestamp: new Date().toISOString(),
       nodes: [
@@ -355,11 +374,11 @@ describe('ingestSessionResult with non-eligible principal type', () => {
       session_id: 'sess-host-persist',
     });
 
-    expect(existsSync(TEST_STATE_FILE)).toBe(true);
+    expect(existsSync(statePathFor(engine))).toBe(true);
   });
 
   it('does NOT create HAS_SESSION when principal is a service', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding({
       id: 'f-svc-principal', agent_id: 'test', timestamp: new Date().toISOString(),
       nodes: [
@@ -389,11 +408,11 @@ describe('ingestSessionResult calls persist', () => {
   afterEach(cleanup);
 
   it('state file exists after successful ingestSessionResult', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
 
     // Delete state file to prove persist is called by ingestSessionResult
-    if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
+    if (existsSync(statePathFor(engine))) unlinkSync(statePathFor(engine));
 
     engine.ingestSessionResult({
       success: true,
@@ -403,14 +422,14 @@ describe('ingestSessionResult calls persist', () => {
     });
     engine.flushNow();
 
-    expect(existsSync(TEST_STATE_FILE)).toBe(true);
+    expect(existsSync(statePathFor(engine))).toBe(true);
   });
 
   it('state file exists after failed ingestSessionResult', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
 
-    if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
+    if (existsSync(statePathFor(engine))) unlinkSync(statePathFor(engine));
 
     engine.ingestSessionResult({
       success: false,
@@ -420,7 +439,7 @@ describe('ingestSessionResult calls persist', () => {
     });
     engine.flushNow();
 
-    expect(existsSync(TEST_STATE_FILE)).toBe(true);
+    expect(existsSync(statePathFor(engine))).toBe(true);
   });
 });
 
@@ -431,7 +450,7 @@ describe('has_session_edge_created telemetry', () => {
   afterEach(cleanup);
 
   it('is true when edge was actually created (user principal)', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
 
     engine.ingestSessionResult({
@@ -450,7 +469,7 @@ describe('has_session_edge_created telemetry', () => {
   });
 
   it('is false when principal_node is absent (no edge created)', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding({
       id: 'f-host-only', agent_id: 'test', timestamp: new Date().toISOString(),
       nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), confidence: 1.0 }],
@@ -470,7 +489,7 @@ describe('has_session_edge_created telemetry', () => {
   });
 
   it('is false when principal_node is a host (non-eligible type)', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding({
       id: 'f-two-hosts-t', agent_id: 'test', timestamp: new Date().toISOString(),
       nodes: [
@@ -495,7 +514,7 @@ describe('has_session_edge_created telemetry', () => {
   });
 
   it('is false when principal_node does not exist in graph', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding({
       id: 'f-solo-host', agent_id: 'test', timestamp: new Date().toISOString(),
       nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), confidence: 1.0 }],
@@ -516,7 +535,7 @@ describe('has_session_edge_created telemetry', () => {
   });
 
   it('is true only for credential principal (valid source type)', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndCredential(engine);
 
     engine.ingestSessionResult({
@@ -534,7 +553,7 @@ describe('has_session_edge_created telemetry', () => {
   });
 
   it('not present in session_error events (failure path)', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     seedHostAndUser(engine);
 
     engine.ingestSessionResult({

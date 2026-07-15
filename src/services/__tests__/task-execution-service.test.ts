@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import { ProcessTracker } from '../process-tracker.js';
 import { TaskExecutionService, resolveTaskBackend } from '../task-execution-service.js';
 import { scriptedCanHandle } from '../scripted-agent-runner.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-task-execution.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -19,8 +19,23 @@ function makeConfig(): EngagementConfig {
   };
 }
 
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch { /* ignore */ }
+let testDir: string;
+const engines = new Set<GraphEngine>();
+
+function createEngine(filename = 'state.json'): GraphEngine {
+  const engine = new GraphEngine(makeConfig(), join(testDir, filename));
+  engines.add(engine);
+  return engine;
+}
+
+function setupTestDir(): void {
+  testDir = mkdtempSync(join(tmpdir(), 'overwatch-task-execution-'));
+}
+
+function cleanupTestDir(): void {
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  rmSync(testDir, { recursive: true, force: true });
 }
 
 function runningTask(overrides: Partial<AgentTask> = {}): AgentTask {
@@ -54,14 +69,14 @@ describe('TaskExecutionService', () => {
   let svc: TaskExecutionService;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    setupTestDir();
+    engine = createEngine();
     svc = new TaskExecutionService(engine, new ProcessTracker());
   });
 
   afterEach(() => {
     svc.stop();
-    cleanup();
+    cleanupTestDir();
   });
 
   it('runs scripted-backend tasks WITHOUT a dashboard (decoupled execution)', async () => {
@@ -71,6 +86,35 @@ describe('TaskExecutionService', () => {
     engine.registerAgent(runningTask({ id: 'scripted-1', frontier_item_id: 'frontier-nonexistent' }));
     await settle();
     expect(engine.getTask('scripted-1')?.status).toBe('completed');
+  });
+
+  it('does not start scripted, headless, or orchestrator work while persistence is read-only', async () => {
+    engine.registerAgent(runningTask({
+      id: 'degraded-scripted',
+      backend: 'scripted',
+      frontier_item_id: 'frontier-nonexistent',
+    }));
+    engine.updateConfig({ orchestrator: { enabled: true } });
+    const historyCount = engine.getFullHistory().length;
+    const writable = vi.spyOn(engine, 'isPersistenceWritable').mockReturnValue(false);
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      svc.start();
+      // HTTP startup binds the endpoint after calling start(). This must not
+      // back-door an orchestrator launch when start() declined degraded work.
+      svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+      await settle();
+
+      expect(engine.getTask('degraded-scripted')?.status).toBe('running');
+      expect(engine.getAgentTasks().filter(task => task.orchestrator === true)).toHaveLength(0);
+      expect(svc.activeHeadlessCount()).toBe(0);
+      expect(engine.getFullHistory()).toHaveLength(historyCount);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('task execution not started'));
+    } finally {
+      stderr.mockRestore();
+      writable.mockRestore();
+    }
   });
 
   it('does NOT execute headless_mcp tasks (no runtime until 1B) and logs a deferral', async () => {
@@ -130,8 +174,8 @@ describe('TaskExecutionService', () => {
 
 describe('archetype ↔ scripted routing boundary', () => {
   let engine: GraphEngine;
-  beforeEach(() => { cleanup(); engine = new GraphEngine(makeConfig(), TEST_STATE_FILE); });
-  afterEach(() => { cleanup(); });
+  beforeEach(() => { setupTestDir(); engine = createEngine(); });
+  afterEach(() => { cleanupTestDir(); });
 
   function taskAt(frontierItemId: string, archetype: string): AgentTask {
     return {

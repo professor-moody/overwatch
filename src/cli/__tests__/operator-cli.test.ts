@@ -196,6 +196,42 @@ describe('renderers', () => {
     expect(out).toContain('Get DA');
   });
 
+  it('renderStatus shows a compact persistence recovery summary', () => {
+    const out = renderStatus({
+      state: {
+        engagement: { name: 'Recovery Test' },
+        persistence_recovery: {
+          outcome: 'incomplete',
+          source: 'state',
+          complete: false,
+          writable: false,
+          reason: 'sequence gap',
+          base_checkpoint: 2,
+          highest_allocated_seq: 6,
+          highest_on_disk_seq: 6,
+          highest_contiguous_applied_seq: 4,
+          consecutive_persistence_failures: 0,
+          journal: {
+            enabled: true,
+            read: 4,
+            attempted: 2,
+            applied: 2,
+            skipped: 0,
+            failed: 0,
+            malformed: false,
+            preserved: true,
+          },
+        },
+      },
+    });
+
+    expect(out).toContain('recovery');
+    expect(out).toContain('incomplete from state');
+    expect(out).toContain('seq 4/6');
+    expect(out).toContain('read-only');
+    expect(out).toContain('sequence gap');
+  });
+
   it('renderAgents fills the TASK column from skill/agent_id (not the nonexistent `task`)', () => {
     const out = renderAgents([
       { id: 'task-1', status: 'running', agent_id: 'network-recon-ab12', skill: 'network-recon', current_action: 'nmap' },

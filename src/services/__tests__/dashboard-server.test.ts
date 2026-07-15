@@ -2,15 +2,16 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { execFileSync } from 'child_process';
 import { PassThrough } from 'stream';
-import { unlinkSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
 import { InProcessTapeController } from '../in-process-tape.js';
 import type { EngagementConfig } from '../../types.js';
 
-const TEST_STATE_FILE = './state-test-dashboard.json';
+let testStateDir: string;
+let TEST_STATE_FILE: string;
 
 function makeConfig(overrides?: Partial<EngagementConfig>): EngagementConfig {
   return {
@@ -34,10 +35,16 @@ function makeConfig(overrides?: Partial<EngagementConfig>): EngagementConfig {
   };
 }
 
+const engines = new Set<GraphEngine>();
+
+function trackedEngine(...args: ConstructorParameters<typeof GraphEngine>): GraphEngine {
+  const engine = new GraphEngine(...args);
+  engines.add(engine);
+  return engine;
+}
+
 function cleanup() {
-  for (const f of [TEST_STATE_FILE, TEST_STATE_FILE.replace(/\.json$/, '.journal.jsonl'), './bundle-manifest.json']) {
-    try { if (existsSync(f)) unlinkSync(f); } catch {}
-  }
+  if (testStateDir) rmSync(testStateDir, { recursive: true, force: true });
 }
 
 function sentMessages(mockClient: { send: ReturnType<typeof vi.fn> }): any[] {
@@ -53,19 +60,92 @@ describe('DashboardServer', () => {
   let dashboard: DashboardServer;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testStateDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-test-'));
+    TEST_STATE_FILE = join(testStateDir, 'state-test-dashboard.json');
+    engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
     dashboard = new DashboardServer(engine, 8384);
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
     await dashboard.stop().catch(() => {});
+    for (const liveEngine of engines) liveEngine.dispose();
+    engines.clear();
     cleanup();
   });
 
   it('reports address property', () => {
     expect(dashboard.address).toBe('http://127.0.0.1:8384');
+  });
+
+  it('keeps degraded recovery state inspectable through GET /api/state', () => {
+    const recovery = {
+      outcome: 'incomplete' as const,
+      source: 'snapshot' as const,
+      complete: false,
+      writable: false,
+      reason: 'journal replay stopped at an unknown record',
+      base_checkpoint: 4,
+      highest_allocated_seq: 9,
+      highest_on_disk_seq: 9,
+      highest_contiguous_applied_seq: 6,
+      consecutive_persistence_failures: 0,
+      journal: {
+        enabled: true,
+        read: 5,
+        attempted: 3,
+        applied: 2,
+        skipped: 1,
+        failed: 0,
+        malformed: false,
+        preserved: true,
+      },
+    };
+    vi.spyOn(engine, 'isPersistenceWritable').mockReturnValue(false);
+    vi.spyOn(engine, 'getPersistenceRecoveryStatus').mockReturnValue(recovery);
+    const req = { url: '/api/state', method: 'GET', headers: {} } as any;
+    const res = {
+      statusCode: 0,
+      body: '',
+      setHeader() {},
+      writeHead(statusCode: number) { this.statusCode = statusCode; },
+      end(body?: string) { this.body = body || ''; },
+    };
+
+    (dashboard as any).handleHttpRoute(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).state.persistence_recovery).toEqual(recovery);
+  });
+
+  it('keeps scope preview available as a pure-read POST while degraded', async () => {
+    vi.spyOn(engine, 'isPersistenceWritable').mockReturnValue(false);
+    const preview = vi.spyOn(engine, 'previewScopeChange');
+    const req = new PassThrough() as any;
+    req.url = '/api/config/scope/preview';
+    req.method = 'POST';
+    req.headers = { 'content-type': 'application/json' };
+    const res = {
+      statusCode: 0,
+      body: '',
+      setHeader() {},
+      writeHead(statusCode: number) { this.statusCode = statusCode; },
+      end(body?: string) { this.body = body || ''; },
+    };
+
+    (dashboard as any).handleHttpRoute(req, res);
+    req.end(JSON.stringify({
+      cidrs: ['10.10.10.0/30', '10.20.0.0/16'],
+      domains: ['test.local'],
+      exclusions: [],
+    }));
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(res.statusCode).toBe(200);
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({
+      add_cidrs: ['10.20.0.0/16'],
+    }));
+    expect(JSON.parse(res.body).added.cidrs).toEqual(['10.20.0.0/16']);
   });
 
   it('attributes dashboard tape toggles to dashboard', async () => {
@@ -141,10 +221,10 @@ describe('DashboardServer', () => {
       writeFileSync(archivePath, Buffer.concat(chunks));
       const listing = execFileSync('tar', ['tzf', archivePath], { encoding: 'utf-8' }).split('\n').filter(Boolean);
       expect(res.statusCode).toBe(200);
-      expect(listing).toContain('state-test-dashboard.json');
-      expect(listing).toContain('state-test-dashboard.journal.jsonl');
+      expect(listing).toContain(basename(TEST_STATE_FILE));
+      expect(listing).toContain(basename(journalName));
       expect(listing).toContain('bundle-manifest.json');
-      expect(existsSync('./bundle-manifest.json')).toBe(false);
+      expect(existsSync(join(testStateDir, 'bundle-manifest.json'))).toBe(false);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -1003,6 +1083,55 @@ describe('DashboardServer', () => {
     expect(JSON.parse(res.body).metadata.title).toBe('New title');
   });
 
+  it('rechecks persistence after an async session-update body before mutating metadata', async () => {
+    const update = vi.fn();
+    (dashboard as any).sessionManager = { update };
+    const writable = vi.spyOn(engine, 'isPersistenceWritable').mockReturnValue(true);
+    const req = new PassThrough() as any;
+    req.headers = { 'content-type': 'application/json' };
+    req.url = '/api/sessions/abc-123';
+    const res = {
+      statusCode: 0,
+      body: '',
+      writeHead(statusCode: number) { this.statusCode = statusCode; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+
+    (dashboard as any).handleSessionUpdate('abc-123', req, res);
+    writable.mockReturnValue(false);
+    req.end(JSON.stringify({ title: 'must-not-land' }));
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(update).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'PERSISTENCE_READ_ONLY' });
+  });
+
+  it('does not leak a settings patch when persistence closes during body read', async () => {
+    const before = JSON.parse(JSON.stringify(engine.getConfig().opsec));
+    const writable = vi.spyOn(engine, 'isPersistenceWritable').mockReturnValue(true);
+    const req = new PassThrough() as any;
+    req.headers = { 'content-type': 'application/json' };
+    req.url = '/api/settings';
+    const res = {
+      statusCode: 0,
+      body: '',
+      writeHead(statusCode: number) { this.statusCode = statusCode; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+
+    (dashboard as any).handleUpdateSettings(req, res);
+    writable.mockReturnValue(false);
+    req.end(JSON.stringify({ enabled: true, max_noise: 1.5 }));
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(engine.getConfig().opsec).toEqual(before);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'PERSISTENCE_READ_ONLY' });
+  });
+
   it('serveSessionBuffer reads tail text through the manager', () => {
     const read = vi.fn(() => ({
       session_id: 'abc-123',
@@ -1204,6 +1333,45 @@ describe('DashboardServer', () => {
 
     // Cleanup
     listeners['close']?.[0]?.();
+    vi.useRealTimers();
+  });
+
+  it('blocks an existing session socket when persistence becomes read-only', () => {
+    vi.useFakeTimers();
+    const mockMeta = { id: 'sess-1', state: 'connected', title: 'Shell', kind: 'pty' };
+    const writeSpy = vi.fn();
+    (dashboard as any).sessionManager = {
+      getSession: () => mockMeta,
+      read: vi.fn().mockReturnValue({ text: '', end_pos: 0, start_pos: 0, truncated: false }),
+      write: writeSpy,
+      resize: vi.fn(),
+    };
+
+    const writableSpy = vi.spyOn(engine, 'isPersistenceWritable').mockReturnValue(false);
+    const listeners: Record<string, Function[]> = {};
+    const sent: string[] = [];
+    const mockWs = {
+      close: vi.fn(),
+      on: vi.fn((event: string, cb: Function) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(cb);
+      }),
+      send: vi.fn((data: string) => sent.push(data)),
+      readyState: WebSocket.OPEN,
+    };
+
+    (dashboard as any).handleSessionConnection(mockWs, 'sess-1');
+    listeners.message[0](JSON.stringify({ type: 'input', data: 'id\n' }));
+
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(sent.map(message => JSON.parse(message))).toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'PERSISTENCE_READ_ONLY',
+    }));
+    expect(mockWs.close).toHaveBeenCalledWith(4503, 'Persistence is read-only');
+
+    listeners.close?.[0]?.();
+    writableSpy.mockRestore();
     vi.useRealTimers();
   });
 
@@ -1920,18 +2088,17 @@ describe('DashboardServer', () => {
   describe('non-loopback read auth', () => {
     let nlEngine: GraphEngine;
     let nlDashboard: DashboardServer;
-    const NL_STATE = './state-test-dashboard-nl.json';
+    let nlState: string;
 
     beforeEach(() => {
-      try { if (existsSync(NL_STATE)) unlinkSync(NL_STATE); } catch {}
-      nlEngine = new GraphEngine(makeConfig({ id: 'test-dashboard-nl' }), NL_STATE);
+      nlState = join(testStateDir, 'state-test-dashboard-nl.json');
+      nlEngine = trackedEngine(makeConfig({ id: 'test-dashboard-nl' }), nlState);
       nlDashboard = new DashboardServer(nlEngine, 0, '0.0.0.0');
     });
 
     afterEach(async () => {
       delete process.env.OVERWATCH_DASHBOARD_TOKEN;
       await nlDashboard.stop().catch(() => {});
-      try { if (existsSync(NL_STATE)) unlinkSync(NL_STATE); } catch {}
     });
 
     function nlReq(url: string, headers: Record<string, string> = {}) {

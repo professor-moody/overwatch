@@ -155,6 +155,7 @@ export type SessionEventCallback = (event: SessionEvent) => void;
 
 const MAX_CLOSED_SESSIONS = 50;
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const PERSISTENCE_GATE_POLL_MS = 250;
 
 export interface SessionCreateOptions {
   kind: SessionKind;
@@ -196,10 +197,14 @@ export class SessionManager {
   private engine: GraphEngine | null;
   private idleTimeoutMs: number;
   private eventListeners: Set<SessionEventCallback> = new Set();
+  private persistenceGateTimer: ReturnType<typeof setInterval> | null = null;
+  private persistenceFrozen = false;
+  private persistenceAbortController = new AbortController();
 
   constructor(engine: GraphEngine | null = null, idleTimeoutMs?: number) {
     this.engine = engine;
     this.idleTimeoutMs = idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    this.startPersistenceGateMonitor();
   }
 
   registerAdapter(adapter: SessionAdapterFactory): void {
@@ -212,6 +217,7 @@ export class SessionManager {
   }
 
   async create(options: SessionCreateOptions): Promise<{ metadata: SessionMetadata; initial: SessionReadResult }> {
+    this.assertPersistenceWritable();
     const adapter = this.adapters.get(options.kind);
     if (!adapter) {
       throw new Error(`No adapter registered for session kind: ${options.kind}`);
@@ -268,6 +274,7 @@ export class SessionManager {
     this.sessions.set(id, session);
 
     try {
+      this.assertPersistenceWritable();
       const handle = await adapter.spawn({
         host: options.host,
         user: options.user,
@@ -285,8 +292,21 @@ export class SessionManager {
         advertise_host: options.advertise_host,
         accept_mode: options.accept_mode,
         sessionId: id,
-        onConnect: () => this.handleConnect(id),
+        onConnect: () => {
+          try { this.handleConnect(id); } catch { this.checkPersistenceGate(); }
+        },
+        // Built-in adapters use this to cancel a connect/listen/PTY spawn that
+        // is still pending when persistence transitions to read-only.
+        abort_signal: this.persistenceAbortController.signal,
       });
+
+      // Adapter setup may involve DNS, SSH, or binding a listener. If the gate
+      // closed while it was pending, tear the newly-created runtime handle down
+      // before it can become an untracked target execution surface.
+      if (!this.checkPersistenceGate()) {
+        try { handle.close(); } catch { /* best-effort freeze */ }
+        throw this.persistenceReadOnlyError();
+      }
 
       session.handle = handle;
       session.metadata.pid = handle.pid;
@@ -294,24 +314,34 @@ export class SessionManager {
 
       // Wire output to ring buffer
       handle.onData((chunk: string) => {
+        if (!this.checkPersistenceGate()) return;
         session.buffer.write(chunk);
         session.metadata.buffer_end_pos = session.buffer.endPos;
         session.metadata.last_activity_at = new Date().toISOString();
       });
 
       handle.onExit((info) => {
-        if (session.metadata.state !== 'closed') {
-          session.metadata.state = 'closed';
-          session.metadata.closed_at = new Date().toISOString();
-          this.logSessionEvent(id, 'session_closed',
-            `Session "${session.metadata.title}" exited (code=${info.exitCode}, signal=${info.signal})`);
-          this.notifySessionClosed(session);
-          this.emitSessionEvent('session_closed', session);
+        if (!this.checkPersistenceGate()) return;
+        try {
+          if (session.metadata.state !== 'closed') {
+            session.metadata.state = 'closed';
+            session.metadata.closed_at = new Date().toISOString();
+            this.logSessionEvent(id, 'session_closed',
+              `Session "${session.metadata.title}" exited (code=${info.exitCode}, signal=${info.signal})`);
+            this.notifySessionClosed(session);
+            this.emitSessionEvent('session_closed', session);
+          }
+          this.pruneClosedSessions();
+        } catch {
+          // Adapter event callbacks must never escape into EventEmitter. If the
+          // write gate closed between checks, freeze owns truthful cleanup.
+          this.checkPersistenceGate();
         }
-        this.pruneClosedSessions();
       });
       if (handle.onDisconnect) {
-        handle.onDisconnect(() => this.handleDisconnect(id));
+        handle.onDisconnect(() => {
+          try { this.handleDisconnect(id); } catch { this.checkPersistenceGate(); }
+        });
       }
 
       // For PTY-backed sessions, mark connected immediately
@@ -328,6 +358,7 @@ export class SessionManager {
       if (waitMs > 0) {
         await this.waitForInitialOutput(session, waitMs);
       }
+      if (!this.checkPersistenceGate()) throw this.persistenceReadOnlyError();
 
       // Session → graph integration: SSH sessions with target_node
       // Deferred until after waitForInitialOutput so we can check for auth failures
@@ -352,6 +383,7 @@ export class SessionManager {
         let confirmed = false;
         if (!authFailed && !authPrompt && !sessionDied) {
           confirmed = await this.detectSshAuthSuccess(session);
+          if (!this.checkPersistenceGate()) throw this.persistenceReadOnlyError();
         }
 
         // success = authentication was positively established (shell confirmed),
@@ -403,16 +435,20 @@ export class SessionManager {
         },
       };
     } catch (err) {
-      session.metadata.state = 'error';
+      const persistenceDegraded = !this.checkPersistenceGate();
+      session.metadata.state = persistenceDegraded ? 'closed' : 'error';
       session.metadata.closed_at = new Date().toISOString();
       if (session.handle) {
         try { session.handle.close(); } catch { /* ignore cleanup errors */ }
+        session.handle = null;
       }
-      this.logSessionEvent(id, 'session_error',
-        `Session "${options.title}" failed to open: ${err instanceof Error ? err.message : String(err)}`);
+      if (!persistenceDegraded) {
+        this.logSessionEvent(id, 'session_error',
+          `Session "${options.title}" failed to open: ${err instanceof Error ? err.message : String(err)}`);
+      }
 
       // Session → graph integration: mark failure on specific frontier item
-      if (this.engine && options.kind === 'ssh' && options.target_node) {
+      if (!persistenceDegraded && this.engine && options.kind === 'ssh' && options.target_node) {
         this.engine.ingestSessionResult({
           success: false,
           target_node: options.target_node,
@@ -430,6 +466,7 @@ export class SessionManager {
   }
 
   write(sessionId: string, data: string, claimedBy?: string, force?: boolean): { session_id: string; end_pos: number } {
+    this.assertPersistenceWritable();
     this.reapIdleSessions();
     const session = this.getSessionOrThrow(sessionId);
     this.assertConnected(session);
@@ -439,6 +476,7 @@ export class SessionManager {
       throw new Error(`Session ${sessionId} has no active handle`);
     }
 
+    this.assertPersistenceWritable();
     session.handle.write(data);
     session.metadata.last_activity_at = new Date().toISOString();
     return { session_id: sessionId, end_pos: session.buffer.endPos };
@@ -462,6 +500,7 @@ export class SessionManager {
     command: string,
     options: { timeout_ms?: number; idle_ms?: number; wait_for?: string; claimedBy?: string; force?: boolean } = {},
   ): Promise<SessionReadResult> {
+    this.assertPersistenceWritable();
     const session = this.getSessionOrThrow(sessionId);
     this.assertConnected(session);
     this.assertOwnership(session, options.claimedBy, options.force);
@@ -499,6 +538,7 @@ export class SessionManager {
     if (!session.handle) {
       throw new Error(`Session ${sessionId} has no active handle`);
     }
+    this.assertPersistenceWritable();
     session.handle.write(command + '\n');
     session.metadata.last_activity_at = new Date().toISOString();
 
@@ -537,6 +577,10 @@ export class SessionManager {
 
       const checkIdle = () => {
         if (finished) return;
+        if (!this.checkPersistenceGate()) {
+          finish('session_closed');
+          return;
+        }
         const currentEnd = session.buffer.endPos;
 
         if (waitForRegex) {
@@ -560,6 +604,10 @@ export class SessionManager {
       // Check every 50ms. Once output arrives, transition to Phase 2.
       const waitInterval = setInterval(() => {
         if (finished) { clearInterval(waitInterval); return; }
+        if (!this.checkPersistenceGate()) {
+          finish('session_closed');
+          return;
+        }
         // Detect session shutdown mid-command so callers don't have to
         // infer it from an empty `idle` return.
         if (session.metadata.state === 'closed' || session.metadata.state === 'error' || !session.handle) {
@@ -593,6 +641,7 @@ export class SessionManager {
   }
 
   resize(sessionId: string, cols: number, rows: number, claimedBy?: string, force?: boolean): void {
+    this.assertPersistenceWritable();
     const session = this.getSessionOrThrow(sessionId);
     this.assertConnected(session);
     this.assertOwnership(session, claimedBy, force);
@@ -602,11 +651,13 @@ export class SessionManager {
     }
 
     if (session.handle?.resize) {
+      this.assertPersistenceWritable();
       session.handle.resize(cols, rows);
     }
   }
 
   signal(sessionId: string, sig: string, claimedBy?: string, force?: boolean): void {
+    this.assertPersistenceWritable();
     const session = this.getSessionOrThrow(sessionId);
     this.assertConnected(session);
     this.assertOwnership(session, claimedBy, force);
@@ -616,6 +667,7 @@ export class SessionManager {
     }
 
     if (session.handle?.kill) {
+      this.assertPersistenceWritable();
       session.handle.kill(sig);
       this.logSessionEvent(sessionId, 'session_signaled',
         `Signal ${sig} sent to session "${session.metadata.title}"`);
@@ -628,8 +680,10 @@ export class SessionManager {
     claimed_by?: string;
     notes?: string;
   }, claimedBy?: string, force?: boolean): SessionMetadata {
+    this.assertPersistenceWritable();
     const session = this.getSessionOrThrow(sessionId);
     this.assertOwnership(session, claimedBy, force);
+    this.assertPersistenceWritable();
 
     if (updates.capabilities) {
       session.metadata.capabilities = {
@@ -647,6 +701,10 @@ export class SessionManager {
   }
 
   close(sessionId: string, claimedBy?: string, force?: boolean): { metadata: SessionMetadata; final: SessionReadResult } {
+    // A degraded manager performs runtime cleanup through freezeForPersistence,
+    // which deliberately avoids claiming durable audit/graph updates. Direct
+    // service callers must not receive a falsely durable ordinary close.
+    this.assertPersistenceWritable();
     const session = this.getSessionOrThrow(sessionId);
     this.assertOwnership(session, claimedBy, force);
 
@@ -693,16 +751,32 @@ export class SessionManager {
   }
 
   async shutdown(): Promise<void> {
-    for (const [id, session] of this.sessions) {
-      if (session.metadata.state === 'connected' || session.metadata.state === 'pending') {
-        try {
-          this.close(id, undefined, true);
-        } catch { /* best effort on shutdown */ }
+    this.stopPersistenceGateMonitor();
+    try {
+      if (!this.persistenceWritable()) {
+        this.freezeForPersistence();
+        return;
       }
+      for (const [id, session] of this.sessions) {
+        if (session.metadata.state === 'connected' || session.metadata.state === 'pending') {
+          try {
+            this.close(id, undefined, true);
+          } catch { /* best effort on shutdown */ }
+        }
+      }
+    } finally {
+      this.stopPersistenceGateMonitor();
     }
   }
 
   reapIdleSessions(): string[] {
+    // Reaping is not a read: it closes a runtime handle, changes durable
+    // session metadata, emits an audit event, and downgrades HAS_SESSION.
+    // Read surfaces call this method opportunistically, so make the maintenance
+    // operation itself fail closed while WAL recovery/persistence is degraded.
+    if (!this.checkPersistenceGate()) {
+      return [];
+    }
     if (this.idleTimeoutMs <= 0) return [];
     const now = Date.now();
     const reaped: string[] = [];
@@ -732,8 +806,78 @@ export class SessionManager {
 
   // --- Internal helpers ---
 
+  private startPersistenceGateMonitor(): void {
+    const persistenceAwareEngine = this.engine as (GraphEngine & {
+      isPersistenceWritable?: () => boolean;
+    }) | null;
+    if (this.persistenceGateTimer || typeof persistenceAwareEngine?.isPersistenceWritable !== 'function') return;
+    this.persistenceGateTimer = setInterval(() => this.checkPersistenceGate(), PERSISTENCE_GATE_POLL_MS);
+    this.persistenceGateTimer.unref?.();
+    this.checkPersistenceGate();
+  }
+
+  private stopPersistenceGateMonitor(): void {
+    if (!this.persistenceGateTimer) return;
+    clearInterval(this.persistenceGateTimer);
+    this.persistenceGateTimer = null;
+  }
+
+  private persistenceWritable(): boolean {
+    if (this.persistenceFrozen) return false;
+    const persistenceAwareEngine = this.engine as (GraphEngine & {
+      isPersistenceWritable?: () => boolean;
+    }) | null;
+    if (typeof persistenceAwareEngine?.isPersistenceWritable !== 'function') return true;
+    try {
+      return persistenceAwareEngine.isPersistenceWritable();
+    } catch {
+      // If the persistence owner is disposing or otherwise cannot answer, fail
+      // closed rather than allowing a new target-facing operation.
+      return false;
+    }
+  }
+
+  private checkPersistenceGate(): boolean {
+    if (this.persistenceWritable()) return true;
+    this.freezeForPersistence();
+    return false;
+  }
+
+  /** Close runtime handles without trying to journal lifecycle or graph state.
+   * The gate is sticky for this manager instance; recovery requires restart. */
+  private freezeForPersistence(): void {
+    if (this.persistenceFrozen) return;
+    this.persistenceFrozen = true;
+    this.stopPersistenceGateMonitor();
+    this.persistenceAbortController.abort(this.persistenceReadOnlyError());
+    const closedAt = new Date().toISOString();
+    for (const session of this.sessions.values()) {
+      if (session.metadata.state !== 'connected' && session.metadata.state !== 'pending') continue;
+      const handle = session.handle;
+      session.handle = null;
+      session.metadata.state = 'closed';
+      session.metadata.closed_at = closedAt;
+      session.metadata.claimed_by = undefined;
+      try { handle?.close(); } catch { /* best-effort runtime freeze */ }
+      // Session events are an in-memory dashboard projection only. Do not call
+      // logSessionEvent/onSessionClosed here: both are durable graph mutations.
+      this.emitSessionEvent('session_closed', session);
+    }
+  }
+
+  private persistenceReadOnlyError(): Error {
+    const error = new Error('Session operation refused because durable persistence is read-only');
+    (error as Error & { code?: string }).code = 'PERSISTENCE_READ_ONLY';
+    return error;
+  }
+
+  private assertPersistenceWritable(): void {
+    if (this.checkPersistenceGate()) return;
+    throw this.persistenceReadOnlyError();
+  }
+
   private notifySessionClosed(session: Session): void {
-    if (this.engine) {
+    if (this.engine && this.persistenceWritable()) {
       try {
         this.engine.onSessionClosed(
           session.metadata.id,
@@ -767,6 +911,7 @@ export class SessionManager {
   }
 
   private handleConnect(sessionId: string): void {
+    if (!this.checkPersistenceGate()) return;
     const session = this.sessions.get(sessionId);
     if (!session) return;
     if (session.metadata.state === 'pending') {
@@ -797,6 +942,7 @@ export class SessionManager {
   }
 
   private handleDisconnect(sessionId: string): void {
+    if (!this.checkPersistenceGate()) return;
     const session = this.sessions.get(sessionId);
     if (!session) return;
     if (session.metadata.kind === 'socket' && session.metadata.mode === 'listen' && session.metadata.accept_mode === 'rearm') {
@@ -821,21 +967,26 @@ export class SessionManager {
   }
 
   private logSessionEvent(sessionId: string, eventType: ActivityEventType, description: string): void {
-    if (!this.engine) return;
+    if (!this.engine || !this.persistenceWritable()) return;
     const session = this.sessions.get(sessionId);
-    this.engine.logActionEvent({
-      event_type: eventType,
-      description,
-      agent_id: session?.metadata.agent_id,
-      action_id: session?.metadata.action_id,
-      frontier_item_id: session?.metadata.frontier_item_id,
-      category: 'system',
-      details: {
-        session_id: sessionId,
-        session_kind: session?.metadata.kind,
-        session_state: session?.metadata.state,
-      },
-    });
+    try {
+      this.engine.logActionEvent({
+        event_type: eventType,
+        description,
+        agent_id: session?.metadata.agent_id,
+        action_id: session?.metadata.action_id,
+        frontier_item_id: session?.metadata.frontier_item_id,
+        category: 'system',
+        details: {
+          session_id: sessionId,
+          session_kind: session?.metadata.kind,
+          session_state: session?.metadata.state,
+        },
+      });
+    } catch (error) {
+      if (!this.checkPersistenceGate()) return;
+      throw error;
+    }
   }
 
   private detectSshAuthFailure(session: Session): string | null {
@@ -927,7 +1078,7 @@ export class SessionManager {
     }
 
     // Phase 2: Send an echo probe and wait for it
-    if (!session.handle) return false;
+    if (!this.checkPersistenceGate() || !session.handle) return false;
     const marker = `__OW_READY_${session.metadata.id.slice(0, 8)}__`;
     const probeCmd = `echo ${marker}\n`;
     const preProbePos = session.buffer.endPos;
@@ -946,6 +1097,7 @@ export class SessionManager {
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 200));
+      if (!this.checkPersistenceGate()) return false;
       const newOutput = session.buffer.read(preProbePos).text;
       if (!newOutput.includes(marker)) continue;
       const lines = newOutput.split(/\r?\n/);
@@ -966,6 +1118,13 @@ export class SessionManager {
 
       const check = () => {
         if (settled) return;
+        if (!this.checkPersistenceGate() || session.metadata.state === 'closed' || session.metadata.state === 'error') {
+          settled = true;
+          clearInterval(interval);
+          if (timer) clearTimeout(timer);
+          resolve();
+          return;
+        }
         if (session.buffer.endPos > startPos) {
           settled = true;
           clearInterval(interval);

@@ -234,8 +234,10 @@ export class BloodHoundPathEnricher {
         // post-ingest, not on load, so a raw mergeNodeAttributes would be lost
         // on crash-before-snapshot). Mirrors the graph-engine merge_node_attrs
         // pattern; replay re-applies via the guarded mutator.
-        this.ctx.journalMutation('merge_node_attrs', { props: { id, hvt: true, hvt_reason: reason } });
-        this.ctx.graph.mergeNodeAttributes(id, { hvt: true, hvt_reason: reason });
+        const props = { id, hvt: true, hvt_reason: reason };
+        this.ctx.applyJournaledMutation('merge_node_attrs', { props }, () => {
+          this.ctx.graph.mergeNodeAttributes(id, props);
+        });
         hvts.push({ node_id: id, reason });
         taggedIds.add(id);
       }
@@ -257,8 +259,10 @@ export class BloodHoundPathEnricher {
         } catch { return; }
         if (ep.type === 'MEMBER_OF' && !taggedIds.has(source)) {
           const memberReason = `Member of ${attrs.label || hvt.node_id}`;
-          this.ctx.journalMutation('merge_node_attrs', { props: { id: source, hvt: true, hvt_reason: memberReason } });
-          this.ctx.graph.mergeNodeAttributes(source, { hvt: true, hvt_reason: memberReason });
+          const props = { id: source, hvt: true, hvt_reason: memberReason };
+          this.ctx.applyJournaledMutation('merge_node_attrs', { props }, () => {
+            this.ctx.graph.mergeNodeAttributes(source, props);
+          });
           hvts.push({ node_id: source, reason: memberReason });
           taggedIds.add(source);
         }

@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../services/graph-engine.js';
 import type { AgentTask, EngagementConfig, OperatorPolicy } from '../types.js';
 
 // T3 — per-subnet/target dispatch cap. registerAgent refuses (without registering
 // or logging) a target-facing agent that would exceed the operator-policy limit.
 
-const TEST_STATE_FILE = './state-test-dispatch-cap.json';
+let testDir: string;
+let testStateFile: string;
 
 function makeConfig(operator_policy?: OperatorPolicy): EngagementConfig {
   return {
@@ -18,10 +21,6 @@ function makeConfig(operator_policy?: OperatorPolicy): EngagementConfig {
     opsec: { name: 'pentest', max_noise: 1.0 },
     operator_policy,
   } as EngagementConfig;
-}
-
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
 }
 
 function host(engine: GraphEngine, id: string, ip: string) {
@@ -42,11 +41,17 @@ function task(overrides: Partial<AgentTask>): AgentTask {
 
 describe('GraphEngine.registerAgent — operator-policy dispatch cap', () => {
   let engine: GraphEngine;
-  beforeEach(() => { cleanup(); });
-  afterEach(() => cleanup());
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-dispatch-cap-'));
+    testStateFile = join(testDir, 'state.json');
+  });
+  afterEach(() => {
+    engine?.dispose();
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   it('refuses an N+1 target-facing agent on a /24 that is at the per-subnet cap', () => {
-    engine = new GraphEngine(makeConfig({ version: 1, dispatch_limits: { max_per_subnet: 1 } }), TEST_STATE_FILE);
+    engine = new GraphEngine(makeConfig({ version: 1, dispatch_limits: { max_per_subnet: 1 } }), testStateFile);
     host(engine, 'h1', '10.10.10.1');
     host(engine, 'h2', '10.10.10.2');
     expect(engine.registerAgent(task({ id: 't1', subgraph_node_ids: ['h1'] })).ok).toBe(true);
@@ -58,7 +63,7 @@ describe('GraphEngine.registerAgent — operator-policy dispatch cap', () => {
   });
 
   it('exempts read-only archetypes from the cap', () => {
-    engine = new GraphEngine(makeConfig({ version: 1, dispatch_limits: { max_per_subnet: 1 } }), TEST_STATE_FILE);
+    engine = new GraphEngine(makeConfig({ version: 1, dispatch_limits: { max_per_subnet: 1 } }), testStateFile);
     host(engine, 'h1', '10.10.10.1');
     host(engine, 'h2', '10.10.10.2');
     expect(engine.registerAgent(task({ id: 't1', subgraph_node_ids: ['h1'] })).ok).toBe(true);
@@ -67,7 +72,7 @@ describe('GraphEngine.registerAgent — operator-policy dispatch cap', () => {
   });
 
   it('frees a slot when an agent completes', () => {
-    engine = new GraphEngine(makeConfig({ version: 1, dispatch_limits: { max_per_subnet: 1 } }), TEST_STATE_FILE);
+    engine = new GraphEngine(makeConfig({ version: 1, dispatch_limits: { max_per_subnet: 1 } }), testStateFile);
     host(engine, 'h1', '10.10.10.1');
     host(engine, 'h2', '10.10.10.2');
     expect(engine.registerAgent(task({ id: 't1', subgraph_node_ids: ['h1'] })).ok).toBe(true);
@@ -77,7 +82,7 @@ describe('GraphEngine.registerAgent — operator-policy dispatch cap', () => {
   });
 
   it('a no-IP target bypasses the subnet cap', () => {
-    engine = new GraphEngine(makeConfig({ version: 1, dispatch_limits: { max_per_subnet: 1 } }), TEST_STATE_FILE);
+    engine = new GraphEngine(makeConfig({ version: 1, dispatch_limits: { max_per_subnet: 1 } }), testStateFile);
     host(engine, 'h1', '10.10.10.1');
     expect(engine.registerAgent(task({ id: 't1', subgraph_node_ids: ['h1'] })).ok).toBe(true);
     // a credential/no-IP-resolvable seed → exempt.
@@ -86,7 +91,7 @@ describe('GraphEngine.registerAgent — operator-policy dispatch cap', () => {
   });
 
   it('max_per_target is independent of max_per_subnet', () => {
-    engine = new GraphEngine(makeConfig({ version: 1, dispatch_limits: { max_per_target: 1 } }), TEST_STATE_FILE);
+    engine = new GraphEngine(makeConfig({ version: 1, dispatch_limits: { max_per_target: 1 } }), testStateFile);
     host(engine, 'h1', '10.10.10.1');
     host(engine, 'h2', '10.10.10.2');
     expect(engine.registerAgent(task({ id: 't1', subgraph_node_ids: ['h1'] })).ok).toBe(true);
@@ -99,7 +104,7 @@ describe('GraphEngine.registerAgent — operator-policy dispatch cap', () => {
   });
 
   it('no policy → no cap', () => {
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine = new GraphEngine(makeConfig(), testStateFile);
     host(engine, 'h1', '10.10.10.1');
     host(engine, 'h2', '10.10.10.2');
     expect(engine.registerAgent(task({ id: 't1', subgraph_node_ids: ['h1'] })).ok).toBe(true);

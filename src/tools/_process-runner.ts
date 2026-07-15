@@ -956,6 +956,83 @@ const AGENT_KEEPALIVE_INTERVAL_MS = 45_000;
 // normal TTL reaping resumes even if the tool is still going (its output is still
 // salvaged when it ends). Comfortably exceeds any legitimate single scan.
 const AGENT_KEEPALIVE_MAX_MS = 30 * 60_000;
+const PERSISTENCE_GATE_POLL_MS = 250;
+
+interface ExecutionAbortMonitor {
+  signal: AbortSignal;
+  /** Recheck synchronously at command boundaries and remember degradation even
+   * if persistence later recovers before the child has finished exiting. */
+  checkPersistence(): boolean;
+  persistenceInterrupted(): boolean;
+  dispose(): void;
+}
+
+/**
+ * Merge request cancellation with the asynchronous persistence write gate.
+ * Direct MCP run_tool/run_bash calls are not owned by TaskExecutionService, so
+ * its process registry cannot stop them when persistence trips read-only. This
+ * monitor gives every instrumented child the same fail-closed behavior.
+ */
+function createExecutionAbortMonitor(
+  engine: GraphEngine,
+  callerSignal?: AbortSignal,
+): ExecutionAbortMonitor {
+  const controller = new AbortController();
+  let persistenceDegraded = false;
+
+  const onCallerAbort = (): void => {
+    if (!controller.signal.aborted) controller.abort(callerSignal?.reason);
+  };
+  if (callerSignal?.aborted) onCallerAbort();
+  else callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
+
+  const checkPersistence = (): boolean => {
+    if (persistenceDegraded) return false;
+    if (engine.isPersistenceWritable()) return true;
+    persistenceDegraded = true;
+    if (!controller.signal.aborted) {
+      controller.abort(new Error('Persistence became read-only while the process was running'));
+    }
+    return false;
+  };
+
+  checkPersistence();
+  const timer = setInterval(checkPersistence, PERSISTENCE_GATE_POLL_MS);
+  timer.unref?.();
+
+  return {
+    signal: controller.signal,
+    checkPersistence,
+    persistenceInterrupted: () => persistenceDegraded,
+    dispose: () => {
+      clearInterval(timer);
+      callerSignal?.removeEventListener('abort', onCallerAbort);
+    },
+  };
+}
+
+function persistenceInterruptedResponse(
+  engine: GraphEngine,
+  actionId: string | undefined,
+  details: Record<string, unknown> = {},
+): InstrumentedProcessResponse {
+  return {
+    content: [{
+      type: 'text',
+      text: JSON.stringify({
+        action_id: actionId,
+        executed: false,
+        interrupted: true,
+        code: 'PERSISTENCE_READ_ONLY',
+        reason: 'persistence_degraded',
+        error: 'Target execution was interrupted because durable persistence became read-only.',
+        recovery: engine.getPersistenceRecoveryStatus(),
+        ...details,
+      }, null, 2),
+    }],
+    isError: true,
+  };
+}
 
 /**
  * Keep a running agent's heartbeat fresh while it blocks on a long-running tool.
@@ -1030,6 +1107,13 @@ export async function runInstrumentedProcess(
     operator_infra,
     abortSignal,
   } = opts;
+
+  // ToolRegistrar rejects new MCP calls, but service-internal callers also use
+  // this runner directly. Refuse before allocating IDs or changing lifecycle
+  // state when the durable write gate is already closed.
+  if (!engine.isPersistenceWritable()) {
+    return persistenceInterruptedResponse(engine, action_id);
+  }
 
   // When redaction is requested the raw argv (which may carry a secret) is
   // withheld from the persisted events + tool response; command_repr (which
@@ -1346,7 +1430,21 @@ export async function runInstrumentedProcess(
         agent_id,
       };
       engine.recordApprovalRequest(pendingApproval);
-      const approval = await queue.submit(pendingApproval, { signal: abortSignal });
+      // Approval can remain pending for minutes. Couple that wait to the live
+      // persistence gate as well as the MCP caller signal so an invocation
+      // cannot resume and spawn after durability has gone read-only.
+      const approvalAbort = createExecutionAbortMonitor(engine, abortSignal);
+      let approval: Awaited<ReturnType<typeof queue.submit>>;
+      try {
+        approval = await queue.submit(pendingApproval, { signal: approvalAbort.signal });
+      } finally {
+        approvalAbort.dispose();
+      }
+      if (approvalAbort.persistenceInterrupted() || !engine.isPersistenceWritable()) {
+        return persistenceInterruptedResponse(engine, normalizedActionId, {
+          approval_status: approval.status,
+        });
+      }
       engine.resolveApprovalRequest(approval);
 
       engine.logActionEvent({
@@ -1407,41 +1505,54 @@ export async function runInstrumentedProcess(
   }
 
   // ---- 2. action_started ----
-  engine.logActionEvent({
-    description: resolvedDescription,
-    agent_id,
-    action_id: normalizedActionId,
-    event_type: 'action_started',
-    category: 'frontier',
-    frontier_type: frontierType,
-    tool_name,
-    technique,
-    command_repr,
-    target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
-    target_ips: targetIpsForEvents(),
-    target_cidrs: targetCidrsForEvents(),
-    frontier_item_id,
-    noise_estimate: noiseEstimate,
-    details: {
-      command: command_repr,
-      binary,
-      args: loggedArgs,
-      cwd,
-      timeout_ms: effectiveTimeout,
-      invoking_tool: opts.invoking_tool,
-      operator_infra: operator_infra || undefined,
-    },
-  });
-  if (noiseEstimate !== undefined) {
-    engine.recordOpsecNoise({
-      action_id: normalizedActionId,
-      host_id: allTargetNodeIds[0],
+  // Approval can wait for minutes. Recheck after that wait and immediately
+  // before the durable start record so a stale invocation cannot cross into a
+  // new read-only persistence generation.
+  if (!engine.isPersistenceWritable()) {
+    return persistenceInterruptedResponse(engine, normalizedActionId);
+  }
+  try {
+    engine.logActionEvent({
+      description: resolvedDescription,
       agent_id,
+      action_id: normalizedActionId,
+      event_type: 'action_started',
+      category: 'frontier',
+      frontier_type: frontierType,
+      tool_name,
+      technique,
+      command_repr,
+      target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
+      target_ips: targetIpsForEvents(),
+      target_cidrs: targetCidrsForEvents(),
       frontier_item_id,
       noise_estimate: noiseEstimate,
+      details: {
+        command: command_repr,
+        binary,
+        args: loggedArgs,
+        cwd,
+        timeout_ms: effectiveTimeout,
+        invoking_tool: opts.invoking_tool,
+        operator_infra: operator_infra || undefined,
+      },
     });
+    if (noiseEstimate !== undefined) {
+      engine.recordOpsecNoise({
+        action_id: normalizedActionId,
+        host_id: allTargetNodeIds[0],
+        agent_id,
+        frontier_item_id,
+        noise_estimate: noiseEstimate,
+      });
+    }
+    engine.persist();
+  } catch (error) {
+    if (!engine.isPersistenceWritable()) {
+      return persistenceInterruptedResponse(engine, normalizedActionId);
+    }
+    throw error;
   }
-  engine.persist();
 
   // ---- 3. Execute ----
   // Phase H: pipe stdout/stderr to evidence files as the process runs so
@@ -1475,6 +1586,15 @@ export async function runInstrumentedProcess(
   // routinely exceed the heartbeat TTL. Stopped the instant the process returns
   // (which the tool's own `effectiveTimeout` guarantees), and self-caps at
   // AGENT_KEEPALIVE_MAX_MS so it can't prop up a crashed-mid-tool agent forever.
+  // Last synchronous gate check before spawn. The 250ms monitor owns the race
+  // after this point and aborts the entire child process group on transition.
+  const executionAbort = createExecutionAbortMonitor(engine, abortSignal);
+  if (!executionAbort.checkPersistence()) {
+    await Promise.allSettled([stdoutSink.end(), stderrSink.end()]);
+    liveOutput.markDone(normalizedActionId);
+    executionAbort.dispose();
+    return persistenceInterruptedResponse(engine, normalizedActionId);
+  }
   const stopAgentKeepalive = startAgentKeepalive(engine, agent_id);
   let result: ProcessResult;
   try {
@@ -1483,7 +1603,7 @@ export async function runInstrumentedProcess(
       env,
       timeout_ms: effectiveTimeout,
       // Wire cancellation through: aborting the tool call now kills the running child.
-      signal: abortSignal,
+      signal: executionAbort.signal,
       stdoutSink,
       stderrSink,
       // Scrub reflected secrets from the live dashboard tee too (per-chunk; a
@@ -1528,6 +1648,36 @@ export async function runInstrumentedProcess(
   // know not to trust the blob.
   const stdout_evidence_id = stdoutInfo.total > 0 && !stdoutCaptureError ? stdoutSink.evidence_id : undefined;
   const stderr_evidence_id = stderrInfo.total > 0 && !stderrCaptureError ? stderrSink.evidence_id : undefined;
+
+  // The persistence transition is sticky for this invocation. Even if a retry
+  // happens to reopen the write gate before the killed child exits, never stamp
+  // a terminal event or parse/ingest output from work interrupted by degraded
+  // durability. Evidence streams are closed above and the live buffer is safe
+  // to finalize because both are ephemeral with respect to graph truth.
+  if (executionAbort.persistenceInterrupted() || !engine.isPersistenceWritable()) {
+    liveOutput.markDone(normalizedActionId);
+    executionAbort.dispose();
+    return persistenceInterruptedResponse(engine, normalizedActionId, {
+      executed: true,
+      binary,
+      exit_code: result.exit_code,
+      signal: result.signal,
+      duration_ms: result.duration_ms,
+      timed_out: result.timed_out,
+      stdout: stdoutInfo.text,
+      stderr: stderrInfo.text,
+      stdout_truncated: stdoutInfo.truncated,
+      stderr_truncated: stderrInfo.truncated,
+      stdout_total_bytes: stdoutInfo.total,
+      stderr_total_bytes: stderrInfo.total,
+      stdout_evidence_id,
+      stderr_evidence_id,
+    });
+  }
+  // All remaining lifecycle/parser work is synchronous. Keep polling through
+  // the asynchronous evidence finalization above, then release the monitor
+  // only after the last point where the gate could transition between turns.
+  executionAbort.dispose();
 
   // ---- 5. Terminal lifecycle event ----
   // Phase I: a non-zero exit no longer suppresses parsing. Tools like

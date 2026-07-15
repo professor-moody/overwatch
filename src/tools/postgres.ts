@@ -45,6 +45,7 @@ Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
       },
     },
     withErrorBoundary('connect_postgres', async ({ connection_string, schema }) => {
+      engine.assertPersistenceWritable();
       const engagementId = engine.getConfig().id;
 
       // Test and store
@@ -56,6 +57,16 @@ Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
         throw new Error(`Failed to connect: ${err instanceof Error ? err.message : String(err)}`);
       }
 
+      // The connection check is asynchronous. Re-check before publishing the
+      // live handle or changing durable configuration in case persistence
+      // degraded while the target connection was in flight.
+      try {
+        engine.assertPersistenceWritable();
+      } catch (error) {
+        await src.end().catch(() => {});
+        throw error;
+      }
+
       // Replace any existing source for this engagement
       const existing = sourcesById.get(engagementId);
       if (existing) await existing.end().catch(() => {});
@@ -63,9 +74,7 @@ Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
 
       // Record a redacted DSN in engagement config for display only.
       // Credentials are never stored — operators must reconnect after restart.
-      const cfg = engine.getConfig();
-      cfg.postgres_dsn = redactDsn(connection_string);
-      engine.persist();
+      engine.updateConfig({ postgres_dsn: redactDsn(connection_string) });
 
       const tables = await src.discoverTables(schema);
       const summary = tables.map(t => `${t.schema_name}.${t.table_name} (${t.columns.length} columns)`).join('\n');

@@ -1,19 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resolve } from 'path';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import { generateSystemPrompt, estimateTokens, resolvePrimaryVariant, DEFAULT_MAX_PROMPT_TOKENS, type ToolEntry } from '../prompt-generator.js';
 import { loadEngagementConfigFile } from '../../config.js';
+import type { EngagementConfig } from '../../types.js';
 
 const config = loadEngagementConfigFile(resolve('./engagement.example.json'));
-const TEST_STATE_FILE = './state-test-prompt-gen.json';
+let testDir: string;
+let engineIndex = 0;
+const engines = new Set<GraphEngine>();
 
-function cleanup() {
-  if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-}
-
-function createTestEngine() {
-  return new GraphEngine(config, TEST_STATE_FILE);
+function createTestEngine(engineConfig: EngagementConfig = config) {
+  const engine = new GraphEngine(engineConfig, join(testDir, `state-${engineIndex++}.json`));
+  engines.add(engine);
+  return engine;
 }
 
 const MOCK_TOOLS: ToolEntry[] = [
@@ -83,8 +85,15 @@ const ALL_REGISTERED_TOOLS: ToolEntry[] = [
 ];
 
 describe('prompt-generator', () => {
-  beforeEach(cleanup);
-  afterEach(cleanup);
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-prompt-generator-'));
+    engineIndex = 0;
+  });
+  afterEach(() => {
+    for (const engine of engines) engine.dispose();
+    engines.clear();
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   describe('primary prompt', () => {
     it('includes identity and engagement briefing', () => {
@@ -382,7 +391,7 @@ describe('prompt-generator', () => {
           },
         ],
       };
-      const engine = new GraphEngine(customConfig, TEST_STATE_FILE);
+      const engine = createTestEngine(customConfig);
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       expect(prompt).toContain('[DONE] **Get domain admin**');
@@ -456,7 +465,7 @@ describe('prompt-generator', () => {
   describe('profile-specific guidance', () => {
     it('includes profile hints for goad_ad profile', () => {
       const adConfig = { ...config, profile: 'goad_ad' as const };
-      const engine = new GraphEngine(adConfig, TEST_STATE_FILE);
+      const engine = createTestEngine(adConfig);
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       expect(prompt).toContain('Profile-Specific Guidance (goad_ad)');
@@ -467,7 +476,7 @@ describe('prompt-generator', () => {
 
     it('includes profile hints for web_app profile', () => {
       const webConfig = { ...config, profile: 'web_app' as const };
-      const engine = new GraphEngine(webConfig, TEST_STATE_FILE);
+      const engine = createTestEngine(webConfig);
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       expect(prompt).toContain('Profile-Specific Guidance (web_app)');
@@ -477,7 +486,7 @@ describe('prompt-generator', () => {
 
     it('includes profile hints for cloud profile', () => {
       const cloudConfig = { ...config, profile: 'cloud' as const };
-      const engine = new GraphEngine(cloudConfig, TEST_STATE_FILE);
+      const engine = createTestEngine(cloudConfig);
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       expect(prompt).toContain('Profile-Specific Guidance (cloud)');
@@ -487,7 +496,7 @@ describe('prompt-generator', () => {
 
     it('includes profile hints for hybrid profile', () => {
       const hybridConfig = { ...config, profile: 'hybrid' as const };
-      const engine = new GraphEngine(hybridConfig, TEST_STATE_FILE);
+      const engine = createTestEngine(hybridConfig);
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       expect(prompt).toContain('Profile-Specific Guidance (hybrid)');
@@ -496,7 +505,7 @@ describe('prompt-generator', () => {
 
     it('includes profile hints for network profile', () => {
       const netConfig = { ...config, profile: 'network' as const };
-      const engine = new GraphEngine(netConfig, TEST_STATE_FILE);
+      const engine = createTestEngine(netConfig);
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       expect(prompt).toContain('Profile-Specific Guidance (network)');
@@ -505,7 +514,7 @@ describe('prompt-generator', () => {
 
     it('includes profile hints for single_host profile', () => {
       const shConfig = { ...config, profile: 'single_host' as const };
-      const engine = new GraphEngine(shConfig, TEST_STATE_FILE);
+      const engine = createTestEngine(shConfig);
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       expect(prompt).toContain('Profile-Specific Guidance (single_host)');
@@ -534,7 +543,7 @@ describe('prompt-generator', () => {
           { technique: 'kerberoast', warning: 'AES only — RC4 downgrade will fail' },
         ],
       };
-      const engine = new GraphEngine(fpConfig, TEST_STATE_FILE);
+      const engine = createTestEngine(fpConfig);
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       expect(prompt).toContain('Engagement-Specific Warnings');
@@ -826,7 +835,7 @@ describe('prompt-generator', () => {
     it('config.max_prompt_tokens is respected when options.max_prompt_tokens not set', () => {
       // Use a budget too small to fit everything (500 forces trimming)
       const tightConfig = { ...config, max_prompt_tokens: 500 };
-      const engine = new GraphEngine(tightConfig, TEST_STATE_FILE);
+      const engine = createTestEngine(tightConfig);
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
       // With 500 token budget, non-critical sections should be trimmed
       // Critical sections (identity + core loop) may overflow, but HIGH/MEDIUM/LOW should be gone

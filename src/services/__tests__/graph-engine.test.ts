@@ -1,17 +1,16 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import { parseHashcat, parseNxc, parseResponder, parseSecretsdump } from '../parsers/index.js';
-import { unlinkSync, existsSync, readFileSync, readdirSync, rmSync, mkdtempSync } from 'fs';
+import { readFileSync, rmSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { EngagementConfig, Finding, NodeType, AgentTask } from '../../types.js';
 
-const TEST_STATE_FILE = './state-test-eng.json';
-const tempDirs: string[] = [];
+let testDir: string;
+let TEST_STATE_FILE: string;
 
 function makeTempStateFile(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'overwatch-graph-engine-'));
-  tempDirs.push(dir);
+  const dir = mkdtempSync(join(testDir, 'case-'));
   return join(dir, 'state-test-eng.json');
 }
 
@@ -44,22 +43,6 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
   };
 }
 
-function cleanup() {
-  if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-  const journalFile = TEST_STATE_FILE.replace(/\.json$/, '.journal.jsonl');
-  if (existsSync(journalFile)) unlinkSync(journalFile);
-  // Clean up snapshot files (legacy same-dir and new .snapshots/ subdir)
-  const base = 'state-test-eng';
-  try {
-    for (const f of readdirSync('.')) {
-      if (f.startsWith(`${base}.snap-`) && f.endsWith('.json')) unlinkSync(f);
-    }
-  } catch { /* best effort */ }
-  try {
-    if (existsSync('.snapshots')) rmSync('.snapshots', { recursive: true });
-  } catch { /* best effort */ }
-}
-
 // Track engine instances for cleanup
 const engines: GraphEngine[] = [];
 const _OrigGraphEngine = GraphEngine;
@@ -69,16 +52,18 @@ function trackedEngine(...args: ConstructorParameters<typeof GraphEngine>): Grap
   return e;
 }
 
-describe('GraphEngine', () => {
-  afterEach(() => {
-    for (const e of engines) e.dispose();
-    engines.length = 0;
-    cleanup();
-    for (const dir of tempDirs.splice(0)) {
-      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
-    }
-  });
+beforeEach(() => {
+  testDir = mkdtempSync(join(tmpdir(), 'overwatch-graph-engine-'));
+  TEST_STATE_FILE = join(testDir, 'state-test-eng.json');
+});
 
+afterEach(() => {
+  for (const e of engines) e.dispose();
+  engines.length = 0;
+  try { rmSync(testDir, { recursive: true, force: true }); } catch { /* best effort */ }
+});
+
+describe('GraphEngine', () => {
   // =============================================
   // Seeding
   // =============================================
@@ -3789,7 +3774,7 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
 describe('reconcilePendingApprovalsOnStartup (restart safety)', () => {
   it('flips a persisted pending approval record to aborted on restart', () => {
     const stateFile = makeTempStateFile();
-    const e1 = new GraphEngine(makeConfig(), stateFile);
+    const e1 = trackedEngine(makeConfig(), stateFile);
     e1.recordApprovalRequest({
       action_id: 'pending-on-restart',
       description: 'half-approved action',
@@ -3804,7 +3789,7 @@ describe('reconcilePendingApprovalsOnStartup (restart safety)', () => {
     // Restart: a new engine over the same state file must NOT leave the request
     // stuck 'pending' forever — the requesting agent (and the UI that could
     // action it into a live, awaiting tool call) are gone.
-    const e2 = new GraphEngine(makeConfig(), stateFile);
+    const e2 = trackedEngine(makeConfig(), stateFile);
     const rec = e2.getApprovalRequest('pending-on-restart');
     expect(rec?.status).toBe('aborted');
     expect(rec?.reason ?? '').toContain('restart');
@@ -3816,7 +3801,7 @@ describe('approval log pruning (bounded durable approvals)', () => {
   const OPSEC = { global_noise_spent: 0, noise_budget_remaining: 1, recommended_approach: 'normal' as const, defensive_signals: [] };
   it('caps resolved approval records while preserving pending ones', () => {
     const stateFile = makeTempStateFile();
-    const e = new GraphEngine(makeConfig(), stateFile);
+    const e = trackedEngine(makeConfig(), stateFile);
     for (let i = 0; i < 210; i++) {
       const id = `act-${i}`;
       e.recordApprovalRequest({ action_id: id, description: 'a', opsec_context: OPSEC, validation_result: 'valid' });
@@ -3831,5 +3816,37 @@ describe('approval log pruning (bounded durable approvals)', () => {
     expect(e.getApprovalRequest('act-209')?.status).toBe('approved');     // newest resolved kept
     expect(e.getApprovalRequest('act-0')).toBeUndefined();                // oldest resolved pruned
     e.dispose();
+  });
+});
+
+describe('durable read surfaces are detached', () => {
+  it('does not allow config, graph, or task mutation through getter results', () => {
+    const e = trackedEngine(makeConfig(), makeTempStateFile());
+    e.addNode({
+      id: 'detached-host',
+      type: 'host',
+      label: 'original-host',
+      ip: '10.10.10.20',
+      discovered_at: new Date().toISOString(),
+      confidence: 1,
+    });
+    e.registerAgent({
+      id: 'detached-task',
+      agent_id: 'detached-agent',
+      assigned_at: new Date().toISOString(),
+      status: 'running',
+      subgraph_node_ids: ['detached-host'],
+    });
+
+    e.getConfig().name = 'mutated-outside-engine';
+    e.getNode('detached-host')!.label = 'mutated-outside-engine';
+    e.exportGraph().nodes[0].properties.label = 'mutated-export';
+    e.getTask('detached-task')!.no_retry = true;
+    e.getAgentTasks()[0].reoffered = true;
+
+    expect(e.getConfig().name).not.toBe('mutated-outside-engine');
+    expect(e.getNode('detached-host')?.label).toBe('original-host');
+    expect(e.getTask('detached-task')?.no_retry).not.toBe(true);
+    expect(e.getTask('detached-task')?.reoffered).not.toBe(true);
   });
 });

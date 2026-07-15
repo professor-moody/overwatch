@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, unlinkSync } from 'fs';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -7,8 +7,6 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { InProcessTapeController } from '../in-process-tape.js';
 import { GraphEngine } from '../graph-engine.js';
 import type { EngagementConfig } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-tape.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -19,10 +17,6 @@ function makeConfig(): EngagementConfig {
     objectives: [],
     opsec: { name: 'pentest', max_noise: 0.7 },
   };
-}
-
-function cleanupState() {
-  if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
 }
 
 class FakeTransport implements Transport {
@@ -45,14 +39,13 @@ describe('InProcessTapeController', () => {
   let engine: GraphEngine;
 
   beforeEach(() => {
-    cleanupState();
     tmpDir = mkdtempSync(join(tmpdir(), 'ow-tape-'));
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine = new GraphEngine(makeConfig(), join(tmpDir, 'state.json'));
   });
 
   afterEach(() => {
+    engine.dispose();
     rmSync(tmpDir, { recursive: true, force: true });
-    cleanupState();
   });
 
   it('starts disabled and reports zero frames', () => {
@@ -123,6 +116,21 @@ describe('InProcessTapeController', () => {
     const recent = engine.getFullHistory().slice(-2);
     expect(recent[0].details?.started_by).toBe('config');
     expect(recent[1].details?.started_by).toBe('config');
+  });
+
+  it('clears active metadata even when the writer fails to close', async () => {
+    const c = new InProcessTapeController(engine, { defaultDir: tmpDir });
+    c.enable();
+    const writer = (c as unknown as { writer: { close: () => Promise<void> } }).writer;
+    const closeSpy = vi.spyOn(writer, 'close').mockRejectedValueOnce(new Error('synthetic close failure'));
+
+    await expect(c.disable({ audit: false })).rejects.toThrow('synthetic close failure');
+    expect(c.getStatus()).toMatchObject({ enabled: false, frame_count: 0 });
+    expect(c.getStatus().path).toBeUndefined();
+    expect(c.getStatus().session_id).toBeUndefined();
+
+    closeSpy.mockRestore();
+    await writer.close();
   });
 
   it('emits paired tape_session_started / tape_session_stopped activity events', async () => {

@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { recordCveResearch } from '../research-cve.js';
 import { allowedToolsFor } from '../../services/headless-mcp-runner.js';
 import type { EngagementConfig, Finding } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-research-cve.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -14,7 +14,6 @@ function makeConfig(): EngagementConfig {
     objectives: [], opsec: { name: 'pentest', max_noise: 0.7 },
   };
 }
-function cleanup() { try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch { /* ignore */ } }
 
 function seedService(engine: GraphEngine, id: string, version = '2.4.49') {
   const finding: Finding = {
@@ -49,8 +48,15 @@ describe('allowedToolsFor (headless role profiles)', () => {
 
 describe('recordCveResearch + cve_research frontier lifecycle', () => {
   let engine: GraphEngine;
-  beforeEach(() => { cleanup(); engine = new GraphEngine(makeConfig(), TEST_STATE_FILE); });
-  afterEach(() => { cleanup(); });
+  let testDir: string;
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-research-cve-'));
+    engine = new GraphEngine(makeConfig(), join(testDir, 'state.json'));
+  });
+  afterEach(() => {
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   it('a versioned, uncovered service surfaces a cve_research frontier item', () => {
     seedService(engine, 'svc-1');
