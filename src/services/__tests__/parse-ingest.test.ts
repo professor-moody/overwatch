@@ -69,6 +69,28 @@ describe('parseAndMaybeIngest canonical outcomes', () => {
     expect(result.error).toContain('fixture parser exploded');
   });
 
+  it('links parser-ingested findings to unique frontier campaigns without duplicates', () => {
+    disposers.push(__registerParserForTest('campaign-parser', () => finding('finding-parser-campaign', [{
+      id: 'host-parser-campaign', type: 'host', label: 'parser host', ip: '10.0.0.8',
+      discovered_at: '2026-01-01T00:00:00Z', confidence: 1,
+    }])));
+    const campaign = engine.createCampaign({
+      name: 'Parser campaign', strategy: 'custom', item_ids: ['fi-parser'], abort_conditions: [],
+    });
+    const first = parseAndMaybeIngest(engine, {
+      tool_name: 'campaign-parser', outputText: 'fixture', action_id: 'act-campaign-1',
+      frontier_item_id: 'fi-parser', ingest: true,
+    });
+    const second = parseAndMaybeIngest(engine, {
+      tool_name: 'campaign-parser', outputText: 'fixture', action_id: 'act-campaign-2',
+      frontier_item_id: 'fi-parser', ingest: true,
+    });
+
+    expect(first.campaign_id).toBe(campaign.id);
+    expect(second.campaign_id).toBe(campaign.id);
+    expect(engine.getCampaign(campaign.id)?.findings).toEqual(['finding-parser-campaign']);
+  });
+
   it('retains legacy no_parser while exposing canonical validation_failed', () => {
     const result = parseAndMaybeIngest(engine, {
       tool_name: 'not-registered', outputText: 'fixture', action_id: 'act-missing', ingest: true,

@@ -43,6 +43,7 @@ export interface ParseIngestResult {
   tool: string;
   action_id: string;
   finding_id?: string;
+  campaign_id?: string;
   nodes_parsed: number;
   edges_parsed: number;
   ingested?: false | { new_nodes: number; new_edges: number; inferred_edges: number };
@@ -251,8 +252,15 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
   }
 
   let ingestResult: { new_nodes: string[]; new_edges: string[]; inferred_edges: string[] } | undefined;
+  let campaignId: string | undefined;
   if (ingest) {
     ingestResult = engine.ingestFinding(prepared.finding);
+    campaignId = engine.linkFindingToCampaign({
+      finding_id: finding.id,
+      frontier_item_id,
+      agent_id,
+      action_id,
+    });
   }
 
   engine.logActionEvent({
@@ -281,6 +289,7 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
     parsed: true, parse_status: 'ok', parse_outcome: effectivePartial ? 'partial' : 'ok',
     isError: false, tool: tool_name, action_id,
     finding_id: finding.id, nodes_parsed: finding.nodes.length, edges_parsed: finding.edges.length,
+    campaign_id: campaignId,
     ingested: ingest
       ? { new_nodes: ingestResult!.new_nodes.length, new_edges: ingestResult!.new_edges.length, inferred_edges: ingestResult!.inferred_edges.length }
       : undefined,

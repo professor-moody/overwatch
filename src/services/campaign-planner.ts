@@ -56,8 +56,8 @@ export class CampaignPlanner {
   private get campaigns(): Map<string, Campaign> { return this.ctx.campaigns; }
   /** Maps chain_id → campaign_id for stable spray campaign identity across recomputation */
   private chainToCampaign = new Map<string, string>();
-  /** Reverse index: frontier item ID → campaign ID for O(1) lookup */
-  private itemToCampaign = new Map<string, string>();
+  /** Reverse index: frontier item ID → every campaign containing it. */
+  private itemToCampaign = new Map<string, Set<string>>();
 
   constructor(ctx: EngineContext) {
     this.ctx = ctx;
@@ -80,21 +80,56 @@ export class CampaignPlanner {
   /** Rebuild itemToCampaign reverse index from persisted campaigns */
   private rebuildItemIndex(): void {
     this.itemToCampaign.clear();
+    const structuralParents = new Set(
+      Array.from(this.campaigns.values())
+        .map(campaign => campaign.parent_id)
+        .filter((id): id is string => typeof id === 'string'),
+    );
     for (const [id, c] of this.campaigns) {
-      for (const item of c.items) this.itemToCampaign.set(item, id);
+      // Once a campaign is split, its children own the actionable item
+      // memberships. Keeping the structural parent in this reverse index
+      // makes every item ambiguous after restart and prevents authoritative
+      // frontier dispatch from attaching work to the correct child.
+      if (structuralParents.has(id)) continue;
+      for (const item of c.items) this.addItemMembership(item, id);
     }
+  }
+
+  private addItemMembership(itemId: string, campaignId: string): void {
+    const memberships = this.itemToCampaign.get(itemId) ?? new Set<string>();
+    memberships.add(campaignId);
+    this.itemToCampaign.set(itemId, memberships);
+  }
+
+  private removeItemMembership(itemId: string, campaignId: string): void {
+    const memberships = this.itemToCampaign.get(itemId);
+    if (!memberships) return;
+    memberships.delete(campaignId);
+    if (memberships.size === 0) this.itemToCampaign.delete(itemId);
   }
 
   /** Rebuild chainToCampaign index from persisted campaigns (after load) */
   private rebuildChainIndex(): void {
     this.chainToCampaign.clear();
+    const legacyClaims = new Map<string, string[]>();
     for (const [id, c] of this.campaigns) {
-      if (c.chain_id) this.chainToCampaign.set(c.chain_id, id);
+      // Stable generated keys belong to the canonical root campaign only.
+      // Clones and split children deliberately share configuration/items but
+      // must never hijack recomputation after a restart.
+      if (c.parent_id) continue;
+      if (c.stable_key) {
+        this.chainToCampaign.set(c.stable_key, id);
+        continue;
+      }
+      // Legacy states predate stable_key. Infer only when exactly one root
+      // claims a key; a clone carrying an old copied chain_id or a renamed
+      // generated-looking clone must never silently replace the original.
+      let inferredKey: string | undefined = c.chain_id;
       // Reconstruct stable keys for non-chain campaigns
       if (c.strategy === 'enumeration') {
         // Find the node type from the name pattern "Enumerate N <type> nodes"
         const m = c.name.match(/Enumerate \d+ (\w+) nodes/);
-        if (m) this.chainToCampaign.set(`enum-${m[1]}`, id);
+        if (m) inferredKey = `enum-${m[1]}`;
       } else if (c.strategy === 'post_exploitation') {
         const m = c.name.match(/Post-exploitation on (.+?) \(/);
         if (m) {
@@ -103,12 +138,16 @@ export class CampaignPlanner {
           this.ctx.graph.forEachNode((nid, attrs) => {
             if (!hostId && attrs.label === m[1] && attrs.type === 'host') hostId = nid;
           });
-          if (hostId) this.chainToCampaign.set(`postex-${hostId}`, id);
+          if (hostId) inferredKey = `postex-${hostId}`;
         }
       } else if (c.strategy === 'network_discovery') {
         const m = c.name.match(/Discover hosts in (.+)/);
-        if (m) this.chainToCampaign.set(`discovery-${m[1]}`, id);
+        if (m) inferredKey = `discovery-${m[1]}`;
       }
+      if (inferredKey) legacyClaims.set(inferredKey, [...(legacyClaims.get(inferredKey) ?? []), id]);
+    }
+    for (const [key, ids] of legacyClaims) {
+      if (ids.length === 1 && !this.chainToCampaign.has(key)) this.chainToCampaign.set(key, ids[0]);
     }
   }
 
@@ -260,7 +299,10 @@ export class CampaignPlanner {
 
   pauseCampaign(id: string): Campaign | null {
     const c = this.campaigns.get(id);
-    if (!c || c.status !== 'active') return null;
+    if (!c) return null;
+    const children = this.getChildren(id);
+    const effectiveStatus = children.length > 0 ? this.deriveParentStatus(id) : c.status;
+    if (effectiveStatus !== 'active') return null;
     c.status = 'paused';
     this.cascadeToChildren(id, 'pause');
     return c;
@@ -268,14 +310,21 @@ export class CampaignPlanner {
 
   resumeCampaign(id: string): Campaign | null {
     const c = this.campaigns.get(id);
-    if (!c || c.status !== 'paused') return null;
+    if (!c) return null;
+    const children = this.getChildren(id);
+    const effectiveStatus = children.length > 0 ? this.deriveParentStatus(id) : c.status;
+    if (effectiveStatus !== 'paused') return null;
     c.status = 'active';
+    this.cascadeToChildren(id, 'resume');
     return c;
   }
 
   abortCampaign(id: string): Campaign | null {
     const c = this.campaigns.get(id);
-    if (!c || c.status === 'completed' || c.status === 'aborted') return null;
+    if (!c) return null;
+    const children = this.getChildren(id);
+    const effectiveStatus = children.length > 0 ? this.deriveParentStatus(id) : c.status;
+    if (effectiveStatus === 'completed' || effectiveStatus === 'aborted') return null;
     c.status = 'aborted';
     c.completed_at = new Date().toISOString();
     this.cascadeToChildren(id, 'abort');
@@ -284,7 +333,10 @@ export class CampaignPlanner {
 
   activateCampaign(id: string): Campaign | null {
     const c = this.campaigns.get(id);
-    if (!c || c.status !== 'draft') return null;
+    if (!c) return null;
+    const children = this.getChildren(id);
+    const effectiveStatus = children.length > 0 ? this.deriveParentStatus(id) : c.status;
+    if (effectiveStatus !== 'draft') return null;
     c.status = 'active';
     c.started_at = new Date().toISOString();
     this.cascadeToChildren(id, 'activate');
@@ -320,7 +372,7 @@ export class CampaignPlanner {
       findings: [],
     };
     this.campaigns.set(id, campaign);
-    for (const item of campaign.items) this.itemToCampaign.set(item, id);
+    for (const item of campaign.items) this.addItemMembership(item, id);
     return campaign;
   }
 
@@ -333,6 +385,9 @@ export class CampaignPlanner {
     if (c.status !== 'draft' && c.status !== 'paused') {
       throw new Error(`Cannot update campaign in '${c.status}' status (must be draft or paused)`);
     }
+    if (this.getChildren(id).length > 0 && ((patch.add_items?.length ?? 0) > 0 || (patch.remove_items?.length ?? 0) > 0)) {
+      throw new Error('Cannot change items on a campaign that has child campaigns');
+    }
 
     if (patch.name !== undefined) {
       if (patch.name.trim().length === 0) throw new Error('Campaign name cannot be empty');
@@ -340,12 +395,13 @@ export class CampaignPlanner {
     }
     if (patch.abort_conditions !== undefined) {
       c.abort_conditions = [...patch.abort_conditions];
+      for (const child of this.getChildren(id)) child.abort_conditions = [...patch.abort_conditions];
     }
     if (patch.add_items) {
       for (const itemId of patch.add_items) {
         if (!c.items.includes(itemId)) {
           c.items.push(itemId);
-          this.itemToCampaign.set(itemId, id);
+          this.addItemMembership(itemId, id);
         }
       }
       c.progress.total = c.items.length;
@@ -354,7 +410,7 @@ export class CampaignPlanner {
       const removed = new Set(patch.remove_items);
       c.items = c.items.filter(id => !removed.has(id));
       for (const removedId of removed) {
-        if (this.itemToCampaign.get(removedId) === id) this.itemToCampaign.delete(removedId);
+        this.removeItemMembership(removedId, id);
       }
       c.progress.total = c.items.length;
     }
@@ -370,9 +426,12 @@ export class CampaignPlanner {
     if (c.status !== 'draft') {
       throw new Error(`Cannot delete campaign in '${c.status}' status (must be draft)`);
     }
+    if (this.getChildren(id).length > 0) {
+      throw new Error('Cannot delete a campaign that has child campaigns');
+    }
     this.campaigns.delete(id);
     for (const item of c.items) {
-      if (this.itemToCampaign.get(item) === id) this.itemToCampaign.delete(item);
+      this.removeItemMembership(item, id);
     }
     // Clean up chain mapping if present
     for (const [key, cid] of this.chainToCampaign) {
@@ -401,10 +460,9 @@ export class CampaignPlanner {
       progress: { total: source.items.length, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 },
       created_at: new Date().toISOString(),
       findings: [],
-      chain_id: source.chain_id,
     };
     this.campaigns.set(newId, campaign);
-    for (const item of campaign.items) this.itemToCampaign.set(item, newId);
+    for (const item of campaign.items) this.addItemMembership(item, newId);
     return campaign;
   }
 
@@ -527,11 +585,13 @@ export class CampaignPlanner {
     const parent = this.campaigns.get(id);
     if (!parent) return null;
     if (parent.parent_id) return null; // can't split a child
+    if (parent.status === 'completed' || parent.status === 'aborted') return null;
+    if (this.getChildren(id).length > 0) return null;
 
     const items = parent.items;
-    if (items.length === 0) return null;
-
-    const n = Math.min(count ?? items.length, items.length);
+    if (items.length < 2) return null;
+    const n = count ?? items.length;
+    if (!Number.isInteger(n) || n < 2 || n > items.length) return null;
     const children: Campaign[] = [];
 
     // Distribute items across N children (round-robin)
@@ -540,25 +600,41 @@ export class CampaignPlanner {
       buckets[i % n].push(items[i]);
     }
 
+    // The parent becomes a structural roll-up. Its children are the unique
+    // actionable owners of the frontier items from this point onward.
+    for (const item of items) this.removeItemMembership(item, id);
+
     for (let i = 0; i < n; i++) {
       if (buckets[i].length === 0) continue;
       const childId = uuidv4();
+      const itemStatus = Object.fromEntries(
+        buckets[i]
+          .map(item => [item, parent.item_status?.[item]] as const)
+          .filter((entry): entry is readonly [string, 'succeeded' | 'failed'] => entry[1] !== undefined),
+      );
+      const statuses = Object.values(itemStatus);
+      const completed = statuses.length;
+      const succeeded = statuses.filter(status => status === 'succeeded').length;
+      const failed = statuses.filter(status => status === 'failed').length;
+      const childCompleted = completed === buckets[i].length;
       const child: Campaign = {
         id: childId,
         name: `${parent.name} (${i + 1}/${n})`,
         strategy: parent.strategy,
-        status: 'draft',
+        status: childCompleted ? 'completed' : parent.status,
         items: buckets[i],
         abort_conditions: [...parent.abort_conditions],
-        progress: { total: buckets[i].length, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 },
+        progress: { total: buckets[i].length, completed, succeeded, failed, consecutive_failures: 0 },
         parent_id: id,
         phase_id: parent.phase_id,
-        chain_id: parent.chain_id,
         created_at: new Date().toISOString(),
         findings: [],
+        ...(completed > 0 ? { item_status: itemStatus } : {}),
+        ...(parent.started_at ? { started_at: parent.started_at } : {}),
+        ...(childCompleted ? { completed_at: parent.completed_at ?? new Date().toISOString() } : {}),
       };
       this.campaigns.set(childId, child);
-      for (const item of child.items) this.itemToCampaign.set(item, childId);
+      for (const item of child.items) this.addItemMembership(item, childId);
       children.push(child);
     }
 
@@ -607,7 +683,7 @@ export class CampaignPlanner {
   }
 
   /** Cascade lifecycle action from parent to children */
-  cascadeToChildren(parentId: string, action: 'activate' | 'pause' | 'abort'): void {
+  cascadeToChildren(parentId: string, action: 'activate' | 'pause' | 'resume' | 'abort'): void {
     for (const child of this.getChildren(parentId)) {
       switch (action) {
         case 'activate':
@@ -615,6 +691,9 @@ export class CampaignPlanner {
           break;
         case 'pause':
           if (child.status === 'active') this.pauseCampaign(child.id);
+          break;
+        case 'resume':
+          if (child.status === 'paused') this.resumeCampaign(child.id);
           break;
         case 'abort':
           if (child.status !== 'completed' && child.status !== 'aborted') this.abortCampaign(child.id);
@@ -627,9 +706,18 @@ export class CampaignPlanner {
    * Find which campaign contains a given frontier item.
    */
   findCampaignForItem(frontierItemId: string): Campaign | null {
-    const campaignId = this.itemToCampaign.get(frontierItemId);
-    if (campaignId) return this.campaigns.get(campaignId) || null;
-    return null;
+    const campaignIds = this.itemToCampaign.get(frontierItemId);
+    if (!campaignIds || campaignIds.size !== 1) return null;
+    const [campaignId] = campaignIds;
+    return this.campaigns.get(campaignId) || null;
+  }
+
+  /** Link a finding once to a known campaign. */
+  addFinding(campaignId: string, findingId: string): Campaign | null {
+    const campaign = this.campaigns.get(campaignId);
+    if (!campaign) return null;
+    if (!campaign.findings.includes(findingId)) campaign.findings.push(findingId);
+    return campaign;
   }
 
   // =============================================
@@ -652,6 +740,7 @@ export class CampaignPlanner {
     const existing = existingId ? this.campaigns.get(existingId) : null;
 
     if (existing) {
+      existing.stable_key = stableKey;
       if (existing.status === 'draft') {
         // Draft campaigns: safe to fully refresh item list
         existing.items = itemIds;
@@ -683,12 +772,13 @@ export class CampaignPlanner {
       progress: { total: itemIds.length, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 },
       created_at: new Date().toISOString(),
       findings: [],
+      stable_key: stableKey,
       ...extra,
     };
 
     this.campaigns.set(id, campaign);
     this.chainToCampaign.set(stableKey, id);
-    for (const item of itemIds) this.itemToCampaign.set(item, id);
+    for (const item of itemIds) this.addItemMembership(item, id);
     return campaign;
   }
 

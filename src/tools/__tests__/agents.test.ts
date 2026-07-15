@@ -221,7 +221,9 @@ describe('agent tools', () => {
 
     it('dispatch_agents stamps each agent with a frontier-derived archetype (host → recon_scanner)', async () => {
       seedHost();
-      const result = await handlers.dispatch_agents({ count: 5, strategy: 'top_priority', hops: 2 });
+      const result = await handlers.dispatch_agents({
+        count: 5, strategy: 'top_priority', hops: 2, types: ['incomplete_node'],
+      });
       const payload = JSON.parse(result.content[0].text);
       expect(payload.dispatched.length).toBeGreaterThan(0);
       for (const d of payload.dispatched) {

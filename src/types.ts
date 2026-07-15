@@ -1247,6 +1247,7 @@ export interface Campaign {
   abort_conditions: AbortCondition[];
   progress: CampaignProgress;
   chain_id?: string;             // links to ChainScorer chain for spray campaigns
+  stable_key?: string;           // durable generated-campaign identity across restart/reindex
   phase_id?: string;             // links campaign to an engagement phase
   parent_id?: string;            // links child campaign to parent
   created_at: string;

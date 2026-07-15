@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { existsSync, readdirSync, unlinkSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../graph-engine.js';
 import { registerAgentTools, dispatchCampaignAgents } from '../../tools/agents.js';
@@ -21,6 +21,16 @@ function makeConfig(): EngagementConfig {
 
 function cleanup() {
   try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
+  for (const sibling of ['state-test-campaign-fixes.journal.jsonl']) {
+    try { if (existsSync(sibling)) unlinkSync(sibling); } catch {}
+  }
+  try {
+    for (const snapshot of readdirSync('./.snapshots')) {
+      if (snapshot.startsWith('state-test-campaign-fixes.')) {
+        try { unlinkSync(`./.snapshots/${snapshot}`); } catch {}
+      }
+    }
+  } catch {}
 }
 
 function parse(result: any): any {
@@ -145,6 +155,15 @@ describe('Campaign fixes — P1: dispatch skips completed items', () => {
 
   it('does not redispatch frontier items already marked succeeded', () => {
     const { engine, campaignId } = buildEngineWithCampaign(['fi-1', 'fi-2']);
+    vi.spyOn(engine, 'getActionableFrontierItem').mockImplementation(itemId => ({
+      id: itemId,
+      type: 'network_discovery',
+      description: `Discover ${itemId}`,
+      target_cidr: '10.0.0.0/24',
+      graph_metrics: { hops_to_objective: null, fan_out_estimate: 1, node_degree: 0, confidence: 1 },
+      opsec_noise: 0.1,
+      staleness_seconds: 0,
+    }));
 
     // Simulate fi-1 completing successfully
     engine.updateCampaignProgress(campaignId, 'fi-1', 'success', 'fnd-1');
@@ -158,6 +177,13 @@ describe('Campaign fixes — P1: dispatch skips completed items', () => {
     expect(dispatchedIds).toContain('fi-2');
   });
 
+  it('does not dispatch a stored item that is no longer actionable', () => {
+    const { engine, campaignId } = buildEngineWithCampaign(['fi-stale']);
+    const result = dispatchCampaignAgents(engine, campaignId, { max_agents: 1 });
+    expect(result.dispatched).toEqual([]);
+    expect(result.skipped).toEqual([{ frontier_item_id: 'fi-stale', reason: 'frontier_not_actionable' }]);
+  });
+
   it('does not redispatch items already marked failed', () => {
     const { engine, campaignId } = buildEngineWithCampaign(['fi-1', 'fi-2']);
     engine.updateCampaignProgress(campaignId, 'fi-1', 'failure');
@@ -165,6 +191,51 @@ describe('Campaign fixes — P1: dispatch skips completed items', () => {
     const result = dispatchCampaignAgents(engine, campaignId, { max_agents: 8 });
     expect(result.dispatched.map((d) => d.frontier_item_id)).not.toContain('fi-1');
     expect(result.skipped.find((s) => s.frontier_item_id === 'fi-1')?.reason).toMatch(/already_failed/);
+  });
+});
+
+describe('Campaign fixes — split ownership preserves active work', () => {
+  afterEach(cleanup);
+
+  it('moves progress, item membership, and in-flight tasks into child campaigns', () => {
+    const { engine, campaignId } = buildEngineWithCampaign(['fi-1', 'fi-2']);
+    engine.activateCampaign(campaignId);
+    engine.updateCampaignProgress(campaignId, 'fi-1', 'success', 'finding-before-split');
+    engine.registerAgent({
+      id: 'task-before-split', agent_id: 'agent-before-split', assigned_at: new Date().toISOString(),
+      status: 'running', frontier_item_id: 'fi-2', campaign_id: campaignId, subgraph_node_ids: [],
+    });
+
+    const children = engine.splitCampaign(campaignId, 2)!;
+    const completedChild = children.find(child => child.items.includes('fi-1'))!;
+    const activeChild = children.find(child => child.items.includes('fi-2'))!;
+
+    expect(completedChild).toMatchObject({
+      status: 'completed',
+      progress: { total: 1, completed: 1, succeeded: 1, failed: 0 },
+      item_status: { 'fi-1': 'succeeded' },
+    });
+    expect(engine.findCampaignForItem('fi-1')?.id).toBe(completedChild.id);
+    expect(engine.findCampaignForItem('fi-2')?.id).toBe(activeChild.id);
+    expect(engine.getTask('task-before-split')?.campaign_id).toBe(activeChild.id);
+  });
+
+  it('does not abort a parent whose children are already terminal', () => {
+    const { engine, campaignId } = buildEngineWithCampaign(['fi-1', 'fi-2']);
+    const children = engine.splitCampaign(campaignId, 2)!;
+    engine.activateCampaign(campaignId);
+    for (const child of children) {
+      engine.updateCampaignProgress(child.id, child.items[0], 'success');
+    }
+    expect(engine.deriveCampaignParentStatus(campaignId)).toBe('completed');
+    expect(engine.abortCampaign(campaignId)).toBeNull();
+  });
+
+  it('rejects item edits on a split parent instead of desynchronizing children', () => {
+    const { engine, campaignId } = buildEngineWithCampaign(['fi-1', 'fi-2']);
+    engine.pauseCampaign(campaignId);
+    engine.splitCampaign(campaignId, 2);
+    expect(() => engine.updateCampaign(campaignId, { add_items: ['fi-3'] })).toThrow('child campaigns');
   });
 });
 

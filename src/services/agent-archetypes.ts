@@ -327,6 +327,7 @@ export function recommendArchetype(input: RecommendInput): AgentArchetypeId {
     case 'network_discovery': return 'recon_scanner';
     case 'incomplete_node': return input.nodeType === 'webapp' || input.nodeType === 'url' ? 'web_tester' : 'recon_scanner';
     case 'credential_test': return 'credential_operator';
+    case 'mfa_bypass_candidate': return 'credential_operator';
     case 'inferred_edge': return 'credential_operator';
     case 'network_pivot':
     case 'cross_tier_pivot': return 'post_exploit';
