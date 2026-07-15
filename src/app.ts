@@ -91,7 +91,10 @@ export type OverwatchToolRegistrar = Pick<McpServer, 'registerTool'>;
  */
 export class ToolRegistrar implements OverwatchToolRegistrar {
   private entries: ToolEntry[] = [];
-  constructor(private server: McpServer) {}
+  constructor(
+    private server: McpServer,
+    private persistenceGate?: Pick<GraphEngine, 'isPersistenceWritable' | 'getPersistenceRecoveryStatus'>,
+  ) {}
   registerTool<OutputArgs extends ZodRawShapeCompat | AnySchema, InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined>(
     name: string,
     config: { title?: string; description?: string; inputSchema?: InputArgs; outputSchema?: OutputArgs; annotations?: ToolAnnotations; _meta?: Record<string, unknown> },
@@ -106,7 +109,44 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
       idempotent: config?.annotations?.idempotentHint,
       open_world: config?.annotations?.openWorldHint,
     });
-    return this.server.registerTool(name, config, cb);
+    const wrapped = (async (...args: unknown[]) => {
+      const input = args[0];
+      const inputRecord = input && typeof input === 'object'
+        ? input as Record<string, unknown>
+        : {};
+      // Tool annotations describe the common case, but a handful of public
+      // tools are conditionally mutating or perform maintenance despite being
+      // presented as reads. Keep the degraded-mode gate based on behavior,
+      // not just metadata supplied to the MCP client.
+      const conditionallyMutating =
+        (name === 'get_state' && inputRecord.snapshot === true)
+        || (name === 'get_system_prompt' && inputRecord.snapshot !== false)
+        || name === 'check_processes';
+      const explicitlyNonMutating = name === 'get_system_prompt'
+        && inputRecord.snapshot === false;
+      const requiresWritablePersistence = conditionallyMutating
+        || (config?.annotations?.readOnlyHint !== true && !explicitlyNonMutating);
+      if (
+        requiresWritablePersistence
+        && this.persistenceGate
+        && !this.persistenceGate.isPersistenceWritable()
+      ) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: 'Durable mutations are disabled while persistence recovery is incomplete.',
+              code: 'PERSISTENCE_READ_ONLY',
+              recovery: this.persistenceGate.getPersistenceRecoveryStatus(),
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      const invoke = cb as unknown as (...callbackArgs: unknown[]) => unknown;
+      return invoke(...args);
+    }) as unknown as ToolCallback<InputArgs>;
+    return this.server.registerTool(name, config, wrapped);
   }
   getEntries(): ToolEntry[] { return this.entries; }
 }
@@ -176,7 +216,7 @@ export function registerAllTools(
     setTelemetry(new ToolTelemetry());
   }
 
-  const registrar = new ToolRegistrar(server as McpServer);
+  const registrar = new ToolRegistrar(server as McpServer, deps.engine);
   const s = registrar as unknown as McpServer;
 
   registerStateTools(s, deps.engine, {
@@ -562,32 +602,58 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
 }
 
 export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
-  // Stop agent-task execution and AWAIT headless children exiting (SIGTERM→
-  // SIGKILL) so none outlive the daemon.
-  await app.taskExecution.shutdown();
-  // Close HTTP transport sessions. (In-flight tool calls are aborted per-request
-  // via the MCP SDK's extra.signal, which the process runner already honors;
-  // there is no separate per-session abort controller to fire.)
-  if (app.httpTransports) {
-    for (const [sid, transport] of Object.entries(app.httpTransports)) {
-      try {
-        await transport.close();
-      } catch { /* best effort */ }
-      delete app.httpTransports[sid];
+  let firstError: unknown;
+  const capture = (error: unknown): void => {
+    if (firstError === undefined) firstError = error;
+  };
+  const cleanup = async (operation: () => unknown | Promise<unknown>): Promise<void> => {
+    try { await operation(); } catch (error) { capture(error); }
+  };
+
+  try {
+    // Stop agent-task execution and AWAIT headless children exiting (SIGTERM→
+    // SIGKILL) so none outlive the daemon. Every later cleanup still runs if a
+    // component reports an error.
+    await cleanup(() => app.taskExecution.shutdown());
+
+    // Close HTTP transport sessions. In-flight requests receive cancellation
+    // through the SDK signal, which the process runner combines with its
+    // persistence gate monitor.
+    if (app.httpTransports) {
+      for (const [sid, transport] of Object.entries(app.httpTransports)) {
+        await cleanup(() => transport.close());
+        delete app.httpTransports[sid];
+      }
     }
+    if (app.httpServer) {
+      await cleanup(() => new Promise<void>((resolve, reject) => {
+        app.httpServer!.close(error => error ? reject(error) : resolve());
+      }));
+    }
+    await cleanup(() => app.sessionManager.shutdown());
+    if (app.dashboard) await cleanup(() => app.dashboard!.stop());
+    await cleanup(() => app.tape.disable({ audit: app.engine.isPersistenceWritable() }));
+
+    // A degraded engine intentionally rejects every durable mutation. Runtime
+    // cleanup above remains mandatory, but attempting a final checkpoint would
+    // only turn an orderly shutdown into a guard exception.
+    if (app.engine.isPersistenceWritable()) {
+      try {
+        app.engine.setTrackedProcesses(app.processTracker.serialize());
+        app.engine.persist();
+        app.engine.flushNow();
+      } catch (error) {
+        capture(error);
+      }
+    }
+  } finally {
+    // dispose() cancels persistence retries, approval timers, and process-level
+    // flush hooks. It must run even when another shutdown component failed or
+    // the persistence gate is already closed.
+    try { app.engine.dispose(); } catch (error) { capture(error); }
   }
-  if (app.httpServer) {
-    await new Promise<void>((resolve) => app.httpServer!.close(() => resolve()));
-  }
-  await app.sessionManager.shutdown().catch(() => {});
-  if (app.dashboard) {
-    await app.dashboard.stop().catch(() => {});
-  }
-  await app.tape.disable().catch(() => {});
-  app.engine.setTrackedProcesses(app.processTracker.serialize());
-  app.engine.persist();
-  app.engine.flushNow();
-  app.engine.dispose();
+
+  if (firstError !== undefined) throw firstError;
 }
 
 export function createAppOrExit(options: CreateOverwatchAppOptions = {}): OverwatchApp {

@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-agent-directives.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -14,10 +14,6 @@ function makeConfig(): EngagementConfig {
     objectives: [],
     opsec: { name: 'pentest', max_noise: 0.7 },
   };
-}
-
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch { /* ignore */ }
 }
 
 function registerTask(engine: GraphEngine, id: string): AgentTask {
@@ -31,9 +27,26 @@ function registerTask(engine: GraphEngine, id: string): AgentTask {
 
 describe('Agent directives (engine)', () => {
   let engine: GraphEngine;
+  let testDir: string;
+  let stateFile: string;
+  const engines = new Set<GraphEngine>();
 
-  beforeEach(() => { cleanup(); engine = new GraphEngine(makeConfig(), TEST_STATE_FILE); });
-  afterEach(() => { cleanup(); });
+  function createEngine(): GraphEngine {
+    const created = new GraphEngine(makeConfig(), stateFile);
+    engines.add(created);
+    return created;
+  }
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-agent-directives-'));
+    stateFile = join(testDir, 'state.json');
+    engine = createEngine();
+  });
+  afterEach(() => {
+    for (const created of engines) created.dispose();
+    engines.clear();
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   it('issues a pending directive that getPendingAgentDirective returns', () => {
     registerTask(engine, 't1');
@@ -92,8 +105,10 @@ describe('Agent directives (engine)', () => {
     registerTask(engine, 't6');
     const d = engine.issueAgentDirective({ task_id: 't6', kind: 'prioritize', frontier_types: ['credential_test'], note: 'creds first' });
     engine.flushNow();
+    engine.dispose();
+    engines.delete(engine);
 
-    const reloaded = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const reloaded = createEngine();
     const history = reloaded.getAgentDirectives('t6');
     expect(history).toHaveLength(1);
     expect(history[0].id).toBe(d.id);

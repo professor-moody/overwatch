@@ -1,10 +1,10 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import { ColdStore, classifyNodeTemperature, toColdRecord, isInterestingEdgeType } from '../cold-store.js';
 import type { EngagementConfig, Finding, NodeProperties } from '../../types.js';
-import { unlinkSync, existsSync } from 'fs';
-
-const TEST_STATE_FILE = './state-test-compaction.json';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig {
   return {
@@ -28,19 +28,30 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
   };
 }
 
-function cleanup() {
-  if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-}
-
 const now = new Date().toISOString();
 
 function makeFinding(nodes: Finding['nodes'], edges: Finding['edges'] = []): Finding {
   return { id: `f-${Date.now()}-${Math.random()}`, agent_id: 'test', timestamp: now, nodes, edges };
 }
 
-function createEngine(overrides: Partial<EngagementConfig> = {}): GraphEngine {
-  return new GraphEngine(makeConfig(overrides), TEST_STATE_FILE);
+let testDir: string;
+const engines = new Set<GraphEngine>();
+
+function createEngine(overrides: Partial<EngagementConfig> = {}, filename = 'state.json'): GraphEngine {
+  const engine = new GraphEngine(makeConfig(overrides), join(testDir, filename));
+  engines.add(engine);
+  return engine;
 }
+
+beforeEach(() => {
+  testDir = mkdtempSync(join(tmpdir(), 'overwatch-compaction-'));
+});
+
+afterEach(() => {
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  rmSync(testDir, { recursive: true, force: true });
+});
 
 // ============================================================
 // Phase 1: classifyNodeTemperature
@@ -223,8 +234,6 @@ describe('toColdRecord', () => {
 // ============================================================
 
 describe('Graph compaction integration', () => {
-  afterEach(cleanup);
-
   it('diverts ping-only host to cold store', () => {
     const engine = createEngine();
     engine.ingestFinding(makeFinding([
@@ -365,9 +374,11 @@ describe('Graph compaction integration', () => {
     ]));
     expect(engine.getState().graph_summary.cold_node_count).toBe(1);
     engine.flushNow();
+    engine.dispose();
+    engines.delete(engine);
 
     // Load a fresh engine from the same state file
-    const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine2 = createEngine();
     expect(engine2.getState().graph_summary.cold_node_count).toBe(1);
   });
 
@@ -448,8 +459,6 @@ describe('Graph compaction integration', () => {
 // ============================================================
 
 describe('dispatch_subnet_agents', () => {
-  afterEach(cleanup);
-
   it('dispatches agents for scope CIDRs', () => {
     const engine = createEngine();
     const frontier = engine.computeFrontier();
@@ -534,8 +543,6 @@ describe('dispatch_subnet_agents', () => {
 // ============================================================
 
 describe('Cold store promotion inference', () => {
-  afterEach(cleanup);
-
   it('pivot-promoted host gets inference rules run — RELAY_TARGET after adding SMB service', () => {
     const engine = createEngine();
 

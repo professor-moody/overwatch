@@ -198,6 +198,11 @@ export class EngineContext {
   // continue to rely on debounced snapshots only.
   mutationJournal: MutationJournal | null;
   journalSnapshotSeq: number;        // last seq that's already in the persisted snapshot
+  /**
+   * Installed by StatePersistence.  Recovery and repeated persistence failures
+   * use this guard to stop new durable work before it mutates memory.
+   */
+  persistenceWriteGuard?: () => void;
   /** Set during WAL replay so the guarded mutators (addNode/addEdge) re-apply
    *  state without re-emitting their edge-case events (the type-conflict warning
    *  + inferred-edge-confirmation log) into the already-restored activity log. */
@@ -234,10 +239,13 @@ export class EngineContext {
     this.checkpointSigningKey = loadCheckpointSigningKey(process.env);
     this.deterministicSeq = 0;
     this.frontierLeases = new FrontierLeases();
-    // P2.1: WAL is opt-in via engagement_nonce — same migration boundary
-    // as deterministic IDs. Legacy engagements (no nonce) skip journaling
-    // entirely so existing tests / state files continue to behave as before.
-    this.mutationJournal = config.engagement_nonce ? new MutationJournal(stateFilePath) : null;
+    // P2.1: new WAL creation is opt-in via engagement_nonce, but recovery must
+    // never ignore bytes that already exist on disk merely because the incoming
+    // config is a legacy/no-nonce shape. The persisted base may itself restore a
+    // nonce later; StatePersistence enables journaling at that point as well.
+    this.mutationJournal = config.engagement_nonce || MutationJournal.hasDataForState(stateFilePath)
+      ? new MutationJournal(stateFilePath)
+      : null;
     this.journalSnapshotSeq = 0;
   }
 
@@ -250,14 +258,44 @@ export class EngineContext {
    * Throws on journal write failure; callers must abort the in-memory
    * change in that case.
    */
-  journalMutation(type: MutationType, payload: Record<string, unknown>, source_action_id?: string): void {
-    if (!this.mutationJournal) return;
-    this.mutationJournal.append({
+  journalMutation(type: MutationType, payload: Record<string, unknown>, source_action_id?: string): number | undefined {
+    this.persistenceWriteGuard?.();
+    if (!this.mutationJournal) return undefined;
+    const entry = this.mutationJournal.append({
       type,
       payload,
       ...(source_action_id ? { source_action_id } : {}),
       ts: this.nowIso(),
     });
+    return entry.seq;
+  }
+
+  /**
+   * Apply a mutation under the WAL contract and advance the in-memory
+   * checkpoint only after the mutation has actually succeeded.  Keeping this
+   * transition in one helper prevents snapshots from claiming an appended but
+   * unapplied record.
+   */
+  applyJournaledMutation<T>(
+    type: MutationType,
+    payload: Record<string, unknown>,
+    apply: () => T,
+    source_action_id?: string,
+  ): T {
+    this.persistenceWriteGuard?.();
+    const seq = this.journalMutation(type, payload, source_action_id);
+    try {
+      const result = apply();
+      if (seq !== undefined) this.mutationJournal?.markApplied(seq);
+      return result;
+    } catch (error) {
+      if (seq !== undefined) {
+        this.mutationJournal?.blockAppends(
+          `mutation seq ${seq} was durable but failed during in-memory application`,
+        );
+      }
+      throw error;
+    }
   }
 
   /**
@@ -269,13 +307,13 @@ export class EngineContext {
    * (journaling suppressed), so these don't double-record.
    */
   coldAdd(record: ColdNodeRecord): void {
-    this.journalMutation('cold_add', { record });
-    this.coldStore.add(record);
+    this.applyJournaledMutation('cold_add', { record }, () => {
+      this.coldStore.add(record);
+    });
   }
 
   coldPromote(id: string): ColdNodeRecord | undefined {
-    this.journalMutation('cold_promote', { id });
-    return this.coldStore.promote(id);
+    return this.applyJournaledMutation('cold_promote', { id }, () => this.coldStore.promote(id));
   }
 
   /**

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RingBuffer, SessionManager } from '../session-manager.js';
 import { LocalPtyAdapter } from '../session-adapters.js';
 import type { AdapterHandle, SessionCapabilities } from '../../types.js';
@@ -112,10 +112,18 @@ describe('RingBuffer', () => {
 // Mock adapter for SessionManager tests
 // ============================================================
 
-function createMockAdapter(): { adapter: SessionAdapterFactory; handle: AdapterHandle; dataCbs: Array<(chunk: string) => void>; exitCbs: Array<(info: { exitCode?: number; signal?: number }) => void> } {
+function createMockAdapter(): {
+  adapter: SessionAdapterFactory;
+  handle: AdapterHandle;
+  dataCbs: Array<(chunk: string) => void>;
+  exitCbs: Array<(info: { exitCode?: number; signal?: number }) => void>;
+  written: string[];
+  wasClosed(): boolean;
+} {
   const dataCbs: Array<(chunk: string) => void> = [];
   const exitCbs: Array<(info: { exitCode?: number; signal?: number }) => void> = [];
   const written: string[] = [];
+  let closed = false;
 
   const handle: AdapterHandle = {
     pid: 12345,
@@ -129,7 +137,7 @@ function createMockAdapter(): { adapter: SessionAdapterFactory; handle: AdapterH
     write(data: string) { written.push(data); },
     resize(_cols: number, _rows: number) {},
     kill(_signal?: string) {},
-    close() {},
+    close() { closed = true; },
     onData(cb) { dataCbs.push(cb); },
     onExit(cb) { exitCbs.push(cb); },
   };
@@ -141,7 +149,7 @@ function createMockAdapter(): { adapter: SessionAdapterFactory; handle: AdapterH
     },
   };
 
-  return { adapter, handle, dataCbs, exitCbs };
+  return { adapter, handle, dataCbs, exitCbs, written, wasClosed: () => closed };
 }
 
 // ============================================================
@@ -1220,6 +1228,160 @@ describe('Session Idle Timeout', () => {
 
     const reaped = mgr.reapIdleSessions();
     expect(reaped).toHaveLength(0);
+    await mgr.shutdown();
+  });
+
+  it('freezes instead of reaping through read surfaces while persistence is read-only', async () => {
+    const mgr = new SessionManager(null, 100);
+    const mock = createMockAdapter();
+    mgr.registerAdapter(mock.adapter);
+
+    const result = await mgr.create({ kind: 'local_pty', title: 'degraded-read', initial_wait_ms: 0 });
+    const session = (mgr as any).sessions.get(result.metadata.id);
+    session.metadata.last_activity_at = new Date(Date.now() - 200).toISOString();
+    (mgr as any).engine = { isPersistenceWritable: () => false };
+
+    expect(mgr.list()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: result.metadata.id, state: 'closed' }),
+    ]));
+    expect(mgr.read(result.metadata.id).session_id).toBe(result.metadata.id);
+    expect(mgr.reapIdleSessions()).toEqual([]);
+    expect(mgr.getSession(result.metadata.id)?.state).toBe('closed');
+    expect(mock.wasClosed()).toBe(true);
+
+    (mgr as any).engine = null;
+    await mgr.shutdown();
+  });
+});
+
+describe('SessionManager persistence freeze', () => {
+  it('closes live handles without durable callbacks and rejects later operations', async () => {
+    let writable = true;
+    const durableEvents: unknown[] = [];
+    const engine = {
+      isPersistenceWritable: () => writable,
+      logActionEvent: (event: unknown) => { durableEvents.push(event); },
+      onSessionClosed: () => { durableEvents.push('graph-session-close'); },
+    };
+    const mgr = new SessionManager(engine as any);
+    const mock = createMockAdapter();
+    mgr.registerAdapter(mock.adapter);
+
+    const result = await mgr.create({ kind: 'local_pty', title: 'freeze-me', initial_wait_ms: 0 });
+    const eventCountBeforeFreeze = durableEvents.length;
+    writable = false;
+
+    // The unref'd gate monitor must detect the transition without a new API call.
+    await new Promise(resolve => setTimeout(resolve, 325));
+    expect(mock.wasClosed()).toBe(true);
+    expect(mgr.getSession(result.metadata.id)?.state).toBe('closed');
+    expect(durableEvents).toHaveLength(eventCountBeforeFreeze);
+
+    expect(() => mgr.write(result.metadata.id, 'whoami')).toThrow(/persistence is read-only/i);
+    expect(() => mgr.update(result.metadata.id, { title: 'must-not-change' }, undefined, true))
+      .toThrow(/persistence is read-only/i);
+    expect(mgr.getSession(result.metadata.id)?.title).toBe('freeze-me');
+    await expect(mgr.sendCommand(result.metadata.id, 'id')).rejects.toThrow(/persistence is read-only/i);
+    await expect(mgr.create({ kind: 'local_pty', title: 'must-not-open', initial_wait_ms: 0 }))
+      .rejects.toThrow(/persistence is read-only/i);
+
+    // Late adapter callbacks are isolated and cannot write lifecycle state.
+    expect(() => mock.exitCbs.forEach(cb => cb({ exitCode: 0 }))).not.toThrow();
+    expect(durableEvents).toHaveLength(eventCountBeforeFreeze);
+    await mgr.shutdown();
+  });
+
+  it('interrupts a command already waiting for session output', async () => {
+    let writable = true;
+    const engine = {
+      isPersistenceWritable: () => writable,
+      logActionEvent() {},
+    };
+    const mgr = new SessionManager(engine as any);
+    const mock = createMockAdapter();
+    mgr.registerAdapter(mock.adapter);
+    const result = await mgr.create({ kind: 'local_pty', title: 'running-command', initial_wait_ms: 0 });
+
+    const pending = mgr.sendCommand(result.metadata.id, 'sleep 30', { timeout_ms: 5_000 });
+    expect(mock.written).toContain('sleep 30\n');
+    writable = false;
+
+    await expect(pending).resolves.toMatchObject({ completion_reason: 'session_closed' });
+    expect(mock.wasClosed()).toBe(true);
+    await mgr.shutdown();
+  });
+
+  it('closes a pending listener instead of accepting a connection after gate closure', async () => {
+    let writable = true;
+    const logActionEvent = vi.fn();
+    const ingestSessionResult = vi.fn();
+    const engine = {
+      isPersistenceWritable: () => writable,
+      logActionEvent,
+      ingestSessionResult,
+    };
+    const mgr = new SessionManager(engine as any);
+    const mock = createMockAdapter();
+    let connect: (() => void) | undefined;
+    mgr.registerAdapter({
+      kind: 'socket',
+      async spawn(options) {
+        connect = (options as { onConnect?: () => void }).onConnect;
+        return mock.handle;
+      },
+    });
+
+    const result = await mgr.create({
+      kind: 'socket',
+      title: 'pending-listener',
+      mode: 'listen',
+      target_node: 'host-1',
+      initial_wait_ms: 0,
+    });
+    expect(result.metadata.state).toBe('pending');
+    const eventCount = logActionEvent.mock.calls.length;
+
+    writable = false;
+    expect(() => connect?.()).not.toThrow();
+
+    expect(mock.wasClosed()).toBe(true);
+    expect(mgr.getSession(result.metadata.id)?.state).toBe('closed');
+    expect(ingestSessionResult).not.toHaveBeenCalled();
+    expect(logActionEvent).toHaveBeenCalledTimes(eventCount);
+    await mgr.shutdown();
+  });
+
+  it('aborts an adapter spawn that is still pending when persistence degrades', async () => {
+    let writable = true;
+    const engine = { isPersistenceWritable: () => writable };
+    const mgr = new SessionManager(engine as any, 0);
+    let adapterSignal: AbortSignal | undefined;
+    const adapter: SessionAdapterFactory = {
+      kind: 'socket',
+      spawn(options) {
+        const signal = options.abort_signal as AbortSignal;
+        adapterSignal = signal;
+        return new Promise((_resolve, reject) => {
+          const onAbort = () => reject(signal.reason ?? new Error('aborted'));
+          if (signal.aborted) onAbort();
+          else signal.addEventListener('abort', onAbort, { once: true });
+        });
+      },
+    };
+    mgr.registerAdapter(adapter);
+
+    const pending = mgr.create({
+      kind: 'socket',
+      title: 'pending-listener',
+      mode: 'listen',
+      port: 4444,
+      initial_wait_ms: 0,
+    });
+    expect(adapterSignal?.aborted).toBe(false);
+    writable = false;
+
+    await expect(pending).rejects.toMatchObject({ code: 'PERSISTENCE_READ_ONLY' });
+    expect(adapterSignal?.aborted).toBe(true);
     await mgr.shutdown();
   });
 });

@@ -1,9 +1,12 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
-import { unlinkSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { EngagementConfig, Finding } from '../../types.js';
 
-const TEST_STATE_FILE = './state-test-imperative-inf.json';
+const engines = new Set<GraphEngine>();
+const testDirs = new Set<string>();
 
 function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig {
   return {
@@ -22,9 +25,18 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
 }
 
 function cleanup() {
-  try {
-    if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-  } catch { /* noop */ }
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  for (const dir of testDirs) rmSync(dir, { recursive: true, force: true });
+  testDirs.clear();
+}
+
+function createEngine(config: EngagementConfig = makeConfig()): GraphEngine {
+  const dir = mkdtempSync(join(tmpdir(), 'overwatch-imperative-inference-'));
+  testDirs.add(dir);
+  const engine = new GraphEngine(config, join(dir, 'state.json'));
+  engines.add(engine);
+  return engine;
 }
 
 const now = new Date().toISOString();
@@ -40,7 +52,7 @@ describe('inferPivotReachability', () => {
   afterEach(cleanup);
 
   it('does not create REACHABLE edge when session confidence < 0.9', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-70', type: 'host', label: 'low-sess-a', ip: '10.10.10.70', discovered_at: now, confidence: 1.0, alive: true },
@@ -54,7 +66,7 @@ describe('inferPivotReachability', () => {
   });
 
   it('REACHABLE edge has confidence 0.6 and correct provenance', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-80', type: 'host', label: 'prov-a', ip: '10.10.10.80', discovered_at: now, confidence: 1.0, alive: true },
@@ -72,7 +84,7 @@ describe('inferPivotReachability', () => {
   });
 
   it('skips host nodes without an ip property', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-no-ip', type: 'host', label: 'no-ip', discovered_at: now, confidence: 1.0, alive: true },
@@ -86,7 +98,7 @@ describe('inferPivotReachability', () => {
   });
 
   it('creates REACHABLE edges to multiple peers in the same subnet', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-90', type: 'host', label: 'multi-a', ip: '10.10.10.90', discovered_at: now, confidence: 1.0, alive: true },
@@ -103,7 +115,7 @@ describe('inferPivotReachability', () => {
   });
 
   it('does not create REACHABLE edge to self', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-95', type: 'host', label: 'self-a', ip: '10.10.10.95', discovered_at: now, confidence: 1.0, alive: true },
@@ -123,7 +135,7 @@ describe('inferDefaultCredentials', () => {
   afterEach(cleanup);
 
   it('fires for each supported CMS type', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     const cmsTypes = ['tomcat', 'jenkins', 'grafana', 'phpmyadmin'] as const;
     const expectedUsers: Record<string, string> = {
       tomcat: 'tomcat', jenkins: 'admin', grafana: 'admin', phpmyadmin: 'root',
@@ -144,7 +156,7 @@ describe('inferDefaultCredentials', () => {
   });
 
   it('sets cred_evidence_kind to manual on default credential nodes', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding(makeFinding([{
       id: 'webapp-grafana', type: 'webapp', label: 'http://10.10.10.5/grafana',
       discovered_at: now, confidence: 1.0, cms_type: 'grafana',
@@ -156,7 +168,7 @@ describe('inferDefaultCredentials', () => {
   });
 
   it('creates POTENTIAL_AUTH edge with confidence 0.3', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding(makeFinding([{
       id: 'webapp-jenkins', type: 'webapp', label: 'http://10.10.10.5/jenkins',
       discovered_at: now, confidence: 1.0, cms_type: 'jenkins',
@@ -169,7 +181,7 @@ describe('inferDefaultCredentials', () => {
   });
 
   it('creates separate credentials for distinct CMS types in one ingestion', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding(makeFinding([
       { id: 'webapp-tc', type: 'webapp', label: 'http://10.10.10.5/tomcat', discovered_at: now, confidence: 1.0, cms_type: 'tomcat' },
       { id: 'webapp-jk', type: 'webapp', label: 'http://10.10.10.5/jenkins', discovered_at: now, confidence: 1.0, cms_type: 'jenkins' },
@@ -185,7 +197,7 @@ describe('inferDefaultCredentials', () => {
   });
 
   it('handles case-insensitive CMS type matching', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.ingestFinding(makeFinding([{
       id: 'webapp-WP', type: 'webapp', label: 'http://10.10.10.5/WP',
       discovered_at: now, confidence: 1.0, cms_type: 'WordPress',
@@ -203,7 +215,7 @@ describe('degradeExpiredCredentialEdges', () => {
   afterEach(cleanup);
 
   it('degrades edges from stale credentials (not just expired)', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.addNode({
       id: 'cred-stale', type: 'credential', label: 'stale-cred',
       confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z',
@@ -228,7 +240,7 @@ describe('degradeExpiredCredentialEdges', () => {
   });
 
   it('degrades edges from rotated credentials', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.addNode({
       id: 'cred-rot', type: 'credential', label: 'rotated-cred',
       confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z',
@@ -253,7 +265,7 @@ describe('degradeExpiredCredentialEdges', () => {
   });
 
   it('degrades all POTENTIAL_AUTH edges from the same credential', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.addNode({
       id: 'cred-multi', type: 'credential', label: 'multi-cred',
       confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z',
@@ -290,13 +302,13 @@ describe('degradeExpiredCredentialEdges', () => {
   });
 
   it('returns empty array for non-existent node', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     const degraded = engine.degradeExpiredCredentialEdges('nonexistent');
     expect(degraded.length).toBe(0);
   });
 
   it('returns empty array for non-credential node types', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.addNode({
       id: 'host-not-cred', type: 'host', label: 'host',
       confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z',
@@ -307,7 +319,7 @@ describe('degradeExpiredCredentialEdges', () => {
   });
 
   it('degrades credentials expired by valid_until timestamp', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createEngine();
     engine.addNode({
       id: 'cred-ts-exp', type: 'credential', label: 'ts-exp',
       confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z',

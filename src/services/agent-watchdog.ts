@@ -119,12 +119,25 @@ export class AgentWatchdog {
   }
 
   tick(): number {
+    // Persistence can close asynchronously after the watchdog was started.
+    // Maintenance must become a no-op instead of letting a guarded engine
+    // mutation escape from the interval callback and crash the daemon.
+    if (!this.engine.isPersistenceWritable()) {
+      this.stop();
+      return 0;
+    }
     const now = this.now();
     // Refresh supervised long-lived liveness BEFORE reaping — the owner keeps the
     // orchestrator's heartbeat fresh while its process is alive, so a busy-but-quiet
     // one isn't reaped on this very tick. A throwing hook is logged (once per streak)
     // but never breaks the timer or skips the reap.
     if (this.beforeTick) this.invokeHook(this.beforeTick, 'before-reap');
+    // A before-tick hook may itself observe the writable→read-only transition
+    // and freeze the owning service. Recheck before touching durable agent state.
+    if (!this.engine.isPersistenceWritable()) {
+      this.stop();
+      return 0;
+    }
     const reaped = this.engine.reapStaleAgents(now);
     // Drop expired leases. Heartbeat-based reaping above already released
     // leases for tasks that got interrupted on this same tick; this catches

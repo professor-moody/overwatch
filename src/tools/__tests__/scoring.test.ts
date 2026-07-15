@@ -141,7 +141,7 @@ describe('scoring and inference tools', () => {
   });
 
   it('includes opsec_context in validate_action when OPSEC enforcement is enabled', async () => {
-    engine.getConfig().opsec.enabled = true;
+    engine.updateConfig({ opsec: { ...engine.getConfig().opsec, enabled: true } });
     const res = await handlers.validate_action({
       action_id: 'act-opsec-on', target_ip: '10.10.10.7', technique: 'portscan', description: 'Scan host',
     });
@@ -150,9 +150,13 @@ describe('scoring and inference tools', () => {
   });
 
   it('persists approval-gated validate_action requests before blocking', async () => {
-    const config = engine.getConfig();
-    config.opsec.approval_mode = 'approve-all';
-    config.opsec.approval_timeout_ms = 60_000;
+    engine.updateConfig({
+      opsec: {
+        ...engine.getConfig().opsec,
+        approval_mode: 'approve-all',
+        approval_timeout_ms: 60_000,
+      },
+    });
 
     const validation = handlers.validate_action({
       action_id: 'act-live-approval',

@@ -376,6 +376,30 @@ export interface TimelineEntry {
 
 // --- Engagement State (from get_state) ---
 
+export interface PersistenceRecoveryStatus {
+  outcome: 'clean' | 'recovered' | 'incomplete' | 'reinitialized';
+  source: 'fresh' | 'state' | 'snapshot' | 'config';
+  complete: boolean;
+  writable: boolean;
+  reason?: string;
+  base_checkpoint: number;
+  highest_allocated_seq: number;
+  highest_on_disk_seq: number;
+  highest_contiguous_applied_seq: number;
+  consecutive_persistence_failures: number;
+  last_persistence_error?: string;
+  journal: {
+    enabled: boolean;
+    read: number;
+    attempted: number;
+    applied: number;
+    skipped: number;
+    failed: number;
+    malformed: boolean;
+    preserved: boolean;
+  };
+}
+
 export interface FrontierHiddenSummary {
   total: number;
   by_reason: {
@@ -435,6 +459,7 @@ export interface EngagementState {
     status: string;
     top_issues: string[];
   };
+  persistence_recovery?: PersistenceRecoveryStatus;
 }
 
 export type CampaignStrategy = 'credential_spray' | 'enumeration' | 'post_exploitation' | 'network_discovery' | 'custom';
@@ -804,6 +829,7 @@ export interface DashboardReadinessSummary {
     last_flush_at?: string;
     flush_count?: number;
     last_flush_ms?: number;
+    recovery?: PersistenceRecoveryStatus;
   };
   issues: string[];
   dev?: Record<string, unknown>;

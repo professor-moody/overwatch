@@ -116,7 +116,18 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
   if (typeof partial.community_resolution === 'number') draft.community_resolution = partial.community_resolution;
   // Agent model knobs (settable via a config PATCH, not only file edit).
   if (Array.isArray(partial.available_models)) draft.available_models = (partial.available_models as unknown[]).filter(m => typeof m === 'string') as string[];
-  if (typeof partial.default_agent_model === 'string') draft.default_agent_model = partial.default_agent_model;
+  if (partial.default_agent_model === null) draft.default_agent_model = undefined;
+  else if (typeof partial.default_agent_model === 'string') draft.default_agent_model = partial.default_agent_model;
+  if (partial.orchestrator === null) draft.orchestrator = undefined;
+  else if (partial.orchestrator && typeof partial.orchestrator === 'object') {
+    draft.orchestrator = partial.orchestrator as EngagementConfig['orchestrator'];
+  }
+  if (partial.cve_research === null) draft.cve_research = undefined;
+  else if (partial.cve_research && typeof partial.cve_research === 'object') {
+    draft.cve_research = partial.cve_research as EngagementConfig['cve_research'];
+  }
+  if (partial.postgres_dsn === null) draft.postgres_dsn = undefined;
+  else if (typeof partial.postgres_dsn === 'string') draft.postgres_dsn = partial.postgres_dsn;
 
   // Merge scope (partial merge — only overwrite provided keys)
   if (partial.scope && typeof partial.scope === 'object') {

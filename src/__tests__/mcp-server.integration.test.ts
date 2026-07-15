@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { unlinkSync, existsSync, readFileSync, readdirSync } from 'fs';
-import { resolve } from 'path';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
 import { createConnection, createServer, type Socket } from 'net';
 import { setTimeout as delay } from 'timers/promises';
 
@@ -14,10 +15,9 @@ const primaryScopeCidr = engagementConfig.scope.cidrs[0];
 const inScopeTargetIp = hostIpFromCidr(primaryScopeCidr, 5);
 const parseOnlyTargetIp = hostIpFromCidr(primaryScopeCidr, 250);
 const outOfScopeTargetIp = '203.0.113.2';
-const STATE_FILE = resolve(`./state-${engagementId}.json`);
-
 let client: Client;
 let transport: StdioClientTransport;
+let stateRoot: string | undefined;
 
 function hostIpFromCidr(cidr: string, hostOctet: number): string {
   const [network] = cidr.split('/');
@@ -60,17 +60,9 @@ const supportsLocalListen = await new Promise<boolean>((resolve) => {
 });
 
 function cleanup() {
-  if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE);
-  // Clean up snapshot files for this engagement
-  const prefix = `state-${engagementId}.snap-`;
-  const dir = resolve('.');
-  try {
-    for (const file of readdirSync(dir)) {
-      if (file.startsWith(prefix) && file.endsWith('.json')) {
-        unlinkSync(resolve(dir, file));
-      }
-    }
-  } catch {}
+  if (!stateRoot) return;
+  rmSync(stateRoot, { recursive: true, force: true });
+  stateRoot = undefined;
 }
 
 function parseToolBody(result: Awaited<ReturnType<Client['callTool']>>) {
@@ -133,6 +125,8 @@ async function readUntilContains(sessionId: string, fromPos: number, needle: str
 describe('MCP Server Integration', () => {
   beforeAll(async () => {
     cleanup();
+    stateRoot = mkdtempSync(join(tmpdir(), 'overwatch-mcp-stdio-'));
+    const stateFile = join(stateRoot, `state-${engagementId}.json`);
     transport = new StdioClientTransport({
       command: 'node',
       args: [resolve('./dist/index.js')],
@@ -140,6 +134,7 @@ describe('MCP Server Integration', () => {
         ...process.env as Record<string, string>,
         OVERWATCH_CONFIG: ENGAGEMENT_JSON,
         OVERWATCH_SKILLS: SKILLS_DIR,
+        OVERWATCH_STATE_FILE: stateFile,
         OVERWATCH_DASHBOARD_PORT: '0',
       },
       stderr: 'pipe',

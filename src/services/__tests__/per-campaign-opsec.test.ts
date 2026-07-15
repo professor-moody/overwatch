@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import type { AgentTask, EngagementConfig } from '../../types.js';
 
@@ -8,8 +10,6 @@ import type { AgentTask, EngagementConfig } from '../../types.js';
 // gauge. The lifecycle carries an agent_id and/or frontier_item_id (not the
 // campaign directly), so GraphEngine.recordOpsecNoise resolves the campaign via
 // the agent's task. These tests pin that resolution.
-
-const TEST_STATE_FILE = './state-test-per-campaign-opsec.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -20,10 +20,6 @@ function makeConfig(): EngagementConfig {
     objectives: [],
     opsec: { name: 'pentest', max_noise: 1.0 },
   } as EngagementConfig;
-}
-
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
 }
 
 function runningTask(overrides: Partial<AgentTask>): AgentTask {
@@ -39,12 +35,16 @@ function runningTask(overrides: Partial<AgentTask>): AgentTask {
 
 describe('GraphEngine.recordOpsecNoise — per-campaign attribution', () => {
   let engine: GraphEngine;
+  let testDir: string;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-campaign-opsec-'));
+    engine = new GraphEngine(makeConfig(), join(testDir, 'state.json'));
   });
-  afterEach(() => cleanup());
+  afterEach(() => {
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   it('attributes noise to the campaign via frontier_item_id (running task lookup)', () => {
     engine.registerAgent(runningTask({ id: 't1', agent_id: 'a1', frontier_item_id: 'fi-1', campaign_id: 'camp-1' }));

@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync, rmSync } from 'fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerRunToolTool } from '../run-tool.js';
 import type { EngagementConfig } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-run-tool.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -18,11 +18,6 @@ function makeConfig(): EngagementConfig {
   };
 }
 
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { rmSync('./evidence-test-run-tool', { recursive: true, force: true }); } catch {}
-}
-
 function parseTextResult(result: any): any {
   return JSON.parse(result.content[0].text);
 }
@@ -30,10 +25,11 @@ function parseTextResult(result: any): any {
 describe('run_tool', () => {
   let engine: GraphEngine;
   let handlers: Record<string, (args: any) => Promise<any>>;
+  let testDir: string;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-run-tool-'));
+    engine = new GraphEngine(makeConfig(), join(testDir, 'state.json'));
     handlers = {};
     const fakeServer = {
       registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
@@ -44,7 +40,8 @@ describe('run_tool', () => {
   });
 
   afterEach(() => {
-    cleanup();
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('executes a binary with argv and logs the full lifecycle', async () => {
@@ -141,6 +138,88 @@ describe('run_tool', () => {
     expect(payload.timed_out).toBe(true);
     expect(elapsed).toBeLessThan(7000);
   });
+
+  it('kills an in-flight process and skips terminal ingest when persistence becomes read-only', async () => {
+    let writable = true;
+    const gate = vi.spyOn(engine, 'isPersistenceWritable').mockImplementation(() => writable);
+    const startedAt = Date.now();
+
+    try {
+      const pending = handlers.run_tool({
+        binary: process.execPath,
+        args: ['-e', "setInterval(() => process.stdout.write('still-running\\n'), 25)"],
+        timeout_ms: 30_000,
+        validate: false,
+        parse_with: 'nmap',
+      });
+
+      // Wait until action_started has landed so this exercises the live
+      // writable→read-only transition, not the entry-point rejection path.
+      for (let i = 0; i < 100 && !engine.getFullHistory().some(event => event.event_type === 'action_started'); i++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(engine.getFullHistory().some(event => event.event_type === 'action_started')).toBe(true);
+
+      writable = false;
+      const result = await pending;
+      const payload = parseTextResult(result);
+
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+      expect(result.isError).toBe(true);
+      expect(payload).toMatchObject({
+        executed: true,
+        interrupted: true,
+        code: 'PERSISTENCE_READ_ONLY',
+        reason: 'persistence_degraded',
+      });
+      expect(payload.signal).toBeTruthy();
+
+      const actionEvents = engine.getFullHistory().filter(event => event.action_id === payload.action_id);
+      expect(actionEvents.map(event => event.event_type)).toContain('action_started');
+      expect(actionEvents.map(event => event.event_type)).not.toContain('action_completed');
+      expect(actionEvents.map(event => event.event_type)).not.toContain('action_failed');
+      expect(actionEvents.map(event => event.event_type)).not.toContain('parse_output');
+    } finally {
+      gate.mockRestore();
+    }
+  }, 10_000);
+
+  it('aborts a pending approval when persistence becomes read-only before spawn', async () => {
+    engine.updateConfig({ opsec: { ...engine.getConfig().opsec, approval_mode: 'approve-all' } });
+    let writable = true;
+    const gate = vi.spyOn(engine, 'isPersistenceWritable').mockImplementation(() => writable);
+
+    try {
+      const pending = handlers.run_tool({
+        binary: 'echo',
+        args: ['must-not-spawn'],
+        target_ip: '10.10.10.1',
+        technique: 'enum_smb',
+      });
+
+      for (let i = 0; i < 100 && engine.getPendingActionQueue().getPending().length === 0; i++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(engine.getPendingActionQueue().getPending()).toHaveLength(1);
+
+      writable = false;
+      const result = await pending;
+      const payload = parseTextResult(result);
+
+      expect(result.isError).toBe(true);
+      expect(payload).toMatchObject({
+        executed: false,
+        interrupted: true,
+        code: 'PERSISTENCE_READ_ONLY',
+        reason: 'persistence_degraded',
+        approval_status: 'aborted',
+      });
+      expect(engine.getPendingActionQueue().getPending()).toHaveLength(0);
+      expect(engine.getFullHistory().some(event => event.event_type === 'action_started')).toBe(false);
+    } finally {
+      gate.mockRestore();
+    }
+  }, 10_000);
 
   it('marks oversized stdout as truncated while preserving evidence linkage', async () => {
     const result = await handlers.run_tool({

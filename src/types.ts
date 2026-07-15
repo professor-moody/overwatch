@@ -1163,6 +1163,35 @@ export interface Campaign {
 
 // --- Graph State Summary (returned by get_state) ---
 
+/**
+ * Startup/restart persistence status. This is an additive, per-process
+ * summary: callers must not treat its absence as a recovery failure when
+ * talking to an older server.
+ */
+export interface PersistenceRecoveryStatus {
+  outcome: 'clean' | 'recovered' | 'incomplete' | 'reinitialized';
+  source: 'fresh' | 'state' | 'snapshot' | 'config';
+  complete: boolean;
+  writable: boolean;
+  reason?: string;
+  base_checkpoint: number;
+  highest_allocated_seq: number;
+  highest_on_disk_seq: number;
+  highest_contiguous_applied_seq: number;
+  consecutive_persistence_failures: number;
+  last_persistence_error?: string;
+  journal: {
+    enabled: boolean;
+    read: number;
+    attempted: number;
+    applied: number;
+    skipped: number;
+    failed: number;
+    malformed: boolean;
+    preserved: boolean;
+  };
+}
+
 export interface EngagementState {
   config: EngagementConfig;
   graph_summary: {
@@ -1205,6 +1234,8 @@ export interface EngagementState {
   };
   warnings: HealthSummary;
   lab_readiness: LabReadinessSummary;
+  /** Present on servers that expose persistence recovery observability. */
+  persistence_recovery?: PersistenceRecoveryStatus;
   scope_suggestions: ScopeSuggestion[];
   phases: Array<{
     id: string;

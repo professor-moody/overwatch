@@ -21,6 +21,22 @@ import { createServer, connect, type Server, type Socket } from 'net';
 import type { AdapterHandle, SessionCapabilities } from '../types.js';
 import type { SessionAdapterFactory } from './session-manager.js';
 
+function adapterAbortSignal(options: Record<string, unknown>): AbortSignal | undefined {
+  const signal = options.abort_signal;
+  return signal && typeof signal === 'object' && 'aborted' in signal
+    ? signal as AbortSignal
+    : undefined;
+}
+
+function adapterAbortError(signal?: AbortSignal): Error {
+  if (signal?.reason instanceof Error) return signal.reason;
+  return new Error('Session adapter spawn aborted');
+}
+
+function throwIfAdapterAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw adapterAbortError(signal);
+}
+
 // ============================================================
 // LocalPtyAdapter — spawns a local shell via node-pty
 // ============================================================
@@ -37,6 +53,8 @@ export class LocalPtyAdapter implements SessionAdapterFactory {
   readonly kind = 'local_pty' as const;
 
   async spawn(options: Record<string, unknown>): Promise<AdapterHandle> {
+    const abortSignal = adapterAbortSignal(options);
+    throwIfAdapterAborted(abortSignal);
     if (!pty) {
       throw new Error('node-pty is not installed. Install it with: npm install node-pty (requires native build tools)');
     }
@@ -62,8 +80,15 @@ export class LocalPtyAdapter implements SessionAdapterFactory {
     });
 
     proc.onExit((e: { exitCode: number; signal?: number }) => {
+      abortSignal?.removeEventListener('abort', onAbort);
       for (const cb of exitCallbacks) cb({ exitCode: e.exitCode, signal: e.signal });
     });
+
+    const onAbort = (): void => {
+      try { proc.kill(); } catch { /* best-effort persistence freeze */ }
+    };
+    if (abortSignal?.aborted) onAbort();
+    else abortSignal?.addEventListener('abort', onAbort, { once: true });
 
     const handle: AdapterHandle = {
       pid: proc.pid,
@@ -78,6 +103,7 @@ export class LocalPtyAdapter implements SessionAdapterFactory {
         proc.kill(signal);
       },
       close() {
+        abortSignal?.removeEventListener('abort', onAbort);
         proc.kill();
       },
       onData(cb: (chunk: string) => void) {
@@ -100,6 +126,8 @@ export class SshAdapter implements SessionAdapterFactory {
   readonly kind = 'ssh' as const;
 
   async spawn(options: Record<string, unknown>): Promise<AdapterHandle> {
+    const abortSignal = adapterAbortSignal(options);
+    throwIfAdapterAborted(abortSignal);
     if (!pty) {
       throw new Error('node-pty is not installed. Install it with: npm install node-pty (requires native build tools)');
     }
@@ -166,8 +194,15 @@ export class SshAdapter implements SessionAdapterFactory {
     });
 
     proc.onExit((e: { exitCode: number; signal?: number }) => {
+      abortSignal?.removeEventListener('abort', onAbort);
       for (const cb of exitCallbacks) cb({ exitCode: e.exitCode, signal: e.signal });
     });
+
+    const onAbort = (): void => {
+      try { proc.kill(); } catch { /* best-effort persistence freeze */ }
+    };
+    if (abortSignal?.aborted) onAbort();
+    else abortSignal?.addEventListener('abort', onAbort, { once: true });
 
     const handle: AdapterHandle = {
       pid: proc.pid,
@@ -182,6 +217,7 @@ export class SshAdapter implements SessionAdapterFactory {
         proc.kill(signal);
       },
       close() {
+        abortSignal?.removeEventListener('abort', onAbort);
         proc.kill();
       },
       onData(cb: (chunk: string) => void) {
@@ -215,6 +251,8 @@ export class SocketAdapter implements SessionAdapterFactory {
   private activeServers: Map<string, Server> = new Map();
 
   async spawn(options: Record<string, unknown>): Promise<AdapterHandle> {
+    const abortSignal = adapterAbortSignal(options);
+    throwIfAdapterAborted(abortSignal);
     const mode = (options.mode as string) || 'connect';
     const host = (options.bind_host as string | undefined) || (options.host as string);
     const port = options.port as number;
@@ -229,10 +267,10 @@ export class SocketAdapter implements SessionAdapterFactory {
       if (bindHost === '0.0.0.0') {
         console.error(`[session] Warning: listener binding to 0.0.0.0 — exposed on all interfaces`);
       }
-      return this.spawnListener(bindHost, port, sessionId, acceptMode, onConnect);
+      return this.spawnListener(bindHost, port, sessionId, acceptMode, onConnect, abortSignal);
     } else {
       if (!host) throw new Error('Socket adapter connect mode requires a host');
-      return this.spawnConnect(host, port, sessionId, onConnect);
+      return this.spawnConnect(host, port, sessionId, onConnect, abortSignal);
     }
   }
 
@@ -242,6 +280,7 @@ export class SocketAdapter implements SessionAdapterFactory {
     sessionId: string,
     acceptMode: 'single' | 'rearm',
     onConnect?: () => void,
+    abortSignal?: AbortSignal,
   ): Promise<AdapterHandle> {
     const self = this;
     return new Promise((resolve, reject) => {
@@ -250,6 +289,25 @@ export class SocketAdapter implements SessionAdapterFactory {
       const disconnectCallbacks: Array<(info?: { reason?: string }) => void> = [];
       let activeSocket: Socket | null = null;
       let closed = false;
+      let settled = false;
+
+      const removeAbortListener = (): void => abortSignal?.removeEventListener('abort', onAbort);
+      const closeTransport = (): void => {
+        closed = true;
+        if (activeSocket) {
+          activeSocket.destroy();
+          activeSocket = null;
+        }
+        try { server.close(); } catch { /* best-effort */ }
+        if (sessionId) self.activeServers.delete(sessionId);
+      };
+      const onAbort = (): void => {
+        closeTransport();
+        if (!settled) {
+          settled = true;
+          reject(adapterAbortError(abortSignal));
+        }
+      };
 
       const server = createServer((socket: Socket) => {
         // Accept only one active connection at a time. Rearm mode keeps the
@@ -272,18 +330,26 @@ export class SocketAdapter implements SessionAdapterFactory {
             closed = true;
             try { server.close(); } catch { /* best-effort */ }
             if (sessionId) self.activeServers.delete(sessionId);
+            removeAbortListener();
           },
         );
         if (onConnect) onConnect();
       });
 
       server.on('error', (err: Error) => {
-        if (!activeSocket) {
+        if (!activeSocket && !settled) {
+          settled = true;
+          removeAbortListener();
           reject(err);
         }
       });
 
       server.listen(port, host, () => {
+        if (settled || abortSignal?.aborted) {
+          onAbort();
+          return;
+        }
+        settled = true;
         if (sessionId) this.activeServers.set(sessionId, server);
 
         const handle: AdapterHandle = {
@@ -294,15 +360,8 @@ export class SocketAdapter implements SessionAdapterFactory {
             activeSocket.write(data);
           },
           close() {
-            closed = true;
-            if (activeSocket) {
-              activeSocket.destroy();
-              activeSocket = null;
-            }
-            server.close();
-            if (sessionId) {
-              self.activeServers.delete(sessionId);
-            }
+            removeAbortListener();
+            closeTransport();
           },
           onData(cb: (chunk: string) => void) {
             dataCallbacks.push(cb);
@@ -317,10 +376,18 @@ export class SocketAdapter implements SessionAdapterFactory {
 
         resolve(handle);
       });
+      if (abortSignal?.aborted) onAbort();
+      else abortSignal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 
-  private spawnConnect(host: string, port: number, _sessionId: string, onConnect?: () => void): Promise<AdapterHandle> {
+  private spawnConnect(
+    host: string,
+    port: number,
+    _sessionId: string,
+    onConnect?: () => void,
+    abortSignal?: AbortSignal,
+  ): Promise<AdapterHandle> {
     return new Promise((resolve, reject) => {
       const dataCallbacks: Array<(chunk: string) => void> = [];
       const exitCallbacks: Array<(info: { exitCode?: number; signal?: number }) => void> = [];
@@ -337,6 +404,10 @@ export class SocketAdapter implements SessionAdapterFactory {
 
       const socket = connect({ host, port }, () => {
         if (settled) return; // an error already rejected — don't also resolve
+        if (abortSignal?.aborted) {
+          onAbort();
+          return;
+        }
         settled = true;
         if (onConnect) onConnect();
 
@@ -348,6 +419,7 @@ export class SocketAdapter implements SessionAdapterFactory {
             socket.write(data);
           },
           close() {
+            abortSignal?.removeEventListener('abort', onAbort);
             closed = true;
             socket.destroy();
           },
@@ -369,13 +441,28 @@ export class SocketAdapter implements SessionAdapterFactory {
         resolve(handle);
       });
 
-      this.wireSocket(socket, dataCallbacks, exitCallbacks, () => { closed = true; });
+      const onAbort = (): void => {
+        closed = true;
+        socket.destroy();
+        if (!settled) {
+          settled = true;
+          reject(adapterAbortError(abortSignal));
+        }
+      };
+      if (abortSignal?.aborted) onAbort();
+      else abortSignal?.addEventListener('abort', onAbort, { once: true });
+
+      this.wireSocket(socket, dataCallbacks, exitCallbacks, () => {
+        closed = true;
+        abortSignal?.removeEventListener('abort', onAbort);
+      });
 
       socket.on('error', (err: Error) => {
         // Reject only if the connect callback hasn't resolved yet. A post-connect
         // error is reported via wireSocket's exit callbacks, not by rejecting here.
         if (!settled) {
           settled = true;
+          abortSignal?.removeEventListener('abort', onAbort);
           reject(err);
         }
       });

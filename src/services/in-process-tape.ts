@@ -144,34 +144,52 @@ export class InProcessTapeController {
    * frame count + path so the activity log shows both endpoints. No-op if
    * not currently enabled.
    */
-  async disable(): Promise<TapeStatus> {
+  async disable(options: { audit?: boolean } = {}): Promise<TapeStatus> {
     if (!this.writer) return this.getStatus();
     const path = this.currentPath;
     const sessionId = this.currentSessionId;
     const startedBy = this.currentStartedBy;
     const frames = this.writer.count;
-    await this.writer.close();
-    this.writer = null;
-    this.engine.logActionEvent({
-      description: `In-process tape session stopped: ${sessionId} (${frames} frames)`,
-      event_type: 'tape_session_stopped',
-      category: 'system',
-      provenance: 'system',
-      details: {
-        session_id: sessionId,
-        tape_path: path,
-        capture_mode: 'in_process',
-        frame_count: frames,
-        started_event_id: this.startEventId,
-        started_by: startedBy,
-        stopped_at: new Date().toISOString(),
-      },
-    });
-    this.currentPath = undefined;
-    this.currentSessionId = undefined;
-    this.currentStartedBy = undefined;
-    this.startedAt = undefined;
-    this.startEventId = undefined;
+    let closeError: unknown;
+    try {
+      try {
+        await this.writer.close();
+      } catch (error) {
+        closeError = error;
+      } finally {
+        this.writer = null;
+      }
+      // Shutdown must still close the runtime writer after persistence has
+      // entered read-only mode, but it must not attempt another durable audit
+      // mutation. Recheck after the asynchronous writer close as the gate may
+      // have crossed while the stream was draining.
+      if (closeError === undefined && options.audit !== false && this.engine.isPersistenceWritable()) {
+        this.engine.logActionEvent({
+          description: `In-process tape session stopped: ${sessionId} (${frames} frames)`,
+          event_type: 'tape_session_stopped',
+          category: 'system',
+          provenance: 'system',
+          details: {
+            session_id: sessionId,
+            tape_path: path,
+            capture_mode: 'in_process',
+            frame_count: frames,
+            started_event_id: this.startEventId,
+            started_by: startedBy,
+            stopped_at: new Date().toISOString(),
+          },
+        });
+      }
+    } finally {
+      // The writer is already closed. Never leave the controller reporting an
+      // enabled/stale session just because the optional audit event failed.
+      this.currentPath = undefined;
+      this.currentSessionId = undefined;
+      this.currentStartedBy = undefined;
+      this.startedAt = undefined;
+      this.startEventId = undefined;
+    }
+    if (closeError !== undefined) throw closeError;
     return this.getStatus();
   }
 

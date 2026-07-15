@@ -171,14 +171,17 @@ the built config without writing. Does not touch the currently running engagemen
         });
       }
 
-      // Apply in place (canonical handleUpdateSettings merge) + persist.
-      if (params.max_noise !== undefined) opsec.max_noise = params.max_noise;
-      if (params.enabled !== undefined) opsec.enabled = params.enabled;
-      if (params.approval_mode !== undefined) opsec.approval_mode = params.approval_mode;
-      if (params.approval_timeout_ms !== undefined) opsec.approval_timeout_ms = params.approval_timeout_ms;
-      if (params.time_window !== undefined) opsec.time_window = params.time_window ?? undefined;
-      if (params.blacklisted_techniques !== undefined) opsec.blacklisted_techniques = params.blacklisted_techniques;
-      engine.persist();
+      // Route the mutation through the engine write gate. Mutating the object
+      // returned by getConfig() first would alter live state before a degraded
+      // persistence gate had a chance to reject the change.
+      const nextOpsec = { ...opsec };
+      if (params.max_noise !== undefined) nextOpsec.max_noise = params.max_noise;
+      if (params.enabled !== undefined) nextOpsec.enabled = params.enabled;
+      if (params.approval_mode !== undefined) nextOpsec.approval_mode = params.approval_mode;
+      if (params.approval_timeout_ms !== undefined) nextOpsec.approval_timeout_ms = params.approval_timeout_ms;
+      if (params.time_window !== undefined) nextOpsec.time_window = params.time_window ?? undefined;
+      if (params.blacklisted_techniques !== undefined) nextOpsec.blacklisted_techniques = params.blacklisted_techniques;
+      engine.updateConfig({ opsec: nextOpsec });
       engine.logActionEvent({
         description: `OPSEC policy updated: ${params.reason}`,
         event_type: 'system',

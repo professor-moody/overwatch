@@ -118,6 +118,9 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       const stored: string | Buffer = format === 'pdf' ? pdfBuffer! : output;
 
       if (write_to_disk) {
+        // PDF rendering is asynchronous; storage may have crossed the failure
+        // threshold after the MCP entry gate admitted this call.
+        engine.assertPersistenceWritable();
         let validatedDir: string;
         try {
           validatedDir = validateFilePath(join(output_dir, config.id));
@@ -140,6 +143,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
 
       let archivedReportId: string | undefined;
       if (persist_to_archive) {
+        engine.assertPersistenceWritable();
         const archive = engine.getReportArchive();
         const record = archive.add(stored, {
           generated_at: new Date().toISOString(),

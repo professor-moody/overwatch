@@ -251,6 +251,82 @@ describe('StatePersistence', () => {
       expect(ctx.graph.hasNode('host-1')).toBe(true);
       // host-2 should be gone after rollback
       expect(ctx.graph.hasNode('host-2')).toBe(false);
+      expect(existsSync(`${ctx.stateFilePath}.rollback-intent.json`)).toBe(false);
+    });
+
+    it('rejects an unrestorable snapshot before committing rollback authority or cancelling dirty persistence', async () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', {
+        id: 'host-1', type: 'host', label: 'durable-head',
+        discovered_at: now, confidence: 1.0,
+      } as NodeProperties);
+      persistence.persist();
+      persistence.flushNow();
+
+      ctx.lastSnapshotTime = 0;
+      persistence.persist();
+      persistence.flushNow();
+      const rollbackSnapshot = persistence.listSnapshots()[0];
+      const snapshotPath = join(tempDir, rollbackSnapshot);
+      const malformed = JSON.parse(readFileSync(snapshotPath, 'utf-8')) as Record<string, unknown>;
+      malformed.agents = {}; // graph/config validate, but complete restore cannot construct this Map
+      writeFileSync(snapshotPath, JSON.stringify(malformed));
+
+      graph.addNode('host-dirty', {
+        id: 'host-dirty', type: 'host', label: 'must-still-flush',
+        discovered_at: now, confidence: 1.0,
+      } as NodeProperties);
+      persistence.persist();
+
+      expect(() => persistence.rollbackToSnapshot(rollbackSnapshot, BUILTIN_RULES)).toThrow(
+        /did not start/,
+      );
+      expect(ctx.graph.hasNode('host-dirty')).toBe(true);
+      expect(existsSync(`${ctx.stateFilePath}.rollback-intent.json`)).toBe(false);
+
+      await new Promise(resolve => setTimeout(resolve, FLUSH_DEBOUNCE_MS + 50));
+      const primary = JSON.parse(readFileSync(ctx.stateFilePath, 'utf-8')) as Record<string, any>;
+      expect((primary.graph.nodes as Array<{ key: string }>).map(node => node.key))
+        .toContain('host-dirty');
+      expect(persistence.isDirty()).toBe(false);
+    });
+
+    it('does not let a superseded snapshot resurrect state after rollback and restart', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', {
+        id: 'host-1', type: 'host', label: 'rollback-target',
+        discovered_at: now, confidence: 1.0,
+      } as NodeProperties);
+      persistence.persist();
+      persistence.flushNow();
+
+      ctx.lastSnapshotTime = 0;
+      persistence.persist();
+      persistence.flushNow();
+      const rollbackSnapshot = persistence.listSnapshots()[0];
+
+      graph.addNode('host-2', {
+        id: 'host-2', type: 'host', label: 'must-stay-rolled-back',
+        discovered_at: now, confidence: 1.0,
+      } as NodeProperties);
+      persistence.persist();
+      persistence.flushNow();
+      ctx.lastSnapshotTime = 0;
+      persistence.persist();
+      persistence.flushNow();
+      expect(persistence.listSnapshots().length).toBeGreaterThan(1);
+
+      expect(persistence.rollbackToSnapshot(rollbackSnapshot, BUILTIN_RULES)).toBe(true);
+      expect(ctx.graph.hasNode('host-2')).toBe(false);
+      expect(persistence.listSnapshots()).toEqual([rollbackSnapshot]);
+
+      // Force startup to use the retained rollback anchor. A newer/equal
+      // snapshot left behind by rollback would resurrect host-2 here.
+      writeFileSync(ctx.stateFilePath, '{corrupt rolled-back primary');
+      const { ctx: restarted, persistence: restartedPersistence } = buildPersistence(ctx.stateFilePath);
+      restartedPersistence.loadState();
+      expect(restarted.graph.hasNode('host-1')).toBe(true);
+      expect(restarted.graph.hasNode('host-2')).toBe(false);
     });
 
     it('returns false for nonexistent snapshot', () => {

@@ -15,7 +15,7 @@
 // presence). Behavior is covered by per-feature tests elsewhere.
 // ============================================================
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { existsSync, unlinkSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -193,6 +193,13 @@ describe('GET /api/state', () => {
     expect(body.state).toHaveProperty('agents');             // was missing — only active_agents existed
     expect(body.state).toHaveProperty('sessions');           // injected by buildFrontendState
     expect(body.state).toHaveProperty('graph_summary');
+    expect(body.state).toHaveProperty('persistence_recovery');
+    expect((body.state as { persistence_recovery: Record<string, unknown> }).persistence_recovery).toMatchObject({
+      outcome: expect.any(String),
+      complete: expect.any(Boolean),
+      writable: expect.any(Boolean),
+      journal: expect.any(Object),
+    });
     expect((body.state as { graph_summary: { nodes_by_type: unknown } }).graph_summary).toHaveProperty('nodes_by_type');
     expect(body.graph.nodes.length).toBeGreaterThan(0);
     // frontier_hidden: counts of intentionally-filtered frontier items so the
@@ -299,7 +306,82 @@ describe('GET /api/readiness', () => {
     expect(body).toHaveProperty('actions');
     expect(body).toHaveProperty('agents');
     expect(body).toHaveProperty('persistence');
+    expect(body.persistence).toHaveProperty('recovery');
     expect(typeof body.api.mcp_tools_registered).toBe('number');
+  });
+
+  it('nests recovery status under persistence and raises an existing readiness issue', async () => {
+    const getState = engine.getState.bind(engine);
+    const getStateSpy = vi.spyOn(engine, 'getState').mockImplementation(options => ({
+      ...getState(options),
+      persistence_recovery: {
+        outcome: 'incomplete',
+        source: 'state',
+        complete: false,
+        writable: false,
+        reason: 'sequence gap',
+        base_checkpoint: 2,
+        highest_allocated_seq: 6,
+        highest_on_disk_seq: 6,
+        highest_contiguous_applied_seq: 4,
+        consecutive_persistence_failures: 0,
+        journal: {
+          enabled: true,
+          read: 4,
+          attempted: 2,
+          applied: 2,
+          skipped: 0,
+          failed: 0,
+          malformed: false,
+          preserved: true,
+        },
+      },
+    }));
+
+    try {
+      const { status, body } = await getJson<Record<string, any>>('/api/readiness');
+      expect(status).toBe(200);
+      expect(body.status).toBe('critical');
+      expect(body.persistence.recovery).toMatchObject({
+        outcome: 'incomplete',
+        writable: false,
+        highest_contiguous_applied_seq: 4,
+        highest_on_disk_seq: 6,
+      });
+      expect(body.issues[0]).toContain('sequence gap');
+    } finally {
+      getStateSpy.mockRestore();
+    }
+  });
+});
+
+describe('degraded persistence gate', () => {
+  it('keeps reads and pure previews available while rejecting dashboard mutations', async () => {
+    const writableSpy = vi.spyOn(engine, 'isPersistenceWritable').mockReturnValue(false);
+    try {
+      const objectiveCount = engine.getConfig().objectives.length;
+      const blocked = await postJson<Record<string, unknown>>('/api/config/objectives', {
+        description: 'must not be created',
+      });
+      expect(blocked.status).toBe(503);
+      expect(blocked.body).toMatchObject({ code: 'PERSISTENCE_READ_ONLY' });
+      expect(engine.getConfig().objectives).toHaveLength(objectiveCount);
+
+      const state = await getJson('/api/state');
+      expect(state.status).toBe(200);
+
+      const bundle = await getJson<Record<string, unknown>>('/api/bundle');
+      expect(bundle.status).toBe(503);
+      expect(bundle.body).toMatchObject({ code: 'PERSISTENCE_READ_ONLY' });
+
+      const preview = await postJson('/api/config/scope/preview', {
+        ...engine.getConfig().scope,
+        cidrs: [...engine.getConfig().scope.cidrs, '10.1.0.0/24'],
+      });
+      expect(preview.status).toBe(200);
+    } finally {
+      writableSpy.mockRestore();
+    }
   });
 });
 
@@ -642,9 +724,8 @@ describe('POST /api/agents/quick-deploy', () => {
   });
 
   it('rejects a no-model dispatch when default_agent_model is NOT in available_models', async () => {
-    const cfg = engine.getConfig();
-    const prev = cfg.default_agent_model;
-    cfg.default_agent_model = 'not-in-the-allowlist';    // misconfigured default
+    const prev = engine.getConfig().default_agent_model;
+    engine.updateConfig({ default_agent_model: 'not-in-the-allowlist' }); // misconfigured default
     try {
       const before = await getJson<{ scope: { cidrs: string[] } }>('/api/config');
       // No model → falls back to the (disallowed) default; must not silently reach claude -p.
@@ -653,20 +734,19 @@ describe('POST /api/agents/quick-deploy', () => {
       const after = await getJson<{ scope: { cidrs: string[] } }>('/api/config');
       expect(after.body.scope.cidrs).toEqual(before.body.scope.cidrs); // no scope mutation
     } finally {
-      if (prev === undefined) delete cfg.default_agent_model; else cfg.default_agent_model = prev;
+      engine.updateConfig({ default_agent_model: prev ?? null });
     }
   });
 
   it('accepts a no-model dispatch when default_agent_model IS allowed', async () => {
-    const cfg = engine.getConfig();
-    const prev = cfg.default_agent_model;
-    cfg.default_agent_model = 'claude-opus-4-8';         // valid default
+    const prev = engine.getConfig().default_agent_model;
+    engine.updateConfig({ default_agent_model: 'claude-opus-4-8' }); // valid default
     try {
       const { status, body } = await postJson<{ dispatched: boolean }>('/api/agents/quick-deploy', { target: '10.47.0.9' });
       expect(status).toBe(201);
       expect(body.dispatched).toBe(true);
     } finally {
-      if (prev === undefined) delete cfg.default_agent_model; else cfg.default_agent_model = prev;
+      engine.updateConfig({ default_agent_model: prev ?? null });
     }
   });
 });

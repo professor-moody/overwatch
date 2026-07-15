@@ -82,6 +82,7 @@ export class HeadlessMcpRunner {
   private opts: Required<Pick<HeadlessMcpRunnerOptions, 'claudeBinary' | 'logDir'>> & HeadlessMcpRunnerOptions;
   private spawnFn: SpawnFn;
   private now: () => string;
+  private mutationAllowed: () => boolean;
 
   constructor(
     engine: GraphEngine,
@@ -94,6 +95,7 @@ export class HeadlessMcpRunner {
     this.processTracker = processTracker;
     this.spawnFn = options.spawnFn ?? (spawn as SpawnFn);
     this.now = options.now ?? (() => new Date().toISOString());
+    this.mutationAllowed = () => this.engine.isPersistenceWritable();
     this.opts = {
       claudeBinary: options.claudeBinary ?? process.env.OVERWATCH_CLAUDE_BINARY ?? 'claude',
       logDir: options.logDir ?? 'logs/agents',
@@ -103,6 +105,12 @@ export class HeadlessMcpRunner {
       spawnFn: options.spawnFn,
       now: options.now,
     };
+  }
+
+  /** The owning execution service tightens this guard when it freezes.  Cleanup
+   *  callbacks still run, but they cannot rewrite task/process truth afterward. */
+  setMutationGuard(guard: () => boolean): void {
+    this.mutationAllowed = guard;
   }
 
   /**
@@ -156,6 +164,14 @@ export class HeadlessMcpRunner {
     child.stderr?.on('data', (c: Buffer) => { capture(c); this.registry.noteOutput(task.id, Date.now()); try { log?.write(c); } catch { /* ignore */ } });
 
     child.on('error', (err) => {
+      if (!this.mutationAllowed()) {
+        // Runtime freeze owns the signal.  Clean ephemeral resources, but leave
+        // task/process truth untouched for restart reconciliation.
+        try { log?.end(); } catch { /* ignore */ }
+        this.registry.unregister(task.id);
+        this.cleanupConfig(configPath);
+        return;
+      }
       this.engine.logActionEvent({
         description: `Headless sub-agent process error: ${err.message}`,
         event_type: 'instrumentation_warning',
@@ -177,6 +193,7 @@ export class HeadlessMcpRunner {
     // flipped it before the child died — both are "cut off without a transcript".
     // A `completed` task reported its own work, so it is not salvaged.
     child.on('close', () => {
+      if (!this.mutationAllowed()) return;
       const current = this.engine.getTask(task.id);
       if (current && (current.status === 'running' || current.status === 'interrupted')) {
         try { this.salvageTranscript(task, captured, capturedTruncated); } catch { /* salvage is best-effort */ }
@@ -187,6 +204,7 @@ export class HeadlessMcpRunner {
       try { log?.end(); } catch { /* ignore */ }
       this.registry.unregister(task.id);
       this.cleanupConfig(configPath);
+      if (!this.mutationAllowed()) return;
       const ok = code === 0;
       this.processTracker.update(`headless-${task.id}`, ok ? 'completed' : 'failed');
       this.engine.logActionEvent({
@@ -390,6 +408,7 @@ export class HeadlessMcpRunner {
     try { log?.end(); } catch { /* ignore */ }
     this.registry.unregister(task_id);
     this.cleanupConfig(configPath);
+    if (!this.mutationAllowed()) return;
     const current = this.engine.getTask(task_id);
     if (current && current.status === 'running') {
       this.engine.updateAgentStatus(task_id, status, summary);

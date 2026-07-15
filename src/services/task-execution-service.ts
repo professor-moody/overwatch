@@ -60,6 +60,10 @@ export interface TaskExecutionServiceOptions {
   maxConcurrentHeadless?: number;
   /** Per-task wall-clock timeout for headless sub-agents (ms). Default 30 min. */
   headlessTimeoutMs?: number;
+  /** Poll interval for detecting a live writable→read-only persistence
+   *  transition.  This is intentionally much shorter than the agent watchdog:
+   *  target work must be frozen promptly when durable state becomes unavailable. */
+  persistenceGatePollMs?: number;
   /** A persistent-orchestrator run lasting at least this long counts as healthy and
    *  resets the crash-loop backoff. Default 5 min (lowered in tests). */
   orchestratorHealthyMs?: number;
@@ -77,6 +81,7 @@ export class TaskExecutionService {
   private registry: HeadlessProcessRegistry;
   private headlessRunner: HeadlessMcpRunner;
   private running = false;
+  private persistenceGateTimer: ReturnType<typeof setInterval> | null = null;
 
   /** HTTP endpoint headless children connect to. Unset in stdio mode. */
   private endpoint: HeadlessEndpoint | null = null;
@@ -97,6 +102,7 @@ export class TaskExecutionService {
 
   private maxConcurrentHeadless: number;
   private headlessTimeoutMs: number;
+  private persistenceGatePollMs: number;
   private orchestratorHealthyMs: number;
   private orchestratorWedgedCeilingMs: number;
 
@@ -115,8 +121,12 @@ export class TaskExecutionService {
     });
     this.registry = new HeadlessProcessRegistry();
     this.headlessRunner = new HeadlessMcpRunner(engine, this.registry, processTracker, options.headless);
+    // Normal stop/shutdown still lets child exit handlers finalize lifecycle
+    // state. Only persistence degradation suppresses those durable callbacks.
+    this.headlessRunner.setMutationGuard(() => this.engine.isPersistenceWritable());
     this.maxConcurrentHeadless = options.maxConcurrentHeadless ?? DEFAULT_MAX_HEADLESS;
     this.headlessTimeoutMs = options.headlessTimeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS;
+    this.persistenceGatePollMs = options.persistenceGatePollMs ?? 250;
     this.orchestratorHealthyMs = options.orchestratorHealthyMs ?? ORCHESTRATOR_HEALTHY_MS;
     this.orchestratorWedgedCeilingMs = options.orchestratorWedgedCeilingMs ?? ORCHESTRATOR_WEDGED_CEILING_MS;
   }
@@ -128,7 +138,12 @@ export class TaskExecutionService {
    */
   setHttpEndpoint(endpoint: HeadlessEndpoint): void {
     this.endpoint = endpoint;
-    if (this.running) this.drainHeadless();
+    // A degraded-recovery daemon still exposes MCP/dashboard reads, but must not
+    // turn a newly-bound HTTP endpoint into permission to launch persisted work.
+    // start() remains retryable: if persistence later recovers, a subsequent
+    // start() sees this retained endpoint and drains normally.
+    if (!this.running || !this.engine.isPersistenceWritable()) return;
+    this.drainHeadless();
     this.reconcileOrchestrator(); // headless is now available — start the primary if opted in
   }
 
@@ -148,13 +163,24 @@ export class TaskExecutionService {
 
   start(): void {
     if (this.running) return;
+    if (!this.engine.isPersistenceWritable()) {
+      const recovery = this.engine.getPersistenceRecoveryStatus();
+      console.error(
+        `[persistence] task execution not started while persistence is read-only: ${recovery.reason ?? recovery.last_persistence_error ?? recovery.outcome}`,
+      );
+      return;
+    }
     this.running = true;
+    this.startPersistenceGateMonitor();
     // The scripted runner only picks up tasks our routing assigns to it.
-    this.scripted.setShouldHandle((task) => this.resolveBackend(task) === 'scripted');
+    this.scripted.setShouldHandle((task) => (
+      this.engine.isPersistenceWritable() && this.resolveBackend(task) === 'scripted'
+    ));
     this.scripted.start();
     this.watchdog.start();
     this.engine.onUpdate(() => {
       if (!this.running) return;
+      if (!this.ensurePersistenceWritable()) return;
       this.drainDirectives();
       this.drainCveResearch();
       this.drainHeadless();
@@ -162,6 +188,54 @@ export class TaskExecutionService {
     this.drainCveResearch();
     this.drainHeadless();
     this.reconcileOrchestrator(); // in case the endpoint is already set
+  }
+
+  /**
+   * Persistence can become read-only asynchronously after the third failed
+   * snapshot while agent processes are already running.  Entry-point guards do
+   * not cover that transition, so this monitor freezes every service-owned
+   * execution source promptly and lets the existing process-group termination
+   * paths reap children and grandchildren.
+   */
+  private startPersistenceGateMonitor(): void {
+    if (this.persistenceGateTimer) return;
+    this.persistenceGateTimer = setInterval(() => {
+      this.ensurePersistenceWritable();
+    }, this.persistenceGatePollMs);
+    this.persistenceGateTimer.unref?.();
+  }
+
+  private stopPersistenceGateMonitor(): void {
+    if (!this.persistenceGateTimer) return;
+    clearInterval(this.persistenceGateTimer);
+    this.persistenceGateTimer = null;
+  }
+
+  private ensurePersistenceWritable(): boolean {
+    if (!this.running) return false;
+    if (this.engine.isPersistenceWritable()) return true;
+    this.freezeForPersistence();
+    return false;
+  }
+
+  private freezeForPersistence(): void {
+    if (!this.running) return;
+    // Flip the lifecycle flag first.  Exit/error callbacks and re-entrant engine
+    // updates observe the frozen state before any signals are delivered.
+    this.running = false;
+    this.stopPersistenceGateMonitor();
+    this.scripted.stop();
+    this.watchdog.stop();
+    for (const timer of this.timeoutTimers.values()) clearTimeout(timer);
+    this.timeoutTimers.clear();
+    // HeadlessProcessRegistry owns safe SIGTERM→SIGKILL process-group cleanup.
+    // Do not update task/process records here: persistence is unavailable, so
+    // restart reconciliation remains the truthful source of terminal status.
+    this.registry.killAll();
+    const recovery = this.engine.getPersistenceRecoveryStatus();
+    console.error(
+      `[persistence] task execution frozen while persistence is read-only: ${recovery.reason ?? recovery.last_persistence_error ?? recovery.outcome}`,
+    );
   }
 
   /**
@@ -174,6 +248,7 @@ export class TaskExecutionService {
    * primary having to remember to do it.
    */
   private drainCveResearch(): void {
+    if (!this.running || !this.engine.isPersistenceWritable()) return;
     if (!this.endpoint) return;
     if (this.engine.getConfig().cve_research?.enabled === false) return;
 
@@ -250,13 +325,14 @@ export class TaskExecutionService {
       this.engine.acknowledgeAgentDirective(task.id, pending.id);
       // A stop directive (per-agent or fleet) is a deliberate operator stop —
       // mark it so the Phase 3.1 re-offer sweep doesn't auto-re-dispatch the work.
-      task.no_retry = true;
+      this.engine.updateAgentSchedulerFlags(task.id, { no_retry: true });
       this.cancelHeadless(task.id, `stop directive (${pending.id})`);
     }
   }
 
   stop(): void {
     this.running = false;
+    this.stopPersistenceGateMonitor();
     this.scripted.stop();
     this.watchdog.stop();
     for (const t of this.timeoutTimers.values()) clearTimeout(t);
@@ -272,6 +348,7 @@ export class TaskExecutionService {
    */
   async shutdown(): Promise<void> {
     this.running = false;
+    this.stopPersistenceGateMonitor();
     this.scripted.stop();
     this.watchdog.stop();
     for (const t of this.timeoutTimers.values()) clearTimeout(t);
@@ -281,6 +358,7 @@ export class TaskExecutionService {
 
   /** Exposed for tests so a tick can be forced without waiting on the timer. */
   tickWatchdog(): number {
+    if (!this.ensurePersistenceWritable()) return 0;
     return this.watchdog.tick();
   }
 
@@ -361,8 +439,6 @@ export class TaskExecutionService {
    * (durable `reoffered` flag).
    */
   private reofferStrandedWork(): void {
-    let changed = false;
-
     for (const task of this.engine.getAgentTasks()) {
       // Only abnormal terminations of headless work tied to a frontier item.
       if (task.status !== 'interrupted' && task.status !== 'failed') continue;
@@ -379,7 +455,8 @@ export class TaskExecutionService {
       if (this.registry.has(task.id)) continue;
       // A deliberately-aborted campaign is not "stranded" — record it handled.
       if (task.campaign_id && this.engine.getCampaign(task.campaign_id)?.status === 'aborted') {
-        task.reoffered = true; changed = true; continue;
+        this.engine.updateAgentSchedulerFlags(task.id, { reoffered: true });
+        continue;
       }
 
       // Is there still work? The frontier is the source of truth. getFrontierItem
@@ -395,7 +472,7 @@ export class TaskExecutionService {
       }
 
       // Now safe to commit the durable dedup flag.
-      task.reoffered = true; changed = true;
+      this.engine.updateAgentSchedulerFlags(task.id, { reoffered: true });
       if (!stillOpen) continue;                                 // item done/achieved/out-of-scope → nothing stranded
       // Already being worked by a live task (e.g. a fresh dispatch)? not stranded.
       const beingWorked = this.engine.getAgentTasks().some(t =>
@@ -419,9 +496,6 @@ export class TaskExecutionService {
       });
     }
 
-    // The reoffered flags are durable dedup state — flush them so a restart right
-    // after an alert doesn't re-alert the same dead tasks.
-    if (changed) this.engine.persist();
   }
 
   /**
@@ -526,6 +600,7 @@ export class TaskExecutionService {
    * available, and after every watchdog tick.
    */
   private reconcileOrchestrator(): void {
+    if (!this.running || !this.engine.isPersistenceWritable()) return;
     if (this.engine.getConfig().orchestrator?.enabled !== true) return; // opt-in
     if (!this.endpoint) return;                                          // needs headless runtime
 
@@ -601,6 +676,7 @@ export class TaskExecutionService {
   }
 
   private drainHeadless(): void {
+    if (!this.running || !this.engine.isPersistenceWritable()) return;
     for (const task of this.engine.getAgentTasks()) {
       if (task.status !== 'running') continue;
       const backend = this.resolveBackend(task);
@@ -625,6 +701,7 @@ export class TaskExecutionService {
   }
 
   private launchHeadless(task: AgentTask): void {
+    if (!this.running || !this.engine.isPersistenceWritable()) return;
     this.launched.add(task.id);
     const child = this.headlessRunner.launch(task, this.endpoint!);
     if (!child) {
@@ -641,6 +718,7 @@ export class TaskExecutionService {
     // kill it. A late timer (task already exited) finds nothing → harmless.
     const timer = setTimeout(() => {
       this.timeoutTimers.delete(task.id);
+      if (!this.ensurePersistenceWritable()) return;
       if (this.registry.has(task.id)) {
         this.engine.logActionEvent({
           description: `Headless sub-agent timed out after ${Math.round(this.headlessTimeoutMs / 1000)}s`,

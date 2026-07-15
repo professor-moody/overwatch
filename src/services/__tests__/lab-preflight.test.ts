@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import { runLabPreflight, summarizeInlineLabReadiness } from '../lab-preflight.js';
 import { parseBloodHoundFile } from '../bloodhound-ingest.js';
@@ -7,12 +9,16 @@ import { parseNmapXml, parseNxc, parseSecretsdump } from '../parsers/index.js';
 import type { EngagementConfig } from '../../types.js';
 import type { ToolStatus } from '../tool-check.js';
 
-const TEST_STATE_FILE = './state-test-preflight.json';
+const testEngines: GraphEngine[] = [];
+const testDirs: string[] = [];
 
 function cleanup() {
-  try {
-    if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-  } catch {}
+  for (const engine of testEngines.splice(0)) {
+    try { engine.dispose(); } catch {}
+  }
+  for (const dir of testDirs.splice(0)) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
 }
 
 function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig {
@@ -32,6 +38,14 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
     },
     ...overrides,
   };
+}
+
+function createTestEngine(config: EngagementConfig): GraphEngine {
+  const dir = mkdtempSync(join(tmpdir(), 'overwatch-preflight-'));
+  testDirs.push(dir);
+  const engine = new GraphEngine(config, join(dir, 'state.json'));
+  testEngines.push(engine);
+  return engine;
 }
 
 function installedTools(names: string[]): ToolStatus[] {
@@ -57,7 +71,7 @@ describe('lab preflight', () => {
   afterEach(cleanup);
 
   it('returns blocked for GOAD profile when required tools are missing', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createTestEngine(makeConfig());
 
     const report = runLabPreflight(engine, {
       profile: 'goad_ad',
@@ -70,7 +84,7 @@ describe('lab preflight', () => {
   });
 
   it('returns ready for a healthy GOAD mixed-source scenario when required tools exist', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createTestEngine(makeConfig());
 
     const bhResult = parseBloodHoundFile(JSON.stringify({
       data: [{
@@ -128,7 +142,7 @@ describe('lab preflight', () => {
   });
 
   it('auto-resolves GOAD-style BH+nmap split hosts via FQDN short-name matching', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = createTestEngine(makeConfig());
 
     const bhResult = parseBloodHoundFile(JSON.stringify({
       data: [{
@@ -192,7 +206,7 @@ describe('lab preflight', () => {
       profile: 'network' as const,
       scope: { cidrs: ['10.10.110.0/24'], domains: [], exclusions: ['10.10.110.2'] },
     });
-    const engine = new GraphEngine(config, TEST_STATE_FILE);
+    const engine = createTestEngine(config);
 
     const nmapFinding = parseNmapXml(`<?xml version="1.0"?>
       <nmaprun>
@@ -226,7 +240,7 @@ describe('lab preflight', () => {
     const config = makeConfig({
       scope: { cidrs: ['10.10.110.0/24'], domains: [], exclusions: [] },
     });
-    const engine = new GraphEngine(config, TEST_STATE_FILE);
+    const engine = createTestEngine(config);
 
     const report = runLabPreflight(engine, {
       toolStatuses: installedTools(['nmap']),
@@ -241,7 +255,7 @@ describe('lab preflight', () => {
       profile: 'network' as const,
       scope: { cidrs: ['10.10.110.0/24'], domains: [], exclusions: [] },
     });
-    const engine = new GraphEngine(config, TEST_STATE_FILE);
+    const engine = createTestEngine(config);
 
     const report = runLabPreflight(engine, {
       toolStatuses: installedTools(['nmap']),
@@ -256,7 +270,7 @@ describe('lab preflight', () => {
       profile: 'network' as const,
       scope: { cidrs: ['10.10.110.0/24'], domains: [], exclusions: [] },
     });
-    const engine = new GraphEngine(config, TEST_STATE_FILE);
+    const engine = createTestEngine(config);
 
     const report = runLabPreflight(engine, {
       profile: 'network',
@@ -275,7 +289,7 @@ describe('lab preflight', () => {
         exclusions: [],
       },
     });
-    const engine = new GraphEngine(config, TEST_STATE_FILE);
+    const engine = createTestEngine(config);
 
     const nmapFinding = parseNmapXml(`<?xml version="1.0"?>
       <nmaprun>
@@ -305,9 +319,9 @@ describe('lab preflight', () => {
   });
 
   it('summarizes inline readiness for get_state', () => {
-    const engine = new GraphEngine(makeConfig({
+    const engine = createTestEngine(makeConfig({
       scope: { cidrs: [], domains: [], exclusions: [] },
-    }), TEST_STATE_FILE);
+    }));
 
     const summary = summarizeInlineLabReadiness(engine);
 
@@ -316,10 +330,10 @@ describe('lab preflight', () => {
   });
 
   it('inline readiness warns about missing domains only for goad_ad profile', () => {
-    const engine = new GraphEngine(makeConfig({
+    const engine = createTestEngine(makeConfig({
       profile: 'goad_ad' as const,
       scope: { cidrs: ['10.10.10.0/24'], domains: [], exclusions: [] },
-    }), TEST_STATE_FILE);
+    }));
 
     const summary = summarizeInlineLabReadiness(engine);
 
@@ -328,14 +342,63 @@ describe('lab preflight', () => {
   });
 
   it('inline readiness does not warn about missing domains for network profile', () => {
-    const engine = new GraphEngine(makeConfig({
+    const engine = createTestEngine(makeConfig({
       profile: 'network' as const,
       scope: { cidrs: ['10.10.10.0/24'], domains: [], exclusions: [] },
-    }), TEST_STATE_FILE);
+    }));
 
     const summary = summarizeInlineLabReadiness(engine);
 
     expect(summary.top_issues.some(issue => issue.includes('No scoped domains'))).toBe(false);
+  });
+
+  it('includes incomplete recovery details in the existing persistence check', () => {
+    const engine = createTestEngine(makeConfig({
+      profile: 'single_host' as const,
+    }));
+    Object.assign(engine, {
+      getPersistenceRecoveryStatus: vi.fn(() => ({
+        outcome: 'incomplete',
+        source: 'state',
+        complete: false,
+        writable: false,
+        reason: 'sequence gap',
+        base_checkpoint: 2,
+        highest_allocated_seq: 6,
+        highest_on_disk_seq: 6,
+        highest_contiguous_applied_seq: 4,
+        consecutive_persistence_failures: 0,
+        journal: {
+          enabled: true,
+          read: 4,
+          attempted: 2,
+          applied: 2,
+          skipped: 0,
+          failed: 0,
+          malformed: false,
+          preserved: true,
+        },
+      })),
+    });
+
+    const report = runLabPreflight(engine, {
+      profile: 'single_host',
+      toolStatuses: installedTools(['nmap']),
+      dashboard: { enabled: false, running: false },
+    });
+    const inline = summarizeInlineLabReadiness(engine);
+    const persistence = report.checks.find(check => check.name === 'persistence');
+
+    expect(persistence?.status).toBe('fail');
+    expect(persistence?.message).toContain('sequence gap');
+    expect(persistence?.details?.recovery).toMatchObject({
+      outcome: 'incomplete',
+      writable: false,
+      highest_contiguous_applied_seq: 4,
+      highest_on_disk_seq: 6,
+    });
+    expect(inline.status).toBe('blocked');
+    expect(inline.top_issues[0]).toContain('sequence gap');
   });
 
   it('web_app profile passes scope check with url_patterns and checks for web tools', () => {
@@ -343,7 +406,7 @@ describe('lab preflight', () => {
       profile: 'web_app' as const,
       scope: { cidrs: [], domains: [], exclusions: [], url_patterns: ['*.example.com', 'app.corp.io/api/*'] },
     });
-    const engine = new GraphEngine(config, TEST_STATE_FILE);
+    const engine = createTestEngine(config);
 
     const webTools: ToolStatus[] = [
       { name: 'nuclei', installed: true, version: '3.0.0', path: '/usr/bin/nuclei' },
@@ -375,7 +438,7 @@ describe('lab preflight', () => {
       profile: 'cloud' as const,
       scope: { cidrs: [], domains: [], exclusions: [], aws_accounts: ['123456789012'] },
     });
-    const engine = new GraphEngine(config, TEST_STATE_FILE);
+    const engine = createTestEngine(config);
 
     const cloudTools: ToolStatus[] = [
       { name: 'pacu', installed: true, version: '1.0.0', path: '/usr/bin/pacu' },

@@ -11,15 +11,24 @@
 // and batchMutate() to suppress flushes during batch operations.
 // ============================================================
 
-import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, mkdirSync, openSync, fsyncSync, closeSync } from 'fs';
-import { dirname, basename, join } from 'path';
+import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, openSync, fsyncSync, closeSync } from 'fs';
+import { dirname, basename, isAbsolute, join, relative, resolve } from 'path';
+import { createHash } from 'crypto';
 import type { EngineContext, OverwatchGraph, GraphUpdateDetail, ActivityLogEntry } from './engine-context.js';
 import { normalizeActivityLogEntry } from './engine-context.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { FrontierLeases } from './frontier-leases.js';
-import type { InferenceRule, NodeProperties, EdgeProperties } from '../types.js';
+import {
+  engagementConfigSchema,
+  type InferenceRule,
+  type NodeProperties,
+  type EdgeProperties,
+  type PersistenceRecoveryStatus,
+} from '../types.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
 import { OpsecTracker } from './opsec-tracker.js';
+import { MutationJournal, type MutationReplayResult } from './mutation-journal.js';
+import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
 
 export const MAX_SNAPSHOTS = 5;
 
@@ -34,6 +43,59 @@ export interface ReplayMutators {
 // --- Coalescing configuration ---
 export const FLUSH_DEBOUNCE_MS = 100;   // Wait 100ms of quiet before flushing
 export const FLUSH_MAX_DELAY_MS = 500;  // Maximum time between dirty and flush
+export const PERSIST_RETRY_DELAYS_MS = [250, 1_000, 5_000, 30_000] as const;
+export const JOURNAL_CHECKPOINT_SEMANTICS = 'contiguous_applied_v1' as const;
+
+class JournalRecoveryGateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'JournalRecoveryGateError';
+  }
+}
+
+export interface RestoreResult {
+  status: 'restored' | 'seed_required' | 'degraded';
+  source: PersistenceRecoveryStatus['source'];
+  reason?: string;
+}
+
+interface RestoreCandidate {
+  source: 'state' | 'snapshot';
+  path: string;
+}
+
+interface ValidatedRestoreCandidate extends RestoreCandidate {
+  data: unknown;
+  checkpoint: number;
+  /** Lower values are newer. The primary outranks an equal-checkpoint
+   * snapshot; snapshots inherit listSnapshots()'s filename chronology. */
+  newnessRank: number;
+}
+
+interface RestoredBase {
+  source: 'state' | 'snapshot';
+  path: string;
+  data: unknown;
+  checkpoint: number;
+  replay?: MutationReplayResult;
+}
+
+interface RestoredCheckpoint {
+  checkpoint: number;
+  trusted: boolean;
+}
+
+interface RollbackIntentV1 {
+  version: 1;
+  checkpoint: number;
+  /** Path relative to the state directory. The selected snapshot remains a
+   * recovery anchor while every superseded snapshot is removed. */
+  selected_snapshot: string;
+  selected_snapshot_sha256: string;
+  /** Digest of the canonical intent fields above. This distinguishes a valid
+   * rollback authority from a torn/manually-corrupted sidecar. */
+  intent_checksum: string;
+}
 
 // --- Module-level shutdown flusher registry ---
 // One process-level listener per signal regardless of how many
@@ -78,12 +140,27 @@ export interface PersistMetrics {
 export class StatePersistence {
   private ctx: EngineContext;
   private builtinRuleIds: Set<string>;
+  private builtinRules: InferenceRule[];
+  private createGraph: () => OverwatchGraph;
 
   // --- Write coalescing state ---
   private dirty = false;
   private pendingDetail: GraphUpdateDetail = {};
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private maxDelayTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryDelayIndex = 0;
+  private consecutivePersistenceFailures = 0;
+  /** Once three writes fail in one process, target-facing work has already
+   * frozen around that fact. A later background retry may make bytes durable,
+   * but reopening mutations in-place would split runtime and persistence truth.
+   * Only a clean restart clears this latch. */
+  private persistenceFailureGateTripped = false;
+  private lastPersistenceError: string | undefined;
+  private recoveryReadOnlyReason: string | undefined;
+  private pendingRecoveryCheckpoint: number | undefined;
+  private pendingRecoverySource: 'state' | 'snapshot' | undefined;
+  private journalAccessError: unknown | undefined;
   private batchDepth = 0;  // >0 means inside batchMutate, suppress auto-flush
   private metrics: PersistMetrics = {
     flushCount: 0,
@@ -94,11 +171,190 @@ export class StatePersistence {
     dirty: false,
   };
   private shutdownHandlers: (() => void)[] = [];
+  private recoveryStatus: PersistenceRecoveryStatus;
+  /** Present only while an explicit rollback is being installed. Persisting
+   * this marker in the replacement primary makes that primary authoritative on
+   * restart before destructive snapshot/WAL cleanup resumes. */
+  private rollbackIntent: RollbackIntentV1 | undefined;
 
-  constructor(ctx: EngineContext, builtinRules: InferenceRule[], _createGraph?: () => OverwatchGraph) {
+  constructor(ctx: EngineContext, builtinRules: InferenceRule[], createGraph?: () => OverwatchGraph) {
     this.ctx = ctx;
+    this.builtinRules = [...builtinRules];
     this.builtinRuleIds = new Set(builtinRules.map(r => r.id));
+    this.createGraph = createGraph ?? (() => {
+      throw new Error('A graph factory is required to validate persisted recovery bases');
+    });
+    const journal = this.ctx.mutationJournal;
+    let initialPhysicalSeq = 0;
+    if (journal) {
+      try {
+        initialPhysicalSeq = journal.getHighestPhysicalSeq();
+      } catch (error) {
+        this.journalAccessError = error;
+        const reason = this.describeJournalAccessFailure(error);
+        this.recoveryReadOnlyReason = reason;
+        journal.blockAppends(reason);
+      }
+    }
+    this.recoveryStatus = {
+      outcome: this.journalAccessError ? 'incomplete' : 'clean',
+      source: 'fresh',
+      complete: this.journalAccessError === undefined,
+      writable: this.journalAccessError === undefined,
+      ...(this.journalAccessError ? { reason: this.recoveryReadOnlyReason } : {}),
+      base_checkpoint: 0,
+      highest_allocated_seq: journal?.getHighestAllocatedSeq() ?? 0,
+      highest_on_disk_seq: initialPhysicalSeq,
+      highest_contiguous_applied_seq: journal?.getAppliedThroughSeq() ?? 0,
+      consecutive_persistence_failures: 0,
+      journal: {
+        enabled: journal !== null,
+        read: 0,
+        attempted: 0,
+        applied: 0,
+        skipped: 0,
+        failed: 0,
+        malformed: false,
+        preserved: this.journalAccessError !== undefined,
+      },
+    };
+    this.ctx.persistenceWriteGuard = () => this.assertWritable();
     this.hookShutdown();
+  }
+
+  getRecoveryStatus(): PersistenceRecoveryStatus {
+    const journal = this.ctx.mutationJournal;
+    const journalBlockedReason = journal?.getAppendBlockedReason();
+    let physicalHighest: number | undefined;
+    try {
+      physicalHighest = journal?.getHighestPhysicalSeq();
+    } catch (error) {
+      this.latchJournalRecoveryFailure({
+        reason: this.describeJournalAccessFailure(error),
+        error,
+        malformed: false,
+        accessFailure: true,
+      });
+      physicalHighest = this.recoveryStatus.highest_on_disk_seq;
+    }
+    return {
+      ...this.recoveryStatus,
+      ...(journalBlockedReason && !this.recoveryStatus.reason ? { reason: journalBlockedReason } : {}),
+      outcome: journalBlockedReason ? 'incomplete' : this.recoveryStatus.outcome,
+      complete: journalBlockedReason ? false : this.recoveryStatus.complete,
+      writable: this.isWritable(),
+      highest_allocated_seq: journal?.getHighestAllocatedSeq() ?? this.recoveryStatus.highest_allocated_seq,
+      // Compaction legitimately removes replayed records from the active WAL.
+      // Preserve the highest sequence observed during recovery while still
+      // allowing later live appends to advance the value.
+      highest_on_disk_seq: physicalHighest === undefined
+        ? this.recoveryStatus.highest_on_disk_seq
+        : Math.max(this.recoveryStatus.highest_on_disk_seq, physicalHighest),
+      highest_contiguous_applied_seq: journal?.getAppliedThroughSeq() ?? this.recoveryStatus.highest_contiguous_applied_seq,
+      consecutive_persistence_failures: this.consecutivePersistenceFailures,
+      ...(this.lastPersistenceError ? { last_persistence_error: this.lastPersistenceError } : {}),
+      journal: {
+        ...this.recoveryStatus.journal,
+        // An append/apply ambiguity blocks the journal outside the startup
+        // replay path. Surface that the bytes remain available for recovery.
+        preserved: this.recoveryStatus.journal.preserved || journalBlockedReason !== undefined,
+      },
+    };
+  }
+
+  isWritable(): boolean {
+    return this.recoveryReadOnlyReason === undefined
+      && this.ctx.mutationJournal?.getAppendBlockedReason() === undefined
+      && !this.persistenceFailureGateTripped
+      && this.consecutivePersistenceFailures < 3;
+  }
+
+  assertWritable(): void {
+    if (this.isWritable()) return;
+    const reason = this.recoveryReadOnlyReason
+      ?? this.ctx.mutationJournal?.getAppendBlockedReason()
+      ?? `state persistence failed ${this.consecutivePersistenceFailures} consecutive times`;
+    throw new Error(`Durable mutations are disabled while persistence is degraded: ${reason}`);
+  }
+
+  private describeJournalAccessFailure(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    const path = this.ctx.mutationJournal?.getPath()
+      ?? MutationJournal.pathForState(this.ctx.stateFilePath);
+    return `persisted WAL could not be read at ${path}: ${message}`;
+  }
+
+  /** Permanently close this process's durable-mutation gate after discovering
+   * an unreadable or semantically corrupt live WAL. Retrying an ordinary state
+   * write cannot repair journal ordering, so this path deliberately bypasses
+   * the transient persistence retry schedule. */
+  private latchJournalRecoveryFailure(input: {
+    reason: string;
+    error?: unknown;
+    malformed: boolean;
+    accessFailure?: boolean;
+  }): JournalRecoveryGateError {
+    const alreadyLatched = this.recoveryReadOnlyReason === input.reason;
+    this.cancelTimers();
+    this.cancelRetryTimer();
+    this.dirty = false;
+    this.pendingDetail = {};
+    this.pendingRecoveryCheckpoint = undefined;
+    this.pendingRecoverySource = undefined;
+    this.recoveryReadOnlyReason = input.reason;
+    if (input.accessFailure) this.journalAccessError = input.error ?? input.reason;
+    const message = input.error instanceof Error
+      ? input.error.message
+      : input.error === undefined ? input.reason : String(input.error);
+    this.lastPersistenceError = message;
+    this.ctx.mutationJournal?.blockAppends(input.reason);
+    const quarantine = alreadyLatched ? {} : this.quarantineJournal();
+    this.recoveryStatus = {
+      ...this.recoveryStatus,
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      reason: input.reason,
+      last_persistence_error: message,
+      journal: {
+        ...this.recoveryStatus.journal,
+        malformed: input.malformed,
+        preserved: true,
+      },
+    };
+    if (!alreadyLatched) {
+      // eslint-disable-next-line no-console
+      console.error(`[persistence] degraded read-only WAL: ${input.reason}`);
+      try {
+        this.ctx.logEvent({
+          description: 'WAL integrity/access failure forced degraded read-only mode',
+          event_type: 'system',
+          category: 'system',
+          outcome: 'failure',
+          result_classification: 'failure',
+          details: {
+            error: message,
+            malformed: input.malformed,
+            quarantine_path: quarantine.path,
+            quarantine_error: quarantine.error,
+          },
+        });
+      } catch { /* recovery gating cannot depend on diagnostic logging */ }
+    }
+    return new JournalRecoveryGateError(input.reason);
+  }
+
+  /** Mark the boot as a deliberate config seed.  Corruption-driven seeds are
+   *  distinguished from a genuinely fresh engagement for readiness surfaces. */
+  markConfigInitialization(reinitialized: boolean): void {
+    this.recoveryStatus = {
+      ...this.recoveryStatus,
+      outcome: reinitialized ? 'reinitialized' : 'clean',
+      source: 'config',
+      complete: true,
+      writable: this.isWritable(),
+      ...(reinitialized ? { reason: 'no valid persisted base was available; state was reinitialized from config' } : {}),
+    };
   }
 
   /**
@@ -107,6 +363,7 @@ export class StatePersistence {
    * Detail objects are merged so the final flush includes all changes.
    */
   persist(detail: GraphUpdateDetail = {}): void {
+    this.assertWritable();
     this.mergeDetail(detail);
     this.dirty = true;
 
@@ -127,24 +384,41 @@ export class StatePersistence {
    * Immediately write state to disk. Bypasses coalescing.
    * Use for: rollback, recovery, process shutdown, explicit sync points.
    */
-  flushNow(): void {
+  flushNow(failureSource: 'explicit_flush' | 'debounce' | 'max_delay' = 'explicit_flush'): void {
     this.cancelTimers();
     if (!this.dirty) return;
-    this.writeStateToDisk();
-    this.dirty = false;
-    this.pendingDetail = {};
+    this.assertWritable();
+    try {
+      this.writeStateToDisk();
+      this.finishSuccessfulWrite();
+    } catch (error) {
+      if (error instanceof JournalRecoveryGateError) throw error;
+      this.recordPersistenceFailure(error, failureSource);
+      throw error;
+    }
   }
 
   /**
    * Immediately write state to disk regardless of dirty flag.
    * Use for: initial persist after load, rollback overwrites.
    */
-  persistImmediate(detail: GraphUpdateDetail = {}): void {
+  persistImmediate(
+    detail: GraphUpdateDetail = {},
+    options: { rotateExisting?: boolean } = {},
+  ): void {
     this.cancelTimers();
-    this.writeStateToDisk();
-    this.ctx.fireUpdateCallbacks(detail);
-    this.dirty = false;
-    this.pendingDetail = {};
+    this.assertWritable();
+    try {
+      this.writeStateToDisk({ rotateExisting: options.rotateExisting });
+      this.ctx.fireUpdateCallbacks(detail);
+      this.finishSuccessfulWrite();
+    } catch (error) {
+      if (error instanceof JournalRecoveryGateError) throw error;
+      this.dirty = true;
+      this.mergeDetail(detail);
+      this.recordPersistenceFailure(error, 'immediate_flush');
+      throw error;
+    }
   }
 
   /**
@@ -207,20 +481,8 @@ export class StatePersistence {
 
   private flushFromTimer(timerKind: 'debounce' | 'max_delay'): void {
     try {
-      this.flushNow();
-    } catch (err) {
-      this.ctx.logEvent({
-        description: `Scheduled state persistence flush failed (${timerKind})`,
-        category: 'system',
-        event_type: 'system',
-        result_classification: 'failure',
-        details: {
-          timer_kind: timerKind,
-          state_file: this.ctx.stateFilePath,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      });
-    }
+      this.flushNow(timerKind);
+    } catch { /* failure logging + bounded retry are handled centrally */ }
   }
 
   private cancelTimers(): void {
@@ -234,9 +496,126 @@ export class StatePersistence {
     }
   }
 
+  private cancelRetryTimer(): void {
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  private scheduleRetry(): void {
+    if (this.retryTimer !== null) return;
+    const delay = PERSIST_RETRY_DELAYS_MS[Math.min(this.retryDelayIndex, PERSIST_RETRY_DELAYS_MS.length - 1)];
+    this.retryDelayIndex = Math.min(this.retryDelayIndex + 1, PERSIST_RETRY_DELAYS_MS.length - 1);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.retryFailedWrite();
+    }, delay);
+    this.retryTimer.unref?.();
+  }
+
+  private retryFailedWrite(): void {
+    if (!this.dirty && this.pendingRecoveryCheckpoint === undefined) return;
+    const recoveredDetail = { ...this.pendingDetail };
+    try {
+      if (this.pendingRecoveryCheckpoint !== undefined) {
+        const checkpoint = this.pendingRecoveryCheckpoint;
+        this.writeStateToDisk({ journalCheckpointSeq: checkpoint, rotateExisting: false });
+        this.finishRecoveryCheckpoint(checkpoint, this.pendingRecoverySource ?? 'state', {
+          // The GraphEngine skipped startup reconciliation while recovery was
+          // degraded. A late checkpoint cannot safely reopen writes in-place.
+          restartRequired: true,
+        });
+      } else {
+        this.writeStateToDisk();
+      }
+      this.finishSuccessfulWrite();
+      // A failed persistImmediate never emitted its update callback.  A retry
+      // success also changes the recovery/write-health surface, so publish one
+      // consolidated refresh. Recovery-checkpoint retries deliberately keep
+      // the gate closed until a clean restart runs startup reconciliation.
+      this.ctx.fireUpdateCallbacks(recoveredDetail);
+    } catch (error) {
+      if (error instanceof JournalRecoveryGateError) return;
+      this.recordPersistenceFailure(error, 'retry');
+    }
+  }
+
+  private recordPersistenceFailure(error: unknown, source: string): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.consecutivePersistenceFailures++;
+    this.lastPersistenceError = message;
+    this.dirty = true;
+    if (this.consecutivePersistenceFailures >= 3 && !this.persistenceFailureGateTripped) {
+      this.persistenceFailureGateTripped = true;
+      const restartReason = 'state persistence failed three consecutive times; restart required after durable recovery before writes resume';
+      this.recoveryReadOnlyReason ??= restartReason;
+      this.ctx.mutationJournal?.blockAppends(this.recoveryReadOnlyReason);
+    }
+    this.recoveryStatus = {
+      ...this.recoveryStatus,
+      outcome: this.persistenceFailureGateTripped ? 'incomplete' : this.recoveryStatus.outcome,
+      complete: this.persistenceFailureGateTripped ? false : this.recoveryStatus.complete,
+      writable: this.isWritable(),
+      ...(this.recoveryReadOnlyReason ? { reason: this.recoveryReadOnlyReason } : {}),
+      consecutive_persistence_failures: this.consecutivePersistenceFailures,
+      last_persistence_error: message,
+    };
+    this.scheduleRetry();
+    try {
+      this.ctx.logEvent({
+        description: `Scheduled state persistence flush failed (${source})`,
+        category: 'system',
+        event_type: 'system',
+        result_classification: 'failure',
+        details: {
+          timer_kind: source,
+          state_file: this.ctx.stateFilePath,
+          error: message,
+          consecutive_failures: this.consecutivePersistenceFailures,
+          durable_mutations_blocked: this.consecutivePersistenceFailures >= 3 || this.recoveryReadOnlyReason !== undefined,
+        },
+      });
+    } catch {
+      // Persistence retry must never depend on diagnostic event emission.
+    }
+  }
+
+  private finishSuccessfulWrite(): void {
+    const hadFailures = this.consecutivePersistenceFailures > 0;
+    this.cancelRetryTimer();
+    this.consecutivePersistenceFailures = 0;
+    this.retryDelayIndex = 0;
+    this.lastPersistenceError = undefined;
+    this.dirty = false;
+    this.pendingDetail = {};
+    this.recoveryStatus = {
+      ...this.recoveryStatus,
+      writable: this.isWritable(),
+      consecutive_persistence_failures: 0,
+    };
+    delete this.recoveryStatus.last_persistence_error;
+    if (hadFailures) {
+      try {
+        const restartRequired = this.recoveryReadOnlyReason?.includes('restart required') ?? false;
+        this.ctx.logEvent({
+          description: restartRequired
+            ? 'State persistence checkpoint recovered after retry; restart required before writes resume'
+            : 'State persistence recovered after retry',
+          category: 'system',
+          event_type: 'system',
+          result_classification: 'success',
+        });
+      } catch {
+        // The durable write already succeeded; diagnostics cannot reverse it.
+      }
+    }
+  }
+
   /** Cancel any pending flush (for shutdown / disposal). */
   cancelPendingFlush(): void {
     this.cancelTimers();
+    this.cancelRetryTimer();
   }
 
   // --- Detail merging ---
@@ -268,13 +647,10 @@ export class StatePersistence {
 
   private hookShutdown(): void {
     const flush = () => {
-      if (this.dirty) {
+      if (this.dirty || this.pendingRecoveryCheckpoint !== undefined) {
         this.cancelTimers();
-        try {
-          this.writeStateToDisk();
-          this.dirty = false;
-          this.pendingDetail = {};
-        } catch { /* best effort on shutdown */ }
+        this.cancelRetryTimer();
+        try { this.retryFailedWrite(); } catch { /* best effort on shutdown */ }
       }
     };
 
@@ -288,15 +664,20 @@ export class StatePersistence {
    */
   dispose(): void {
     this.cancelTimers();
+    this.cancelRetryTimer();
     for (const handler of this.shutdownHandlers) {
       unregisterShutdownFlusher(handler);
     }
     this.shutdownHandlers = [];
+    this.ctx.persistenceWriteGuard = undefined;
   }
 
-  // --- Core write logic (unchanged from original) ---
+  // --- Core durable write logic ---
 
-  private writeStateToDisk(): void {
+  private writeStateToDisk(options: { journalCheckpointSeq?: number; rotateExisting?: boolean } = {}): void {
+    const journalCheckpointSeq = options.journalCheckpointSeq
+      ?? this.ctx.mutationJournal?.getAppliedThroughSeq()
+      ?? 0;
     const serializeStart = Date.now();
     const data = {
       config: this.ctx.config,
@@ -328,7 +709,13 @@ export class StatePersistence {
       // the journal entry numbered `journalSnapshotSeq`; on next load,
       // replay journal entries with `seq > journalSnapshotSeq` to catch
       // any post-snapshot mutations that hadn't been re-snapshotted yet.
-      journalSnapshotSeq: this.ctx.mutationJournal?.peekSeq() ?? 0,
+      journalSnapshotSeq: journalCheckpointSeq,
+      // PR1: distinguish a contiguous successfully-applied checkpoint from the
+      // legacy value, which older writers could derive from allocation alone.
+      // Recovery may only skip retained WAL prefix records when this marker is
+      // present and recognized.
+      journalCheckpointSemantics: JOURNAL_CHECKPOINT_SEMANTICS,
+      ...(this.rollbackIntent ? { rollbackIntent: this.rollbackIntent } : {}),
     };
     const json = JSON.stringify(data);
     const serializeEnd = Date.now();
@@ -337,18 +724,25 @@ export class StatePersistence {
     const writeStart = Date.now();
 
     // Atomic write: write to temp, fsync, then rename (atomic on POSIX)
-    mkdirSync(dirname(this.ctx.stateFilePath), { recursive: true });
+    const stateDir = dirname(this.ctx.stateFilePath);
+    mkdirDurable(stateDir);
+
+    // Rotate the current durable primary before creating the replacement temp.
+    // This lets a WAL-integrity preflight fail without leaving a state temp that
+    // could be mistaken for a completed checkpoint.
+    const now = Date.now();
+    if (options.rotateExisting !== false && existsSync(this.ctx.stateFilePath) && (now - this.ctx.lastSnapshotTime >= 30000)) {
+      this.rotateSnapshot();
+      this.ctx.lastSnapshotTime = now;
+    }
+
     const tmpPath = this.ctx.stateFilePath + '.tmp';
     writeFileSync(tmpPath, json);
     const fd = openSync(tmpPath, 'r');
-    fsyncSync(fd);
-    closeSync(fd);
-
-    // Rotate snapshot before overwriting (throttled to once per 30s)
-    const now = Date.now();
-    if (existsSync(this.ctx.stateFilePath) && (now - this.ctx.lastSnapshotTime >= 30000)) {
-      this.rotateSnapshot();
-      this.ctx.lastSnapshotTime = now;
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
     }
 
     if (process.platform === 'win32') {
@@ -362,6 +756,8 @@ export class StatePersistence {
     } else {
       renameSync(tmpPath, this.ctx.stateFilePath);
     }
+    fsyncDirectory(stateDir);
+    this.ctx.journalSnapshotSeq = journalCheckpointSeq;
 
     const writeEnd = Date.now();
     this.metrics.totalWriteMs += (writeEnd - writeStart);
@@ -371,57 +767,178 @@ export class StatePersistence {
   }
 
   private rotateSnapshot(): void {
+    const dir = dirname(this.ctx.stateFilePath);
+    const base = basename(this.ctx.stateFilePath, '.json');
+    const snapDir = join(dir, '.snapshots');
+    const journal = this.ctx.mutationJournal;
+    if (journal) {
+      let issue;
+      try {
+        issue = journal.inspectIntegrity();
+      } catch (error) {
+        throw this.latchJournalRecoveryFailure({
+          reason: this.describeJournalAccessFailure(error),
+          error,
+          malformed: false,
+          accessFailure: true,
+        });
+      }
+      if (issue) {
+        throw this.latchJournalRecoveryFailure({
+          reason: `snapshot WAL integrity preflight failed at line ${issue.line}: ${issue.reason}`,
+          error: issue.reason,
+          malformed: issue.kind === 'malformed_entry',
+        });
+      }
+    }
+    mkdirDurable(snapDir);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    let snapPath: string | undefined;
+    let snapFd: number | undefined;
+    for (let collision = 0; collision < 10_000; collision++) {
+      const suffix = collision === 0 ? '' : `-${String(collision).padStart(4, '0')}`;
+      const candidate = join(snapDir, `${base}.snap-${ts}-${process.pid}${suffix}.json`);
+      try {
+        // Exclusive creation is essential: a repeated clock/PID tuple must
+        // never truncate an existing recovery anchor before the new snapshot
+        // has been copied and made durable.
+        snapFd = openSync(candidate, 'wx');
+        snapPath = candidate;
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+        throw error;
+      }
+    }
+    if (snapFd === undefined || snapPath === undefined) {
+      throw new Error('could not allocate a collision-free snapshot filename');
+    }
+    // Copy the current durable primary to a durable snapshot before replacing
+    // it. Creation/fsync failures abort the entire persistence attempt.
     try {
-      const dir = dirname(this.ctx.stateFilePath);
-      const base = basename(this.ctx.stateFilePath, '.json');
-      const snapDir = join(dir, '.snapshots');
-      mkdirSync(snapDir, { recursive: true });
-      const ts = new Date().toISOString().replace(/[:.]/g, '-');
-      const snapPath = join(snapDir, `${base}.snap-${ts}-${process.pid}.json`);
-      // Copy current state to snapshot
-      writeFileSync(snapPath, readFileSync(this.ctx.stateFilePath));
-      // Prune old snapshots beyond MAX_SNAPSHOTS
-      const snaps = readdirSync(snapDir)
-        .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json'))
-        .sort();
-      while (snaps.length > MAX_SNAPSHOTS) {
-        const oldest = snaps.shift()!;
-        try { unlinkSync(join(snapDir, oldest)); } catch { /* best effort */ }
+      const stateBytes = readFileSync(this.ctx.stateFilePath);
+      writeFileSync(snapFd, stateBytes);
+      fsyncSync(snapFd);
+      closeSync(snapFd);
+      snapFd = undefined;
+      fsyncDirectory(snapDir);
+    } catch (error) {
+      if (snapFd !== undefined) {
+        try { closeSync(snapFd); } catch { /* preserve the original copy error */ }
       }
-      // P2.1: compact the WAL — entries up to the seq stored in the
-      // freshly-rotated snapshot are redundant. Read the seq back from
-      // the just-written snapshot file so it matches what's on disk.
-      if (this.ctx.mutationJournal) {
+      // The path was uniquely created by this attempt, so removing an
+      // incomplete copy cannot harm any pre-existing recovery anchor.
+      try {
+        unlinkSync(snapPath);
+        fsyncDirectory(snapDir);
+      } catch { /* an invalid leftover is rejected by base validation */ }
+      throw error;
+    }
+    // Compaction happens before the replacement primary rename. Never discard
+    // WAL beyond the checkpoint already present in the durable primary: a crash
+    // at this boundary must leave that primary able to replay its full suffix.
+    if (journal) {
+      const retained = this.oldestRetainedValidSnapshotCheckpoint();
+      const upTo = retained === undefined
+        ? undefined
+        : Math.min(retained, this.ctx.journalSnapshotSeq);
+      if (upTo !== undefined && upTo > 0) {
         try {
-          const snapData = JSON.parse(readFileSync(snapPath, 'utf-8'));
-          const upTo = typeof snapData.journalSnapshotSeq === 'number' ? snapData.journalSnapshotSeq : 0;
-          if (upTo > 0) this.ctx.mutationJournal.compactUpTo(upTo);
-        } catch { /* journal compaction is best-effort */ }
+          const result = journal.compactUpTo(upTo);
+          if ('preserved' in result) {
+            throw this.latchJournalRecoveryFailure({
+              reason: `snapshot WAL compaction refused: ${result.reason}`,
+              error: result.reason,
+              malformed: false,
+            });
+          }
+        } catch (error) {
+          if (error instanceof JournalRecoveryGateError) throw error;
+          throw this.latchJournalRecoveryFailure({
+            reason: this.describeJournalAccessFailure(error),
+            error,
+            malformed: false,
+            accessFailure: true,
+          });
+        }
       }
-    } catch (err) {
-      this.ctx.log(`Snapshot rotation error: ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
+    }
+    // Prune only after integrity checking and any compaction have succeeded.
+    // Retaining an extra snapshot is safe, so pruning alone remains best-effort.
+    const snaps = readdirSync(snapDir)
+      .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json'))
+      .sort();
+    while (snaps.length > MAX_SNAPSHOTS) {
+      const oldest = snaps.shift()!;
+      try {
+        unlinkSync(join(snapDir, oldest));
+        fsyncDirectory(snapDir);
+      } catch { /* best effort: an extra recovery anchor is safe */ }
     }
   }
 
   listSnapshots(): string[] {
     try {
-      const dir = dirname(this.ctx.stateFilePath);
-      const base = basename(this.ctx.stateFilePath, '.json');
-      const snapDir = join(dir, '.snapshots');
-      const results: string[] = [];
-      // Check new subdirectory location
-      if (existsSync(snapDir)) {
-        results.push(...readdirSync(snapDir)
-          .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json'))
-          .map(f => `.snapshots/${f}`));
-      }
-      // Check legacy same-directory location for backward compat
-      results.push(...readdirSync(dir)
-        .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json')));
-      return results.sort();
+      return this.listSnapshotsStrict();
     } catch {
       return [];
     }
+  }
+
+  private listSnapshotsStrict(): string[] {
+    const dir = dirname(this.ctx.stateFilePath);
+    const base = basename(this.ctx.stateFilePath, '.json');
+    const snapDir = join(dir, '.snapshots');
+    const results: string[] = [];
+    if (!existsSync(dir)) return results;
+    // Check new subdirectory location
+    if (existsSync(snapDir)) {
+      results.push(...readdirSync(snapDir)
+        .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json'))
+        .map(f => `.snapshots/${f}`));
+    }
+    // Check legacy same-directory location for backward compat
+    results.push(...readdirSync(dir)
+      .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json')));
+    // Compare the snapshot filenames, not their storage-directory prefixes.
+    // Otherwise every legacy root snapshot sorts after every `.snapshots/`
+    // entry and is incorrectly tried first after the caller reverses the list.
+    return results.sort((a, b) => {
+      const byName = basename(a).localeCompare(basename(b));
+      return byName !== 0 ? byName : a.localeCompare(b);
+    });
+  }
+
+  /** Return the oldest checkpoint for a retained snapshot that is itself a
+   * usable full-state base. If none are valid, retaining the complete WAL is
+   * the only safe compaction policy. */
+  private oldestRetainedValidSnapshotCheckpoint(): number | undefined {
+    const stateDir = dirname(this.ctx.stateFilePath);
+    let oldest: number | undefined;
+    for (const snapshot of this.listSnapshots()) {
+      let raw: string;
+      try {
+        raw = readFileSync(join(stateDir, snapshot), 'utf-8');
+      } catch {
+        // An unreadable retained file may still be the oldest valid recovery
+        // anchor. It cannot authorize deletion of any WAL bytes.
+        return undefined;
+      }
+      try {
+        const data = JSON.parse(raw) as unknown;
+        const { checkpoint, trusted } = this.validateStateBase(data);
+        // A legacy snapshot may contain an allocation-based overclaim. It is a
+        // usable graph base, but not authority to delete *any* retained WAL
+        // records. Disabling compaction preserves the suffix it may need and
+        // any records at/below its unproven cursor.
+        if (!trusted) return undefined;
+        oldest = oldest === undefined ? checkpoint : Math.min(oldest, checkpoint);
+      } catch {
+        // An invalid snapshot is not a recovery anchor and therefore cannot
+        // justify discarding any WAL prefix.
+      }
+    }
+    return oldest;
   }
 
   rollbackToSnapshot(snapshotName: string, builtinRules: InferenceRule[]): boolean {
@@ -437,18 +954,248 @@ export class StatePersistence {
   }
 
   private _rollbackFrom(snapPath: string, builtinRules: InferenceRule[]): boolean {
-    const raw = readFileSync(snapPath, 'utf-8');
-    const data = JSON.parse(raw);
-    const snapshotSeq = this._restoreFromData(data, builtinRules);
-    // Discard journal entries that post-date this snapshot; they describe
-    // mutations that no longer apply to the rolled-back state.
+    // Read and perform structural validation before disturbing any pending
+    // persistence work. A bad rollback input must not strand an otherwise
+    // writable dirty engine with its debounce/retry timers cancelled.
+    const snapshotBytes = readFileSync(snapPath);
+    const data = JSON.parse(snapshotBytes.toString('utf-8')) as unknown;
+    const validated = this.validateStateBase(data);
+    const snapshotSeq = validated.checkpoint;
+    const intent = this.createRollbackIntent({
+      version: 1,
+      checkpoint: snapshotSeq,
+      selected_snapshot: this.snapshotPathForIntent(snapPath),
+      selected_snapshot_sha256: createHash('sha256').update(snapshotBytes).digest('hex'),
+    });
+    const baseline = this.captureRestoreBaseline();
+    const baselineJournal = this.ctx.mutationJournal;
+
+    try {
+      // Fully deserialize the selected base before publishing the rollback
+      // authority. validateStateBase deliberately validates only the fields
+      // needed for base ranking; auxiliary persisted fields can still make the
+      // complete restore fail. Such a target must never become a restart loop.
+      this._restoreFromData(data, builtinRules);
+      this.ensureJournalForRestoredConfig();
+
+      // The sidecar is the rollback commit point. It survives corruption of the
+      // replacement primary and still names a checksummed, retained full-state
+      // base from which startup can finish the operation.
+      this.writeRollbackAuthority(intent);
+      // All work below belongs to the committed rollback. Prevent a pending
+      // timer for the superseded in-memory head from writing over it.
+      this.cancelTimers();
+      this.cancelRetryTimer();
+      this.ctx.mutationJournal?.setNextSeq(snapshotSeq, {
+        preserveAllocated: true,
+        appliedThroughSeq: snapshotSeq,
+      });
+
+      // Phase 1: make the rollback target the durable recovery head. A restart
+      // that sees this marker must finish this rollback before comparing any
+      // newer snapshot checkpoints or replaying the superseded WAL suffix.
+      this.rollbackIntent = intent;
+      this.writeStateToDisk({ journalCheckpointSeq: snapshotSeq, rotateExisting: false });
+
+      // Phase 2 is destructive but idempotent. It is safe only after the marked
+      // primary above has reached stable storage.
+      this.completeRollbackCleanup(intent);
+      this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
+
+      // Phase 3: clear the intent only after cleanup is durable. If this final
+      // write fails, the marked primary remains and startup retries phase 2.
+      this.rollbackIntent = undefined;
+      this.writeStateToDisk({ journalCheckpointSeq: snapshotSeq, rotateExisting: false });
+      this.removeRollbackAuthority();
+      this.ctx.mutationJournal?.unblockAppends();
+      this.finishSuccessfulWrite();
+      this.ctx.fireUpdateCallbacks({});
+      this.recoveryReadOnlyReason = undefined;
+      this.recoveryStatus = this.buildRecoveryStatus({
+        outcome: 'recovered',
+        source: 'snapshot',
+        complete: true,
+        writable: true,
+        checkpoint: snapshotSeq,
+        preserved: false,
+      });
+      return true;
+    } catch (error) {
+      // Before the authority sidecar exists, disk still names the old head.
+      // Restore the original in-memory state and leave its existing timers
+      // alone so a malformed rollback target cannot suppress a pending write.
+      if (!existsSync(this.rollbackAuthorityPath())) {
+        this.rollbackIntent = undefined;
+        this.ctx.mutationJournal = baselineJournal;
+        try {
+          this.restoreRejectedCandidateBaseline(baseline, builtinRules);
+        } catch (restoreError) {
+          this.cancelTimers();
+          this.cancelRetryTimer();
+          this.latchRollbackFailure(
+            new Error(
+              `rollback failed (${error instanceof Error ? error.message : String(error)}) and the original in-memory state could not be restored (${restoreError instanceof Error ? restoreError.message : String(restoreError)})`,
+            ),
+            snapshotSeq,
+            'snapshot',
+          );
+        }
+        throw new Error(
+          `Rollback to ${basename(snapPath)} did not start: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      // Keep the in-memory marker aligned with the durable marked primary when
+      // one was installed. In all cases freeze writes: memory may already hold
+      // the rollback target while disk still holds either the old or pending
+      // head, so an ordinary retry would be unsafe.
+      this.cancelTimers();
+      this.cancelRetryTimer();
+      this.rollbackIntent = intent;
+      this.latchRollbackFailure(error, snapshotSeq, 'snapshot');
+      throw new Error(
+        `Rollback to ${basename(snapPath)} did not complete durably: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private snapshotPathForIntent(snapshotPath: string): string {
+    const stateDir = resolve(dirname(this.ctx.stateFilePath));
+    const selected = resolve(snapshotPath);
+    const relativePath = relative(stateDir, selected);
+    if (!relativePath || isAbsolute(relativePath) || relativePath === '..' || relativePath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) {
+      throw new Error('rollback snapshot must be inside the state directory');
+    }
+    return relativePath;
+  }
+
+  private rollbackAuthorityPath(): string {
+    return `${this.ctx.stateFilePath}.rollback-intent.json`;
+  }
+
+  private rollbackIntentChecksum(
+    intent: Omit<RollbackIntentV1, 'intent_checksum'>,
+  ): string {
+    return createHash('sha256').update(JSON.stringify([
+      intent.version,
+      intent.checkpoint,
+      intent.selected_snapshot,
+      intent.selected_snapshot_sha256,
+    ])).digest('hex');
+  }
+
+  private createRollbackIntent(
+    intent: Omit<RollbackIntentV1, 'intent_checksum'>,
+  ): RollbackIntentV1 {
+    return { ...intent, intent_checksum: this.rollbackIntentChecksum(intent) };
+  }
+
+  private writeRollbackAuthority(intent: RollbackIntentV1): void {
+    const path = this.rollbackAuthorityPath();
+    const dir = dirname(path);
+    const tmp = `${path}.tmp`;
+    const json = JSON.stringify(intent);
+    const fd = openSync(tmp, 'w');
+    try {
+      writeFileSync(fd, json);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+    fsyncDirectory(dir);
+  }
+
+  private removeRollbackAuthority(): void {
+    const path = this.rollbackAuthorityPath();
+    if (!existsSync(path)) return;
+    unlinkSync(path);
+    fsyncDirectory(dirname(path));
+  }
+
+  private completeRollbackCleanup(intent: RollbackIntentV1): void {
+    const selectedPath = join(dirname(this.ctx.stateFilePath), intent.selected_snapshot);
+    this.pruneSnapshotsSupersededByRollback(selectedPath, intent.checkpoint);
     if (this.ctx.mutationJournal) {
       this.ctx.mutationJournal.truncate();
-      this.ctx.mutationJournal.setNextSeq(snapshotSeq);
+      this.ctx.mutationJournal.setNextSeq(intent.checkpoint, {
+        appliedThroughSeq: intent.checkpoint,
+      });
     }
-    this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
-    this.persistImmediate();
-    return true;
+    this.ctx.journalSnapshotSeq = intent.checkpoint;
+  }
+
+  private pruneSnapshotsSupersededByRollback(selectedPath: string, checkpoint: number): void {
+    const stateDir = dirname(this.ctx.stateFilePath);
+    const selected = resolve(selectedPath);
+
+    for (const snapshot of this.listSnapshotsStrict()) {
+      const snapshotPath = join(stateDir, snapshot);
+      if (resolve(snapshotPath) === selected) continue;
+      // A listed-but-unreadable snapshot might still be a valid, newer base.
+      // Treat filesystem failure as fatal; only parse/schema-invalid snapshots
+      // are safe to ignore because startup will reject them too.
+      const raw = readFileSync(snapshotPath, 'utf-8');
+      let candidateCheckpoint: number;
+      try {
+        const data = JSON.parse(raw) as unknown;
+        candidateCheckpoint = this.validateStateBase(data).checkpoint;
+      } catch {
+        // Invalid snapshots cannot outrank a valid rollback base.
+        continue;
+      }
+      if (candidateCheckpoint < checkpoint) continue;
+      // I/O failures here intentionally escape: silently retaining a valid
+      // superseded snapshot would make the successful result non-durable.
+      unlinkSync(snapshotPath);
+      fsyncDirectory(dirname(snapshotPath));
+    }
+  }
+
+  /** Capture the complete mutable persistence surface before trying a recovery
+   *  candidate. `_restoreFromData` necessarily updates several fields in order;
+   *  this baseline lets a late validation/deserialization failure roll back all
+   *  of those changes before another candidate or config seeding is attempted. */
+  private captureRestoreBaseline(): unknown {
+    const data = {
+      config: this.ctx.config,
+      graph: this.ctx.graph.export(),
+      activityLog: this.ctx.activityLog,
+      agents: Array.from(this.ctx.agents.entries()),
+      campaigns: Array.from(this.ctx.campaigns.entries()),
+      agentDirectives: Array.from(this.ctx.agentDirectives.entries()),
+      approvalRequests: Array.from(this.ctx.approvalRequests.entries()),
+      inferenceRules: this.ctx.inferenceRules.filter(rule => !this.builtinRuleIds.has(rule.id)),
+      trackedProcesses: this.ctx.trackedProcesses,
+      coldStore: this.ctx.coldStore.export(),
+      opsecTracker: this.ctx.opsecTracker.serialize(),
+      frontierLinkage: this.ctx.frontierLinkage.serialize(),
+      chainCheckpoints: this.ctx.chainCheckpoints,
+      deterministicSeq: this.ctx.deterministicSeq,
+      frontierLeases: this.ctx.frontierLeases.serialize(),
+      lastKnownPhaseId: this.ctx.lastKnownPhaseId,
+      journalSnapshotSeq: this.ctx.journalSnapshotSeq,
+      journalCheckpointSemantics: JOURNAL_CHECKPOINT_SEMANTICS,
+    };
+    // The ordinary writer requires this state to be JSON serializable. Clone it
+    // so a rejected candidate cannot mutate objects retained by the baseline.
+    return JSON.parse(JSON.stringify(data));
+  }
+
+  private restoreRejectedCandidateBaseline(baseline: unknown, builtinRules: InferenceRule[]): void {
+    try {
+      this._restoreFromData(baseline, builtinRules);
+    } catch (error) {
+      throw new Error(
+        `Failed to restore the pre-recovery engine state after rejecting a candidate: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private ensureJournalForRestoredConfig(): void {
+    if (!this.ctx.mutationJournal && this.ctx.config.engagement_nonce) {
+      this.ctx.mutationJournal = new MutationJournal(this.ctx.stateFilePath);
+    }
   }
 
   /**
@@ -458,15 +1205,15 @@ export class StatePersistence {
    * linkage, chain checkpoints, deterministic sequence, frontier leases,
    * last phase id) so the two paths are always in sync.
    *
-   * Journal handling is intentionally left to the caller: rollback and
-   * recovery both truncate post-snapshot entries, while loadState replays
-   * them first and truncates after.
+   * Journal handling is intentionally left to the caller: explicit rollback
+   * discards post-snapshot entries, while boot recovery replays and checkpoints
+   * them before any compaction.
    *
    * Returns the raw `journalSnapshotSeq` from the snapshot data so callers
    * can reset the journal sequence to the right value.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private _restoreFromData(data: any, builtinRules: InferenceRule[]): number {
+  private _restoreFromData(data: any, builtinRules: InferenceRule[]): RestoredCheckpoint {
     this.ctx.graph.clear();
     this.ctx.config = data.config;
     this.ctx.graph.import(data.graph);
@@ -485,9 +1232,7 @@ export class StatePersistence {
         this.ctx.inferenceRules.push(rule);
       }
     }
-    if (data.coldStore) {
-      this.ctx.coldStore.import(data.coldStore);
-    }
+    this.ctx.coldStore.import(Array.isArray(data.coldStore) ? data.coldStore : []);
     this.ctx.opsecTracker = data.opsecTracker
       ? OpsecTracker.deserialize(data.opsecTracker, this.ctx)
       : new OpsecTracker(this.ctx);
@@ -499,95 +1244,777 @@ export class StatePersistence {
     this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
     this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
     this.ctx.lastKnownPhaseId = typeof data.lastKnownPhaseId === 'string' ? data.lastKnownPhaseId : undefined;
-    return typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0;
+    const checkpoint = typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0;
+    this.ctx.journalSnapshotSeq = checkpoint;
+    return {
+      checkpoint,
+      trusted: data.journalCheckpointSemantics === JOURNAL_CHECKPOINT_SEMANTICS,
+    };
   }
 
-  loadState(mutators?: ReplayMutators): void {
-    const raw = readFileSync(this.ctx.stateFilePath, 'utf-8');
-    const data = JSON.parse(raw);
-    this.ctx.config = data.config;
-    this.ctx.graph.clear();
-    this.ctx.graph.import(data.graph);
-    this.normalizeLoadedNodeProvenance();
-    this.migrateDefaultCredentialFlags();
-    this.ctx.activityLog = (data.activityLog || []).map((entry: unknown) => normalizeActivityLogEntry(entry as Partial<ActivityLogEntry> & { description: string }));
-    this.ctx.agents = new Map(data.agents || []);
-    this.ctx.campaigns = new Map(data.campaigns || []);
-    this.ctx.agentDirectives = new Map(data.agentDirectives || []);
-    this.ctx.approvalRequests = new Map(data.approvalRequests || []);
-    this.ctx.trackedProcesses = data.trackedProcesses || [];
-    if (data.inferenceRules) {
-      for (const rule of data.inferenceRules) {
-        this.ctx.inferenceRules.push(rule);
+  /**
+   * Restore from the newest valid full-state base and replay every newer WAL
+   * record.  Primary and snapshot recovery deliberately share this path: a
+   * snapshot is only a different base candidate, never permission to discard
+   * the post-snapshot journal.
+   */
+  restoreBaseAndReplay(mutators?: ReplayMutators): RestoreResult {
+    if (this.journalAccessError !== undefined) {
+      return this.enterJournalAccessFailure(
+        this.journalAccessError,
+        existsSync(this.ctx.stateFilePath) ? 'state' : 'fresh',
+      );
+    }
+    const pendingRollback = this.resumePendingRollback();
+    if (pendingRollback) return pendingRollback;
+
+    const candidates: RestoreCandidate[] = [];
+    if (existsSync(this.ctx.stateFilePath)) {
+      candidates.push({ source: 'state', path: this.ctx.stateFilePath });
+    }
+    const stateDir = dirname(this.ctx.stateFilePath);
+    let snapshots: string[];
+    try {
+      snapshots = this.listSnapshotsStrict();
+    } catch (error) {
+      return this.enterBaseAccessFailure('snapshot', join(stateDir, '.snapshots'), error);
+    }
+    for (const snapshot of snapshots.reverse()) {
+      candidates.push({ source: 'snapshot', path: join(stateDir, snapshot) });
+    }
+    return this.restoreCandidates(candidates, this.builtinRules, mutators);
+  }
+
+  /** A checksummed sidecar is the durable authority for an explicit rollback.
+   * The marked primary is preferred when valid, but the retained selected
+   * snapshot can rebuild it if the primary was corrupted mid-operation. */
+  private resumePendingRollback(): RestoreResult | undefined {
+    const authorityPath = this.rollbackAuthorityPath();
+    const hasAuthoritySidecar = existsSync(authorityPath);
+    let intent: RollbackIntentV1 | undefined;
+    let primaryData: unknown;
+    let primaryIntent: RollbackIntentV1 | undefined;
+
+    if (hasAuthoritySidecar) {
+      try {
+        const authority = JSON.parse(readFileSync(authorityPath, 'utf-8')) as unknown;
+        intent = this.validateStandaloneRollbackIntent(authority);
+      } catch (error) {
+        this.latchRollbackFailure(error, this.rollbackCheckpointHintFromIntentFile(authorityPath) ?? 0, 'state');
+        return { status: 'degraded', source: 'state', reason: this.recoveryReadOnlyReason };
       }
     }
-    if (data.coldStore) {
-      this.ctx.coldStore.import(data.coldStore);
-    }
-    this.ctx.opsecTracker = data.opsecTracker
-      ? OpsecTracker.deserialize(data.opsecTracker, this.ctx)
-      : new OpsecTracker(this.ctx);
-    this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
-    this.ctx.rebuildActionFrontierMap();
-    this.ctx.rebuildChainTail();
-    // P0.2: restore chain checkpoints. If the field is missing (legacy
-    // snapshots, or hash chain disabled), keep the empty array.
-    this.ctx.chainCheckpoints = Array.isArray(data.chainCheckpoints) ? data.chainCheckpoints : [];
-    this.ctx.chainEventsSinceCheckpoint = 0;
-    // P1.2: restore deterministic sequence counter so post-restart IDs
-    // don't collide with pre-restart ones.
-    this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
-    // P1.4: restore frontier leases.
-    this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
-    // P4.1: restore last-known phase id (undefined for legacy snapshots).
-    this.ctx.lastKnownPhaseId = typeof data.lastKnownPhaseId === 'string' ? data.lastKnownPhaseId : undefined;
 
-    // P2.1: WAL replay. For deterministic-ID engagements, the snapshot
-    // captures state AS OF `journalSnapshotSeq`. If the engine crashed
-    // between a journal append and the next snapshot rotation, the journal
-    // file holds entries with `seq > journalSnapshotSeq` that aren't yet
-    // in this snapshot. Replay them here so the in-memory graph reflects
-    // the last durable mutation. After replay, truncate the journal — the
-    // re-issued snapshot covers everything we just replayed.
-    if (this.ctx.mutationJournal) {
-      const snapshotSeq = typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0;
-      this.ctx.mutationJournal.setNextSeq(snapshotSeq);
-      const replay = this.ctx.mutationJournal.replay(this.makeMutationApplier(mutators), snapshotSeq);
-      if (replay.read > 0 || replay.truncated) {
-        const parts: string[] = [`applied ${replay.applied}`];
-        if (replay.skipped > 0) parts.push(`skipped ${replay.skipped}`);
-        if (replay.failed > 0) parts.push(`FAILED ${replay.failed}`);
-        if (replay.truncated) parts.push('TRUNCATED (durable tail dropped)');
-        this.ctx.logEvent({
-          description: `WAL replay: ${parts.join(', ')} of ${replay.read} mutation(s)`,
-          event_type: 'system',
-          category: 'system',
-          outcome: (replay.failed > 0 || replay.truncated) ? 'failure' : replay.skipped > 0 ? 'neutral' : 'success',
-          details: {
-            read: replay.read,
-            applied: replay.applied,
-            skipped: replay.skipped,
-            failed: replay.failed,
-            truncated: replay.truncated,
-            skipped_reasons: replay.skipped_reasons,
-            failed_reasons: replay.failed_reasons,
-          },
-        });
-        // Only truncate the journal when every entry applied cleanly AND the
-        // read wasn't itself truncated. A failure, skip, or a dropped durable
-        // tail means recovery is incomplete — preserve the journal file so the
-        // operator can inspect and recover manually (truncating destroys the
-        // evidence).
-        if (replay.failed === 0 && replay.skipped === 0 && !replay.truncated) {
-          this.persistImmediate();
-          this.ctx.mutationJournal.truncate();
-          this.ctx.mutationJournal.setNextSeq(this.ctx.mutationJournal.peekSeq());
-        } else {
-          // Still snapshot so in-memory state is durable, but keep journal.
-          this.persistImmediate();
+    if (existsSync(this.ctx.stateFilePath)) {
+      try {
+        primaryData = JSON.parse(readFileSync(this.ctx.stateFilePath, 'utf-8')) as unknown;
+        if (
+          primaryData
+          && typeof primaryData === 'object'
+          && Object.prototype.hasOwnProperty.call(primaryData, 'rollbackIntent')
+        ) {
+          const validated = this.validateStateBase(primaryData);
+          primaryIntent = this.validateRollbackIntent(
+            primaryData as Record<string, unknown>,
+            validated.checkpoint,
+          )!;
+          if (intent && intent.intent_checksum !== primaryIntent.intent_checksum) {
+            throw new Error('rollback sidecar and marked primary disagree');
+          }
+          intent ??= primaryIntent;
+        }
+      } catch (error) {
+        // A valid sidecar deliberately survives primary corruption. Without one,
+        // an explicitly present but invalid marker is an unresolved rollback and
+        // must degrade rather than fall through to a superseded snapshot.
+        if (!intent && primaryData && typeof primaryData === 'object'
+          && Object.prototype.hasOwnProperty.call(primaryData, 'rollbackIntent')) {
+          this.latchRollbackFailure(error, this.rollbackCheckpointHint(primaryData) ?? 0, 'state');
+          return { status: 'degraded', source: 'state', reason: this.recoveryReadOnlyReason };
+        }
+        primaryData = undefined;
+        primaryIntent = undefined;
+      }
+    }
+
+    if (!intent) return undefined;
+
+    let recoverySource: 'state' | 'snapshot' = 'state';
+    try {
+      let rollbackData: unknown;
+      // The sidecar binds the selected snapshot bytes, not arbitrary contents
+      // of the replaceable marked primary. Whenever that independent authority
+      // exists, its checksummed snapshot is canonical even if the primary is
+      // syntactically valid and carries the same intent fields.
+      if (!hasAuthoritySidecar && primaryData && primaryIntent?.intent_checksum === intent.intent_checksum) {
+        rollbackData = primaryData;
+      } else {
+        recoverySource = 'snapshot';
+        const selectedPath = join(dirname(this.ctx.stateFilePath), intent.selected_snapshot);
+        const selectedBytes = readFileSync(selectedPath);
+        const selectedDigest = createHash('sha256').update(selectedBytes).digest('hex');
+        if (selectedDigest !== intent.selected_snapshot_sha256) {
+          throw new Error('selected rollback snapshot checksum does not match the durable intent');
+        }
+        rollbackData = JSON.parse(selectedBytes.toString('utf-8')) as unknown;
+        const selected = this.validateStateBase(rollbackData);
+        if (selected.checkpoint !== intent.checkpoint) {
+          throw new Error('selected rollback snapshot checkpoint does not match the durable intent');
         }
       }
+
+      // Marker-only pending states are upgraded to the independently durable
+      // authority before any cleanup. Existing sidecars are rewritten
+      // idempotently so their directory entry is freshly synchronized.
+      this.writeRollbackAuthority(intent);
+      this.rollbackIntent = intent;
+      this._restoreFromData(rollbackData, this.builtinRules);
+      this.ensureJournalForRestoredConfig();
+      this.ctx.mutationJournal?.setNextSeq(intent.checkpoint, {
+        preserveAllocated: true,
+        appliedThroughSeq: intent.checkpoint,
+      });
+
+      // Rebuild a marked primary from the selected snapshot when the old marked
+      // primary was absent/corrupt, then resume destructive cleanup.
+      if (recoverySource === 'snapshot') {
+        this.writeStateToDisk({ journalCheckpointSeq: intent.checkpoint, rotateExisting: false });
+      }
+      this.completeRollbackCleanup(intent);
+      this.ctx.logEvent({
+        description: `Completed interrupted rollback to ${basename(intent.selected_snapshot)}`,
+        event_type: 'system',
+        category: 'system',
+        outcome: 'success',
+        details: { checkpoint: intent.checkpoint },
+      });
+      this.rollbackIntent = undefined;
+      this.writeStateToDisk({ journalCheckpointSeq: intent.checkpoint, rotateExisting: false });
+      this.removeRollbackAuthority();
+      this.ctx.mutationJournal?.unblockAppends();
+      this.finishSuccessfulWrite();
+      this.recoveryReadOnlyReason = undefined;
+      this.recoveryStatus = this.buildRecoveryStatus({
+        outcome: 'recovered',
+        source: recoverySource,
+        complete: true,
+        writable: true,
+        checkpoint: intent.checkpoint,
+        preserved: false,
+      });
+      return { status: 'restored', source: recoverySource };
+    } catch (error) {
+      const checkpoint = this.rollbackIntent?.checkpoint ?? intent.checkpoint;
+      this.latchRollbackFailure(error, checkpoint, recoverySource);
+      return {
+        status: 'degraded',
+        source: recoverySource,
+        reason: this.recoveryReadOnlyReason,
+      };
     }
+  }
+
+  /** Backward-compatible facade retained for direct persistence tests. */
+  loadState(mutators?: ReplayMutators): void {
+    const result = this.restoreBaseAndReplay(mutators);
+    if (result.status === 'seed_required') {
+      throw new Error(`No valid persisted state base found at ${this.ctx.stateFilePath}`);
+    }
+  }
+
+  private restoreCandidates(
+    candidates: RestoreCandidate[],
+    builtinRules: InferenceRule[],
+    mutators?: ReplayMutators,
+  ): RestoreResult {
+    const rejected: Array<{ path: string; error: string }> = [];
+    const baseline = this.captureRestoreBaseline();
+
+    // Parse and validate every base before choosing one. Filename order alone
+    // is insufficient: a valid snapshot can carry a later durable checkpoint
+    // than a stale-but-still-valid primary left by an interrupted rename.
+    const validated: ValidatedRestoreCandidate[] = [];
+    for (const [newnessRank, candidate] of candidates.entries()) {
+      let raw: string;
+      try {
+        raw = readFileSync(candidate.path, 'utf-8');
+      } catch (error) {
+        // A transiently unreadable base may be the newest durable state. Treating
+        // it like malformed JSON and overwriting it from an older base/config
+        // would turn an access problem into permanent data loss.
+        return this.enterBaseAccessFailure(candidate.source, candidate.path, error);
+      }
+      try {
+        const data = JSON.parse(raw) as unknown;
+        const { checkpoint } = this.validateStateBase(data);
+        validated.push({ ...candidate, data, checkpoint, newnessRank });
+      } catch (error) {
+        rejected.push({
+          path: candidate.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    validated.sort((left, right) =>
+      right.checkpoint - left.checkpoint || left.newnessRank - right.newnessRank,
+    );
+
+    for (const candidate of validated) {
+      let restoredCheckpoint: RestoredCheckpoint;
+      try {
+        restoredCheckpoint = this._restoreFromData(candidate.data, builtinRules);
+      } catch (error) {
+        this.restoreRejectedCandidateBaseline(baseline, builtinRules);
+        rejected.push({
+          path: candidate.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+
+      this.ensureJournalForRestoredConfig();
+      const journal = this.ctx.mutationJournal;
+      let replay: MutationReplayResult | undefined;
+      if (journal) {
+        journal.unblockAppends();
+        journal.setNextSeq(restoredCheckpoint.checkpoint, {
+          appliedThroughSeq: restoredCheckpoint.trusted ? restoredCheckpoint.checkpoint : 0,
+        });
+        try {
+          replay = journal.replay(
+            this.makeMutationApplier(mutators),
+            restoredCheckpoint.checkpoint,
+            { trustedContiguousCheckpoint: restoredCheckpoint.trusted },
+          );
+        } catch (error) {
+          return this.enterJournalAccessFailure(error, candidate.source);
+        }
+        if (replay.applied > 0) {
+          this.normalizeLoadedNodeProvenance();
+          this.migrateDefaultCredentialFlags();
+        }
+      }
+
+      const restored: RestoredBase = {
+        source: candidate.source,
+        path: candidate.path,
+        data: candidate.data,
+        checkpoint: restoredCheckpoint.checkpoint,
+        ...(replay ? { replay } : {}),
+      };
+
+      // Once the newest valid base exposes an incomplete WAL, do not reinterpret
+      // its durable history against an older state. Even a complete replay from
+      // that older base cannot prove it contains newer base-only legacy state.
+      if (replay && !replay.complete) {
+        return this.enterIncompleteRecovery(restored, this.describeIncompleteReplay(replay));
+      }
+
+      return this.finishRestoredBase(restored);
+    }
+
+    try {
+      if (this.ctx.mutationJournal?.hasData()) {
+        return this.enterNoBaseRecovery(rejected);
+      }
+    } catch (error) {
+      return this.enterJournalAccessFailure(
+        error,
+        existsSync(this.ctx.stateFilePath) ? 'state' : 'fresh',
+      );
+    }
+    return { status: 'seed_required', source: 'fresh' };
+  }
+
+  private describeIncompleteReplay(replay: MutationReplayResult): string {
+    if (
+      replay.stopped_at_seq !== undefined
+      && (
+        replay.read_issue?.actual_seq === undefined
+        || replay.stopped_at_seq < replay.read_issue.actual_seq
+      )
+    ) {
+      return `WAL replay stopped at seq ${replay.stopped_at_seq}`;
+    }
+    if (replay.read_issue) {
+      const issue = replay.read_issue;
+      if (issue.kind === 'sequence_gap') {
+        return `WAL sequence gap at line ${issue.line}: expected seq ${issue.expected_seq}, found ${issue.actual_seq}`;
+      }
+      if (issue.kind === 'unknown_type' || issue.kind === 'ambiguous_checkpoint') {
+        return `WAL recovery cannot safely continue at line ${issue.line}: ${issue.reason}`;
+      }
+      return issue.unterminated_eof_fragment
+        ? `WAL unterminated EOF fragment at line ${issue.line}: ${issue.reason}`
+        : `WAL malformed entry at line ${issue.line}: ${issue.reason}`;
+    }
+    if (replay.stopped_at_seq !== undefined) {
+      return `WAL replay stopped at seq ${replay.stopped_at_seq}`;
+    }
+    return `WAL replay stopped after contiguous seq ${replay.highest_contiguous_applied_seq}`;
+  }
+
+  private validateStateBase(data: unknown): RestoredCheckpoint {
+    if (!data || typeof data !== 'object') throw new Error('persisted state is not an object');
+    const record = data as Record<string, unknown>;
+    if (!record.config || typeof record.config !== 'object') throw new Error('persisted state is missing config');
+    const configValidation = engagementConfigSchema.safeParse(record.config);
+    if (!configValidation.success) {
+      const issues = configValidation.error.issues
+        .map(issue => `${issue.path.join('.') || '<root>'}: ${issue.message}`)
+        .join('; ');
+      throw new Error(`persisted state config is invalid: ${issues}`);
+    }
+    if (!record.graph || typeof record.graph !== 'object') throw new Error('persisted state is missing graph');
+    if (
+      record.journalSnapshotSeq !== undefined
+      && (!Number.isSafeInteger(record.journalSnapshotSeq) || (record.journalSnapshotSeq as number) < 0)
+    ) {
+      throw new Error('persisted journalSnapshotSeq must be a non-negative safe integer');
+    }
+    const checkpoint = typeof record.journalSnapshotSeq === 'number' ? record.journalSnapshotSeq : 0;
+    this.validateRollbackIntent(record, checkpoint);
+    const scratch = this.createGraph();
+    scratch.import(record.graph as Parameters<OverwatchGraph['import']>[0]);
+    return {
+      checkpoint,
+      trusted: record.journalCheckpointSemantics === JOURNAL_CHECKPOINT_SEMANTICS,
+    };
+  }
+
+  private validateRollbackIntent(
+    record: Record<string, unknown>,
+    checkpoint: number,
+  ): RollbackIntentV1 | undefined {
+    if (!Object.prototype.hasOwnProperty.call(record, 'rollbackIntent')) return undefined;
+    const raw = record.rollbackIntent;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('persisted rollbackIntent must be an object');
+    }
+    const intent = raw as Record<string, unknown>;
+    if (intent.version !== 1) {
+      throw new Error('persisted rollbackIntent version is unsupported');
+    }
+    if (!Number.isSafeInteger(intent.checkpoint) || (intent.checkpoint as number) < 0) {
+      throw new Error('persisted rollbackIntent checkpoint must be a non-negative safe integer');
+    }
+    if (intent.checkpoint !== checkpoint) {
+      throw new Error('persisted rollbackIntent checkpoint does not match the state checkpoint');
+    }
+    if (typeof intent.selected_snapshot !== 'string' || intent.selected_snapshot.length === 0) {
+      throw new Error('persisted rollbackIntent selected_snapshot must be a non-empty string');
+    }
+    if (typeof intent.selected_snapshot_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(intent.selected_snapshot_sha256)) {
+      throw new Error('persisted rollbackIntent selected_snapshot_sha256 must be a lowercase SHA-256 digest');
+    }
+    if (typeof intent.intent_checksum !== 'string' || !/^[a-f0-9]{64}$/.test(intent.intent_checksum)) {
+      throw new Error('persisted rollbackIntent intent_checksum must be a lowercase SHA-256 digest');
+    }
+    const stateDir = resolve(dirname(this.ctx.stateFilePath));
+    const selected = resolve(stateDir, intent.selected_snapshot);
+    const relativePath = relative(stateDir, selected);
+    if (!relativePath || isAbsolute(relativePath) || relativePath === '..' || relativePath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) {
+      throw new Error('persisted rollbackIntent selected_snapshot escapes the state directory');
+    }
+    const validated: RollbackIntentV1 = {
+      version: 1,
+      checkpoint: intent.checkpoint as number,
+      selected_snapshot: intent.selected_snapshot,
+      selected_snapshot_sha256: intent.selected_snapshot_sha256,
+      intent_checksum: intent.intent_checksum,
+    };
+    const expectedChecksum = this.rollbackIntentChecksum({
+      version: validated.version,
+      checkpoint: validated.checkpoint,
+      selected_snapshot: validated.selected_snapshot,
+      selected_snapshot_sha256: validated.selected_snapshot_sha256,
+    });
+    if (validated.intent_checksum !== expectedChecksum) {
+      throw new Error('persisted rollbackIntent checksum is invalid');
+    }
+    return validated;
+  }
+
+  private validateStandaloneRollbackIntent(data: unknown): RollbackIntentV1 {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('rollback authority sidecar must contain an object');
+    }
+    const checkpoint = (data as Record<string, unknown>).checkpoint;
+    if (!Number.isSafeInteger(checkpoint) || (checkpoint as number) < 0) {
+      throw new Error('rollback authority sidecar checkpoint must be a non-negative safe integer');
+    }
+    return this.validateRollbackIntent(
+      { rollbackIntent: data },
+      checkpoint as number,
+    )!;
+  }
+
+  private rollbackCheckpointHint(data: unknown): number | undefined {
+    if (!data || typeof data !== 'object') return undefined;
+    const raw = (data as Record<string, unknown>).rollbackIntent;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const checkpoint = (raw as Record<string, unknown>).checkpoint;
+    return Number.isSafeInteger(checkpoint) && (checkpoint as number) >= 0
+      ? checkpoint as number
+      : undefined;
+  }
+
+  private rollbackCheckpointHintFromIntentFile(path: string): number | undefined {
+    try {
+      const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+      const checkpoint = raw?.checkpoint;
+      return Number.isSafeInteger(checkpoint) && (checkpoint as number) >= 0
+        ? checkpoint as number
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private latchRollbackFailure(
+    error: unknown,
+    checkpoint: number,
+    source: 'state' | 'snapshot',
+  ): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = `rollback completion failed at checkpoint ${checkpoint}; restart required: ${message}`;
+    this.cancelTimers();
+    this.cancelRetryTimer();
+    // Do not let the generic shutdown/retry path write this partially completed
+    // in-memory state. The marked primary (when installed) is the only safe
+    // authority for the next startup attempt.
+    this.dirty = false;
+    this.pendingDetail = {};
+    this.pendingRecoveryCheckpoint = undefined;
+    this.pendingRecoverySource = undefined;
+    this.persistenceFailureGateTripped = true;
+    this.lastPersistenceError = message;
+    this.recoveryReadOnlyReason = reason;
+    this.ctx.mutationJournal?.blockAppends(reason);
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source,
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint,
+      preserved: true,
+    });
+    this.recoveryStatus.last_persistence_error = message;
+  }
+
+  private finishRestoredBase(restored: RestoredBase): RestoreResult {
+    const replay = restored.replay;
+    const checkpoint = replay?.highest_contiguous_applied_seq ?? restored.checkpoint;
+    const recovered = restored.source === 'snapshot'
+      || checkpoint !== restored.checkpoint;
+
+    if (replay && (replay.read > 0 || replay.read_issue !== undefined)) {
+      this.ctx.logEvent({
+        description: `WAL replay applied ${replay.applied} of ${replay.read} mutation(s)`,
+        event_type: 'system',
+        category: 'system',
+        outcome: 'success',
+        details: {
+          read: replay.read,
+          attempted: replay.attempted,
+          applied: replay.applied,
+          skipped: replay.skipped,
+          failed: replay.failed,
+          highest_on_disk_seq: replay.highest_on_disk_seq,
+          highest_contiguous_applied_seq: replay.highest_contiguous_applied_seq,
+        },
+      });
+    }
+
+    // A retained, already-applied WAL prefix is a recovery anchor, not a reason
+    // to rewrite state on every restart. Write only when replay changed durable
+    // truth, advanced the checkpoint, or selected a snapshot as the new primary.
+    if (restored.source === 'snapshot' || checkpoint !== restored.checkpoint) {
+      try {
+        this.writeStateToDisk({ journalCheckpointSeq: checkpoint, rotateExisting: false });
+        this.finishRecoveryCheckpoint(checkpoint, restored.source);
+      } catch (error) {
+        return this.enterCheckpointFailure(restored, checkpoint, error);
+      }
+    }
+
+    this.recoveryReadOnlyReason = undefined;
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: recovered ? 'recovered' : 'clean',
+      source: restored.source,
+      complete: true,
+      writable: true,
+      checkpoint,
+      replay,
+      preserved: false,
+    });
+    if (restored.source === 'snapshot') {
+      this.ctx.logEvent({
+        description: `Recovered engagement from snapshot: ${basename(restored.path)}`,
+        event_type: 'system',
+        category: 'system',
+        outcome: 'success',
+        details: { checkpoint },
+      });
+    }
+    return { status: 'restored', source: restored.source };
+  }
+
+  private enterIncompleteRecovery(restored: RestoredBase, reason: string): RestoreResult {
+    const journal = this.ctx.mutationJournal;
+    // Fully committed records before the first bad/skipped/failed record remain
+    // authoritative and visible in degraded read-only mode. Do not checkpoint
+    // them or alter the WAL; each restart deterministically reapplies the same
+    // prefix from the selected base and stops at the same boundary.
+    this.recoveryReadOnlyReason = reason;
+    journal?.blockAppends(reason);
+    const quarantine = this.quarantineJournal();
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source: restored.source,
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: restored.checkpoint,
+      replay: restored.replay,
+      preserved: true,
+      highestContiguousAppliedSeq:
+        restored.replay?.highest_contiguous_applied_seq ?? restored.checkpoint,
+    });
+    this.ctx.logEvent({
+      description: `WAL recovery incomplete; service entered degraded read-only mode`,
+      event_type: 'system',
+      category: 'system',
+      outcome: 'failure',
+      result_classification: 'failure',
+      details: {
+        reason,
+        base: restored.path,
+        checkpoint: restored.checkpoint,
+        replay: restored.replay,
+        quarantine_path: quarantine.path,
+        quarantine_error: quarantine.error,
+      },
+    });
+    return { status: 'degraded', source: restored.source, reason };
+  }
+
+  private enterNoBaseRecovery(rejected: Array<{ path: string; error: string }>): RestoreResult {
+    const reason = 'a nonempty WAL exists without a valid full-state base';
+    const journal = this.ctx.mutationJournal!;
+    this.recoveryReadOnlyReason = reason;
+    journal.blockAppends(reason);
+    const quarantine = this.quarantineJournal();
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source: 'fresh',
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: 0,
+      preserved: true,
+    });
+    this.ctx.logEvent({
+      description: 'WAL recovery blocked: no valid base; service entered degraded read-only mode',
+      event_type: 'system',
+      category: 'system',
+      outcome: 'failure',
+      result_classification: 'failure',
+      details: {
+        reason,
+        rejected_bases: rejected,
+        quarantine_path: quarantine.path,
+        quarantine_error: quarantine.error,
+      },
+    });
+    return { status: 'degraded', source: 'fresh', reason };
+  }
+
+  private enterJournalAccessFailure(
+    error: unknown,
+    source: 'fresh' | 'state' | 'snapshot',
+  ): RestoreResult {
+    const reason = this.describeJournalAccessFailure(error);
+    this.latchJournalRecoveryFailure({
+      reason,
+      error,
+      malformed: false,
+      accessFailure: true,
+    });
+    this.recoveryStatus = { ...this.recoveryStatus, source };
+    return { status: 'degraded', source, reason };
+  }
+
+  private enterBaseAccessFailure(
+    source: 'state' | 'snapshot',
+    path: string,
+    error: unknown,
+  ): RestoreResult {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = `persisted ${source} recovery base could not be read at ${path}: ${message}`;
+    this.recoveryReadOnlyReason = reason;
+    this.ctx.mutationJournal?.blockAppends(reason);
+    let journalPreserved = false;
+    try { journalPreserved = this.ctx.mutationJournal?.hasData() ?? false; } catch { journalPreserved = true; }
+    const quarantine = journalPreserved ? this.quarantineJournal() : {};
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source,
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: 0,
+      preserved: journalPreserved,
+    });
+    this.ctx.logEvent({
+      description: 'Persistence recovery blocked by an unreadable recovery base',
+      event_type: 'system',
+      category: 'system',
+      outcome: 'failure',
+      result_classification: 'failure',
+      details: {
+        source,
+        path,
+        error: message,
+        quarantine_path: quarantine.path,
+        quarantine_error: quarantine.error,
+      },
+    });
+    return { status: 'degraded', source, reason };
+  }
+
+  private enterCheckpointFailure(
+    restored: RestoredBase,
+    checkpoint: number,
+    error: unknown,
+  ): RestoreResult {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = `recovered state could not be checkpointed: ${message}`;
+    this.pendingRecoveryCheckpoint = checkpoint;
+    this.pendingRecoverySource = restored.source;
+    this.recoveryReadOnlyReason = reason;
+    this.dirty = true;
+    this.ctx.mutationJournal?.blockAppends(reason);
+    const quarantine = this.quarantineJournal();
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source: restored.source,
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: restored.checkpoint,
+      replay: restored.replay,
+      preserved: true,
+    });
+    if (quarantine.error) {
+      this.recoveryStatus.reason = `${reason}; WAL quarantine failed: ${quarantine.error}`;
+    }
+    this.recordPersistenceFailure(error, 'recovery_checkpoint');
+    return { status: 'degraded', source: restored.source, reason };
+  }
+
+  private quarantineJournal(): { path?: string; error?: string } {
+    try {
+      const path = this.ctx.mutationJournal?.quarantine();
+      return path ? { path } : {};
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private finishRecoveryCheckpoint(
+    checkpoint: number,
+    source: 'state' | 'snapshot',
+    options: { restartRequired?: boolean } = {},
+  ): void {
+    const journal = this.ctx.mutationJournal;
+    if (journal) {
+      const oldestSnapshotCheckpoint = this.oldestRetainedValidSnapshotCheckpoint();
+      // Without a retained valid snapshot, keep the whole WAL. When snapshots
+      // exist, retain every record newer than the oldest one so corruption in
+      // the primary/newer snapshots can still fall back through the full chain.
+      if (
+        oldestSnapshotCheckpoint !== undefined
+        && oldestSnapshotCheckpoint > 0
+        && oldestSnapshotCheckpoint <= checkpoint
+      ) {
+        const result = journal.compactUpTo(oldestSnapshotCheckpoint);
+        if ('preserved' in result) {
+          throw new Error(`recovery checkpoint committed but WAL compaction refused: ${result.reason}`);
+        }
+      }
+      journal.setNextSeq(checkpoint);
+    }
+    this.pendingRecoveryCheckpoint = undefined;
+    this.pendingRecoverySource = undefined;
+    const restartReason = options.restartRequired
+      ? 'recovery checkpoint became durable after startup; restart required to run startup reconciliation before writes resume'
+      : undefined;
+    this.recoveryReadOnlyReason = restartReason;
+    if (journal) {
+      if (restartReason) journal.blockAppends(restartReason);
+      else journal.unblockAppends();
+    }
+    this.recoveryStatus = {
+      ...this.recoveryStatus,
+      outcome: restartReason ? 'incomplete' : 'recovered',
+      source,
+      complete: restartReason === undefined,
+      writable: restartReason === undefined,
+      reason: restartReason,
+      base_checkpoint: checkpoint,
+      highest_allocated_seq: checkpoint,
+      highest_on_disk_seq: Math.max(
+        this.recoveryStatus.highest_on_disk_seq,
+        journal?.getHighestPhysicalSeq() ?? 0,
+      ),
+      highest_contiguous_applied_seq: checkpoint,
+      journal: { ...this.recoveryStatus.journal, preserved: false },
+    };
+  }
+
+  private buildRecoveryStatus(input: {
+    outcome: PersistenceRecoveryStatus['outcome'];
+    source: PersistenceRecoveryStatus['source'];
+    complete: boolean;
+    writable: boolean;
+    checkpoint: number;
+    replay?: MutationReplayResult;
+    preserved: boolean;
+    reason?: string;
+    highestContiguousAppliedSeq?: number;
+  }): PersistenceRecoveryStatus {
+    const journal = this.ctx.mutationJournal;
+    const replay = input.replay;
+    return {
+      outcome: input.outcome,
+      source: input.source,
+      complete: input.complete,
+      writable: input.writable,
+      ...(input.reason ? { reason: input.reason } : {}),
+      base_checkpoint: input.checkpoint,
+      highest_allocated_seq: journal?.getHighestAllocatedSeq() ?? input.checkpoint,
+      highest_on_disk_seq: replay?.highest_on_disk_seq ?? journal?.getHighestPhysicalSeq() ?? input.checkpoint,
+      highest_contiguous_applied_seq: input.highestContiguousAppliedSeq
+        ?? replay?.highest_contiguous_applied_seq
+        ?? journal?.getAppliedThroughSeq()
+        ?? input.checkpoint,
+      consecutive_persistence_failures: this.consecutivePersistenceFailures,
+      ...(this.lastPersistenceError ? { last_persistence_error: this.lastPersistenceError } : {}),
+      journal: {
+        enabled: journal !== null,
+        read: replay?.read ?? 0,
+        attempted: replay?.attempted ?? 0,
+        applied: replay?.applied ?? 0,
+        skipped: replay?.skipped ?? 0,
+        failed: replay?.failed ?? 0,
+        // A sequence discontinuity is not malformed JSON. Unterminated EOF
+        // fragments are malformed entries and therefore do set this flag.
+        malformed: replay?.read_issue?.kind === 'malformed_entry',
+        preserved: input.preserved,
+      },
+    };
   }
 
   /**
@@ -675,7 +2102,10 @@ export class StatePersistence {
             case 'drop_edge': {
               const p = entry.payload as { edge_id: string };
               if (!ctx.graph.hasEdge(p.edge_id)) {
-                return { status: 'skipped', reason: `missing edge: ${p.edge_id}` };
+                // Prefix replay is intentionally idempotent. A trusted base may
+                // already reflect this deletion, so absence is the desired end
+                // state rather than an incompatible recovery chain.
+                return { status: 'applied' };
               }
               ctx.graph.dropEdge(p.edge_id);
               return { status: 'applied' };
@@ -688,7 +2118,8 @@ export class StatePersistence {
             }
             case 'cold_promote': {
               // A cold node was promoted to hot: remove it from the cold store (the
-              // matching add_node/merge entry re-adds it to the graph).
+              // matching add_node/merge entry re-adds it to the graph). promote()
+              // is deliberately idempotent when the cold record is already gone.
               const id = (entry.payload as { id: string }).id;
               ctx.coldStore.promote(id);
               return { status: 'applied' };
@@ -706,33 +2137,21 @@ export class StatePersistence {
     };
   }
 
-  recoverFromSnapshot(builtinRules: InferenceRule[]): boolean {
-    const snapshots = this.listSnapshots().reverse(); // newest first
-    for (const snap of snapshots) {
-      try {
-        const dir = dirname(this.ctx.stateFilePath);
-        const raw = readFileSync(join(dir, snap), 'utf-8');
-        const data = JSON.parse(raw);
-        // Use the shared restore routine so all fields (deterministicSeq,
-        // frontierLeases, chainCheckpoints, lastKnownPhaseId) are restored
-        // — previously these were skipped, causing potential ID reuse and
-        // stale lease/phase state after recovery (P1 fix).
-        const snapshotSeq = this._restoreFromData(data, builtinRules);
-        // Truncate journal and reset seq, same as rollback, so stale
-        // post-snapshot mutations cannot replay into recovered state (P1 fix).
-        if (this.ctx.mutationJournal) {
-          this.ctx.mutationJournal.truncate();
-          this.ctx.mutationJournal.setNextSeq(snapshotSeq);
-        }
-        this.ctx.log('Recovered from snapshot: ' + basename(snap), undefined, { category: 'system' });
-        // Overwrite corrupted state file with valid snapshot data
-        this.persistImmediate();
-        return true;
-      } catch {
-        continue;
-      }
+  recoverFromSnapshot(builtinRules: InferenceRule[], mutators?: ReplayMutators): boolean {
+    const dir = dirname(this.ctx.stateFilePath);
+    let snapshots: string[];
+    try {
+      snapshots = this.listSnapshotsStrict();
+    } catch (error) {
+      this.enterBaseAccessFailure('snapshot', join(dir, '.snapshots'), error);
+      return false;
     }
-    return false;
+    const candidates = snapshots.reverse().map<RestoreCandidate>(snapshot => ({
+      source: 'snapshot',
+      path: join(dir, snapshot),
+    }));
+    const result = this.restoreCandidates(candidates, builtinRules, mutators);
+    return result.status === 'restored';
   }
 
   private normalizeLoadedNodeProvenance(): void {

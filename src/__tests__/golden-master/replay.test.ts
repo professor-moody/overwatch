@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, unlinkSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { replayTape, rerecordTape, hashGraph, type GoldenTape } from '../../services/golden-replay.js';
@@ -15,30 +16,32 @@ function loadTape(name: string): GoldenTape {
   return JSON.parse(readFileSync(tapePath(name), 'utf-8'));
 }
 
-function freshEngine(config: EngagementConfig, stateFile: string): GraphEngine {
-  return new GraphEngine(config, stateFile);
-}
-
-function cleanup(stateFile: string): void {
-  for (const f of [stateFile, stateFile + '.journal.jsonl']) {
-    try { if (existsSync(f)) unlinkSync(f); } catch {}
-  }
-  try { rmSync('./.snapshots', { recursive: true, force: true }); } catch {}
-}
-
 describe('Golden-master replay (P2.2)', () => {
-  const stateFile = './state-test-golden-master.json';
+  let testDir: string;
+  const engines = new Set<GraphEngine>();
 
-  afterEach(() => cleanup(stateFile));
+  function freshEngine(config: EngagementConfig, filename: string): GraphEngine {
+    const engine = new GraphEngine(config, join(testDir, filename));
+    engines.add(engine);
+    return engine;
+  }
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-golden-replay-'));
+  });
+
+  afterEach(() => {
+    for (const engine of engines) engine.dispose();
+    engines.clear();
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   it('replays the small-recon tape deterministically', () => {
     const tape = loadTape('small-recon');
-    cleanup(stateFile);
-    const eng1 = freshEngine(tape.config, stateFile);
+    const eng1 = freshEngine(tape.config, 'first.json');
     const r1 = replayTape(eng1, tape);
 
-    cleanup(stateFile);
-    const eng2 = freshEngine(tape.config, stateFile);
+    const eng2 = freshEngine(tape.config, 'second.json');
     const r2 = replayTape(eng2, tape);
 
     // Two replays of the same tape against fresh engines produce the
@@ -50,8 +53,7 @@ describe('Golden-master replay (P2.2)', () => {
 
   it('matches the stored expected hashes (fails loudly when behavior drifts)', () => {
     const tape = loadTape('small-recon');
-    cleanup(stateFile);
-    const eng = freshEngine(tape.config, stateFile);
+    const eng = freshEngine(tape.config, 'expected.json');
     const result = replayTape(eng, tape);
 
     if (tape.expected_graph_hash == null) { // treat both null and undefined as "not yet recorded"
@@ -88,8 +90,7 @@ describe('Golden-master replay (P2.2)', () => {
     const tape = loadTape('small-recon');
     const legacyConfig = { ...tape.config };
     delete (legacyConfig as { engagement_nonce?: string }).engagement_nonce;
-    cleanup(stateFile);
-    const eng = freshEngine(legacyConfig, stateFile);
+    const eng = freshEngine(legacyConfig, 'legacy.json');
     const result = replayTape(eng, { ...tape, config: legacyConfig });
     expect(result.graph_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.graph.nodes.length).toBeGreaterThan(0);
@@ -97,8 +98,7 @@ describe('Golden-master replay (P2.2)', () => {
 
   it('hashGraph is independent of node/edge insertion order', () => {
     const tape = loadTape('small-recon');
-    cleanup(stateFile);
-    const eng = freshEngine(tape.config, stateFile);
+    const eng = freshEngine(tape.config, 'hash-order.json');
     replayTape(eng, tape);
     const graph = eng.exportGraph();
 

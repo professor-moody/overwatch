@@ -76,7 +76,12 @@ describe('set_opsec tool', () => {
   const fakeEngine = (opsec: any) => {
     let persisted = false; const events: any[] = [];
     const engine = {
-      getConfig: () => ({ opsec }),
+      getConfig: () => ({ opsec: { ...opsec } }),
+      updateConfig: (partial: any) => {
+        if (partial.opsec) Object.assign(opsec, partial.opsec);
+        persisted = true;
+        return { opsec: { ...opsec } };
+      },
       persist: () => { persisted = true; },
       logActionEvent: (e: any) => { events.push(e); },
     } as any;

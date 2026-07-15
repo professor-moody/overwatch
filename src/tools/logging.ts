@@ -147,15 +147,14 @@ Recommended flow:
           h => h.event_type === 'action_failed' && (h as any).technique === technique
         );
         if (recentFailures.length >= 3) {
-          if (!engine.getConfig().failure_patterns) {
-            engine.getConfig().failure_patterns = [];
-          }
-          const existing = engine.getConfig().failure_patterns!.find(
+          const failurePatterns = [...(engine.getConfig().failure_patterns ?? [])];
+          const existing = failurePatterns.find(
             fp => fp.technique === technique && !fp.target_pattern
           );
           if (!existing) {
             const warning = `Auto-detected: technique '${technique}' has failed ${recentFailures.length} times recently`;
-            engine.getConfig().failure_patterns!.push({ technique, warning });
+            failurePatterns.push({ technique, warning });
+            engine.updateConfig({ failure_patterns: failurePatterns });
             auto_pattern_added = warning;
           }
         }
