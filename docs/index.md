@@ -19,7 +19,7 @@ After a compaction or restart, one call to [`get_state()`](tools/get-state.md) r
 - **[Graph-based state](graph-model.md)** — 30 node types, 90 edge types. Every attack path is a traversable route through the engagement graph, not a list of notes.
 - **[Inference engine](architecture.md#inference-rules)** — 64 built-in rules that fire when findings land (e.g., "OIDC audience matches AWS STS → probable AssumeRoleWithWebIdentity"). Surfaces follow-on opportunities as scored frontier items automatically.
 - **[Credential lifecycle intelligence](concepts.md#credential-lifecycle)** — Captured tokens track status (active/stale/expired), reachability via confirmed edges, expiry estimation, and provenance. The Credentials dashboard tab shows all of this at a glance.
-- **[80 MCP tools](tools/index.md)** — State management, action logging, graph queries, BloodHound/AzureHound ingestion, 75 output parsers, persistent interactive sessions, credential playbooks, and pentest report generation. (The live count + set come from `get_system_prompt`.)
+- **[82 MCP tools](tools/index.md)** — State management, recovery and config reconciliation, action logging, graph queries, BloodHound/AzureHound ingestion, 75 output parsers, persistent interactive sessions, credential playbooks, and pentest report generation. (The live count + set come from `get_system_prompt`.)
 - **[Credential-driven playbooks](tools/index.md)** — Five tools (`expand_aws_credential`, `expand_github_credential`, `expand_oidc_capture`, `exchange_refresh_token`, `expand_entra_credential`) that turn a captured credential into a sequenced recon plan queued through the approval gate.
 - **[43 offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
 - **[Scope and OPSEC enforcement](concepts.md#opsec-noise)** — Hard constraints live in the deterministic layer. The LLM handles reasoning. Out-of-scope calls fail closed.
@@ -32,7 +32,7 @@ After a compaction or restart, one call to [`get_state()`](tools/get-state.md) r
 
 | | |
 |---|---|
-| **80** MCP tools | **43** offensive skills |
+| **82** MCP tools | **43** offensive skills |
 | **75** output parsers / **130** `parse_output` keys (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, sqlmap, wpscan, httpx, dnsx, amass, subfinder, crt.sh, whois, theHarvester, trufflehog, linkfinder, openapi/graphql, security-headers, gowitness, katana, and more) | **64** built-in inference rules |
 | **4000+** tests across **220+** files | **30** node types, **90** edge types |
 

@@ -10,6 +10,7 @@ Use this tool for cleanup and remediation when the graph already contains bad da
 
 Supported operations:
 
+- **`drop_node`** — Remove a stale or invalid node and all of its incident edges
 - **`drop_edge`** — Remove a stale or invalid edge
 - **`replace_edge`** — Replace an edge with the correct type, source, target, or properties
 - **`patch_node`** — Update or remove node properties (including normalized credential fields)
@@ -23,6 +24,13 @@ All operations in a single call are applied **transactionally** — if any opera
 | `reason` | `string` | Yes | Operator-provided reason for the correction batch |
 | `action_id` | `string` | No | Action ID to link this correction to a triggering workflow |
 | `operations` | `array` | Yes | Array of correction operations (min 1) |
+
+### Operation: `drop_node`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `kind` | `"drop_node"` | Yes | Operation type |
+| `node_id` | `string` | Yes | Node to remove together with its incident edges |
 
 ### Operation: `drop_edge`
 
@@ -67,6 +75,25 @@ All operations in a single call are applied **transactionally** — if any opera
 | `details` | `array` | Per-operation results |
 
 ## Usage Examples
+
+### Drop a stale node as part of a mixed correction
+
+```json
+{
+  "reason": "Remove the duplicate asset and correct the surviving label",
+  "operations": [
+    {
+      "kind": "drop_node",
+      "node_id": "host-duplicate"
+    },
+    {
+      "kind": "patch_node",
+      "node_id": "host-canonical",
+      "set_properties": { "label": "Canonical asset" }
+    }
+  ]
+}
+```
 
 ### Drop a stale POTENTIAL_AUTH edge
 

@@ -48,6 +48,7 @@ overwatch/
 │   │   ├── ingest-json.ts    # ingest_json
 │   │   ├── postgres.ts       # connect/list/ingest Postgres helpers
 │   │   ├── bundle.ts         # bundle_engagement
+│   │   ├── recovery.ts       # get_recovery_status, resolve_config_divergence
 │   │   ├── log-thought.ts    # log_thought
 │   │   ├── transcripts.ts    # ingest_transcript
 │   │   ├── tapes.ts          # register_tape_session

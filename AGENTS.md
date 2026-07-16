@@ -136,11 +136,12 @@ Dispatch assigns each agent a typed **archetype** (bounded tool surface + missio
 
 ## Tool Reference
 
-**80 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the **live** tool table (the authoritative count + set), engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP) and may lag the live set; treat the generated prompt as source of truth. Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
+**82 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the **live** tool table (the authoritative count + set), engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP) and may lag the live set; treat the generated prompt as source of truth. Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
 | `get_state` | Full engagement briefing | Start of session, after compaction, periodic check-in |
+| `get_recovery_status` | Inspect WAL/state recovery and active config convergence | Startup diagnostics; whenever durable mutations are read-only |
 | `get_opsec_status` | Read-only OPSEC posture: noise budget spent, recommended approach, observed defensive signals | Before noisy actions; the `opsec_sentinel` agent type monitors this |
 | `next_task` | Filtered frontier candidates | When deciding what to do next |
 | `query_graph` | Open-ended graph exploration | When you see a pattern the frontier misses |
@@ -190,6 +191,7 @@ Dispatch assigns each agent a typed **archetype** (bounded tool surface + missio
 | `generate_report` | Client pentest report (Markdown / HTML / JSON / PDF) | End of engagement; also callable mid-engagement for draft reports |
 | `correct_graph` | Transactional graph repair | Operator corrections |
 | `update_scope` | Expand or contract engagement scope | Discovered pivot networks |
+| `resolve_config_divergence` | Reconcile active config using explicit file or durable-state authority | Only after inspecting recovery status and preserving its exact file/state hashes |
 | `create_engagement` | Build + persist a new engagement config (no hand-edited JSON; create-then-start — restart to activate) | Operator asks to set up a new engagement |
 | `list_engagements` | List persisted engagement configs + which is active | Confirming a created engagement / picking one to activate |
 | `add_objective` | Add an objective to the active engagement | A new goal emerges mid-engagement |
@@ -197,13 +199,16 @@ Dispatch assigns each agent a typed **archetype** (bounded tool surface + missio
 | `register_mock_service` | Register operator-controlled infrastructure (decoy listeners / mock services) as graph nodes | Setting up catchers / honeytokens; pass `operator_infra: true` |
 | `propose_plan` | Planner-role sub-agent: submit a free-form operator command as a confirmable plan of ops (directives / scope / approvals) | NL operator cockpit — the planner proposes, the operator confirms, the dashboard executes |
 | `manage_agent_directive` | Steer a running sub-agent: pause/resume/stop/narrow_scope/skip_types/prioritize/instruct (delivered on heartbeat) | Operator steering — per-agent + fleet controls in the cockpit |
+| `acknowledge_agent_directive` | Confirm that a live headless sub-agent received an operator directive | Sub-agent calls this after `agent_heartbeat` delivers `pending_directive`, before honoring it |
 | `ask_operator` | Sub-agent escalates a decision and waits; the answer returns on its heartbeat | At a genuine fork the agent can't resolve |
+| `research_cve` | Record CVE/exploit research against a versioned service | Research agents land applicable candidates, or an empty checked result, after public-web review |
 | `suggest_inference_rule` | Propose custom inference rules | Operator-driven graph logic |
 | `run_retrospective` | Post-engagement analysis, traces | End of engagement |
 | `register_tape_session` | Register a JSON-RPC tape captured by the `overwatch-mcp-tape` proxy | After running the engagement under the proxy |
 | `recompute_objectives` | Refresh objective achievement from graph | After credential or access changes |
 | `ingest_bloodhound` | Import BloodHound JSON collections | AD attack path analysis |
 | `ingest_azurehound` | Import AzureHound / cloud identity JSON | Azure attack paths |
+| `ingest_screenshots` | Ingest gowitness/aquatone PNGs as viewable evidence | After visual recon, attach on-disk screenshots to their web application nodes |
 | `check_tools` | Detect offensive tools on PATH | Environment validation |
 | `track_process` | Track long-running scan PIDs | Background nmap, etc. |
 | `check_processes` | Refresh tracked process status | After scans may have finished |

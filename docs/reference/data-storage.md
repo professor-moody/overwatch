@@ -21,7 +21,36 @@ OVERWATCH_CONFIG=/path/to/engagement.json  # override
 ./engagement.json                          # default (cwd-relative)
 ```
 
-The config file is the operator-authored definition: scope, objectives, OPSEC, phases, and campaign defaults. Mutable graph state is stored separately beside it by default.
+The config file is the operator-authored definition: scope, objectives, OPSEC,
+phases, and campaign defaults. For an active engagement it is also a managed,
+revisioned representation: Overwatch writes `config_revision` and `config_hash`
+through to the file, live engine, and durable state. Mutable graph state remains
+stored separately beside it by default.
+
+During an active-config update, Overwatch may create a temporary durable intent:
+
+```
+<config-path>.write-intent.json
+```
+
+The intent records the source and target hashes/revision plus a checksum. It is
+removed only after the file, runtime, audit event, and durable state complete.
+If present after a crash, startup attempts to finish that known write. Preserve
+it during backup or incident handling; deleting it can remove the information
+needed to distinguish an interrupted write from unexplained divergence.
+
+If an intent is valid but conflicts with the observed file or durable state,
+Overwatch preserves its exact bytes (base64-encoded with observed-state audit
+metadata) in a content-addressed conflict archive before requiring explicit
+reconciliation:
+
+```
+<config-path>.write-intent.json.conflict-<sha256>.json
+```
+
+Once that archive is durable, the conflicting active intent is removed so it
+cannot retain write authority. Preserve the conflict archive; it is audit and
+recovery evidence, not a disposable temporary file.
 
 ---
 
@@ -42,7 +71,10 @@ This single JSON file contains:
 - **Agent registry** — registered agents and their status
 - **Chain checkpoints** — hash-chain integrity anchors (when `hash_chain_enabled: true`)
 
-Set `OVERWATCH_STATE_FILE=/path/to/state.json` to override the default. The server writes this file on every tool call that mutates state (debounced) and on clean shutdown. The config file remains clean unless you explicitly edit engagement settings.
+Set `OVERWATCH_STATE_FILE=/path/to/state.json` to override the default. The
+server writes this file on every tool call that mutates state (debounced) and on
+clean shutdown. Active configuration changes also atomically update the config
+file; an API/tool success means its revision/hash matches runtime and state.
 
 ### Snapshots
 
@@ -51,23 +83,34 @@ Point-in-time recovery snapshots live in a hidden subdirectory next to the state
 ```
 <config-dir>/
 └── .snapshots/
-    ├── engagement-1746000000000.json
-    ├── engagement-1746003600000.json
-    └── ...                           # up to 10 retained (oldest pruned)
+    ├── state-example-engagement.snap-2026-07-15T18-00-00-000Z-21409.json
+    ├── state-example-engagement.snap-2026-07-15T18-30-00-000Z-21409.json
+    └── ...                           # up to 5 retained (oldest pruned)
 ```
 
-If the main state file becomes corrupted on startup, the server automatically recovers from the most recent snapshot.
+At startup, Overwatch selects the newest valid primary/snapshot base and replays
+every newer committed WAL record. Incomplete replay remains degraded and
+read-only; recovery never treats an older snapshot as permission to discard a
+malformed, unknown, skipped, or failed WAL tail.
 
 ### WAL (mutation journal)
 
-Engagements with `engagement_nonce` set use a write-ahead log for durability between debounced snapshots:
+The write-ahead log lives beside its state file and uses the state basename:
 
 ```
 <config-dir>/
-└── journal.jsonl                     # append-only; truncated after each snapshot
+└── state-<engagement-id>.journal.jsonl
 ```
 
-Legacy engagements (no `engagement_nonce`) skip this file.
+Engagements with `engagement_nonce` journal primitive durable mutations.
+Legacy engagements can acquire the same WAL before their first composite scope
+or graph-correction mutation. On every startup, any existing non-empty WAL is
+inspected and recovered regardless of whether the incoming config currently has
+an `engagement_nonce`; feature flags never make durable bytes disappear.
+
+Compaction removes only a contiguously applied prefix that is already covered
+by a durable recovery base. A malformed or incomplete tail is preserved, and a
+content-addressed `.quarantine-<sha256>.jsonl` copy may be written for repair.
 
 ---
 
@@ -147,9 +190,11 @@ A typical engagement directory after one session:
 ```
 ./
 ├── engagement.json                   # active config (scope, objectives, OPSEC)
+├── engagement.json.write-intent.json # present only while a config write needs completion
 ├── state-example-engagement.json     # live graph, activity log, agents, campaigns
+├── state-example-engagement.journal.jsonl # WAL when durable mutations are pending
 ├── .snapshots/
-│   └── engagement-1746005400000.json
+│   └── state-example-engagement.snap-2026-07-15T18-30-00-000Z-21409.json
 ├── engagements/
 │   └── eng-abc123.json
 ├── evidence/
@@ -170,7 +215,10 @@ A typical engagement directory after one session:
 
 ## Backup and portability
 
-**To back up an engagement:** copy the entire directory containing `engagement.json` and `state-<id>.json`.
+**To back up an engagement:** copy the entire directory containing
+`engagement.json` and `state-<id>.json`. Include any adjacent
+`.write-intent.json`, intent conflict archives, mutation journal, and retained
+snapshots; do not omit them from a crash-state capture.
 
 The state file contains the full graph, activity log, agents, campaigns, and checkpoints. The config file contains the operator-authored engagement definition. Evidence blobs are referenced by ID from the manifest; copy the `evidence/` subdirectory to retain them.
 

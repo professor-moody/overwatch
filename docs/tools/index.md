@@ -7,6 +7,7 @@ Overwatch exposes its MCP tools organized by function (the live count comes from
 | Tool | Purpose | Read-only |
 |------|---------|-----------|
 | [`get_state`](get-state.md) | Full engagement briefing from graph | Yes |
+| [`get_recovery_status`](get-recovery-status.md) | WAL/state recovery and active config convergence | Yes |
 | [`run_lab_preflight`](run-lab-preflight.md) | Aggregate lab-readiness checks | Yes |
 | [`run_graph_health`](run-graph-health.md) | Full graph integrity report | Yes |
 | [`get_opsec_status`](get-opsec-status.md) | Noise budget, recommended approach, defensive signals | Yes |
@@ -79,6 +80,7 @@ Overwatch exposes its MCP tools organized by function (the live count comes from
 | [`signal_session`](sessions.md) | Send signal to session process | No |
 | [`close_session`](sessions.md) | Close and destroy a session | No |
 | [`update_scope`](update-scope.md) | Confirmation-gated runtime scope expansion/contraction | No |
+| [`resolve_config_divergence`](resolve-config-divergence.md) | Reconcile active config using explicit file or durable-state authority | No |
 | [`create_engagement`](create-engagement.md) | Build + persist a new engagement config (no hand-edited JSON; create-then-start) | No |
 | [`list_engagements`](list-engagements.md) | List persisted engagement configs + which is active | No |
 | [`add_objective`](add-objective.md) | Add an objective to the active engagement | No |
@@ -97,6 +99,11 @@ Conversational engagement creation + configuration — so nobody hand-edits
 restart to activate); [`add_objective`](add-objective.md),
 [`set_opsec`](set-opsec.md), and [`update_scope`](update-scope.md) configure the
 active engagement.
+
+If the active file, runtime, and durable state disagree, use
+[`get_recovery_status`](get-recovery-status.md) to inspect the exact observed
+hashes, then [`resolve_config_divergence`](resolve-config-divergence.md) to make
+an explicit, optimistic-concurrency-checked authority choice.
 
 ### State & Health
 Tools for understanding the current engagement state and verifying system health.

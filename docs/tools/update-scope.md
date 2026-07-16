@@ -14,7 +14,7 @@ Expand or contract the engagement scope at runtime.
 The tool has a **two-phase** workflow:
 
 1. **Preview** (`confirm: false`, the default) — returns a dry-run showing what would change, how many nodes would enter/leave scope, and which pending scope suggestions would be resolved. No state is mutated.
-2. **Apply** (`confirm: true`) — mutates `config.scope` in-place, persists immediately, logs a `scope_updated` activity event with full before/after diff, and invalidates the frontier cache so new discovery items appear.
+2. **Apply** (`confirm: true`) — commits one durable scope operation containing the revisioned config change, cold-to-hot promotions, derived inference edges, and audit event. It then invalidates the frontier cache so new discovery items appear.
 
 ## Parameters
 
@@ -88,5 +88,9 @@ Out-of-scope host nodes are automatically detected and surfaced in `get_state()`
 - Duplicate entries are silently deduplicated (adding a CIDR already in scope is a no-op)
 - **Scope expansion warnings:** In dry-run preview mode (`confirm: false`), the response includes a `scope_expansion_warning` array listing nodes that would enter or leave scope, plus notes about newly added scope entries. This helps operators gauge impact before committing
 - The frontier cache is invalidated immediately so `next_task` reflects the new scope
-- The persisted state file is written immediately so scope survives restarts
+- The active config file, runtime config, and durable state receive one
+  `config_revision`/`config_hash`; success is not returned while they disagree
+- Scope, promotions, inference, and audit replay as one high-level journaled
+  operation after restart; an incompatible or partial replay leaves persistence
+  read-only instead of applying a subset
 - Activity log entry includes the complete before/after scope diff for audit trail

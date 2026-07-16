@@ -35,6 +35,7 @@ overwatch <command> [options]
 | Command | Shows |
 |---|---|
 | `overwatch status` | Engagement snapshot: graph, objectives, access, agents, approvals, top frontier, readiness |
+| `overwatch recovery` | WAL/state recovery plus active file/runtime/state config convergence and exact reconciliation hashes |
 | `overwatch frontier [--max N] [--type TYPE]` | Candidate next actions (the deterministic frontier) |
 | `overwatch findings [--severity S]` | Classified findings + severity summary |
 | `overwatch agents` | Running agent roster |
@@ -52,10 +53,45 @@ overwatch <command> [options]
 | `overwatch answer <query-id> <answer text…>` | Answer an agent's question |
 | `overwatch deploy <target> [--archetype TYPE]` | Quick-deploy an agent at a raw IP/CIDR/domain (auto-scopes) |
 | `overwatch dispatch --node <id…> [--skill S] [--archetype A]` | Dispatch an agent at existing graph node(s) |
+| `overwatch config reconcile <use_file\|use_state> --file-hash SHA256 --state-hash SHA256` | Resolve an active config divergence using an explicit authority choice |
 
 A refusal (e.g. a frontier item already leased, or an out-of-scope target) prints
 the server's reason and exits non-zero; a success prints a confirmation (deploy /
 dispatch report the new task + agent id).
+
+## Recovery and config reconciliation
+
+`overwatch recovery` is always safe to run, including when recovery has placed
+the server in read-only mode. It reports the base, contiguous-applied, on-disk,
+and allocated WAL checkpoints; explicit preserved/malformed flags; the last
+persistence error and durable-write failure streak; and the active config's
+file/runtime/state revisions and hashes.
+
+The CLI presents the combined write gate separately from **state/WAL health**.
+A config-only divergence therefore reads as a paused/read-only combined status
+with healthy state/WAL recovery. If underlying persistence is also degraded,
+`state/WAL health` is degraded and the separate `persistence reason` explains
+why configuration reconciliation cannot proceed.
+
+When it reports `config_recovery.status: diverged`, inspect the semantic
+difference and use only a mode listed in `allowed_resolutions`. Pass both hashes
+from that same observation:
+
+```bash
+overwatch recovery
+
+overwatch config reconcile use_state \
+  --file-hash 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --state-hash abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+```
+
+`use_file` applies the validated file to runtime and state. `use_state` restores
+the file from durable state. Both create a fresh config revision and fail with a
+conflict if either observed hash changed after inspection.
+
+Do not reconcile a `write_incomplete` status: restart to let Overwatch complete
+its known write intent. Config reconciliation is also refused while underlying
+WAL/state recovery is incomplete.
 
 ## Options
 
