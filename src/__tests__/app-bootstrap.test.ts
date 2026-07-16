@@ -8,7 +8,7 @@ import { EngagementManager } from '../services/engagement-manager.js';
 import { GraphEngine } from '../services/graph-engine.js';
 import { MutationJournal } from '../services/mutation-journal.js';
 import { CURRENT_JOURNAL_VERSION, CURRENT_STATE_VERSION } from '../services/persisted-state.js';
-import type { EngagementConfig } from '../types.js';
+import type { EngagementConfig, SessionMetadata } from '../types.js';
 import { registerEngagementTools } from '../tools/engagement.js';
 import { withErrorBoundary } from '../tools/error-boundary.js';
 import { verifyStateMigrationBackup } from '../services/state-migration.js';
@@ -55,6 +55,8 @@ describe('app bootstrap', () => {
       });
       expect(recovery.file_hash).toMatch(/^[0-9a-f]{64}$/);
       expect(app.engine.isPersistenceWritable()).toBe(false);
+      expect(() => app!.engine.getState()).not.toThrow();
+      expect(() => (app!.dashboard as any).buildFrontendState()).not.toThrow();
 
       app.engine.resolveConfigDivergence({
         mode: 'use_state',
@@ -63,6 +65,20 @@ describe('app bootstrap', () => {
       });
       expect(existsSync(configPath)).toBe(true);
       expect(app.engine.isPersistenceWritable()).toBe(true);
+      const resumedRuntime = await app.sessionManager.create({
+        kind: 'socket',
+        title: 'post-reconciliation listener',
+        mode: 'listen',
+        accept_mode: 'rearm',
+        bind_host: '127.0.0.1',
+        port: 0,
+        initial_wait_ms: 0,
+      });
+      expect(resumedRuntime.metadata).toMatchObject({
+        state: 'pending',
+        port: expect.any(Number),
+      });
+      app.sessionManager.close(resumedRuntime.metadata.id, undefined, true);
     } finally {
       if (app) await shutdownOverwatchApp(app);
       rmSync(dir, { recursive: true, force: true });
@@ -235,6 +251,278 @@ describe('app bootstrap', () => {
     }
   });
 
+  it('applies use_file config changes without replacing durable engagement state', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-use-file-state-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-app-use-file-state.json');
+    const original = recoveryConfig();
+    writeFileSync(configPath, JSON.stringify(original));
+    const seed = new GraphEngine(original, stateFilePath, configPath);
+    const seededAt = new Date().toISOString();
+    seed.ingestFinding({
+      id: 'finding-before-config-edit',
+      agent_id: 'preserved-agent',
+      timestamp: seededAt,
+      nodes: [{
+        id: 'host-10-30-0-10',
+        type: 'host',
+        label: 'Preserved host',
+        ip: '10.30.0.10',
+        discovered_at: seededAt,
+        confidence: 1,
+      }],
+      edges: [],
+      raw_output: 'preserved finding output',
+    });
+    (seed as unknown as {
+      ctx: {
+        coldStore: {
+          add: (node: {
+            id: string;
+            type: 'host';
+            label: string;
+            ip: string;
+            discovered_at: string;
+            last_seen_at: string;
+          }) => void;
+        };
+      };
+    }).ctx.coldStore.add({
+      id: 'cold-before-config-edit',
+      type: 'host',
+      label: 'Preserved cold host',
+      ip: '192.0.2.44',
+      discovered_at: seededAt,
+      last_seen_at: seededAt,
+    });
+    seed.registerAgent({
+      id: 'completed-task-before-config-edit',
+      agent_id: 'preserved-agent',
+      assigned_at: seededAt,
+      completed_at: seededAt,
+      status: 'completed',
+      subgraph_node_ids: ['host-10-30-0-10'],
+    });
+    const campaign = seed.createCampaign({
+      name: 'Preserved campaign',
+      strategy: 'enumeration',
+      item_ids: ['frontier-before-config-edit'],
+    });
+    seed.setRuntimeRuns([{
+      run_id: 'runtime-before-config-edit',
+      kind: 'tracked_process',
+      daemon_owner: 'preserved-daemon',
+      command_fingerprint: 'a'.repeat(64),
+      started_at: seededAt,
+      completed_at: seededAt,
+      lifecycle: 'completed',
+      finalization_status: 'completed',
+    }]);
+    seed.recordSessionDescriptor({
+      id: 'listener-before-config-edit',
+      kind: 'socket',
+      transport: 'tcp-listen',
+      state: 'resume_available',
+      mode: 'listen',
+      accept_mode: 'rearm',
+      bind_host: '127.0.0.1',
+      port: 0,
+      title: 'Preserved listener',
+      started_at: seededAt,
+      last_activity_at: seededAt,
+      capabilities: {
+        has_stdin: true,
+        has_stdout: true,
+        supports_resize: false,
+        supports_signals: false,
+        tty_quality: 'dumb',
+      },
+      buffer_end_pos: 0,
+      resume_policy: 'manual',
+    });
+    const planId = seed.createCommandPlan({
+      command: 'preserve this coordination outcome',
+      ops: [],
+      now: Date.now(),
+      ttlMs: 10 * 60_000,
+    });
+    seed.recordCommandOutcome(planId, [{ preserved: true }], Date.now(), 10 * 60_000);
+    const evidenceId = seed.getEvidenceStore().store({
+      evidence_type: 'command_output',
+      finding_id: 'finding-before-config-edit',
+      agent_id: 'preserved-agent',
+      content: 'preserved evidence content',
+    });
+    seed.persistImmediate();
+    seed.dispose();
+
+    writeFileSync(configPath, JSON.stringify({
+      ...original,
+      name: 'Operator edited config',
+      scope: {
+        ...original.scope,
+        domains: [...original.scope.domains, 'new-scope.example'],
+      },
+    }));
+
+    let app: OverwatchApp | undefined;
+    try {
+      app = createOverwatchApp({
+        configPath,
+        stateFilePath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 8384,
+      });
+      const recovery = app.engine.getConfigRecoveryStatus();
+      expect(recovery).toMatchObject({
+        status: 'diverged',
+        resolution_required: true,
+      });
+      expect(app.engine.getNode('host-10-30-0-10')).toBeDefined();
+      expect(app.engine.getState({ activityCount: 100 })).toMatchObject({
+        graph_summary: {
+          cold_node_count: 1,
+        },
+        agents: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'completed-task-before-config-edit',
+            agent_id: 'preserved-agent',
+            status: 'completed',
+          }),
+        ]),
+      });
+      expect(app.engine.getCampaign(campaign.id)).toMatchObject({
+        name: 'Preserved campaign',
+      });
+      expect(app.engine.getRuntimeRuns()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            run_id: 'runtime-before-config-edit',
+            lifecycle: 'completed',
+          }),
+        ]),
+      );
+      expect(app.sessionManager.getSession('listener-before-config-edit')).toMatchObject({
+        state: 'resume_available',
+        resume_policy: 'manual',
+      });
+      expect(app.engine.getCommandOutcome(planId)).toMatchObject({
+        results: [{ preserved: true }],
+      });
+      expect(app.engine.getEvidenceStore().getContent(evidenceId)).toBe('preserved evidence content');
+
+      const journalPath = MutationJournal.pathForState(stateFilePath);
+      const stateBeforeRead = readFileSync(stateFilePath);
+      const configBeforeRead = readFileSync(configPath);
+      const journalBeforeRead = existsSync(journalPath) ? readFileSync(journalPath) : undefined;
+      expect(() => app!.engine.getState()).not.toThrow();
+      expect(() => (app!.dashboard as any).buildFrontendState()).not.toThrow();
+      expect(readFileSync(stateFilePath)).toEqual(stateBeforeRead);
+      expect(readFileSync(configPath)).toEqual(configBeforeRead);
+      expect(existsSync(journalPath) ? readFileSync(journalPath) : undefined).toEqual(journalBeforeRead);
+
+      app.engine.resolveConfigDivergence({
+        mode: 'use_file',
+        expected_file_hash: recovery.file_hash!,
+        expected_state_hash: recovery.state_hash!,
+      });
+
+      expect(app.engine.getConfig()).toMatchObject({
+        name: 'Operator edited config',
+        scope: expect.objectContaining({
+          domains: expect.arrayContaining(['new-scope.example']),
+        }),
+      });
+      expect(app.engine.getNode('host-10-30-0-10')).toMatchObject({
+        label: 'Preserved host',
+      });
+      expect(app.engine.getState({ activityCount: 100 })).toMatchObject({
+        agents: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'completed-task-before-config-edit',
+            agent_id: 'preserved-agent',
+            status: 'completed',
+          }),
+        ]),
+        recent_activity: expect.arrayContaining([
+          expect.objectContaining({
+            linked_finding_ids: expect.arrayContaining(['finding-before-config-edit']),
+          }),
+        ]),
+        graph_summary: {
+          cold_node_count: 1,
+        },
+      });
+      expect(app.engine.getCampaign(campaign.id)).toMatchObject({
+        name: 'Preserved campaign',
+      });
+      expect(app.engine.getRuntimeRuns()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            run_id: 'runtime-before-config-edit',
+            lifecycle: 'completed',
+          }),
+        ]),
+      );
+      expect(app.engine.getCommandOutcome(planId)).toMatchObject({
+        results: [{ preserved: true }],
+      });
+      expect(app.engine.getEvidenceStore().getContent(evidenceId)).toBe('preserved evidence content');
+      expect(app.engine.isPersistenceWritable()).toBe(true);
+
+      const resumed = await app.sessionManager.resume('listener-before-config-edit', undefined, true);
+      expect(resumed.metadata).toMatchObject({
+        id: 'listener-before-config-edit',
+        state: 'pending',
+        port: expect.any(Number),
+      });
+      app.sessionManager.close('listener-before-config-edit', undefined, true);
+
+      await shutdownOverwatchApp(app);
+      app = createOverwatchApp({
+        configPath,
+        stateFilePath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      });
+      expect(app.engine.getConfig()).toMatchObject({
+        name: 'Operator edited config',
+      });
+      expect(app.engine.getNode('host-10-30-0-10')).toMatchObject({
+        label: 'Preserved host',
+      });
+      expect(app.engine.getState({ activityCount: 100 })).toMatchObject({
+        graph_summary: {
+          cold_node_count: 1,
+        },
+        agents: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'completed-task-before-config-edit',
+            status: 'completed',
+          }),
+        ]),
+      });
+      expect(app.engine.getCampaign(campaign.id)).toMatchObject({
+        name: 'Preserved campaign',
+      });
+      expect(app.engine.getRuntimeRuns()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            run_id: 'runtime-before-config-edit',
+            lifecycle: 'completed',
+          }),
+        ]),
+      );
+      expect(app.engine.getCommandOutcome(planId)).toMatchObject({
+        results: [{ preserved: true }],
+      });
+      expect(app.engine.getEvidenceStore().getContent(evidenceId)).toBe('preserved evidence content');
+    } finally {
+      if (app) await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reconciles process ownership after rolling back to a snapshot with older config', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-rollback-runtime-'));
     const configPath = join(dir, 'engagement.json');
@@ -261,6 +549,50 @@ describe('app bootstrap', () => {
         started_at: '2026-07-16T00:00:00.000Z',
         status: 'unknown',
       }]);
+      const sessionAt = '2026-07-16T00:00:30.000Z';
+      app.engine.addNode({
+        id: 'rollback-principal',
+        type: 'user',
+        label: 'Rollback principal',
+        discovered_at: sessionAt,
+        confidence: 1,
+      });
+      app.engine.addNode({
+        id: 'rollback-target',
+        type: 'host',
+        label: 'Rollback target',
+        ip: '10.30.0.20',
+        discovered_at: sessionAt,
+        confidence: 1,
+      });
+      const connectedSession: SessionMetadata = {
+        id: 'rollback-session',
+        kind: 'local_pty',
+        adapter: 'local_pty',
+        transport: 'pty',
+        state: 'connected',
+        connection_generation: 1,
+        connection_id: 'rollback-session:g1',
+        connection_started_at: sessionAt,
+        title: 'Rollback shell',
+        target_node: 'rollback-target',
+        principal_node: 'rollback-principal',
+        started_at: sessionAt,
+        last_activity_at: sessionAt,
+        capabilities: {
+          has_stdin: true,
+          has_stdout: true,
+          supports_resize: true,
+          supports_signals: true,
+          tty_quality: 'full',
+        },
+        buffer_end_pos: 0,
+        resume_policy: 'none',
+      };
+      app.engine.connectSessionGenerationDurably(
+        connectedSession,
+        'Rollback fixture connected',
+      );
       app.engine.flushNow();
 
       internals.lastSnapshotTime = 0;
@@ -276,6 +608,18 @@ describe('app bootstrap', () => {
         started_at: '2026-07-16T00:01:00.000Z',
         status: 'unknown',
       }]);
+      app.engine.closeSessionDurably({
+        ...connectedSession,
+        state: 'closed',
+        connection_id: undefined,
+        connection_started_at: undefined,
+        last_connection_id: connectedSession.connection_id,
+        last_connection_state: 'closed',
+        last_connection_closed_at: '2026-07-16T00:01:30.000Z',
+        closed_at: '2026-07-16T00:01:30.000Z',
+      }, 'Rollback fixture closed after snapshot', {
+        connection_id: connectedSession.connection_id,
+      });
       app.engine.flushNow();
       app.engine.updateConfig({ name: 'Config after snapshot' });
 
@@ -285,6 +629,28 @@ describe('app bootstrap', () => {
       expect(app.processTracker.serialize()).toEqual([
         expect.objectContaining({ id: 'process-before' }),
       ]);
+      expect(app.engine.getSessionDescriptors()).toContainEqual(
+        expect.objectContaining({
+          session_id: 'rollback-session',
+          lifecycle: 'error',
+          recovery_lifecycle: 'interrupted',
+          connection_id: undefined,
+          last_connection_id: 'rollback-session:g1',
+          last_connection_state: 'interrupted',
+        }),
+      );
+      expect(app.sessionManager.getSession('rollback-session')).toMatchObject({
+        state: 'interrupted',
+        connection_id: undefined,
+      });
+      const rolledBackSessionEdge = app.engine.exportGraph().edges.find(edge =>
+        edge.properties.type === 'HAS_SESSION'
+        && edge.properties.session_id === 'rollback-session:g1');
+      expect(rolledBackSessionEdge?.properties).toMatchObject({
+        session_live: false,
+        live_session_ids: [],
+        live_session_refs: [],
+      });
       expect(existsSync(`${stateFilePath}.rollback-intent.json`)).toBe(false);
     } finally {
       if (app) await shutdownOverwatchApp(app);
@@ -515,8 +881,8 @@ describe('app bootstrap', () => {
       });
 
       // Minimum expected tool count — increase this when adding new tools
-      expect(toolNames).toHaveLength(82);
-      expect(new Set(toolNames).size).toBe(82);
+      expect(toolNames).toHaveLength(83);
+      expect(new Set(toolNames).size).toBe(83);
       expect(toolNames).toContain('get_state');
       expect(toolNames).toContain('run_retrospective');
       expect(toolNames).toContain('generate_report');
@@ -526,6 +892,7 @@ describe('app bootstrap', () => {
       expect(toolNames).toContain('add_objective');
       expect(toolNames).toContain('set_opsec');
       expect(toolNames).toContain('close_session');
+      expect(toolNames).toContain('resume_session');
       expect(toolNames).toContain('update_scope');
       expect(toolNames).toContain('get_system_prompt');
       expect(toolNames).toContain('ingest_azurehound');
@@ -534,6 +901,66 @@ describe('app bootstrap', () => {
       expect(toolNames).toContain('resolve_config_divergence');
     } finally {
       await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('hydrates recovered session descriptors into the runtime listing surface', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-session-restore-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-app-session-restore.json');
+    writeFileSync(configPath, JSON.stringify(recoveryConfig()));
+    const first = createOverwatchApp({
+      configPath,
+      stateFilePath,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+    });
+    const now = new Date().toISOString();
+    first.engine.recordSessionDescriptor({
+      id: 'listener-restored',
+      kind: 'socket',
+      adapter: 'socket',
+      transport: 'tcp-listen',
+      state: 'resume_available',
+      listener_id: 'listener-restored',
+      connection_generation: 2,
+      resume_policy: 'manual',
+      mode: 'listen',
+      bind_host: '127.0.0.1',
+      accept_mode: 'rearm',
+      title: 'Recovered listener',
+      port: 4444,
+      started_at: now,
+      last_activity_at: now,
+      capabilities: {
+        has_stdin: true,
+        has_stdout: true,
+        supports_resize: false,
+        supports_signals: false,
+        tty_quality: 'dumb',
+      },
+      buffer_end_pos: 0,
+    });
+    first.engine.flushNow();
+    await shutdownOverwatchApp(first);
+
+    const restarted = createOverwatchApp({
+      configPath,
+      stateFilePath,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+    });
+    try {
+      expect(restarted.sessionManager.list()).toContainEqual(expect.objectContaining({
+        id: 'listener-restored',
+        state: 'resume_available',
+        listener_id: 'listener-restored',
+        connection_generation: 2,
+        buffer_end_pos: 0,
+      }));
+    } finally {
+      await shutdownOverwatchApp(restarted);
       rmSync(dir, { recursive: true, force: true });
     }
   });

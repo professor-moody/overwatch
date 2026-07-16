@@ -9,7 +9,14 @@ import { createOverwatchGraph } from './graphology-types.js';
 import { existsSync } from 'fs';
 import { isIpInCidr, isUrlInScope, isCloudResourceInScope, isHostExcluded, isHostInScope as isScopedHostInScope, isCidrInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
-import type { ActivityLogEntry, ActivityLogInput, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
+import type {
+  ActivityEventType,
+  ActivityLogEntry,
+  ActivityLogInput,
+  GraphUpdateCallback,
+  GraphUpdateDetail,
+  OverwatchGraph,
+} from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { AgentManager } from './agent-manager.js';
@@ -144,6 +151,7 @@ import type {
   PersistenceRecoveryStatus,
   ConfigRecoveryStatus,
   ConfigIntentConflict,
+  SessionCapabilities,
   SessionMetadata,
   SessionDefaultValidation,
 } from '../types.js';
@@ -197,6 +205,26 @@ const BIDIRECTIONAL_EDGE_TYPES: Set<EdgeType> = new Set([
   'ASSUMES_ROLE', 'MANAGED_BY',
   'AUTH_BYPASS',
 ]);
+
+const RECOVERED_LISTENER_CAPABILITIES: SessionCapabilities = {
+  has_stdin: true,
+  has_stdout: true,
+  supports_resize: false,
+  supports_signals: false,
+  tty_quality: 'dumb',
+};
+
+function persistedSessionLifecycle(
+  lifecycle: SessionMetadata['state'],
+): Pick<PersistedSessionDescriptorV1, 'lifecycle' | 'recovery_lifecycle'> {
+  if (lifecycle === 'resume_available') {
+    return { lifecycle: 'closed', recovery_lifecycle: 'resume_available' };
+  }
+  if (lifecycle === 'interrupted') {
+    return { lifecycle: 'error', recovery_lifecycle: 'interrupted' };
+  }
+  return { lifecycle };
+}
 
 export { GraphUpdateCallback };
 
@@ -1606,7 +1634,7 @@ export class GraphEngine {
       const chainGroups = this.chainScorer.scoreChains(all);
 
       // Generate campaigns from frontier + chain groups (phase-aware)
-      const campaigns = this.persistence.isWritable()
+      const campaigns = this.isPersistenceWritable()
         ? this.transactDurableSlices(
           'generate frontier campaigns',
           ['campaigns'],
@@ -2731,6 +2759,8 @@ export class GraphEngine {
     principal_node?: string;
     credential_node?: string;
     session_id?: string;
+    listener_id?: string;
+    connection_generation?: number;
     agent_id?: string;
     action_id?: string;
     frontier_item_id?: string;
@@ -2744,18 +2774,27 @@ export class GraphEngine {
     _onSessionClosed(this.sessionHost, _sessionId, targetNode, principalNode);
   }
 
-  closeSessionDurably(
+  connectSessionGenerationDurably(
     metadata: SessionMetadata,
     description: string,
-    options: { preserve_descriptor?: boolean } = {},
   ): void {
-    const preserveDescriptor = options.preserve_descriptor === true;
+    const connectionId = metadata.connection_id ?? metadata.id;
     this.runAtomicGraphCommand(
-      'close session lifecycle',
+      'connect session generation',
       metadata.action_id,
       () => {
+        if (metadata.target_node && !this.ctx.graph.hasNode(metadata.target_node)) {
+          throw new Error(
+            `Cannot connect session generation: target node ${metadata.target_node} does not exist.`,
+          );
+        }
+        if (metadata.principal_node && !this.ctx.graph.hasNode(metadata.principal_node)) {
+          throw new Error(
+            `Cannot connect session generation: principal node ${metadata.principal_node} does not exist.`,
+          );
+        }
         this.logActionEvent({
-          event_type: 'session_closed',
+          event_type: 'session_connected',
           description,
           agent_id: metadata.agent_id,
           action_id: metadata.action_id,
@@ -2763,13 +2802,71 @@ export class GraphEngine {
           category: 'system',
           details: {
             session_id: metadata.id,
+            listener_id: metadata.listener_id,
+            connection_id: connectionId,
+            connection_generation: metadata.connection_generation,
+            session_kind: metadata.kind,
+            session_state: metadata.state,
+          },
+        });
+        if (metadata.target_node) {
+          _ingestSessionResult(this.sessionHost, {
+            success: true,
+            confirmed: true,
+            target_node: metadata.target_node,
+            principal_node: metadata.principal_node,
+            credential_node: metadata.credential_node,
+            session_id: connectionId,
+            listener_id: metadata.listener_id,
+            connection_generation: metadata.connection_generation,
+            agent_id: metadata.agent_id,
+            action_id: metadata.action_id,
+            frontier_item_id: metadata.frontier_item_id,
+          });
+        }
+        this.recordSessionDescriptor(metadata);
+      },
+      ['session_descriptors'],
+    );
+  }
+
+  closeSessionDurably(
+    metadata: SessionMetadata,
+    description: string,
+    options: {
+      preserve_descriptor?: boolean;
+      connection_id?: string;
+      event_type?: ActivityEventType;
+    } = {},
+  ): void {
+    const preserveDescriptor = options.preserve_descriptor === true;
+    const connectionId = options.connection_id
+      ?? metadata.connection_id
+      ?? metadata.last_connection_id
+      ?? metadata.id;
+    this.runAtomicGraphCommand(
+      'close session lifecycle',
+      metadata.action_id,
+      () => {
+        this.logActionEvent({
+          event_type: options.event_type ?? 'session_closed',
+          description,
+          agent_id: metadata.agent_id,
+          action_id: metadata.action_id,
+          frontier_item_id: metadata.frontier_item_id,
+          category: 'system',
+          details: {
+            session_id: metadata.id,
+            listener_id: metadata.listener_id,
+            connection_id: connectionId,
+            connection_generation: metadata.connection_generation,
             session_kind: metadata.kind,
             session_state: metadata.state,
           },
         });
         _onSessionClosed(
           this.sessionHost,
-          metadata.id,
+          connectionId,
           metadata.target_node,
           metadata.principal_node,
         );
@@ -2798,21 +2895,64 @@ export class GraphEngine {
     const interruptedAt = this.ctx.nowIso();
     let changed = false;
     this.ctx.sessionDescriptors = this.ctx.sessionDescriptors.map(descriptor => {
-      if (descriptor.lifecycle !== 'pending' && descriptor.lifecycle !== 'connected') {
-        return descriptor;
-      }
-      changed = true;
-      return {
+      const durableLifecycle = descriptor.recovery_lifecycle ?? descriptor.lifecycle;
+      const adapter = descriptor.adapter ?? descriptor.kind;
+      const listenerId = descriptor.listener_id
+        ?? (descriptor.kind === 'socket' && descriptor.mode === 'listen'
+          ? descriptor.session_id
+          : undefined);
+      const generation = descriptor.connection_generation
+        ?? (durableLifecycle === 'connected' ? 1 : 0);
+      const inferredConnectionId = descriptor.connection_id
+        ?? (durableLifecycle === 'connected'
+          ? `${descriptor.session_id}:g${Math.max(1, generation)}`
+          : undefined);
+      const active = durableLifecycle === 'pending' || durableLifecycle === 'connected';
+      const resumableListener = descriptor.kind === 'socket'
+        && descriptor.mode === 'listen'
+        && descriptor.accept_mode === 'rearm'
+        && descriptor.resume_intent.requested;
+      const recoveredLifecycle = active
+        ? (resumableListener ? 'resume_available' : 'interrupted')
+        : durableLifecycle;
+      const normalized: PersistedSessionDescriptorV1 = {
         ...descriptor,
-        lifecycle: 'error',
-        closed_at: interruptedAt,
-        resume_intent: {
-          ...descriptor.resume_intent,
-          policy: descriptor.resume_intent.requested ? 'manual' : 'none',
-          prior_state: descriptor.lifecycle,
-          recorded_at: interruptedAt,
-        },
+        adapter,
+        listener_id: listenerId,
+        connection_generation: generation,
+        ...persistedSessionLifecycle(recoveredLifecycle),
+        closed_at: active ? undefined : descriptor.closed_at,
+        connection_id: active ? undefined : descriptor.connection_id,
+        connection_started_at: active ? undefined : descriptor.connection_started_at,
+        last_connection_id: durableLifecycle === 'connected'
+          ? inferredConnectionId
+          : descriptor.last_connection_id,
+        last_connection_state: durableLifecycle === 'connected'
+          ? 'interrupted'
+          : descriptor.last_connection_state,
+        last_connection_closed_at: durableLifecycle === 'connected'
+          ? interruptedAt
+          : descriptor.last_connection_closed_at,
+        auth_status: recoveredLifecycle === 'resume_available'
+          ? undefined
+          : descriptor.auth_status,
+        capabilities: recoveredLifecycle === 'resume_available'
+          ? detached(RECOVERED_LISTENER_CAPABILITIES)
+          : descriptor.capabilities,
+        resume_intent: active
+          ? {
+              ...descriptor.resume_intent,
+              policy: resumableListener ? 'manual' : descriptor.resume_intent.policy,
+              requested: resumableListener,
+              prior_state: durableLifecycle === 'connected'
+                ? 'connected'
+                : 'pending',
+              recorded_at: interruptedAt,
+            }
+          : descriptor.resume_intent,
       };
+      if (canonicalJson(normalized) !== canonicalJson(descriptor)) changed = true;
+      return normalized;
     });
     if (changed) this.persist();
   }
@@ -4793,12 +4933,12 @@ export class GraphEngine {
 
   private completeDeferredStartupReconciliation(): void {
     if (!this.startupReconciliationDeferred) return;
-    this.runtimeOwnershipRecoveryHandler?.();
     this.evaluateObjectives();
     this.reconcileSessionEdgesOnStartup();
     this.reconcileSessionDescriptorsOnStartup();
     this.reconcileAgentsOnStartup();
     this.reconcilePendingApprovalsOnStartup();
+    this.runtimeOwnershipRecoveryHandler?.();
     this.persistence.persistImmediate();
     this.runAutoHealthCheck('configuration recovery startup reconciliation');
     this.warnIfOpsecInert();
@@ -4808,6 +4948,11 @@ export class GraphEngine {
 
   setRuntimeOwnershipRecoveryHandler(handler: (() => void) | undefined): void {
     this.runtimeOwnershipRecoveryHandler = handler;
+  }
+
+  /** Whether the WAL/state persistence owner itself remains writable. */
+  isStatePersistenceWritable(): boolean {
+    return this.persistence.isWritable();
   }
 
   /** Whether a new durable mutation may be accepted right now. */
@@ -5071,6 +5216,15 @@ export class GraphEngine {
     if (metadata.id.length === 0) throw new Error('Session id must not be empty.');
     if (metadata.transport.length === 0) throw new Error('Session transport must not be empty.');
     if (
+      metadata.connection_generation !== undefined
+      && (
+        !Number.isSafeInteger(metadata.connection_generation)
+        || metadata.connection_generation < 0
+      )
+    ) {
+      throw new Error('Session connection_generation must be a non-negative safe integer.');
+    }
+    if (
       metadata.port !== undefined
       && (
         !Number.isSafeInteger(metadata.port)
@@ -5122,17 +5276,30 @@ export class GraphEngine {
     const resumableListener = metadata.kind === 'socket'
       && metadata.mode === 'listen'
       && metadata.accept_mode === 'rearm'
-      && (metadata.state === 'pending' || metadata.state === 'connected');
+      && (
+        metadata.state === 'pending'
+        || metadata.state === 'connected'
+        || metadata.state === 'resume_available'
+      );
     const descriptor: PersistedSessionDescriptorV1 = {
       session_id: metadata.id,
       kind: metadata.kind,
+      adapter: metadata.adapter ?? metadata.kind,
       transport: metadata.transport,
-      lifecycle: metadata.state,
+      ...persistedSessionLifecycle(metadata.state),
+      listener_id: nonEmpty(metadata.listener_id),
+      connection_generation: metadata.connection_generation ?? 0,
+      connection_id: nonEmpty(metadata.connection_id),
+      connection_started_at: metadata.connection_started_at,
+      last_connection_id: nonEmpty(metadata.last_connection_id),
+      last_connection_state: metadata.last_connection_state,
+      last_connection_closed_at: metadata.last_connection_closed_at,
       mode: metadata.mode,
       bind_host: nonEmpty(metadata.bind_host),
       advertise_host: nonEmpty(metadata.advertise_host),
       accept_mode: metadata.accept_mode,
       reachability_warnings: metadata.reachability_warnings,
+      auth_status: metadata.auth_status,
       title: metadata.title,
       host: nonEmpty(metadata.host),
       user: nonEmpty(metadata.user),
@@ -5154,10 +5321,20 @@ export class GraphEngine {
         ? {
             policy: 'manual',
             requested: true,
-            prior_state: metadata.state === 'pending' ? 'pending' : 'connected',
+            prior_state: metadata.state === 'connected'
+              ? 'connected'
+              : metadata.state === 'resume_available'
+                ? prior?.resume_intent.prior_state
+                  ?? (metadata.last_connection_id ? 'connected' : 'pending')
+                : 'pending',
+            ...(metadata.state === 'resume_available'
+              ? { recovery_prior_state: 'resume_available' as const }
+              : {}),
             recorded_at: recordedAt,
           }
-        : prior?.resume_intent.requested && metadata.state !== 'closed'
+        : prior?.resume_intent.requested
+          && metadata.state !== 'closed'
+          && metadata.state !== 'interrupted'
           ? detached(prior.resume_intent)
           : {
               policy: 'none',
@@ -5776,6 +5953,12 @@ export class GraphEngine {
       if (!restored) return false;
       this.applyRestoredRuntimeProjections();
       this.configService.adoptRestoredRuntimeConfig('snapshot.rollback');
+      // A snapshot may contain descriptors and HAS_SESSION edges that were
+      // live when captured. Rollback never restores their PTY/socket handles,
+      // so reconcile that durable truth before rehydrating adapters or
+      // releasing rollback authority.
+      this.reconcileSessionEdgesOnStartup();
+      this.reconcileSessionDescriptorsOnStartup();
       this.rollbackCoordinator?.afterRollback();
       this.persistence.completePendingRollbackAuthority();
       return true;

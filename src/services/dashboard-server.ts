@@ -328,7 +328,25 @@ export class DashboardServer {
         }
         this.sessionWss.handleUpgrade(req, socket, head, (ws) => {
           this.sessionWss.emit('connection', ws, req);
-          this.handleSessionConnection(ws, sessionMatch[1]);
+          const expectedConnectionId = url.searchParams.get('connection_id') ?? undefined;
+          const expectedGenerationRaw = url.searchParams.get('connection_generation');
+          const expectedConnectionGeneration = expectedGenerationRaw === null
+            ? undefined
+            : Number(expectedGenerationRaw);
+          this.handleSessionConnection(ws, sessionMatch[1], {
+            ...(expectedConnectionId !== undefined
+              ? { expected_connection_id: expectedConnectionId }
+              : {}),
+            ...(expectedGenerationRaw !== null
+              ? {
+                  expected_connection_generation:
+                    Number.isSafeInteger(expectedConnectionGeneration)
+                    && (expectedConnectionGeneration ?? -1) >= 0
+                      ? expectedConnectionGeneration
+                      : Number.NaN,
+                }
+              : {}),
+          });
         });
       } else if (actionOutputMatch) {
         this.actionWss.handleUpgrade(req, socket, head, (ws) => {
@@ -557,7 +575,14 @@ export class DashboardServer {
 
   // ---- Session terminal bridge ----
 
-  private handleSessionConnection(ws: WebSocket, sessionId: string): void {
+  private handleSessionConnection(
+    ws: WebSocket,
+    sessionId: string,
+    expected: {
+      expected_connection_id?: string;
+      expected_connection_generation?: number;
+    } = {},
+  ): void {
     if (!this.sessionManager) {
       ws.close(4503, 'Session manager not available');
       return;
@@ -572,20 +597,42 @@ export class DashboardServer {
       ws.close(4409, `Session not connected (state: ${meta.state})`);
       return;
     }
+    if (
+      (expected.expected_connection_id !== undefined
+        && meta.connection_id !== expected.expected_connection_id)
+      || (expected.expected_connection_generation !== undefined
+        && meta.connection_generation !== expected.expected_connection_generation)
+    ) {
+      ws.close(4409, 'Session connection generation changed before attachment');
+      return;
+    }
+    const connectionId = meta.connection_id;
+    const connectionGeneration = meta.connection_generation;
+    const expectedGeneration = {
+      ...(connectionId !== undefined ? { connection_id: connectionId } : {}),
+      ...(connectionGeneration !== undefined
+        ? { connection_generation: connectionGeneration }
+        : {}),
+    };
+    const generationAddressed = connectionId !== undefined || connectionGeneration !== undefined;
+    const readGeneration = (from?: number, tail?: number) =>
+      generationAddressed
+        ? this.sessionManager!.read(sessionId, from, tail, expectedGeneration)
+        : this.sessionManager!.read(sessionId, from, tail);
 
     // Send initial state
     ws.send(JSON.stringify({ type: 'session_meta', data: meta }));
 
     // Read initial buffer tail
     try {
-      const initial = this.sessionManager.read(sessionId, undefined, 8192);
+      const initial = readGeneration(undefined, 8192);
       if (initial.text) {
         ws.send(JSON.stringify({ type: 'output', text: initial.text, end_pos: initial.end_pos }));
       }
     } catch { /* session may have closed between check and read */ }
 
     // Poll buffer for new output
-    let cursor = this.sessionManager.read(sessionId, undefined, 0).end_pos;
+    let cursor = readGeneration(undefined, 0).end_pos;
 
     const poller = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) {
@@ -595,7 +642,22 @@ export class DashboardServer {
       }
 
       try {
-        const result = this.sessionManager!.read(sessionId, cursor);
+        const current = this.sessionManager!.getSession(sessionId);
+        if (
+          !current
+          || current.state !== 'connected'
+          || current.connection_id !== connectionId
+        ) {
+          ws.send(JSON.stringify({
+            type: 'session_closed',
+            connection_id: connectionId,
+          }));
+          clearInterval(poller);
+          this.sessionPollers.delete(ws);
+          ws.close(4410, 'Session generation ended');
+          return;
+        }
+        const result = readGeneration(cursor);
         if (result.text) {
           ws.send(JSON.stringify({ type: 'output', text: result.text, end_pos: result.end_pos }));
           cursor = result.end_pos;
@@ -634,9 +696,34 @@ export class DashboardServer {
           return;
         }
         const msg = JSON.parse(String(raw));
+        const current = this.sessionManager!.getSession(sessionId);
+        if (
+          !current
+          || current.state !== 'connected'
+          || current.connection_id !== connectionId
+        ) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            op: 'generation',
+            code: 'SESSION_GENERATION_ENDED',
+            error: 'This terminal is attached to a connection generation that has ended.',
+          }));
+          ws.close(4410, 'Session generation ended');
+          return;
+        }
         if (msg.type === 'input' && typeof msg.data === 'string') {
           try {
-            this.sessionManager!.write(sessionId, msg.data, 'dashboard', true);
+            if (generationAddressed) {
+              this.sessionManager!.write(
+                sessionId,
+                msg.data,
+                'dashboard',
+                true,
+                expectedGeneration,
+              );
+            } else {
+              this.sessionManager!.write(sessionId, msg.data, 'dashboard', true);
+            }
           } catch (err) {
             ws.send(JSON.stringify({
               type: 'error',
@@ -1046,6 +1133,7 @@ export class DashboardServer {
       const actionApproveMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/approve$/);
       const actionDenyMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/deny$/);
       const sessionCloseMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/close$/);
+      const sessionResumeMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/resume$/);
       const sessionBufferMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/buffer$/);
       const sessionDetailMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)$/);
       const evidenceChainMatch = pathname.match(/^\/api\/evidence-chains\/([^/]+)$/);
@@ -1103,6 +1191,8 @@ export class DashboardServer {
         this.handleActionDeny(actionDenyMatch[1], req, res);
       } else if (sessionCloseMatch && method === 'POST') {
         this.handleSessionClose(sessionCloseMatch[1], req, res);
+      } else if (sessionResumeMatch && method === 'POST') {
+        this.handleSessionResume(sessionResumeMatch[1], req, res);
       } else if (sessionBufferMatch && method === 'GET') {
         this.serveSessionBuffer(sessionBufferMatch[1], url, res);
       } else if (sessionDetailMatch && method === 'PATCH') {
@@ -3025,22 +3115,53 @@ export class DashboardServer {
     const params = new URL(url, 'http://localhost').searchParams;
     const rawFrom = params.get('from');
     const rawTail = params.get('tail_bytes');
+    const expectedConnectionId = params.get('connection_id') ?? undefined;
+    const expectedConnectionGenerationRaw = params.get('connection_generation');
     const from = rawFrom !== null ? parseInt(rawFrom, 10) : undefined;
     const tailBytes = rawTail !== null ? Math.min(Math.max(parseInt(rawTail, 10) || 4096, 0), 65536) : undefined;
+    const expectedConnectionGeneration = expectedConnectionGenerationRaw === null
+      ? undefined
+      : Number(expectedConnectionGenerationRaw);
 
     try {
-      const result = this.sessionManager.read(
-        sessionId,
-        Number.isFinite(from) ? from : undefined,
-        tailBytes,
-      );
+      const expectedGeneration = {
+        ...(expectedConnectionId !== undefined
+          ? { connection_id: expectedConnectionId }
+          : {}),
+        ...(expectedConnectionGenerationRaw !== null
+          ? {
+              connection_generation:
+                Number.isSafeInteger(expectedConnectionGeneration)
+                && (expectedConnectionGeneration ?? -1) >= 0
+                  ? expectedConnectionGeneration
+                  : Number.NaN,
+            }
+          : {}),
+      };
+      const result = expectedConnectionId !== undefined
+        || expectedConnectionGenerationRaw !== null
+        ? this.sessionManager.read(
+            sessionId,
+            Number.isFinite(from) ? from : undefined,
+            tailBytes,
+            expectedGeneration,
+          )
+        : this.sessionManager.read(
+            sessionId,
+            Number.isFinite(from) ? from : undefined,
+            tailBytes,
+          );
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const code = err && typeof err === 'object' && 'code' in err
+        ? String((err as { code?: unknown }).code ?? '')
+        : '';
       const notFound = /not found/i.test(message);
-      res.writeHead(notFound ? 404 : 400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: message }));
+      const generationConflict = code === 'SESSION_GENERATION_CHANGED';
+      res.writeHead(notFound ? 404 : generationConflict ? 409 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message, ...(code ? { code } : {}) }));
     }
   }
 
@@ -3061,6 +3182,35 @@ export class DashboardServer {
       res.writeHead(notFound ? 404 : 400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: message }));
     }
+  }
+
+  private handleSessionResume(sessionId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    if (!this.sessionManager) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Session manager not available' }));
+      return;
+    }
+    if (!this.requireWritablePersistence(res)) return;
+    this.sessionManager.resume(sessionId, 'dashboard', true).then(result => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ resumed: true, metadata: result.metadata }));
+    }).catch(err => {
+      if (!this.engine.isPersistenceWritable()) {
+        this.requireWritablePersistence(res);
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      const code = err && typeof err === 'object' && 'code' in err
+        ? String((err as { code?: unknown }).code ?? '')
+        : '';
+      const notFound = /not found/i.test(message);
+      const conflict = code === 'SESSION_NOT_RESUMABLE'
+        || code === 'SESSION_RESUME_CONFLICT'
+        || /not an explicitly resumable|already has a runtime listener/i.test(message);
+      res.writeHead(notFound ? 404 : conflict ? 409 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message, ...(code ? { code } : {}) }));
+    });
   }
 
   private handleSessionUpdate(sessionId: string, req: IncomingMessage, res: ServerResponse): void {
@@ -4503,7 +4653,15 @@ export class DashboardServer {
       const persistence = this.engine.getPersistMetrics();
       const recovery = state.persistence_recovery;
       const recoveryReadiness = recovery ? assessPersistenceRecovery(recovery) : undefined;
-      const activeSessions = sessions.filter((session: any) => session.state === 'connected' || session.state === 'pending').length;
+      const sessionCounts = {
+        connected: sessions.filter((session: any) => session.state === 'connected').length,
+        waiting: sessions.filter((session: any) => session.state === 'pending').length,
+        resume_available: sessions.filter((session: any) => session.state === 'resume_available').length,
+        interrupted: sessions.filter((session: any) => session.state === 'interrupted').length,
+        error: sessions.filter((session: any) => session.state === 'error').length,
+        closed_exact: sessions.filter((session: any) => session.state === 'closed').length,
+      };
+      const activeSessions = sessionCounts.connected + sessionCounts.waiting;
       const runningAgents = agents.filter(agent => agent.status === 'running').length;
       const failedAgents = agents.filter(agent => agent.status === 'failed' || agent.status === 'interrupted').length;
       const issues = [
@@ -4535,7 +4693,10 @@ export class DashboardServer {
         sessions: {
           total: sessions.length,
           active: activeSessions,
+          // Compatibility v1: `closed` historically meant every inactive
+          // lifecycle, not only the literal closed state.
           closed: sessions.length - activeSessions,
+          ...sessionCounts,
         },
         actions: {
           pending: pending.length,

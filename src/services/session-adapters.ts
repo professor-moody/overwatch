@@ -21,6 +21,10 @@ import { createServer, connect, type Server, type Socket } from 'net';
 import type { AdapterHandle, SessionCapabilities } from '../types.js';
 import type { SessionAdapterFactory } from './session-manager.js';
 
+type AdapterConnectHandler = (info: {
+  connection_token: string;
+}) => void | Promise<void>;
+
 function adapterAbortSignal(options: Record<string, unknown>): AbortSignal | undefined {
   const signal = options.abort_signal;
   return signal && typeof signal === 'object' && 'aborted' in signal
@@ -257,7 +261,7 @@ export class SocketAdapter implements SessionAdapterFactory {
     const host = (options.bind_host as string | undefined) || (options.host as string);
     const port = options.port as number;
     const sessionId = options.sessionId as string;
-    const onConnect = options.onConnect as (() => void) | undefined;
+    const onConnect = options.onConnect as AdapterConnectHandler | undefined;
     const acceptMode = (options.accept_mode as 'single' | 'rearm' | undefined) || 'single';
 
     if (mode === 'listen') {
@@ -283,17 +287,21 @@ export class SocketAdapter implements SessionAdapterFactory {
     port: number,
     sessionId: string,
     acceptMode: 'single' | 'rearm',
-    onConnect?: () => void,
+    onConnect?: AdapterConnectHandler,
     abortSignal?: AbortSignal,
   ): Promise<AdapterHandle> {
     const self = this;
     return new Promise((resolve, reject) => {
       const dataCallbacks: Array<(chunk: string) => void> = [];
       const exitCallbacks: Array<(info: { exitCode?: number; signal?: number }) => void> = [];
-      const disconnectCallbacks: Array<(info?: { reason?: string }) => void> = [];
+      const disconnectCallbacks: Array<(info?: {
+        reason?: string;
+        connection_token?: string;
+      }) => void> = [];
       let activeSocket: Socket | null = null;
       let closed = false;
       let settled = false;
+      let acceptSequence = 0;
 
       const removeAbortListener = (): void => abortSignal?.removeEventListener('abort', onAbort);
       const closeTransport = (): void => {
@@ -321,23 +329,42 @@ export class SocketAdapter implements SessionAdapterFactory {
           return;
         }
         activeSocket = socket;
-        this.wireSocket(
-          socket,
-          dataCallbacks,
-          acceptMode === 'rearm' ? [] : exitCallbacks,
-          () => {
-            activeSocket = null;
-            if (acceptMode === 'rearm' && !closed) {
-              for (const cb of disconnectCallbacks) cb({ reason: 'socket_closed' });
+        socket.pause();
+        const connectionToken = `${sessionId || 'socket'}:accept:${++acceptSequence}`;
+        void Promise.resolve()
+          .then(() => onConnect?.({ connection_token: connectionToken }))
+          .then(() => {
+            if (closed || abortSignal?.aborted || activeSocket !== socket) {
+              socket.destroy();
               return;
             }
-            closed = true;
-            try { server.close(); } catch { /* best-effort */ }
-            if (sessionId) self.activeServers.delete(sessionId);
-            removeAbortListener();
-          },
-        );
-        if (onConnect) onConnect();
+            this.wireSocket(
+              socket,
+              dataCallbacks,
+              acceptMode === 'rearm' ? [] : exitCallbacks,
+              () => {
+                if (activeSocket === socket) activeSocket = null;
+                if (acceptMode === 'rearm' && !closed) {
+                  for (const cb of disconnectCallbacks) {
+                    cb({
+                      reason: 'socket_closed',
+                      connection_token: connectionToken,
+                    });
+                  }
+                  return;
+                }
+                closed = true;
+                try { server.close(); } catch { /* best-effort */ }
+                if (sessionId) self.activeServers.delete(sessionId);
+                removeAbortListener();
+              },
+            );
+            socket.resume();
+          })
+          .catch(() => {
+            if (activeSocket === socket) activeSocket = null;
+            socket.destroy();
+          });
       });
 
       server.on('error', (err: Error) => {
@@ -345,6 +372,17 @@ export class SocketAdapter implements SessionAdapterFactory {
           settled = true;
           removeAbortListener();
           reject(err);
+          return;
+        }
+        if (settled && !closed) {
+          closed = true;
+          if (activeSocket) {
+            activeSocket.destroy();
+            activeSocket = null;
+          }
+          if (sessionId) self.activeServers.delete(sessionId);
+          removeAbortListener();
+          for (const cb of exitCallbacks) cb({ exitCode: 1 });
         }
       });
 
@@ -358,6 +396,10 @@ export class SocketAdapter implements SessionAdapterFactory {
 
         const handle: AdapterHandle = {
           pid: undefined,
+          bound_port: (() => {
+            const address = server.address();
+            return address && typeof address !== 'string' ? address.port : port;
+          })(),
           capabilities: { ...SOCKET_CAPABILITIES },
           write(data: string) {
             if (!activeSocket || closed) throw new Error('Socket not connected');
@@ -373,7 +415,7 @@ export class SocketAdapter implements SessionAdapterFactory {
           onExit(cb: (info: { exitCode?: number; signal?: number }) => void) {
             exitCallbacks.push(cb);
           },
-          onDisconnect(cb: (info?: { reason?: string }) => void) {
+          onDisconnect(cb: (info?: { reason?: string; connection_token?: string }) => void) {
             disconnectCallbacks.push(cb);
           },
         };
@@ -389,7 +431,7 @@ export class SocketAdapter implements SessionAdapterFactory {
     host: string,
     port: number,
     _sessionId: string,
-    onConnect?: () => void,
+    onConnect?: AdapterConnectHandler,
     abortSignal?: AbortSignal,
   ): Promise<AdapterHandle> {
     return new Promise((resolve, reject) => {
@@ -412,37 +454,55 @@ export class SocketAdapter implements SessionAdapterFactory {
           onAbort();
           return;
         }
-        settled = true;
-        if (onConnect) onConnect();
-
-        const handle: AdapterHandle = {
-          pid: undefined,
-          capabilities: { ...SOCKET_CAPABILITIES },
-          write(data: string) {
-            if (closed) throw new Error('Socket closed');
-            socket.write(data);
-          },
-          close() {
-            abortSignal?.removeEventListener('abort', onAbort);
-            closed = true;
-            socket.destroy();
-          },
-          onData(cb: (chunk: string) => void) {
-            // Remove the early buffer callback on first real registration
-            if (earlyBuffer.length > 0 && dataCallbacks[0] !== cb) {
-              dataCallbacks.length = 0;
+        socket.pause();
+        const connectionToken = `${_sessionId || 'socket'}:connect:1`;
+        void Promise.resolve()
+          .then(() => onConnect?.({ connection_token: connectionToken }))
+          .then(() => {
+            if (settled || abortSignal?.aborted) {
+              onAbort();
+              return;
             }
-            dataCallbacks.push(cb);
-            // Flush buffered early data to the new callback
-            for (const chunk of earlyBuffer) cb(chunk);
-            earlyBuffer.length = 0;
-          },
-          onExit(cb: (info: { exitCode?: number; signal?: number }) => void) {
-            exitCallbacks.push(cb);
-          },
-        };
+            settled = true;
 
-        resolve(handle);
+            const handle: AdapterHandle = {
+              pid: undefined,
+              capabilities: { ...SOCKET_CAPABILITIES },
+              write(data: string) {
+                if (closed) throw new Error('Socket closed');
+                socket.write(data);
+              },
+              close() {
+                abortSignal?.removeEventListener('abort', onAbort);
+                closed = true;
+                socket.destroy();
+              },
+              onData(cb: (chunk: string) => void) {
+                // Remove the early buffer callback on first real registration
+                if (earlyBuffer.length > 0 && dataCallbacks[0] !== cb) {
+                  dataCallbacks.length = 0;
+                }
+                dataCallbacks.push(cb);
+                // Flush buffered early data to the new callback
+                for (const chunk of earlyBuffer) cb(chunk);
+                earlyBuffer.length = 0;
+              },
+              onExit(cb: (info: { exitCode?: number; signal?: number }) => void) {
+                exitCallbacks.push(cb);
+              },
+            };
+
+            socket.resume();
+            resolve(handle);
+          })
+          .catch(error => {
+            if (!settled) {
+              settled = true;
+              closed = true;
+              socket.destroy();
+              reject(error);
+            }
+          });
       });
 
       const onAbort = (): void => {

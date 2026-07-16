@@ -128,6 +128,63 @@ describe('ingestSessionResult success path', () => {
     expect(liveEdge().properties.session_closed_at).toBeDefined();
   });
 
+  it('keeps scalar generation attribution aligned with the remaining live reference', () => {
+    const engine = createEngine();
+    seedHostAndUser(engine);
+    const base = {
+      success: true,
+      confirmed: true,
+      target_node: 'host-10-10-10-1',
+      principal_node: 'user-root',
+    };
+    engine.ingestSessionResult({
+      ...base,
+      session_id: 'listener-a:g3',
+      listener_id: 'listener-a',
+      connection_generation: 3,
+    });
+    engine.ingestSessionResult({
+      ...base,
+      session_id: 'listener-b:g8',
+      listener_id: 'listener-b',
+      connection_generation: 8,
+    });
+
+    const liveEdge = () => engine.exportGraph().edges.find(
+      edge => edge.properties.type === 'HAS_SESSION',
+    )!;
+    expect(liveEdge().properties.live_session_refs).toEqual([
+      {
+        session_id: 'listener-a:g3',
+        listener_id: 'listener-a',
+        connection_generation: 3,
+      },
+      {
+        session_id: 'listener-b:g8',
+        listener_id: 'listener-b',
+        connection_generation: 8,
+      },
+    ]);
+
+    engine.onSessionClosed(
+      'listener-b:g8',
+      'host-10-10-10-1',
+      'user-root',
+    );
+    expect(liveEdge().properties).toMatchObject({
+      session_live: true,
+      session_id: 'listener-a:g3',
+      listener_id: 'listener-a',
+      connection_generation: 3,
+      live_session_ids: ['listener-a:g3'],
+      live_session_refs: [{
+        session_id: 'listener-a:g3',
+        listener_id: 'listener-a',
+        connection_generation: 3,
+      }],
+    });
+  });
+
   it('logs session_access_confirmed with correct top-level action_id and frontier_item_id', () => {
     const engine = createEngine();
     seedHostAndUser(engine);

@@ -717,6 +717,12 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   const sessionDescriptorUnsubscribe = sessionManager.onDurableEvent(event => {
     engine.recordSessionDescriptor(event.session);
   });
+  sessionManager.restorePersistedDescriptors(engine.getSessionDescriptors());
+  engine.setRuntimeOwnershipRecoveryHandler(() => {
+    reconcileRuntimeOwnership();
+    sessionManager.reconcileAfterStateRollback();
+    sessionManager.restorePersistedDescriptors(engine.getSessionDescriptors());
+  });
 
   const server = new McpServer({
     name: 'overwatch-mcp-server',
@@ -765,6 +771,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     },
     afterRollback: () => {
       sessionManager.reconcileAfterStateRollback();
+      sessionManager.restorePersistedDescriptors(engine.getSessionDescriptors());
       processTracker.restore(engine.getTrackedProcesses(), { notify: false });
     },
   });
@@ -1074,6 +1081,11 @@ export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
       await cleanup(() => new Promise<void>((resolve, reject) => {
         app.httpServer!.close(error => error ? reject(error) : resolve());
       }));
+    }
+    // Stop the idle reaper before the first shutdown descriptor read/write so
+    // maintenance cannot race the final durable session projection.
+    if (typeof app.sessionManager.beginShutdown === 'function') {
+      app.sessionManager.beginShutdown();
     }
     if (app.engine.isPersistenceWritable()) {
       await cleanup(() => {

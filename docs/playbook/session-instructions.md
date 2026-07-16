@@ -63,7 +63,7 @@ When dispatching agents with `register_agent`, give them this charter:
 > - `run_bash`, `run_tool` — auto-instrumented one-shot execution
 > - `parse_output`, `report_finding` — get findings into the graph
 > - `query_graph`, `get_skill` — context lookup
-> - `open_session` / `write_session` / `read_session` / `send_to_session` / `list_sessions` / `close_session` — sessions
+> - `open_session` / `write_session` / `read_session` / `send_to_session` / `list_sessions` / `resume_session` / `close_session` — sessions
 > - `submit_agent_transcript` — wrap-up handoff before you're closed out
 >
 > Validate first, log start, execute, parse/report, log completion. The primary will mark you done.

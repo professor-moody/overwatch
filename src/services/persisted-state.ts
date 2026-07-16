@@ -9,6 +9,7 @@ import type {
   EngagementConfig,
   InferenceRule,
   SessionCapabilities,
+  SessionConnectionState,
   SessionDefaultValidation,
   SessionKind,
   SessionState,
@@ -127,6 +128,9 @@ export interface PersistedSessionResumeIntentV1 {
   policy: 'none' | 'manual';
   requested: boolean;
   prior_state?: Extract<SessionState, 'pending' | 'connected'>;
+  /** Additive richer prior state; the preceding V1 reader ignores it while
+   * continuing to validate the legacy-compatible `prior_state`. */
+  recovery_prior_state?: Extract<SessionState, 'resume_available'>;
   recorded_at: string;
 }
 
@@ -134,13 +138,28 @@ export interface PersistedSessionResumeIntentV1 {
 export interface PersistedSessionDescriptorV1 {
   session_id: string;
   kind: SessionKind;
+  adapter?: SessionKind;
   transport: string;
-  lifecycle: SessionState;
+  /**
+   * Kept within the original V1 enum so the preceding binary can still open a
+   * PR9-written state file. New recovery-only states are carried additively in
+   * `recovery_lifecycle`.
+   */
+  lifecycle: Extract<SessionState, 'pending' | 'connected' | 'closed' | 'error'>;
+  recovery_lifecycle?: Extract<SessionState, 'resume_available' | 'interrupted'>;
+  listener_id?: string;
+  connection_generation?: number;
+  connection_id?: string;
+  connection_started_at?: string;
+  last_connection_id?: string;
+  last_connection_state?: SessionConnectionState;
+  last_connection_closed_at?: string;
   mode?: 'connect' | 'listen';
   bind_host?: string;
   advertise_host?: string;
   accept_mode?: 'single' | 'rearm';
   reachability_warnings?: string[];
+  auth_status?: 'shell_confirmed' | 'connected_unconfirmed' | 'auth_prompt' | 'auth_failed';
   title: string;
   host?: string;
   user?: string;
@@ -680,10 +699,47 @@ function validateSessionDescriptors(value: unknown, path: string): void {
     if (!['ssh', 'local_pty', 'socket'].includes(requireString(descriptor.kind, `${path}[${index}].kind`))) {
       throw new PersistedStateVersionError(`${path}[${index}].kind is invalid`, CURRENT_STATE_VERSION, 'invalid');
     }
+    if (descriptor.adapter !== undefined && !['ssh', 'local_pty', 'socket'].includes(
+      requireString(descriptor.adapter, `${path}[${index}].adapter`),
+    )) {
+      throw new PersistedStateVersionError(`${path}[${index}].adapter is invalid`, CURRENT_STATE_VERSION, 'invalid');
+    }
     requireString(descriptor.transport, `${path}[${index}].transport`);
-    if (!['pending', 'connected', 'closed', 'error'].includes(requireString(descriptor.lifecycle, `${path}[${index}].lifecycle`))) {
+    const persistedLifecycle = requireString(
+      descriptor.lifecycle,
+      `${path}[${index}].lifecycle`,
+    );
+    if (!['pending', 'connected', 'closed', 'error'].includes(persistedLifecycle)) {
       throw new PersistedStateVersionError(`${path}[${index}].lifecycle is invalid`, CURRENT_STATE_VERSION, 'invalid');
     }
+    const recoveryLifecycle = descriptor.recovery_lifecycle === undefined
+      ? undefined
+      : requireString(
+        descriptor.recovery_lifecycle,
+        `${path}[${index}].recovery_lifecycle`,
+      );
+    if (
+      recoveryLifecycle !== undefined
+      && recoveryLifecycle !== 'resume_available'
+      && recoveryLifecycle !== 'interrupted'
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].recovery_lifecycle is invalid`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (
+      (recoveryLifecycle === 'resume_available' && persistedLifecycle !== 'closed')
+      || (recoveryLifecycle === 'interrupted' && persistedLifecycle !== 'error')
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].recovery_lifecycle has an incompatible V1 lifecycle fallback`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    const lifecycle = recoveryLifecycle ?? persistedLifecycle;
     requireString(descriptor.title, `${path}[${index}].title`, true);
     requireIsoDate(descriptor.started_at, `${path}[${index}].started_at`);
     requireIsoDate(descriptor.last_activity_at, `${path}[${index}].last_activity_at`);
@@ -700,6 +756,9 @@ function validateSessionDescriptors(value: unknown, path: string): void {
     }
     for (const field of [
       'transport',
+      'listener_id',
+      'connection_id',
+      'last_connection_id',
       'bind_host',
       'advertise_host',
       'host',
@@ -716,6 +775,56 @@ function validateSessionDescriptors(value: unknown, path: string): void {
       if (descriptor[field] !== undefined) {
         requireString(descriptor[field], `${path}[${index}].${field}`, field === 'notes');
       }
+    }
+    const connectionGeneration = descriptor.connection_generation === undefined
+      ? undefined
+      : requireSafeInteger(
+        descriptor.connection_generation,
+        `${path}[${index}].connection_generation`,
+      );
+    if (connectionGeneration !== undefined) {
+      const generation = connectionGeneration;
+      if (generation < 0) {
+        throw new PersistedStateVersionError(
+          `${path}[${index}].connection_generation must be non-negative`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+    }
+    for (const field of [
+      'connection_started_at',
+      'last_connection_closed_at',
+    ] as const) {
+      if (descriptor[field] !== undefined) {
+        requireIsoDate(descriptor[field], `${path}[${index}].${field}`);
+      }
+    }
+    if (descriptor.last_connection_state !== undefined && ![
+      'disconnected',
+      'interrupted',
+      'closed',
+    ].includes(requireString(
+      descriptor.last_connection_state,
+      `${path}[${index}].last_connection_state`,
+    ))) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].last_connection_state is invalid`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (descriptor.auth_status !== undefined && ![
+      'shell_confirmed',
+      'connected_unconfirmed',
+      'auth_prompt',
+      'auth_failed',
+    ].includes(requireString(descriptor.auth_status, `${path}[${index}].auth_status`))) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].auth_status is invalid`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
     }
     if (descriptor.port !== undefined) {
       const port = requireSafeInteger(descriptor.port, `${path}[${index}].port`);
@@ -771,7 +880,77 @@ function validateSessionDescriptors(value: unknown, path: string): void {
     )) {
       throw new PersistedStateVersionError(`${path}[${index}].resume_intent.prior_state is invalid`, CURRENT_STATE_VERSION, 'invalid');
     }
+    if (
+      resume.recovery_prior_state !== undefined
+      && requireString(
+        resume.recovery_prior_state,
+        `${path}[${index}].resume_intent.recovery_prior_state`,
+      ) !== 'resume_available'
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].resume_intent.recovery_prior_state is invalid`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (
+      resume.recovery_prior_state !== undefined
+      && lifecycle !== 'resume_available'
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].resume_intent.recovery_prior_state requires resume_available lifecycle`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
     requireIsoDate(resume.recorded_at, `${path}[${index}].resume_intent.recorded_at`);
+    if (
+      lifecycle === 'resume_available'
+      && (
+        resume.policy !== 'manual'
+        || resume.requested !== true
+        || descriptor.kind !== 'socket'
+        || descriptor.mode !== 'listen'
+        || descriptor.accept_mode !== 'rearm'
+      )
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}] resume_available requires a requested manual rearm listener`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (lifecycle !== 'connected' && descriptor.connection_id !== undefined) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].connection_id is only valid for connected lifecycle`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (
+      lifecycle === 'connected'
+      && connectionGeneration !== undefined
+      && connectionGeneration < 1
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}] connected lifecycle requires connection_generation >= 1`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (
+      descriptor.connection_id !== undefined
+      && (
+        connectionGeneration === undefined
+        || connectionGeneration < 1
+      )
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].connection_id requires a positive connection_generation`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
   }
 }
 

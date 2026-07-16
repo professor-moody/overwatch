@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { setColorEnabled, formatTable, truncate, keyValues } from '../operator/format.js';
 import { resolveClientOptions, createClient, ApiError, type ApiClient } from '../operator/client.js';
 import { READ_COMMANDS, WRITE_COMMANDS } from '../operator/commands.js';
-import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents, renderRecovery } from '../operator/render.js';
+import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents, renderRecovery, renderSessions } from '../operator/render.js';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -36,6 +36,18 @@ describe('format', () => {
     const out = keyValues([['a', '1'], ['bbb', '2']]);
     expect(out).toContain('a:');
     expect(out).toContain('bbb:');
+  });
+
+  it('renders recovered session ownership from claimed_by', () => {
+    const output = renderSessions([{
+      id: 'listener-1',
+      kind: 'socket',
+      state: 'resume_available',
+      claimed_by: 'task-owner',
+      connection_generation: 2,
+    }]);
+    expect(output).toContain('task-owner');
+    expect(output).toContain('resume_available');
   });
 });
 
@@ -203,6 +215,24 @@ function recordingClient(response: unknown = {}): { client: ApiClient; calls: Ar
 }
 
 describe('write commands', () => {
+  it('session resume posts to the explicit listener-resume endpoint', async () => {
+    const { client, calls } = recordingClient({
+      resumed: true,
+      metadata: { id: 'listener-1', state: 'pending' },
+    });
+    const result = await WRITE_COMMANDS.session.run({
+      client,
+      args: ['resume', 'listener-1'],
+    });
+    expect(calls).toEqual([{
+      path: '/api/sessions/listener-1/resume',
+      body: {},
+    }]);
+    expect(result.text).toContain('listener-1');
+    await expect(WRITE_COMMANDS.session.run({ client, args: ['resume'] }))
+      .rejects.toThrow(/session-id/);
+  });
+
   it('config reconcile posts the exact inspected hashes', async () => {
     const { client, calls } = recordingClient({ resolved: true });
     await WRITE_COMMANDS.config.run({

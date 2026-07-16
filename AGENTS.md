@@ -69,6 +69,7 @@ A standalone terminal operator client over the same `/api/*` surface — for ope
 - **Always pass `default_validation` to `open_session`** for SSH/socket-connect sessions: `{ technique, target_ip?, target_url?, allow_unverified_scope? }`. Every subsequent `send_to_session` inherits it and runs the full action lifecycle. Without it, sends require a per-call `technique`.
 - **`send_to_session` is the instrumented send.** It validates scope, persists captured output as evidence, and emits action_started/completed. Use `write_session` only for partial I/O (password prompts, REPL navigation) where lifecycle overhead is wrong.
 - **A closed session is dead.** Once a shell exits or the watchdog reaps the session, that `HAS_SESSION` edge is marked `session_live: false`. Frontier scoring, path reachability, and objective achievement ignore dead sessions.
+- **Recovered rearm listeners require explicit Resume.** They return as `resume_available` after restart; call `resume_session` to rebind one. Each accepted connection gets a fresh generation and `HAS_SESSION` reference, and disconnect closes only that generation.
 - **Long-running sub-agents must call `agent_heartbeat({ task_id })`** periodically (default TTL 120s). Otherwise the watchdog interrupts the task and releases its frontier lease.
 
 ### Visibility & audit
@@ -100,7 +101,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 > - `acknowledge_agent_directive` — confirm a directive you received, then act on it
 > - `query_graph` — explore the graph if you need more context
 > - `get_skill` — methodology guidance
-> - `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `close_session` — sessions
+> - `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `resume_session`, `close_session` — sessions
 > - `resize_session`, `signal_session`, `update_session` — session control
 > - `get_evidence` — retrieve full-fidelity evidence by ID
 >
@@ -136,7 +137,7 @@ Dispatch assigns each agent a typed **archetype** (bounded tool surface + missio
 
 ## Tool Reference
 
-**82 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the **live** tool table (the authoritative count + set), engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP) and may lag the live set; treat the generated prompt as source of truth. Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
+**83 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the **live** tool table (the authoritative count + set), engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP) and may lag the live set; treat the generated prompt as source of truth. Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
@@ -213,10 +214,11 @@ Dispatch assigns each agent a typed **archetype** (bounded tool surface + missio
 | `track_process` | Track long-running scan PIDs | Background nmap, etc. |
 | `check_processes` | Refresh tracked process status | After scans may have finished |
 | `open_session` | Create persistent interactive session (SSH, PTY, socket). Pass `default_validation` so subsequent sends inherit scope/technique. | Long-lived shell, reverse shell catch |
-| `write_session` | Write raw bytes to a session — I/O primitive, **bypasses the action lifecycle**. | Partial input (passwords, REPL nav) |
-| `read_session` | Cursor-based read from session buffer | Incremental output |
+| `write_session` | Write raw bytes to a session — I/O primitive, **bypasses the action lifecycle**. Pass the last connection ID/generation to reject stale reconnects. | Partial input (passwords, REPL nav) |
+| `read_session` | Generation-aware cursor read from session buffer | Incremental output |
 | `send_to_session` | **Instrumented** command execution: validates scope, persists evidence, emits action_started/completed. | All command-shaped sends; the audited path |
 | `list_sessions` | List sessions (`{ total, active, sessions }`) | Session inventory |
+| `resume_session` | Explicitly rebind a recovered rearm listener | When a listener is `resume_available` after restart |
 | `update_session` | Metadata, ownership, capabilities | After shell upgrade |
 | `resize_session` | PTY terminal size | After layout changes |
 | `signal_session` | SIGINT, SIGTERM, etc. | Cancel hung commands |

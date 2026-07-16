@@ -215,6 +215,10 @@ export async function closeSession(id: string): Promise<{ metadata: SessionInfo;
   return fetchJson(`/api/sessions/${id}/close`, { method: 'POST' });
 }
 
+export async function resumeSession(id: string): Promise<{ resumed: true; metadata: SessionInfo }> {
+  return fetchJson(`/api/sessions/${id}/resume`, { method: 'POST' });
+}
+
 export async function updateSession(id: string, body: { title?: string; notes?: string }): Promise<{ metadata: SessionInfo }> {
   return fetchJson(`/api/sessions/${id}`, {
     method: 'PATCH',
@@ -222,10 +226,19 @@ export async function updateSession(id: string, body: { title?: string; notes?: 
   });
 }
 
-export async function getSessionBuffer(id: string, params?: { from?: number; tailBytes?: number }): Promise<SessionBufferResponse> {
+export async function getSessionBuffer(id: string, params?: {
+  from?: number;
+  tailBytes?: number;
+  connectionId?: string;
+  connectionGeneration?: number;
+}): Promise<SessionBufferResponse> {
   const qs = new URLSearchParams();
   if (params?.from !== undefined) qs.set('from', String(params.from));
   if (params?.tailBytes !== undefined) qs.set('tail_bytes', String(params.tailBytes));
+  if (params?.connectionId !== undefined) qs.set('connection_id', params.connectionId);
+  if (params?.connectionGeneration !== undefined) {
+    qs.set('connection_generation', String(params.connectionGeneration));
+  }
   const q = qs.toString();
   return fetchJson(`/api/sessions/${id}/buffer${q ? `?${q}` : ''}`);
 }

@@ -54,6 +54,7 @@ overwatch <command> [options]
 | `overwatch answer <query-id> <answer text…>` | Answer an agent's question |
 | `overwatch deploy <target> [--archetype TYPE]` | Quick-deploy an agent at a raw IP/CIDR/domain (auto-scopes) |
 | `overwatch dispatch --node <id…> [--skill S] [--archetype A]` | Dispatch an agent at existing graph node(s) |
+| `overwatch session resume <session-id>` | Explicitly rebind a recovered `resume_available` listener |
 | `overwatch config reconcile <use_file\|use_state> --file-hash SHA256 --state-hash SHA256` | Resolve an active config divergence using an explicit authority choice |
 
 A refusal (e.g. a frontier item already leased, or an out-of-scope target) prints

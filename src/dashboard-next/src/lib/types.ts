@@ -134,8 +134,17 @@ export type AbortCondition = CampaignAbortCondition;
 export interface SessionInfo {
   id: string;
   kind: string;
+  adapter?: string;
   transport?: string;
-  state: 'pending' | 'connected' | 'closed' | 'error';
+  state: 'pending' | 'connected' | 'resume_available' | 'interrupted' | 'closed' | 'error';
+  listener_id?: string;
+  connection_generation?: number;
+  connection_id?: string;
+  connection_started_at?: string;
+  last_connection_id?: string;
+  last_connection_state?: 'disconnected' | 'interrupted' | 'closed';
+  last_connection_closed_at?: string;
+  resume_policy?: 'none' | 'manual';
   mode?: 'connect' | 'listen';
   bind_host?: string;
   advertise_host?: string;
@@ -178,10 +187,13 @@ export interface SessionInfo {
 
 export interface SessionBufferResponse {
   session_id: string;
+  connection_id?: string;
+  connection_generation?: number;
   start_pos: number;
   end_pos: number;
   text: string;
   truncated: boolean;
+  cursor_reset?: boolean;
 }
 
 // --- Pending Actions ---
@@ -725,7 +737,14 @@ export interface DashboardReadinessSummary {
   sessions: {
     total: number;
     active: number;
+    /** Compatibility v1: all inactive lifecycle states. */
     closed: number;
+    connected?: number;
+    waiting?: number;
+    resume_available?: number;
+    interrupted?: number;
+    error?: number;
+    closed_exact?: number;
   };
   actions: {
     pending: number;

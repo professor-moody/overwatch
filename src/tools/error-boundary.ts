@@ -57,7 +57,8 @@ export function withErrorBoundary<T extends (...args: any[]) => any>(
 
 export type ErrorClassification = 'validation_error' | 'not_found' | 'scope_violation' | 'internal_error';
 
-function classifyError(message: string): ErrorClassification {
+function classifyError(message: string, code?: string): ErrorClassification {
+  if (code === 'SESSION_GENERATION_CHANGED') return 'validation_error';
   const lower = message.toLowerCase();
   if (lower.includes('not found') || lower.includes('does not exist') || lower.includes('no such')) return 'not_found';
   if (lower.includes('not in scope') || lower.includes('scope violation') || lower.includes('out of scope')) return 'scope_violation';
@@ -80,7 +81,7 @@ function handleError(toolName: string, err: unknown) {
       text: JSON.stringify({
         success: false,
         error: message,
-        classification: classifyError(message),
+        classification: classifyError(message, code),
         ...(code ? { code } : {}),
         tool: toolName,
       }),

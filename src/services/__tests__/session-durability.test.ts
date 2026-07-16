@@ -135,7 +135,9 @@ describe('session descriptor transaction boundary', () => {
     expect(restarted.getSessionDescriptors()).toContainEqual(expect.objectContaining({
       session_id: created.metadata.id,
       lifecycle: 'error',
-      closed_at: expect.any(String),
+      recovery_lifecycle: 'interrupted',
+      closed_at: undefined,
+      last_connection_state: 'interrupted',
       resume_intent: expect.objectContaining({
         policy: 'none',
         requested: false,
@@ -309,7 +311,7 @@ describe('session descriptor transaction boundary', () => {
       success: true,
       target_node: 'session-target',
       principal_node: 'session-principal',
-      session_id: created.metadata.id,
+      session_id: created.metadata.connection_id,
     });
     engine.flushNow();
     const baseCheckpoint = (JSON.parse(readFileSync(statePath, 'utf-8')) as {
@@ -372,7 +374,7 @@ describe('session descriptor transaction boundary', () => {
       success: true,
       target_node: 'post-commit-target',
       principal_node: 'post-commit-principal',
-      session_id: created.metadata.id,
+      session_id: created.metadata.connection_id,
     });
     first.flushNow();
     const baseCheckpoint = (JSON.parse(readFileSync(statePath, 'utf-8')) as {
@@ -538,14 +540,27 @@ describe('session descriptor transaction boundary', () => {
     expect(liveDescriptors.find(
       descriptor => descriptor.session_id === pending.metadata.id,
     )).toMatchObject({
-      lifecycle: 'pending',
-      resume_intent: { policy: 'manual', requested: true, prior_state: 'pending' },
+      lifecycle: 'closed',
+      recovery_lifecycle: 'resume_available',
+      resume_intent: {
+        policy: 'manual',
+        requested: true,
+        prior_state: 'pending',
+        recovery_prior_state: 'resume_available',
+      },
     });
     expect(liveDescriptors.find(
       descriptor => descriptor.session_id === connected.metadata.id,
     )).toMatchObject({
-      lifecycle: 'connected',
-      resume_intent: { policy: 'manual', requested: true, prior_state: 'connected' },
+      lifecycle: 'closed',
+      recovery_lifecycle: 'resume_available',
+      last_connection_state: 'interrupted',
+      resume_intent: {
+        policy: 'manual',
+        requested: true,
+        prior_state: 'connected',
+        recovery_prior_state: 'resume_available',
+      },
     });
     expect(liveDescriptors.find(
       descriptor => descriptor.session_id === ordinary.metadata.id,
@@ -572,14 +587,27 @@ describe('session descriptor transaction boundary', () => {
     expect(descriptors.find(
       descriptor => descriptor.session_id === pending.metadata.id,
     )).toMatchObject({
-      lifecycle: 'error',
-      resume_intent: { policy: 'manual', requested: true, prior_state: 'pending' },
+      lifecycle: 'closed',
+      recovery_lifecycle: 'resume_available',
+      resume_intent: {
+        policy: 'manual',
+        requested: true,
+        prior_state: 'pending',
+        recovery_prior_state: 'resume_available',
+      },
     });
     expect(descriptors.find(
       descriptor => descriptor.session_id === connected.metadata.id,
     )).toMatchObject({
-      lifecycle: 'error',
-      resume_intent: { policy: 'manual', requested: true, prior_state: 'connected' },
+      lifecycle: 'closed',
+      recovery_lifecycle: 'resume_available',
+      last_connection_state: 'interrupted',
+      resume_intent: {
+        policy: 'manual',
+        requested: true,
+        prior_state: 'connected',
+        recovery_prior_state: 'resume_available',
+      },
     });
     expect(descriptors.find(
       descriptor => descriptor.session_id === ordinary.metadata.id,

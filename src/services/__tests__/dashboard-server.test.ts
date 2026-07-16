@@ -1053,6 +1053,40 @@ describe('DashboardServer', () => {
     expect(payload.sessions).toHaveLength(2);
   });
 
+  it('readiness reports session lifecycle buckets without treating recovery states as closed', () => {
+    (dashboard as any).sessionManager = {
+      list: () => [
+        { id: 'connected', state: 'connected' },
+        { id: 'waiting', state: 'pending' },
+        { id: 'resume', state: 'resume_available' },
+        { id: 'interrupted', state: 'interrupted' },
+        { id: 'error', state: 'error' },
+        { id: 'closed', state: 'closed' },
+      ],
+    };
+    const res = {
+      statusCode: 0,
+      body: '',
+      writeHead(statusCode: number) { this.statusCode = statusCode; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveReadiness(res);
+    const payload = JSON.parse(res.body);
+    expect(payload.sessions).toEqual({
+      total: 6,
+      active: 2,
+      connected: 1,
+      waiting: 1,
+      resume_available: 1,
+      interrupted: 1,
+      error: 1,
+      closed: 4,
+      closed_exact: 1,
+    });
+  });
+
   it('handleSessionClose closes a session through the manager', () => {
     const close = vi.fn(() => ({
       metadata: { id: 'abc-123', state: 'closed', title: 'Shell', kind: 'pty' },
@@ -1075,6 +1109,55 @@ describe('DashboardServer', () => {
     expect(close).toHaveBeenCalledWith('abc-123', 'dashboard', true);
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).metadata.state).toBe('closed');
+  });
+
+  it('handleSessionResume returns recovered listener metadata and maps conflicts', async () => {
+    const resume = vi.fn()
+      .mockResolvedValueOnce({
+        metadata: {
+          id: 'abc-123',
+          state: 'pending',
+          listener_id: 'abc-123',
+          connection_generation: 2,
+        },
+      })
+      .mockRejectedValueOnce(Object.assign(
+        new Error('Session abc-123 is not an explicitly resumable listener.'),
+        { code: 'SESSION_NOT_RESUMABLE' },
+      ));
+    (dashboard as any).sessionManager = { resume };
+    const request = { headers: {}, url: '/api/sessions/abc-123/resume' } as any;
+    const response = () => ({
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '',
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    });
+
+    const ok = response();
+    (dashboard as any).handleSessionResume('abc-123', request, ok);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(ok.statusCode).toBe(200);
+    expect(JSON.parse(ok.body)).toMatchObject({
+      resumed: true,
+      metadata: {
+        id: 'abc-123',
+        state: 'pending',
+        connection_generation: 2,
+      },
+    });
+    expect(resume).toHaveBeenCalledWith('abc-123', 'dashboard', true);
+
+    const conflict = response();
+    (dashboard as any).handleSessionResume('abc-123', request, conflict);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(conflict.statusCode).toBe(409);
+    expect(JSON.parse(conflict.body).code).toBe('SESSION_NOT_RESUMABLE');
   });
 
   it('handleSessionUpdate updates title and notes through the manager', async () => {
@@ -1178,6 +1261,73 @@ describe('DashboardServer', () => {
     expect(read).toHaveBeenCalledWith('abc-123', undefined, 2048);
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).text).toContain('whoami');
+  });
+
+  it('serveSessionBuffer addresses the expected connection generation', () => {
+    const read = vi.fn(() => ({
+      session_id: 'abc-123',
+      connection_id: 'abc-123:g2',
+      connection_generation: 2,
+      start_pos: 0,
+      end_pos: 0,
+      text: '',
+      truncated: false,
+    }));
+    (dashboard as any).sessionManager = { read };
+    const res = {
+      statusCode: 0,
+      body: '',
+      writeHead(statusCode: number) { this.statusCode = statusCode; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveSessionBuffer(
+      'abc-123',
+      '/api/sessions/abc-123/buffer?connection_id=abc-123%3Ag2&connection_generation=2',
+      res,
+    );
+
+    expect(read).toHaveBeenCalledWith(
+      'abc-123',
+      undefined,
+      undefined,
+      {
+        connection_id: 'abc-123:g2',
+        connection_generation: 2,
+      },
+    );
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('serveSessionBuffer returns a generation conflict code for stale readers', () => {
+    const stale = Object.assign(
+      new Error('Session abc-123 connection generation changed.'),
+      { code: 'SESSION_GENERATION_CHANGED' },
+    );
+    (dashboard as any).sessionManager = {
+      read: vi.fn(() => {
+        throw stale;
+      }),
+    };
+    const res = {
+      statusCode: 0,
+      body: '',
+      writeHead(statusCode: number) { this.statusCode = statusCode; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveSessionBuffer(
+      'abc-123',
+      '/api/sessions/abc-123/buffer?connection_id=abc-123%3Ag1',
+      res,
+    );
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'SESSION_GENERATION_CHANGED',
+    });
   });
 
   it('serveFindingContext returns affected nodes and evidence chains', () => {
@@ -1314,6 +1464,56 @@ describe('DashboardServer', () => {
     listeners['close']?.[0]?.();
     expect((dashboard as any).sessionPollers.has(mockWs)).toBe(false);
 
+    vi.useRealTimers();
+  });
+
+  it('closes a terminal WebSocket when its connection generation ends', () => {
+    vi.useFakeTimers();
+    let meta = {
+      id: 'sess-1',
+      state: 'connected',
+      title: 'Shell',
+      kind: 'socket',
+      connection_id: 'sess-1:g1',
+      connection_generation: 1,
+    };
+    (dashboard as any).sessionManager = {
+      getSession: () => meta,
+      read: vi.fn().mockReturnValue({
+        text: '',
+        end_pos: 0,
+        start_pos: 0,
+        truncated: false,
+      }),
+      write: vi.fn(),
+      resize: vi.fn(),
+    };
+    const listeners: Record<string, Function[]> = {};
+    const mockWs = {
+      close: vi.fn(),
+      on: vi.fn((event: string, cb: Function) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(cb);
+      }),
+      send: vi.fn(),
+      readyState: WebSocket.OPEN,
+    };
+
+    (dashboard as any).handleSessionConnection(mockWs, 'sess-1');
+    meta = {
+      ...meta,
+      connection_id: 'sess-1:g2',
+      connection_generation: 2,
+    };
+    vi.advanceTimersByTime(60);
+
+    expect(mockWs.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'session_closed',
+      connection_id: 'sess-1:g1',
+    }));
+    expect(mockWs.close).toHaveBeenCalledWith(4410, 'Session generation ended');
+    expect((dashboard as any).sessionPollers.has(mockWs)).toBe(false);
+    listeners.close?.[0]?.();
     vi.useRealTimers();
   });
 
@@ -2230,7 +2430,14 @@ describe('DashboardServer', () => {
       const token = 'remote token+/=?';
       process.env.OVERWATCH_DASHBOARD_TOKEN = token;
       const sessionId = '00000000-0000-4000-8000-000000000001';
-      const session = { id: sessionId, kind: 'pty', state: 'connected', title: 'Remote shell' };
+      const session = {
+        id: sessionId,
+        kind: 'pty',
+        state: 'connected',
+        title: 'Remote shell',
+        connection_id: `${sessionId}:g2`,
+        connection_generation: 2,
+      };
       (nlDashboard as any).sessionManager = {
         list: () => [session],
         getSession: (id: string) => id === sessionId ? session : null,
@@ -2303,7 +2510,13 @@ describe('DashboardServer', () => {
         socket.once('error', reject);
       });
       const main = await openWithFirstMessage('/ws');
-      const sessionSocket = await openWithFirstMessage(`/ws/session/${sessionId}`);
+      const sessionQuery = new URLSearchParams({
+        connection_id: session.connection_id,
+        connection_generation: String(session.connection_generation),
+      });
+      const sessionSocket = await openWithFirstMessage(
+        `/ws/session/${sessionId}?${sessionQuery.toString()}`,
+      );
       const action = await openWithFirstMessage('/ws/actions/act-live/output');
       expect(main.message.type).toBe('full_state');
       expect(main.message.data.graph.nodes.every((node: any) =>
@@ -2311,6 +2524,21 @@ describe('DashboardServer', () => {
       )).toBe(true);
       expect(sessionSocket.message.type).toBe('session_meta');
       expect(action.message).toMatchObject({ type: 'output', text: 'live output' });
+
+      const mismatchedGenerationClose = await new Promise<number>((resolve, reject) => {
+        const query = new URLSearchParams({
+          token,
+          connection_id: `${sessionId}:g1`,
+          connection_generation: '1',
+        });
+        const socket = new WebSocket(`${wsBase}/ws/session/${sessionId}?${query.toString()}`, {
+          headers: { Origin: origin },
+        });
+        socket.once('message', () => reject(new Error('stale generation received session output')));
+        socket.once('close', code => resolve(code));
+        socket.once('error', () => {});
+      });
+      expect(mismatchedGenerationClose).toBe(4409);
 
       const remoteHost = `ops.example.test:${port}`;
       const remoteOrigin = `http://${remoteHost}`;
