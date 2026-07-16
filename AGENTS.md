@@ -95,8 +95,8 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 > - `parse_output` — supported raw tool output → graph artifacts
 > - `report_finding` — report every discovery immediately
 > - `submit_agent_transcript` — wrap-up handoff to the primary (call before being closed out)
-> - `agent_heartbeat` — refresh the task lease; **also check the response for `pending_directive`** (operator steering — `acknowledge_agent_directive` then honor it) **and `pending_answer`** (the reply to a question you asked)
-> - `ask_operator` — at a genuine fork you can't resolve, ask the operator and wait (the answer arrives on a later heartbeat as `pending_answer`, matched by `query_id`)
+> - `agent_heartbeat` — refresh the task lease; **also check the response for `pending_directive`** (operator steering — `acknowledge_agent_directive` then honor it) **and `pending_answer`** (the reply to a question you asked). After acting on an answer, pass its query ID as `acknowledged_query_id` on a later heartbeat.
+> - `ask_operator` — at a genuine fork you can't resolve, ask the operator and wait (the answer arrives on a later heartbeat as `pending_answer`, matched by `query_id`, and is redelivered until acknowledged)
 > - `acknowledge_agent_directive` — confirm a directive you received, then act on it
 > - `query_graph` — explore the graph if you need more context
 > - `get_skill` — methodology guidance

@@ -73,6 +73,15 @@ import type {
 import type { DurableStatePatchV1 } from './durable-state-patch.js';
 import type { ActivityAppendPayloadV1 } from './activity-append.js';
 import {
+  agentLabelOf,
+  coordinationRecoveryWarning,
+  mergeCoordinationRecoveryWarnings,
+  normalizeAgentTask,
+  resolveAgentIdentity,
+  taskIdOf,
+  type CoordinationRecoveryWarning,
+} from './agent-identity.js';
+import {
   acquireStateMigrationLease,
   activateStateMigration,
   assertStateMigrationWriteAllowed,
@@ -1174,6 +1183,7 @@ export class StatePersistence {
       graph: this.ctx.graph.export(),
       activityLog: this.ctx.activityLog,
       agents: Array.from(this.ctx.agents.entries()),
+      coordinationRecoveryWarnings: this.ctx.coordinationRecoveryWarnings,
       campaigns: Array.from(this.ctx.campaigns.entries()),
       agentDirectives: Array.from(this.ctx.agentDirectives.entries()),
       approvalRequests: Array.from(this.ctx.approvalRequests.entries()),
@@ -2070,6 +2080,7 @@ export class StatePersistence {
       graph: this.ctx.graph.export(),
       activityLog: this.ctx.activityLog,
       agents: Array.from(this.ctx.agents.entries()),
+      coordinationRecoveryWarnings: this.ctx.coordinationRecoveryWarnings,
       campaigns: Array.from(this.ctx.campaigns.entries()),
       agentDirectives: Array.from(this.ctx.agentDirectives.entries()),
       approvalRequests: Array.from(this.ctx.approvalRequests.entries()),
@@ -2149,20 +2160,202 @@ export class StatePersistence {
       ? JSON.parse(JSON.stringify(data.activityLog)) as ActivityLogEntry[]
       : (data.activityLog || []).map((entry: unknown) =>
           normalizeActivityLogEntry(entry as Partial<ActivityLogEntry> & { description: string }));
-    this.ctx.agents = new Map(data.agents || []);
+    const normalizedAgents = new Map<string, import('../types.js').AgentTask>();
+    for (const entry of data.agents || []) {
+      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string') continue;
+      const task = normalizeAgentTask(entry[1], entry[0]);
+      normalizedAgents.set(taskIdOf(task), task);
+    }
+    this.ctx.agents = normalizedAgents;
+    const coordinationWarnings: CoordinationRecoveryWarning[] = Array.isArray(data.coordinationRecoveryWarnings)
+      ? JSON.parse(JSON.stringify(data.coordinationRecoveryWarnings))
+      : [];
+    const resolveOwner = (
+      relationship: string,
+      reference: string | undefined,
+      payload: unknown,
+      preserveMissingTaskId = false,
+      preservedAgentLabel?: string,
+    ): { task_id?: string; agent_label?: string; warning?: CoordinationRecoveryWarning } => {
+      if (!reference) return {};
+      const resolution = resolveAgentIdentity(this.ctx.agents.values(), reference);
+      if (resolution.status === 'exact' || resolution.status === 'unique_legacy_label') {
+        return {
+          task_id: taskIdOf(resolution.task),
+          agent_label: agentLabelOf(resolution.task),
+        };
+      }
+      if (resolution.status === 'missing') {
+        return preserveMissingTaskId
+          ? { task_id: reference, agent_label: preservedAgentLabel }
+          : {
+              warning: coordinationRecoveryWarning({
+                relationship,
+                reference,
+                payload,
+              }),
+            };
+      }
+      return {
+        warning: coordinationRecoveryWarning({
+          relationship,
+          reference,
+          ...(resolution.status === 'ambiguous_legacy_label'
+            ? { candidate_task_ids: resolution.candidate_task_ids }
+            : {}),
+          payload,
+        }),
+      };
+    };
     this.ctx.campaigns = new Map(data.campaigns || []);
-    this.ctx.agentDirectives = new Map(data.agentDirectives || []);
-    this.ctx.approvalRequests = new Map(data.approvalRequests || []);
+    const normalizedDirectives = new Map<string, import('../types.js').AgentDirective[]>();
+    for (const entry of data.agentDirectives || []) {
+      if (!Array.isArray(entry) || entry.length !== 2 || !Array.isArray(entry[1])) continue;
+      for (const rawDirective of entry[1]) {
+        if (!rawDirective || typeof rawDirective !== 'object') continue;
+        const directive = JSON.parse(JSON.stringify(rawDirective)) as import('../types.js').AgentDirective;
+        const owner = resolveOwner(
+          `directive:${directive.id}`,
+          directive.task_id || (typeof entry[0] === 'string' ? entry[0] : undefined),
+          directive,
+          true,
+        );
+        if (!owner.task_id) {
+          if (owner.warning) coordinationWarnings.push(owner.warning);
+          continue;
+        }
+        directive.task_id = owner.task_id;
+        const bucket = normalizedDirectives.get(owner.task_id) ?? [];
+        bucket.push(directive);
+        normalizedDirectives.set(owner.task_id, bucket);
+      }
+    }
+    this.ctx.agentDirectives = normalizedDirectives;
+    const normalizedApprovals = new Map<string, import('./pending-action-queue.js').DurableApprovalRecord>();
+    for (const entry of data.approvalRequests || []) {
+      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string') continue;
+      const record = JSON.parse(JSON.stringify(entry[1])) as import('./pending-action-queue.js').DurableApprovalRecord;
+      const reference = record.task_id ?? record.agent_label ?? record.agent_id;
+      const owner = resolveOwner(
+        `approval:${record.action_id}`,
+        reference,
+        record,
+        record.task_id !== undefined,
+        record.agent_label ?? record.agent_id,
+      );
+      if (owner.task_id) {
+        record.task_id = owner.task_id;
+        record.agent_label = owner.agent_label;
+        record.agent_id = owner.agent_label;
+        delete record.recovery_warning;
+      } else if (owner.warning) {
+        delete record.task_id;
+        record.recovery_warning = owner.warning.message;
+        coordinationWarnings.push(owner.warning);
+      }
+      normalizedApprovals.set(entry[0], record);
+    }
+    this.ctx.approvalRequests = normalizedApprovals;
     this.ctx.trackedProcesses = data.trackedProcesses || [];
     this.ctx.runtimeRuns = Array.isArray(data.runtimeRuns)
       ? JSON.parse(JSON.stringify(data.runtimeRuns))
       : [];
+    for (const run of this.ctx.runtimeRuns) {
+      const reference = run.task_id ?? run.agent_id;
+      const owner = resolveOwner(
+        `runtime_run:${run.run_id}`,
+        reference,
+        run,
+        run.task_id !== undefined,
+        run.agent_id,
+      );
+      if (owner.task_id) {
+        run.task_id = owner.task_id;
+        run.agent_id = owner.agent_label;
+      } else if (owner.warning && reference) {
+        delete run.task_id;
+        run.recovery_warning = owner.warning.message;
+        coordinationWarnings.push(owner.warning);
+      }
+    }
     this.ctx.playbookRuns = new Map(data.playbookRuns || []);
     this.ctx.sessionDescriptors = Array.isArray(data.sessionDescriptors)
       ? JSON.parse(JSON.stringify(data.sessionDescriptors))
       : [];
-    this.ctx.proposedPlanStore.restore(data.proposedPlans);
-    this.ctx.agentQueryStore.restore(data.agentQueries);
+    for (const descriptor of this.ctx.sessionDescriptors) {
+      const owner = resolveOwner(
+        `session:${descriptor.session_id}`,
+        descriptor.owner_task_id,
+        descriptor,
+        descriptor.owner_task_id !== undefined,
+      );
+      if (owner.task_id) {
+        descriptor.owner_task_id = owner.task_id;
+        delete descriptor.recovery_warning;
+      } else if (owner.warning && descriptor.owner_task_id) {
+        delete descriptor.owner_task_id;
+        descriptor.recovery_warning = owner.warning.message;
+        coordinationWarnings.push(owner.warning);
+      }
+    }
+    const proposedPlans = data.proposedPlans && typeof data.proposedPlans === 'object'
+      ? JSON.parse(JSON.stringify(data.proposedPlans))
+      : { plans: [], tombstones: [] };
+    if (Array.isArray(proposedPlans.plans)) {
+      for (const plan of proposedPlans.plans) {
+        const taskReference = plan.owner_task_id ?? plan.source_task_id;
+        const reference = taskReference ?? plan.owner_agent_label ?? plan.source_agent_id;
+        const owner = resolveOwner(
+          `plan:${plan.plan_id}`,
+          reference,
+          plan,
+          taskReference !== undefined,
+          plan.owner_agent_label ?? plan.source_agent_id,
+        );
+        if (owner.task_id) {
+          plan.owner_task_id = owner.task_id;
+          plan.owner_agent_label = owner.agent_label;
+          plan.source_task_id = owner.task_id;
+          plan.source_agent_id = owner.agent_label;
+          delete plan.recovery_warning;
+        } else if (owner.warning && reference) {
+          delete plan.owner_task_id;
+          delete plan.source_task_id;
+          plan.recovery_warning = owner.warning.message;
+          coordinationWarnings.push(owner.warning);
+        }
+      }
+    }
+    this.ctx.proposedPlanStore.restore(proposedPlans);
+    const agentQueries = data.agentQueries && typeof data.agentQueries === 'object'
+      ? JSON.parse(JSON.stringify(data.agentQueries))
+      : { queries: [] };
+    if (Array.isArray(agentQueries.queries)) {
+      for (const query of agentQueries.queries) {
+        const taskReference = query.owner_task_id ?? query.task_id;
+        const reference = taskReference ?? query.owner_agent_label ?? query.agent_id;
+        const owner = resolveOwner(
+          `agent_query:${query.query_id}`,
+          reference,
+          query,
+          taskReference !== undefined,
+          query.owner_agent_label ?? query.agent_id,
+        );
+        if (owner.task_id) {
+          query.owner_task_id = owner.task_id;
+          query.owner_agent_label = owner.agent_label;
+          query.task_id = owner.task_id;
+          query.agent_id = owner.agent_label;
+          delete query.recovery_warning;
+        } else if (owner.warning && reference) {
+          delete query.owner_task_id;
+          delete query.task_id;
+          query.recovery_warning = owner.warning.message;
+          coordinationWarnings.push(owner.warning);
+        }
+      }
+    }
+    this.ctx.agentQueryStore.restore(agentQueries);
     const restoreNow = Date.now();
     this.ctx.commandPlans = new Map(
       (data.commandPlans || []).filter((entry: unknown) =>
@@ -2208,7 +2401,33 @@ export class StatePersistence {
     this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
     this.ctx.recentFindingHashes = new Map(data.recentFindingHashes || []);
     this.ctx.dedupCount = typeof data.dedupCount === 'number' ? data.dedupCount : 0;
-    this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
+    const frontierLeases = data.frontierLeases && typeof data.frontierLeases === 'object'
+      ? JSON.parse(JSON.stringify(data.frontierLeases))
+      : undefined;
+    if (frontierLeases?.byItem && typeof frontierLeases.byItem === 'object') {
+      for (const [itemId, lease] of Object.entries(frontierLeases.byItem) as Array<[string, {
+        task_id?: string;
+        agent_id?: string;
+      }]>) {
+        const reference = lease.task_id ?? lease.agent_id;
+        const owner = resolveOwner(
+          `frontier_lease:${itemId}`,
+          reference,
+          lease,
+          lease.task_id !== undefined,
+          lease.agent_id,
+        );
+        if (owner.task_id) {
+          lease.task_id = owner.task_id;
+          lease.agent_id = owner.agent_label;
+        } else {
+          delete frontierLeases.byItem[itemId];
+          if (owner.warning && reference) coordinationWarnings.push(owner.warning);
+        }
+      }
+    }
+    this.ctx.frontierLeases = FrontierLeases.deserialize(frontierLeases);
+    this.ctx.coordinationRecoveryWarnings = mergeCoordinationRecoveryWarnings(coordinationWarnings);
     this.ctx.lastKnownPhaseId = typeof data.lastKnownPhaseId === 'string' ? data.lastKnownPhaseId : undefined;
     const checkpoint = typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0;
     this.ctx.journalSnapshotSeq = checkpoint;

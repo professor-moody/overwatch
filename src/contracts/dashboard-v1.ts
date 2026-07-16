@@ -574,6 +574,14 @@ export const RecoveryStatusDtoSchema = z.object({
   }).passthrough(),
   state_migration: StateMigrationStatusSchema.optional(),
   config_recovery: ConfigRecoveryStatusSchema.optional(),
+  coordination_warnings: z.array(z.object({
+    warning_id: z.string(),
+    relationship: z.string(),
+    reference: z.string(),
+    message: z.string(),
+    candidate_task_ids: z.array(z.string()).optional(),
+    payload: z.unknown().optional(),
+  }).passthrough()).optional(),
 }).passthrough();
 export type RecoveryStatusDto = z.infer<typeof RecoveryStatusDtoSchema>;
 

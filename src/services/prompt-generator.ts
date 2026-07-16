@@ -329,8 +329,12 @@ function generateSubAgentPrompt(
   options: GeneratePromptOptions,
   engine: GraphEngine,
 ): string {
-  const agentContext = options.agent_id
-    ? state.active_agents.find(a => a.id === options.agent_id || a.agent_id === options.agent_id)
+  const resolution = options.agent_id
+    ? engine.resolveAgentTaskReference(options.agent_id)
+    : { status: 'missing' as const };
+  const agentContext = resolution.status === 'exact'
+    || resolution.status === 'unique_legacy_label'
+    ? resolution.task
     : undefined;
   const scopedTools = tools.filter(t => SUBAGENT_TOOL_NAMES.has(t.name));
 
@@ -470,7 +474,7 @@ function leanGuardrailsSection(): string {
 function leanSteeringSection(): string {
   return `## Steering & escalation
 
-The \`agent_heartbeat\` response may carry operator steering — call \`acknowledge_agent_directive({ task_id, directive_id })\`, then honor it: \`pause\` (stop new actions, keep beating, poll for \`resume\`) · \`resume\` · \`stop\` (submit transcript, then stop) · \`narrow_scope\` (\`node_ids\` become authoritative scope) · \`skip_types\`/\`prioritize\` (by frontier type) · \`instruct\` (free-text in \`note\` — adjust within scope/OPSEC). Also watch \`pending_answer\` (the reply to an \`ask_operator\` question); act on it only when \`pending_answer.query_id\` matches yours, once.
+The \`agent_heartbeat\` response may carry operator steering — call \`acknowledge_agent_directive({ task_id, directive_id })\`, then honor it: \`pause\` (stop new actions, keep beating, poll for \`resume\`) · \`resume\` · \`stop\` (submit transcript, then stop) · \`narrow_scope\` (\`node_ids\` become authoritative scope) · \`skip_types\`/\`prioritize\` (by frontier type) · \`instruct\` (free-text in \`note\` — adjust within scope/OPSEC). Also watch \`pending_answer\` (the reply to an \`ask_operator\` question); act on it only when \`pending_answer.query_id\` matches yours, once, then acknowledge it on a later beat with \`acknowledged_query_id\`.
 
 Report terminal states — don't improvise past them:
 - **NO_PATH** — no in-scope approach remains; say so rather than going out of scope.
@@ -796,7 +800,7 @@ function generateSubAgentWorkflowSection(): string {
     - \`prioritize\` → do frontier items whose type is in \`frontier_types\` first.
     - \`instruct\` → the operator's free-text instruction is in \`note\`; read it and adjust your approach accordingly (e.g. focus a technique, try a different path), staying within scope and OPSEC.
     Also watch for \`pending_answer\` on the heartbeat — the operator's reply to a question you asked via \`ask_operator\`. Act on it only when \`pending_answer.query_id\` matches the \`query_id\` your \`ask_operator\` call returned, and act on a given answer once.
-12b. At a genuine fork you cannot resolve (ambiguous path, risky/irreversible step, missing context), call \`ask_operator({ task_id, question, options? })\` — note the returned \`query_id\` — then keep heartbeating (it's redelivered each beat, so a dropped response self-heals). When \`pending_answer.query_id\` matches, read \`pending_answer.answer\` and proceed. Bound your wait to a few minutes of heartbeats; if no answer arrives, make the safest reasonable choice and note that you proceeded without one. Don't ask for routine decisions — only real escalations.
+12b. At a genuine fork you cannot resolve (ambiguous path, risky/irreversible step, missing context), call \`ask_operator({ task_id, question, options? })\` — note the returned \`query_id\` — then keep heartbeating (it's redelivered each beat, so a dropped response self-heals). When \`pending_answer.query_id\` matches, read \`pending_answer.answer\`, proceed, then acknowledge it on a later heartbeat with \`acknowledged_query_id\`. Bound your wait to a few minutes of heartbeats; if no answer arrives, make the safest reasonable choice and note that you proceeded without one. Don't ask for routine decisions — only real escalations.
 12. **Before** the primary calls \`update_agent\` to close you out, call \`submit_agent_transcript({ task_id, summary, transcript_jsonl?, key_thought_event_ids?, key_finding_ids? })\` so the primary session has your wrap-up linked to the agent task. Use \`agent_id\` only as a legacy fallback if you do not have the task ID. Closing terminal status without first submitting will surface an \`instrumentation_warning\`.
 
 Report every discovery immediately. When done, your task will be marked complete by the primary session.`;

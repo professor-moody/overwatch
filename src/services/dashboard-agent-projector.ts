@@ -1,6 +1,7 @@
 import type { AgentTask, Campaign } from '../types.js';
 import type { AgentDto } from '../contracts/dashboard-v1.js';
 import type { ActivityLogEntry } from './engine-context.js';
+import { agentLabelOf, taskIdOf } from './agent-identity.js';
 
 const BOOKKEEPING_EVENTS = new Set([
   'instrumentation_warning',
@@ -28,12 +29,13 @@ export function projectAgentDtos(
   campaigns: Campaign[],
   now: number = Date.now(),
 ): AgentDto[] {
-  const taskById = new Map(tasks.map(task => [task.id, task]));
+  const taskById = new Map(tasks.map(task => [taskIdOf(task), task]));
   const taskIdsByLabel = new Map<string, string[]>();
   for (const task of tasks) {
-    const ids = taskIdsByLabel.get(task.agent_id) ?? [];
-    ids.push(task.id);
-    taskIdsByLabel.set(task.agent_id, ids);
+    const label = agentLabelOf(task);
+    const ids = taskIdsByLabel.get(label) ?? [];
+    ids.push(taskIdOf(task));
+    taskIdsByLabel.set(label, ids);
   }
 
   const latestByTask = new Map<string, LatestActivity>();
@@ -102,7 +104,9 @@ export function projectAgentDtos(
 
   const campaignById = new Map(campaigns.map(campaign => [campaign.id, campaign]));
   return tasks.map(task => {
-    const latest = task.status === 'running' ? latestByTask.get(task.id) : undefined;
+    const taskId = taskIdOf(task);
+    const agentLabel = agentLabelOf(task);
+    const latest = task.status === 'running' ? latestByTask.get(taskId) : undefined;
     const assignedAt = new Date(task.assigned_at).getTime();
     const elapsed = task.status === 'running' && Number.isFinite(assignedAt) && now >= assignedAt
       ? now - assignedAt
@@ -121,10 +125,10 @@ export function projectAgentDtos(
 
     return {
       ...task,
-      task_id: task.id,
-      agent_label: task.agent_id,
-      id: task.id,
-      agent_id: task.agent_id,
+      task_id: taskId,
+      agent_label: agentLabel,
+      id: taskId,
+      agent_id: agentLabel,
       assigned_at: task.assigned_at,
       subgraph_node_ids: task.subgraph_node_ids ?? [],
       queued: task.status === 'pending',
@@ -137,8 +141,8 @@ export function projectAgentDtos(
         current_action_type: latest.event_type,
         current_action_at: latest.timestamp,
       } : {}),
-      ...(lastFindingAtByTask.has(task.id) ? { last_finding_at: lastFindingAtByTask.get(task.id) } : {}),
-      findings_count: findingIdsByTask.get(task.id)?.size ?? 0,
+      ...(lastFindingAtByTask.has(taskId) ? { last_finding_at: lastFindingAtByTask.get(taskId) } : {}),
+      findings_count: findingIdsByTask.get(taskId)?.size ?? 0,
     } satisfies AgentDto;
   });
 }

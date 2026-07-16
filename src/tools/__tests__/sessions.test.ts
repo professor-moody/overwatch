@@ -58,6 +58,7 @@ function buildHandlers(options: {
   };
 
   const engine = {
+    resolveAgentTaskReference: () => ({ status: 'missing' }),
     getConfig: () => ({
       scope: {
         cidrs: ['10.10.10.0/24'],

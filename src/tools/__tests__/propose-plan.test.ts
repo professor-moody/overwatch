@@ -33,13 +33,20 @@ describe('propose_plan — validation + recording', () => {
 
   it('validates + stores a plan that targets a real running task', () => {
     engine.registerAgent(runningTask('task-1', 'a1'));
+    engine.registerAgent(runningTask('planner-task', 'planner-x'));
     const r = recordProposedPlan(engine, {
       agent_id: 'planner-x', task_id: 'planner-task', command: 'pause a1',
       summary: 'pause a1', ops: [{ op: 'directive', task_id: 'task-1', agent_label: 'a1', kind: 'pause' }],
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(engine.getProposedPlanStore().get(r.plan_id)?.command).toBe('pause a1');
+      expect(engine.getProposedPlanStore().get(r.plan_id)).toMatchObject({
+        command: 'pause a1',
+        owner_task_id: 'planner-task',
+        owner_agent_label: 'planner-x',
+        source_task_id: 'planner-task',
+        source_agent_id: 'planner-x',
+      });
       expect(engine.getProposedPlanStore().getOpen()).toHaveLength(1);
     }
   });
@@ -89,6 +96,36 @@ describe('propose_plan — validation + recording', () => {
     if (!r.ok) expect(r.rejected?.[0].reason).toMatch(/no agent task/);
     // nothing stored — a confirmed plan can never no-op
     expect(engine.getProposedPlanStore().size()).toBe(0);
+  });
+
+  it('rejects ambiguous legacy planner labels instead of guessing an owner', () => {
+    engine.registerAgent(runningTask('planner-a', 'shared-planner'));
+    engine.registerAgent(runningTask('planner-b', 'shared-planner'));
+    engine.registerAgent(runningTask('task-1', 'target'));
+    const result = recordProposedPlan(engine, {
+      agent_id: 'shared-planner',
+      summary: 'pause target',
+      ops: [{ op: 'directive', task_id: 'task-1', agent_label: 'target', kind: 'pause' }],
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: 'agent label "shared-planner" is ambiguous; pass the exact task_id',
+    });
+  });
+
+  it('rejects conflicting planner identity aliases', () => {
+    engine.registerAgent(runningTask('planner-task', 'planner-x'));
+    engine.registerAgent(runningTask('task-1', 'target'));
+    const result = recordProposedPlan(engine, {
+      task_id: 'planner-task',
+      agent_id: 'different-planner',
+      summary: 'pause target',
+      ops: [{ op: 'directive', task_id: 'task-1', agent_label: 'target', kind: 'pause' }],
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: 'agent_id "different-planner" does not match planner task planner-task (planner-x)',
+    });
   });
 
   it('REJECTS a directive that targets a task which is not running', () => {

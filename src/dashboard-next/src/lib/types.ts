@@ -199,13 +199,16 @@ export interface PendingAction {
   submitted_at: string;
   timeout_at?: string;
   resolved_at?: string;
-  status?: 'pending' | 'approved' | 'denied' | 'timeout';
+  status?: 'pending' | 'approved' | 'denied' | 'timeout' | 'aborted';
   operator_notes?: string;
   reason?: string;
   auto_approved?: boolean;
   unattended_execute?: boolean;
   frontier_item_id?: string;
+  task_id?: string;
+  agent_label?: string;
   agent_id?: string;
+  recovery_warning?: string;
   validation_result?: string;
   opsec_context?: {
     noise_level?: number;
@@ -225,6 +228,7 @@ export interface ActivityEntry {
   action_id?: string;
   description: string;
   agent_id?: string;
+  linked_agent_task_id?: string;
   details?: Record<string, unknown>;
   source_kind?: 'primary' | 'subagent' | 'runner' | 'system' | 'dashboard';
   operator_model?: string;

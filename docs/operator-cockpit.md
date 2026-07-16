@@ -49,7 +49,7 @@ A **scope pill** above the input decides where the text goes — so the planner 
 | `scope` | `engine.updateScope` |
 | `approve` / `deny` | `PendingActionQueue.approve` / `deny` → `resolveApprovalRequest` |
 
-`ProposedPlanStore` (engine-owned, in-memory, 10-min TTL) is the hand-off between the `propose_plan` tool and the dashboard confirm path. `propose_plan` rejects a plan if **any** op fails to resolve, so a confirmed plan can never silently no-op.
+`ProposedPlanStore` is the durable hand-off between the `propose_plan` tool and the dashboard confirm path. A plan remains actionable for its original 10-minute window; restart does not extend it, and its confirmation, acknowledgement, and execution outcome remain available afterward as bounded history. `propose_plan` rejects a plan if **any** op fails to resolve, so a confirmed plan can never silently no-op.
 
 ### Grammar reference {#grammar}
 
@@ -57,7 +57,7 @@ The deterministic fast-path (`interpretCommand`) recognizes these verbs (case-in
 
 | Intent | Syntax | Notes |
 |--------|--------|-------|
-| Steer one agent | `pause` / `resume` / `stop` / `halt` `<agent>` | `halt` aliases `stop`. `<agent>` matches a label or task id. |
+| Steer one agent | `pause` / `resume` / `stop` / `halt` `<agent>` | `halt` aliases `stop`. Exact task IDs win; a legacy label is accepted only when it identifies one task. |
 | Steer the fleet | `pause` / `resume` / `stop` `all` (or `everything`, `all agents`) | Fans out over every running agent. |
 | Talk to an agent | `tell <agent> [to] <text>` · `instruct <agent> [to] <text>` | Delivered as an `instruct` directive on the agent's next heartbeat. |
 | Add scope | `scan <targets>` · `add scope <targets>` · `add to scope <targets>` · `target <targets>` | Targets are whitespace/comma-separated CIDRs, IPs (→`/32`), or domains (lowercased); IPv6/junk is rejected. Same parsing as the Console's **Add Targets** modal. |
@@ -92,7 +92,7 @@ Each campaign's **detail** view shows a **Campaign Noise** gauge — that campai
 
 ## Escalation — agents asking the operator {#escalation}
 
-A running agent at a genuine fork calls [`ask_operator`](tools/ask-operator.md) and waits by heartbeating. The question lands in `AgentQueryStore` and surfaces in the cockpit's **Agent Questions** inbox; the operator answers (`POST /api/agent-queries/:id/answer`) and the answer is delivered on the agent's next heartbeat as `pending_answer` (at-least-once; the agent dedups by `query_id`). A task's questions are expired when it goes terminal, so a dead agent's question never lingers.
+A running agent at a genuine fork calls [`ask_operator`](tools/ask-operator.md) and waits by heartbeating. The durable question lands in `AgentQueryStore` and surfaces in the cockpit's **Agent Questions** inbox; the operator answers (`POST /api/agent-queries/:id/answer`) and the answer is delivered as `pending_answer`. Delivery is at-least-once until the agent acts and passes `acknowledged_query_id` on a later heartbeat. Questions retain their original absolute expiry across restart, and a task's still-actionable questions are marked expired when it goes terminal, so a dead agent's question never lingers in the inbox.
 
 The approval gate works the same way — an agent's target-facing call **blocks** in the engine's queue, the operator resolves it from the "Needs you" strip, and the agent resumes. Both round-trips are the clearest proof that the terminal agent and the dashboard operate on one shared engine:
 

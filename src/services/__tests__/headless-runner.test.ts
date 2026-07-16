@@ -739,27 +739,27 @@ describe('Headless runner mechanics (injected spawn)', () => {
       description: 'risky thing',
       opsec_context: { global_noise_spent: 0.1, noise_budget_remaining: 0.9, recommended_approach: 'normal' as const, defensive_signals: [] },
       validation_result: 'valid' as const,
+      task_id: 'h-orphan',
+      agent_label: 'sub-orphan',
       agent_id: 'sub-orphan',
     };
     engine.recordApprovalRequest(pendingApproval);
     const approvalPromise = queue.submit(pendingApproval);
     expect(queue.getPendingCount()).toBe(1);
 
-    // Simulate a heartbeat-reap: the task flips terminal, but reaping does NOT
-    // fire onUpdate, kill the process, or settle the approval (the P1 bug). The
-    // process is still tracked and the approval still pending.
+    // The canonical lifecycle transition immediately settles task-owned
+    // coordination state, but process ownership remains the supervisor's job.
     engine.updateAgentStatus('h-orphan', 'interrupted', 'heartbeat timeout');
     await settle();
-    expect(spawned[0].signals).not.toContain('SIGTERM'); // gap: not yet reconciled
-    expect(queue.getPendingCount()).toBe(1);
+    expect(spawned[0].signals).not.toContain('SIGTERM');
+    expect(queue.getPendingCount()).toBe(0);
+    await expect(approvalPromise).resolves.toMatchObject({ status: 'aborted' });
 
-    // The watchdog tick must reconcile: kill the orphan + abort its approval.
+    // The watchdog tick reconciles the remaining runtime handle.
     svc.tickWatchdog();
     await settle();
 
     expect(spawned[0].signals).toContain('SIGTERM');     // orphaned process killed
-    const resolution = await approvalPromise;
-    expect(resolution.status).toBe('aborted');           // NOT auto-fired/executed
     expect(queue.getPendingCount()).toBe(0);
     // Durable record resolved too — dashboard/state stop showing a stuck 'pending'.
     const rec = engine.getApprovalRequests({ includeResolved: true }).find(r => r.action_id === 'orphan-act');

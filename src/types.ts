@@ -1072,7 +1072,13 @@ export interface ScoredTask {
 // --- Agent Types ---
 
 export interface AgentTask {
+  /** Canonical durable identity. Present on every registered/restored task. */
+  task_id?: string;
+  /** Canonical human-readable label. Present on every registered/restored task. */
+  agent_label?: string;
+  /** @deprecated Compatibility alias for task_id; retained for one minor release. */
   id: string;
+  /** @deprecated Compatibility alias for agent_label; retained for one minor release. */
   agent_id: string;
   assigned_at: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
@@ -1374,6 +1380,8 @@ export interface PersistenceRecoveryStatus {
   state_migration?: StateMigrationStatus;
   /** File/runtime/state configuration convergence for the active engagement. */
   config_recovery?: ConfigRecoveryStatus;
+  /** Ambiguous or missing legacy agent relationships retained without guessing. */
+  coordination_warnings?: import('./services/agent-identity.js').CoordinationRecoveryWarning[];
 }
 
 export interface EngagementState {

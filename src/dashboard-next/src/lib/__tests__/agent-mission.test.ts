@@ -48,7 +48,11 @@ describe('buildMissionCard', () => {
   });
 
   it('marks blocked + waiting-on-approval when a pending action is attributed', () => {
-    const card = buildMissionCard(agent(), { now: NOW, pendingActions: [action({ agent_id: 'recon-1' })] });
+    const card = buildMissionCard(agent(), { now: NOW, pendingActions: [action({
+      task_id: 'task-1',
+      agent_label: 'recon-1',
+      agent_id: 'recon-1',
+    })] });
     expect(card.pendingApproval).toBe(true);
     expect(card.blocker).toBe('waiting on approval');
     expect(card.tone).toBe('blocked');
@@ -67,7 +71,11 @@ describe('buildMissionCard', () => {
   });
 
   it('answer outranks approval as the stated blocker', () => {
-    const card = buildMissionCard(agent(), { now: NOW, agentQueries: [query()], pendingActions: [action({ agent_id: 'recon-1' })] });
+    const card = buildMissionCard(agent(), {
+      now: NOW,
+      agentQueries: [query()],
+      pendingActions: [action({ task_id: 'task-1', agent_id: 'recon-1' })],
+    });
     expect(card.blocker).toBe('waiting on your answer');
   });
 
@@ -86,7 +94,13 @@ describe('buildMissionCard', () => {
   });
 
   it('lists owned sessions via sessionsForAgent', () => {
-    const card = buildMissionCard(agent(), { now: NOW, sessions: [session({ id: 'sx', agent_id: 'recon-1' }), session({ id: 'other', agent_id: 'web-2' })] });
+    const card = buildMissionCard(agent(), {
+      now: NOW,
+      sessions: [
+        session({ id: 'sx', claimed_by: 'task-1', agent_id: 'recon-1' }),
+        session({ id: 'other', claimed_by: 'task-2', agent_id: 'web-2' }),
+      ],
+    });
     expect(card.ownedSessionIds).toEqual(['sx']);
   });
 });

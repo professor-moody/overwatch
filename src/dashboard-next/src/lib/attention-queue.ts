@@ -97,7 +97,9 @@ function questionClusterKey(q: AgentQuery): string {
 // every member via queryIds.
 function questionClusterItem(group: AgentQuery[]): AttentionItem {
   const rep = group[0];
-  const labels = [...new Set(group.map(q => q.agent_id).filter((v): v is string => !!v))];
+  const labels = [...new Set(group
+    .map(q => q.owner_agent_label ?? q.agent_id)
+    .filter((v): v is string => !!v))];
   const clustered = group.length > 1;
   return {
     id: `question:${rep.query_id}`,
@@ -123,7 +125,7 @@ function planItem(plan: ProposedPlan, now: number): AttentionItem {
     priority: P_PLAN,
     title: 'Plan to confirm',
     detail: `${plan.summary} (${meta})`,
-    agentLabel: plan.source_agent_id,
+    agentLabel: plan.owner_agent_label ?? plan.source_agent_id,
     planId: plan.plan_id,
   };
 }

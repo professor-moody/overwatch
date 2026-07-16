@@ -64,6 +64,8 @@ function makeSubmitPayload(overrides: Partial<Omit<PendingAction, 'status' | 'su
     target_node: overrides.target_node,
     target_ip: overrides.target_ip,
     frontier_item_id: overrides.frontier_item_id,
+    task_id: overrides.task_id,
+    agent_label: overrides.agent_label,
     agent_id: overrides.agent_id,
   };
 }
@@ -610,6 +612,28 @@ describe('PendingActionQueue', () => {
       expect(queue.getAction('b-survives')?.status).toBe('pending');
       queue.approve('b-survives');
       expect((await pb).status).toBe('approved');
+    });
+
+    it('abortByTask isolates duplicate labels by canonical task_id', async () => {
+      const { queue } = makeQueue();
+      const a = queue.submit(makeSubmitPayload({
+        action_id: 'task-a-action',
+        task_id: 'task-a',
+        agent_label: 'shared-label',
+        agent_id: 'shared-label',
+      }));
+      const b = queue.submit(makeSubmitPayload({
+        action_id: 'task-b-action',
+        task_id: 'task-b',
+        agent_label: 'shared-label',
+        agent_id: 'shared-label',
+      }));
+
+      expect(queue.abortByTask('task-a', undefined)).toHaveLength(1);
+      await expect(a).resolves.toMatchObject({ status: 'aborted' });
+      expect(queue.getAction('task-b-action')).toBeDefined();
+      queue.abortByTask('task-b', undefined);
+      await expect(b).resolves.toMatchObject({ status: 'aborted' });
     });
 
     it('aborted action does NOT auto-fire on a later timeout (the key safety property)', async () => {

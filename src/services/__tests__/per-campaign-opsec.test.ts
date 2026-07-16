@@ -67,12 +67,14 @@ describe('GraphEngine.recordOpsecNoise — per-campaign attribution', () => {
     expect(engine.getOpsecTracker().getCampaignNoise('camp-resolved')).toBe(0);
   });
 
-  it('prefers the running task when an agent_id reused across campaigns has a finished task in the map', () => {
-    // agent "shared" finished t-old (camp-old) and is now running t-new (camp-new).
-    // Live noise must land on the running campaign, not the stale completed one.
+  it('does not guess between reused labels; the exact task_id remains authoritative', () => {
     engine.registerAgent(runningTask({ id: 't-old', agent_id: 'shared', campaign_id: 'camp-old', status: 'completed' }));
     engine.registerAgent(runningTask({ id: 't-new', agent_id: 'shared', campaign_id: 'camp-new', status: 'running' }));
     engine.recordOpsecNoise({ agent_id: 'shared', noise_estimate: 0.3 });
+    expect(engine.getOpsecTracker().getCampaignNoise('camp-new')).toBe(0);
+    expect(engine.getOpsecTracker().getCampaignNoise('camp-old')).toBe(0);
+
+    engine.recordOpsecNoise({ agent_id: 't-new', noise_estimate: 0.3 });
     expect(engine.getOpsecTracker().getCampaignNoise('camp-new')).toBeCloseTo(0.3, 4);
     expect(engine.getOpsecTracker().getCampaignNoise('camp-old')).toBe(0);
   });

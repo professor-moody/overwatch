@@ -28,6 +28,7 @@ import {
 } from './mutation-journal.js';
 import { ProposedPlanStore } from './proposed-plan-store.js';
 import { AgentQueryStore } from './agent-query-store.js';
+import type { CoordinationRecoveryWarning } from './agent-identity.js';
 import type {
   EngineOperation,
   EngineTransactionDraft,
@@ -200,6 +201,7 @@ export class EngineContext {
   // 3D: agent→operator questions awaiting an answer. Persisted with the
   // original expiry; heartbeat redelivery remains at-least-once.
   agentQueryStore: AgentQueryStore;
+  coordinationRecoveryWarnings: CoordinationRecoveryWarning[];
   /** Grammar previews + duplicate-confirm outcomes share durable ownership with
    * planner proposals instead of disappearing with DashboardServer. */
   commandPlans: Map<string, Omit<PersistedCommandPlanV1, 'plan_id'>>;
@@ -303,6 +305,7 @@ export class EngineContext {
     this.pendingActionQueue = new PendingActionQueue(this);
     this.proposedPlanStore = new ProposedPlanStore();
     this.agentQueryStore = new AgentQueryStore();
+    this.coordinationRecoveryWarnings = [];
     this.commandPlans = new Map();
     this.commandOutcomes = new Map();
     this.sessionDescriptors = [];
@@ -524,6 +527,7 @@ export class EngineContext {
           slices.agents = structuredClone({
             agents: [...this.agents.entries()],
             frontierLeases: this.frontierLeases.serialize(),
+            coordinationRecoveryWarnings: this.coordinationRecoveryWarnings,
           });
           break;
         case 'campaigns':
@@ -610,6 +614,7 @@ export class EngineContext {
         case 'agents':
           this.agents = new Map(value.agents);
           this.frontierLeases = FrontierLeases.deserialize(value.frontierLeases);
+          this.coordinationRecoveryWarnings = value.coordinationRecoveryWarnings ?? [];
           break;
         case 'campaigns':
           this.campaigns = new Map(value);
@@ -702,6 +707,7 @@ export class EngineContext {
       deterministicSeq: this.deterministicSeq,
       agents: this.agents,
       frontierLeases: this.frontierLeases,
+      coordinationRecoveryWarnings: this.coordinationRecoveryWarnings,
       campaigns: this.campaigns,
       agentDirectives: this.agentDirectives,
       approvalRequests: this.approvalRequests,

@@ -107,15 +107,16 @@ export function buildAgentThread(
   questions: AgentQuery[],
   opts: AgentThreadOptions,
 ): ThreadEntry[] {
-  const ids = new Set([opts.agentId, opts.agentLabel].filter((v): v is string => !!v));
+  const taskIds = new Set([opts.agentId].filter((v): v is string => !!v));
   // Events first (the source array is already timestamp-sorted), then the agent's
   // open questions. The build index is the stable tiebreaker for same-timestamp
   // entries — sorting by event id would be meaningless (ids are uuids/hashes) and
   // could scramble a command→action that share a millisecond.
   const entries: ThreadEntry[] = events.map(entryFromEvent);
   for (const q of questions) {
-    if (q.status === 'answered') continue;
-    const owned = (!!q.task_id && ids.has(q.task_id)) || (!!q.agent_id && ids.has(q.agent_id));
+    if (q.status !== 'open') continue;
+    const ownerTaskId = q.owner_task_id ?? q.task_id;
+    const owned = !!ownerTaskId && taskIds.has(ownerTaskId);
     if (owned) entries.push(entryFromQuestion(q));
   }
 

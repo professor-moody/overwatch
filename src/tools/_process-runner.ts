@@ -1051,10 +1051,15 @@ function persistenceInterruptedResponse(
  */
 export function startAgentKeepalive(
   engine: GraphEngine,
-  agentId?: string,
+  taskReference?: string,
   opts?: { intervalMs?: number; maxMs?: number },
 ): () => void {
-  if (!agentId) return () => { /* no agent to keep alive */ };
+  if (!taskReference) return () => { /* no agent to keep alive */ };
+  const resolution = engine.resolveAgentTaskReference(taskReference);
+  if (resolution.status !== 'exact' && resolution.status !== 'unique_legacy_label') {
+    return () => { /* ambiguous or missing legacy label: never guess */ };
+  }
+  const taskId = resolution.task.task_id ?? resolution.task.id;
   const intervalMs = opts?.intervalMs ?? AGENT_KEEPALIVE_INTERVAL_MS;
   const maxMs = opts?.maxMs ?? AGENT_KEEPALIVE_MAX_MS;
   const startedAt = Date.now();
@@ -1064,9 +1069,9 @@ export function startAgentKeepalive(
     // Stop propping the agent up past the ceiling — a still-blocked agent beyond
     // this is treated as potentially wedged and handed back to TTL reaping.
     if (Date.now() - startedAt > maxMs) { stop(); return; }
-    const task = engine.getAgentTasks().find(t => t.agent_id === agentId && t.status === 'running');
-    if (!task) return;
-    try { engine.agentHeartbeat(task.id, undefined, { silent: true }); } catch { /* keepalive is best-effort */ }
+    const task = engine.getTask(taskId);
+    if (task?.status !== 'running') return;
+    try { engine.agentHeartbeat(taskId, undefined, { silent: true }); } catch { /* keepalive is best-effort */ }
   };
   bump();
   timer = setInterval(bump, intervalMs);
@@ -1126,7 +1131,9 @@ export async function runInstrumentedProcess(
   // `dispatch_agents` (e.g. Claude Code's built-in Agent tool) still
   // surface on the dashboard's AgentsPanel. No-op when agent_id is blank
   // or already registered.
-  engine.ensureRunningAgent(agent_id);
+  const owningTask = engine.ensureRunningAgent(agent_id);
+  const ownerTaskId = owningTask?.task_id ?? owningTask?.id;
+  const ownerAgentLabel = owningTask?.agent_label ?? owningTask?.agent_id ?? agent_id;
 
   // P1.2: when the engagement carries a nonce, derive action_id
   // deterministically from (nonce | agent_id | now | command | seq).
@@ -1255,6 +1262,7 @@ export async function runInstrumentedProcess(
         engine.logActionEvent({
           description: 'Refused: unresolved host operand with no scope metadata',
           agent_id,
+          linked_agent_task_id: ownerTaskId,
           action_id: normalizedActionId,
           event_type: 'action_failed',
           category: 'frontier',
@@ -1361,6 +1369,7 @@ export async function runInstrumentedProcess(
     engine.logActionEvent({
       description: resolvedDescription,
       agent_id,
+      linked_agent_task_id: ownerTaskId,
       action_id: normalizedActionId,
       event_type: 'action_validated',
       category: 'frontier',
@@ -1381,6 +1390,7 @@ export async function runInstrumentedProcess(
       engine.logActionEvent({
         description: `Refused to execute: ${resolvedDescription}`,
         agent_id,
+        linked_agent_task_id: ownerTaskId,
         action_id: normalizedActionId,
         event_type: 'action_failed',
         category: 'frontier',
@@ -1427,7 +1437,9 @@ export async function runInstrumentedProcess(
         opsec_context: v.opsec_context,
         validation_result: validationResult as 'valid' | 'warning_only',
         frontier_item_id,
-        agent_id,
+        task_id: ownerTaskId,
+        agent_label: ownerAgentLabel,
+        agent_id: ownerAgentLabel,
       };
       engine.recordApprovalRequest(pendingApproval);
       // Approval can remain pending for minutes. Couple that wait to the live
@@ -1452,6 +1464,7 @@ export async function runInstrumentedProcess(
           ? `Action auto-approved on timeout (unattended): ${resolvedDescription}`
           : `Action ${approval.status}: ${resolvedDescription}`,
         agent_id,
+        linked_agent_task_id: ownerTaskId,
         action_id: normalizedActionId,
         event_type: 'action_validated',
         category: 'frontier',
@@ -1475,6 +1488,7 @@ export async function runInstrumentedProcess(
             ? `Approval aborted (client disconnected): ${resolvedDescription}`
             : `Operator denied: ${resolvedDescription}`,
           agent_id,
+          linked_agent_task_id: ownerTaskId,
           action_id: normalizedActionId,
           event_type: 'action_failed',
           category: 'frontier',
@@ -1515,6 +1529,7 @@ export async function runInstrumentedProcess(
     engine.logActionEvent({
       description: resolvedDescription,
       agent_id,
+      linked_agent_task_id: ownerTaskId,
       action_id: normalizedActionId,
       event_type: 'action_started',
       category: 'frontier',
@@ -1595,7 +1610,7 @@ export async function runInstrumentedProcess(
     executionAbort.dispose();
     return persistenceInterruptedResponse(engine, normalizedActionId);
   }
-  const stopAgentKeepalive = startAgentKeepalive(engine, agent_id);
+  const stopAgentKeepalive = startAgentKeepalive(engine, ownerTaskId);
   let result: ProcessResult;
   try {
     result = await runProcess(binary, args, {
@@ -1707,6 +1722,7 @@ export async function runInstrumentedProcess(
   engine.logActionEvent({
     description: resolvedDescription,
     agent_id,
+    linked_agent_task_id: ownerTaskId,
     action_id: normalizedActionId,
     event_type: terminalEventType,
     category: 'frontier',
@@ -1888,6 +1904,7 @@ export async function runInstrumentedProcess(
         engine.logActionEvent({
           description: 'Selected evidence stream too large for full parse — used head window',
           agent_id,
+          linked_agent_task_id: ownerTaskId,
           action_id: normalizedActionId,
           event_type: 'instrumentation_warning',
           category: 'system',

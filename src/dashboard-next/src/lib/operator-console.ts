@@ -21,8 +21,9 @@ export function buildOperatorConsoleEvents(
 ): AgentConsoleEvent[] {
   const agentLabels = new Map<string, string>();
   for (const agent of options.agents || []) {
-    agentLabels.set(agent.id, agent.agent_id || agent.id);
-    if (agent.agent_id) agentLabels.set(agent.agent_id, agent.agent_id);
+    const taskId = agent.task_id ?? agent.id;
+    const label = agent.agent_label ?? agent.agent_id ?? taskId;
+    agentLabels.set(taskId, label);
   }
 
   const events = entries
@@ -45,7 +46,14 @@ function activityToOperatorConsoleEvent(
   const details = entry.details || {};
   const sourceKind = entry.source_kind || inferConsoleSourceKind(entry);
   const agentId = sourceKind === 'subagent'
-    ? (entry.agent_id || links.agentId || stringDetail(details.agent_id) || OPERATOR_CONSOLE_SOURCE)
+    ? (
+      entry.linked_agent_task_id
+      || stringDetail(details.task_id)
+      || entry.agent_id
+      || links.agentId
+      || stringDetail(details.agent_id)
+      || OPERATOR_CONSOLE_SOURCE
+    )
     : OPERATOR_CONSOLE_SOURCE;
   const kind = consoleKindFor(entry);
   const severity = consoleSeverityFor(entry);
@@ -85,7 +93,7 @@ function inferConsoleSourceKind(entry: ActivityEntry): AgentConsoleEvent['source
   const details = entry.details || {};
   const source = stringDetail(details.source)?.toLowerCase() || '';
   const invokingTool = stringDetail(details.invoking_tool)?.toLowerCase() || '';
-  if (entry.agent_id) return 'subagent';
+  if (entry.linked_agent_task_id || entry.agent_id || typeof details.task_id === 'string') return 'subagent';
   if (source === 'dashboard' || invokingTool === 'dashboard') return 'dashboard';
   if (source.includes('runner') || invokingTool.includes('runner')) return 'runner';
   if (entry.event_type === 'system' || entry.event_type?.startsWith('session_') || entry.event_type?.startsWith('mock_service_')) return 'system';

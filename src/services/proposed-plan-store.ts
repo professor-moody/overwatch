@@ -26,7 +26,10 @@ export interface ProposedPlan {
   ops: OperatorOp[];
   summary: string;
   rationale?: string;
-  /** The planner task/agent that produced this plan (for correlation + console attribution). */
+  /** Canonical planner ownership. */
+  owner_task_id?: string;
+  owner_agent_label?: string;
+  /** Legacy ownership aliases retained for one minor release. */
   source_task_id?: string;
   source_agent_id?: string;
   /** Dry-run scope-impact preview, present when the plan has scope op(s). */
@@ -35,6 +38,17 @@ export interface ProposedPlan {
   /** Absolute expiry; restart never extends the operator decision window. */
   expires_at: number;
   status: ProposedPlanStatus;
+  resolved_at?: number;
+  confirmed_at?: number;
+  denied_at?: number;
+  expired_at?: number;
+  acknowledged_at?: number;
+  execution_outcome?: {
+    status: 'succeeded' | 'partial' | 'failed';
+    completed_at: number;
+    results: unknown[];
+  };
+  recovery_warning?: string;
 }
 
 export interface AddProposedPlanArgs {
@@ -42,6 +56,8 @@ export interface AddProposedPlanArgs {
   ops: OperatorOp[];
   summary: string;
   rationale?: string;
+  owner_task_id?: string;
+  owner_agent_label?: string;
   source_task_id?: string;
   source_agent_id?: string;
   scope_preview?: ScopePreview;
@@ -66,6 +82,7 @@ export type PlanResolution = 'open' | 'confirmed' | 'denied' | 'expired' | 'unkn
 // Bounded history of terminal plan dispositions, so `describeResolution` can still
 // answer after the plan itself has been pruned from the live map.
 const TOMBSTONE_CAP = 200;
+const RECORD_CAP = 500;
 
 export interface SerializedProposedPlanStore {
   plans: ProposedPlan[];
@@ -90,6 +107,18 @@ export class ProposedPlanStore {
     if (this.tombstones.size > TOMBSTONE_CAP) {
       const oldest = this.tombstones.keys().next().value;
       if (oldest !== undefined) this.tombstones.delete(oldest);
+    }
+  }
+
+  private trimRecords(): void {
+    if (this.plans.size <= RECORD_CAP) return;
+    const removable = [...this.plans.values()]
+      .filter(plan => plan.status !== 'open')
+      .sort((a, b) => (a.resolved_at ?? a.expires_at) - (b.resolved_at ?? b.expires_at));
+    for (const plan of removable) {
+      if (this.plans.size <= RECORD_CAP) break;
+      this.tombstone(plan.plan_id, plan.status as Exclude<ProposedPlanStatus, 'open'>);
+      this.plans.delete(plan.plan_id);
     }
   }
 
@@ -135,14 +164,17 @@ export class ProposedPlanStore {
         ops: args.ops,
         summary: args.summary,
         rationale: args.rationale,
-        source_task_id: args.source_task_id,
-        source_agent_id: args.source_agent_id,
+        owner_task_id: args.owner_task_id ?? args.source_task_id,
+        owner_agent_label: args.owner_agent_label ?? args.source_agent_id,
+        source_task_id: args.owner_task_id ?? args.source_task_id,
+        source_agent_id: args.owner_agent_label ?? args.source_agent_id,
         scope_preview: args.scope_preview,
         created_at: now,
         expires_at: now + this.ttlMs,
         status: 'open',
       };
       this.plans.set(plan.plan_id, plan);
+      this.trimRecords();
       this.notifyChange();
       return plan;
     });
@@ -174,8 +206,45 @@ export class ProposedPlanStore {
       const plan = this.plans.get(plan_id);
       if (!plan || plan.status !== 'open') return null;
       plan.status = status;
+      plan.resolved_at = now;
+      plan.acknowledged_at = now;
+      if (status === 'confirmed') plan.confirmed_at = now;
+      else plan.denied_at = now;
       this.tombstone(plan_id, status);
       this.notifyChange();
+      return plan;
+    });
+  }
+
+  recordExecutionOutcome(plan_id: string, results: unknown[], now: number = Date.now()): ProposedPlan | null {
+    return this.runMutation('record proposed plan execution outcome', () => {
+      const plan = this.plans.get(plan_id);
+      if (!plan || plan.status !== 'confirmed') return null;
+      const flags = results.map(result =>
+        Boolean(result && typeof result === 'object' && (result as { ok?: unknown }).ok === true));
+      const status = flags.length > 0 && flags.every(Boolean)
+        ? 'succeeded'
+        : flags.some(Boolean)
+          ? 'partial'
+          : 'failed';
+      plan.execution_outcome = {
+        status,
+        completed_at: now,
+        results: JSON.parse(JSON.stringify(results)) as unknown[],
+      };
+      this.notifyChange();
+      return plan;
+    });
+  }
+
+  acknowledge(plan_id: string, now: number = Date.now()): ProposedPlan | null {
+    return this.runMutation('acknowledge proposed plan', () => {
+      const plan = this.plans.get(plan_id);
+      if (!plan) return null;
+      if (plan.acknowledged_at === undefined) {
+        plan.acknowledged_at = now;
+        this.notifyChange();
+      }
       return plan;
     });
   }
@@ -189,32 +258,33 @@ export class ProposedPlanStore {
   describeResolution(plan_id: string, now: number = Date.now()): PlanResolution {
     try { this.prune(now); } catch { /* degraded reads remain available */ }
     const plan = this.plans.get(plan_id);
-    if (plan && plan.expires_at <= now) return 'expired';
-    if (plan) return plan.status; // 'open' | 'confirmed' | 'denied' (expired ones are pruned, not kept)
+    if (plan) return plan.status;
     return this.tombstones.get(plan_id) ?? 'unknown';
   }
 
-  /** Sweep plans older than the TTL, tombstoning still-open ones as expired before dropping. */
+  /** Mark plans older than their original absolute TTL as expired. */
   prune(now: number = Date.now()): void {
     this.runMutation('prune proposed plans', () => this.pruneInternal(now, false));
   }
 
   private pruneInternal(now: number, guard: boolean, notify = true): void {
-    const expired = [...this.plans.entries()]
-      .filter(([, plan]) => {
+    const expired = [...this.plans.values()]
+      .map(plan => {
         const expiresAt = Number.isFinite(plan.expires_at)
           ? plan.expires_at
           : plan.created_at + this.ttlMs;
-        return expiresAt <= now;
-      });
+        return { plan, expiresAt };
+      })
+      .filter(({ plan, expiresAt }) => plan.status === 'open' && expiresAt <= now);
     if (expired.length === 0) return;
     if (guard) this.mutationGuard?.();
-    for (const [id, plan] of expired) {
-      // A still-open plan that timed out is 'expired'; a resolved one already has
-      // its confirmed/denied tombstone from resolve() — don't overwrite it.
-      if (plan.status === 'open') this.tombstone(id, 'expired');
-      this.plans.delete(id);
+    for (const { plan, expiresAt } of expired) {
+      plan.status = 'expired';
+      plan.resolved_at = expiresAt;
+      plan.expired_at = expiresAt;
+      this.tombstone(plan.plan_id, 'expired');
     }
+    this.trimRecords();
     if (notify) this.notifyChange();
   }
 
@@ -238,8 +308,14 @@ export class ProposedPlanStore {
       if (!candidate || typeof candidate !== 'object') continue;
       const plan = candidate as ProposedPlan;
       if (typeof plan.plan_id !== 'string' || typeof plan.created_at !== 'number') continue;
+      const ownerTaskId = plan.owner_task_id ?? plan.source_task_id;
+      const ownerAgentLabel = plan.owner_agent_label ?? plan.source_agent_id;
       this.plans.set(plan.plan_id, {
         ...(JSON.parse(JSON.stringify(plan)) as ProposedPlan),
+        owner_task_id: ownerTaskId,
+        owner_agent_label: ownerAgentLabel,
+        source_task_id: ownerTaskId,
+        source_agent_id: ownerAgentLabel,
         expires_at: Number.isFinite(plan.expires_at)
           ? plan.expires_at
           : plan.created_at + this.ttlMs,
@@ -257,6 +333,7 @@ export class ProposedPlanStore {
     }
     // Expire against the original absolute deadline, never restart time.
     this.pruneInternal(now, false, false);
+    this.trimRecords();
   }
 
   static deserialize(data: unknown, ttlMs: number = DEFAULT_TTL_MS, now: number = Date.now()): ProposedPlanStore {
@@ -268,5 +345,9 @@ export class ProposedPlanStore {
   /** Test/inspection helper. */
   size(): number {
     return this.plans.size;
+  }
+
+  getAll(): ProposedPlan[] {
+    return [...this.plans.values()];
   }
 }

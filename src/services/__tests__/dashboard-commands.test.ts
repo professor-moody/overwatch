@@ -346,6 +346,16 @@ describe('/api/commands — planner-proposed plan confirm + deny + GET /api/plan
     expect(confirm.results[0].ok).toBe(true);
     // consumed — no longer open
     expect(engine.getProposedPlanStore().getOpen().some(p => p.plan_id === plan.plan_id)).toBe(false);
+    expect(engine.getProposedPlanStore().get(plan.plan_id)).toMatchObject({
+      status: 'confirmed',
+      confirmed_at: expect.any(Number),
+      acknowledged_at: expect.any(Number),
+      execution_outcome: {
+        status: 'succeeded',
+        completed_at: expect.any(Number),
+        results: [expect.objectContaining({ ok: true })],
+      },
+    });
   });
 
   it('reports planner_available:false when NO task-execution service is attached (dashboard-only)', async () => {

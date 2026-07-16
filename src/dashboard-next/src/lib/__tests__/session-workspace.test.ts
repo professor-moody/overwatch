@@ -149,16 +149,20 @@ describe('session workspace helpers', () => {
     expect(searchSessionBuffer(buffer, 'jdoe').map(match => match.line)).toEqual([2, 3]);
   });
 
-  it('finds sessions owned/claimed by an agent (by task id or label)', () => {
+  it('finds sessions by canonical task ownership without guessing from labels', () => {
     const sessions = [
       session({ id: 'by-task', agent_id: 'task-123' }),
       session({ id: 'by-label', agent_id: 'recon-1' }),
-      session({ id: 'by-claim', claimed_by: 'recon-1' }),
+      session({ id: 'by-claim', claimed_by: 'task-123', agent_id: 'recon-1' }),
       session({ id: 'other', agent_id: 'task-999' }),
       session({ id: 'unowned' }),
     ];
-    const matched = sessionsForAgent(sessions, { id: 'task-123', agent_id: 'recon-1' });
-    expect(matched.map(s => s.id).sort()).toEqual(['by-claim', 'by-label', 'by-task']);
+    const matched = sessionsForAgent(sessions, {
+      task_id: 'task-123',
+      id: 'task-123',
+      agent_id: 'recon-1',
+    });
+    expect(matched.map(s => s.id).sort()).toEqual(['by-claim', 'by-task']);
   });
 
   it('returns no sessions for a null agent or an agent with no identifiers', () => {

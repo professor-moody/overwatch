@@ -82,7 +82,7 @@ The session is claimed by the opening agent — other agents can read but not wr
         accept_mode: z.enum(['single', 'rearm']).optional().describe('Socket listener accept behavior. reverse_shell_catcher defaults to rearm; generic listeners default to single.'),
         cols: z.number().int().optional().describe('Terminal columns (default: 120)'),
         rows: z.number().int().optional().describe('Terminal rows (default: 30)'),
-        agent_id: z.string().min(1).optional().describe('Agent that owns this session'),
+        agent_id: z.string().min(1).optional().describe('Owning task_id (preferred); a unique legacy agent label is accepted'),
         target_node: z.string().min(1).optional().describe('Graph node ID this session targets'),
         principal_node: z.string().min(1).optional().describe('Graph node ID of the authenticating user/group/credential (enables HAS_SESSION edge creation on success)'),
         credential_node: z.string().min(1).optional().describe('Graph node ID of the credential used for authentication'),
@@ -107,6 +107,28 @@ The session is claimed by the opening agent — other agents can read but not wr
     },
     withErrorBoundary('open_session', async (params) => {
       const warnings: string[] = [];
+      const ownerResolution = params.agent_id
+        ? engine.resolveAgentTaskReference(params.agent_id)
+        : { status: 'missing' as const };
+      if (ownerResolution.status === 'ambiguous_legacy_label') {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: `Agent label is ambiguous: ${params.agent_id}`,
+              candidate_task_ids: ownerResolution.candidate_task_ids,
+              hint: 'Pass the exact task_id as agent_id for this compatibility input.',
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      const ownerTask = ownerResolution.status === 'exact'
+        || ownerResolution.status === 'unique_legacy_label'
+        ? ownerResolution.task
+        : undefined;
+      const ownerTaskId = ownerTask?.task_id ?? ownerTask?.id;
+      const ownerAgentLabel = ownerTask?.agent_label ?? ownerTask?.agent_id ?? params.agent_id;
       const effectiveMode = params.mode ?? (params.kind === 'socket' ? 'connect' : undefined);
       const isSocketListener = params.kind === 'socket' && effectiveMode === 'listen';
       const bindHost = isSocketListener ? (params.bind_host ?? params.host ?? '127.0.0.1') : undefined;
@@ -203,13 +225,13 @@ The session is claimed by the opening agent — other agents can read but not wr
       // a sensible default for remote-scoped sessions so every send is still
       // instrumented (technique falls back to "session_command").
       let defaultValidation: SessionDefaultValidation | undefined = params.default_validation
-        ? deriveDefaultTarget(params.host, { ...params.default_validation, agent_id: params.default_validation.agent_id ?? params.agent_id })
+        ? deriveDefaultTarget(params.host, { ...params.default_validation, agent_id: params.default_validation.agent_id ?? ownerAgentLabel })
         : undefined;
       if (!defaultValidation && params.host && isRemoteScopedSession(params.kind, effectiveMode)) {
         defaultValidation = deriveDefaultTarget(params.host, {
           technique: 'session_command',
           target_node: params.target_node,
-          agent_id: params.agent_id,
+          agent_id: ownerAgentLabel,
         });
       }
 
@@ -264,7 +286,8 @@ The session is claimed by the opening agent — other agents can read but not wr
         reachability_warnings: warnings.length > 0 ? warnings : undefined,
         cols: params.cols,
         rows: params.rows,
-        agent_id: params.agent_id,
+        owner_task_id: ownerTaskId,
+        agent_id: ownerAgentLabel,
         target_node: params.target_node,
         principal_node: params.principal_node,
         credential_node: params.credential_node,
@@ -292,7 +315,7 @@ The session is claimed by the opening agent — other agents can read but not wr
           notes: params.mock_service_notes,
           bound_session_id: result.metadata.id,
           target_node: params.target_node,
-          agent_id: params.agent_id,
+          agent_id: ownerAgentLabel,
           action_id: params.action_id,
           frontier_item_id: params.frontier_item_id,
         });
@@ -704,7 +727,7 @@ Use session_id to get details for a specific session.`,
       inputSchema: {
         active_only: z.boolean().default(false).describe('Only show pending/connected sessions'),
         session_id: z.string().optional().describe('Get details for a specific session'),
-        agent_id: z.string().optional().describe('Filter to sessions claimed by this agent (or unclaimed)'),
+        agent_id: z.string().optional().describe('Filter to sessions claimed by this task_id (unique legacy label accepted)'),
       },
       annotations: {
         readOnlyHint: true,
@@ -742,7 +765,23 @@ Use session_id to get details for a specific session.`,
 
       let sessions = sessionManager.list(active_only);
       if (agent_id) {
-        sessions = sessions.filter(s => !s.claimed_by || s.claimed_by === agent_id);
+        const resolution = engine.resolveAgentTaskReference(agent_id);
+        if (resolution.status === 'ambiguous_legacy_label') {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `Agent label is ambiguous: ${agent_id}`,
+                candidate_task_ids: resolution.candidate_task_ids,
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
+        const taskId = resolution.status === 'exact' || resolution.status === 'unique_legacy_label'
+          ? resolution.task.task_id ?? resolution.task.id
+          : agent_id;
+        sessions = sessions.filter(s => !s.claimed_by || s.claimed_by === taskId);
       }
       return {
         content: [{
@@ -777,9 +816,9 @@ Use this to:
         supports_resize: z.boolean().optional().describe('Whether session now supports resize'),
         supports_signals: z.boolean().optional().describe('Whether session now supports signals'),
         title: z.string().optional().describe('New session title'),
-        claimed_by: z.string().optional().describe('Transfer ownership to this agent_id'),
+        claimed_by: z.string().optional().describe('Transfer ownership to this task_id (unique legacy agent label accepted)'),
         notes: z.string().optional().describe('Operational notes'),
-        agent_id: z.string().optional().describe('Agent performing the update (checked against claimed_by)'),
+        agent_id: z.string().optional().describe('Task performing the update (unique legacy agent label accepted; checked against claimed_by)'),
         force: z.boolean().default(false).describe('Override ownership check'),
       },
       annotations: {
@@ -795,12 +834,50 @@ Use this to:
       if (supports_resize !== undefined) capabilities.supports_resize = supports_resize;
       if (supports_signals !== undefined) capabilities.supports_signals = supports_signals;
 
+      const claimedResolution = claimed_by
+        ? engine.resolveAgentTaskReference(claimed_by)
+        : { status: 'missing' as const };
+      if (claimedResolution.status === 'ambiguous_legacy_label') {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: `Agent label is ambiguous: ${claimed_by}`,
+              candidate_task_ids: claimedResolution.candidate_task_ids,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      const claimedTaskId = claimedResolution.status === 'exact'
+        || claimedResolution.status === 'unique_legacy_label'
+        ? claimedResolution.task.task_id ?? claimedResolution.task.id
+        : claimed_by;
+      const actorResolution = agent_id
+        ? engine.resolveAgentTaskReference(agent_id)
+        : { status: 'missing' as const };
+      if (actorResolution.status === 'ambiguous_legacy_label') {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: `Agent label is ambiguous: ${agent_id}`,
+              candidate_task_ids: actorResolution.candidate_task_ids,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      const actorTaskId = actorResolution.status === 'exact'
+        || actorResolution.status === 'unique_legacy_label'
+        ? actorResolution.task.task_id ?? actorResolution.task.id
+        : agent_id;
       const updated = sessionManager.update(session_id, {
         capabilities: Object.keys(capabilities).length > 0 ? capabilities as any : undefined,
         title,
-        claimed_by,
+        claimed_by: claimedTaskId,
         notes,
-      }, agent_id, force);
+      }, actorTaskId, force);
 
       return {
         content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }],

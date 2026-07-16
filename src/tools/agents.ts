@@ -7,6 +7,7 @@ import { withErrorBoundary } from './error-boundary.js';
 import { isIpInCidr } from '../services/cidr.js';
 import { recommendArchetype, isArchetypeId, type AgentArchetypeId, type RecommendInput } from '../services/agent-archetypes.js';
 import type { ActivityLogEntry } from '../services/engine-context.js';
+import type { AgentTask } from '../types.js';
 
 interface PriorActionOnScope {
   action_id?: string;
@@ -22,6 +23,22 @@ const PRIOR_ACTIONS_LIMIT = 25;
 // matches would otherwise scan the whole log). Prior actions older than this tail
 // are ancient for grounding purposes.
 const PRIOR_ACTIONS_SCAN_CAP = 4000;
+
+function taskWireIdentity(task: AgentTask): {
+  task_id: string;
+  agent_label: string;
+  id: string;
+  agent_id: string;
+} {
+  const taskId = task.task_id ?? task.id;
+  const agentLabel = task.agent_label ?? task.agent_id;
+  return {
+    task_id: taskId,
+    agent_label: agentLabel,
+    id: taskId,
+    agent_id: agentLabel,
+  };
+}
 
 /**
  * Recent completed/failed actions the agent's scope has already seen — so a dispatched
@@ -82,7 +99,8 @@ export function registerAgentTools(server: McpServer, engine: GraphEngine): void
 Provide the frontier item the agent should work on and the relevant node IDs for its scoped subgraph view.
 The agent can then call get_agent_context with its task ID to receive its scoped view.`,
       inputSchema: {
-        agent_id: z.string().describe('Unique identifier for the agent'),
+        agent_label: z.string().optional().describe('Canonical human-readable label for the agent'),
+        agent_id: z.string().optional().describe('Legacy alias for agent_label (retained for one minor release)'),
         frontier_item_id: z.string().optional().describe('ID of the frontier item this agent should work on (recommended for attribution)'),
         subgraph_node_ids: z.array(z.string()).default([]).describe('Optional node IDs relevant to this agent\'s task. Leave empty to auto-compute from the frontier item.'),
         skill: z.string().optional().describe('Skill/methodology to apply'),
@@ -95,7 +113,32 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         openWorldHint: false
       }
     },
-    withErrorBoundary('register_agent', async ({ agent_id, frontier_item_id, subgraph_node_ids, skill, archetype }) => {
+    withErrorBoundary('register_agent', async ({
+      agent_label,
+      agent_id: legacyAgentId,
+      frontier_item_id,
+      subgraph_node_ids,
+      skill,
+      archetype,
+    }) => {
+      if (!agent_label && !legacyAgentId) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: 'agent_label is required' }) }],
+          isError: true,
+        };
+      }
+      if (agent_label && legacyAgentId && agent_label !== legacyAgentId) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'agent_label and legacy agent_id must match when both are supplied',
+            }),
+          }],
+          isError: true,
+        };
+      }
+      const agent_id = agent_label ?? legacyAgentId!;
       if (frontier_item_id) {
         const existing = engine.getRunningTaskForFrontierItem(frontier_item_id);
         if (existing) {
@@ -103,8 +146,7 @@ The agent can then call get_agent_context with its task ID to receive its scoped
             content: [{
               type: 'text',
               text: JSON.stringify({
-                task_id: existing.id,
-                agent_id: existing.agent_id,
+                ...taskWireIdentity(existing),
                 status: existing.status,
                 skipped_existing: true,
                 message: `A running agent is already assigned to ${frontier_item_id}`,
@@ -184,6 +226,8 @@ The agent can then call get_agent_context with its task ID to receive its scoped
 
       const response: Record<string, unknown> = {
         task_id: task.id,
+        agent_label: agent_id,
+        id: task.id,
         agent_id,
         status: 'running',
         archetype: resolvedArchetype,
@@ -254,8 +298,8 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
       }
 
       const total_candidates = candidates.length;
-      const dispatched: Array<{ task_id: string; agent_id: string; frontier_item_id: string; frontier_type: string; archetype: string; skill?: string }> = [];
-      const skipped_existing: Array<{ frontier_item_id: string; task_id: string; agent_id: string }> = [];
+      const dispatched: Array<{ task_id: string; agent_label: string; id: string; agent_id: string; frontier_item_id: string; frontier_type: string; archetype: string; skill?: string }> = [];
+      const skipped_existing: Array<{ frontier_item_id: string; task_id: string; agent_label: string; id: string; agent_id: string }> = [];
       const skipped_unscoped: Array<{ frontier_item_id: string; frontier_type: string }> = [];
       const skipped_lease_conflict: Array<{ frontier_item_id: string; frontier_type: string; existing_task_id?: string; existing_agent_id?: string }> = [];
       const skipped_dispatch_cap: Array<{ frontier_item_id: string; frontier_type: string; cap_scope: string; cap_key: string; limit: number; current: number }> = [];
@@ -267,8 +311,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
         if (existing) {
           skipped_existing.push({
             frontier_item_id: item.id,
-            task_id: existing.id,
-            agent_id: existing.agent_id,
+            ...taskWireIdentity(existing),
           });
           continue;
         }
@@ -311,6 +354,8 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
         }
         dispatched.push({
           task_id: task.id,
+          agent_label: task.agent_id,
+          id: task.id,
           agent_id: task.agent_id,
           frontier_item_id: item.id,
           frontier_type: item.type,
@@ -395,8 +440,7 @@ auto-computed from the frontier item's target node(s).`,
           content: [{
             type: 'text',
             text: JSON.stringify({
-              task_id: task.id,
-              agent_id: task.agent_id,
+              ...taskWireIdentity(task),
               frontier_item_id: task.frontier_item_id,
               skill: task.skill,
               objective: task.objective,
@@ -423,8 +467,7 @@ auto-computed from the frontier item's target node(s).`,
           content: [{
             type: 'text',
             text: JSON.stringify({
-              task_id: task.id,
-              agent_id: task.agent_id,
+              ...taskWireIdentity(task),
               frontier_item_id: task.frontier_item_id,
               skill: task.skill,
               objective: task.objective,
@@ -456,8 +499,7 @@ auto-computed from the frontier item's target node(s).`,
         content: [{
           type: 'text',
           text: JSON.stringify({
-            task_id: task.id,
-            agent_id: task.agent_id,
+            ...taskWireIdentity(task),
             frontier_item_id: task.frontier_item_id,
             skill: task.skill,
             // archetype + objective complete the context on the common (subgraph)
@@ -493,7 +535,7 @@ Fields:
 - \`key_thought_event_ids\` / \`key_finding_ids\` are optional pointers to events/findings the primary should look at first.`,
       inputSchema: {
         task_id: z.string().optional().describe('Agent task ID this transcript belongs to (preferred). Returned by register_agent as `task_id`.'),
-        agent_id: z.string().optional().describe('Agent task ID this transcript belongs to. Accepted as a legacy alias for `task_id`; if it does not match a task ID, we fall back to looking up the most recent task whose agent_id matches.'),
+        agent_id: z.string().optional().describe('Agent task ID this transcript belongs to. Accepted as a legacy alias for `task_id`; a legacy agent label resolves only when exactly one task has that label.'),
         summary: z.string().min(1).describe('Short wrap-up paragraph from the sub-agent'),
         transcript_jsonl: z.string().optional().describe('Raw JSONL transcript of the sub-agent run (stored as evidence)'),
         key_thought_event_ids: z.array(z.string()).optional().describe('Event IDs of the most important thoughts/decisions'),
@@ -511,8 +553,8 @@ Fields:
       // parameter named `agent_id` but used it as a *task* ID, which
       // tripped operators up since register_agent returns both. We now
       // prefer `task_id`, accept `agent_id` as a legacy alias, and as a
-      // last resort scan tasks for one whose `agent_id` field matches —
-      // covering the case where a sub-agent only kept the agent name.
+      // last resort resolve a legacy agent label only when it uniquely
+      // identifies one task. Duplicate labels are reported as ambiguous.
       const lookupId = task_id ?? agent_id;
       if (!lookupId) {
         return {
@@ -523,18 +565,21 @@ Fields:
           isError: true,
         };
       }
-      let task = engine.getTask(lookupId);
-      if (!task) {
-        // Fallback: maybe the caller passed an agent_id (the human-readable
-        // name) instead of the task UUID. Find the most recent task that
-        // matches; tie-break on assigned_at to prefer the freshest.
-        const candidates = engine.getAgentTasks?.() ?? [];
-        const match = candidates
-          .filter((t) => t.agent_id === lookupId)
-          .sort((a, b) => (b.assigned_at || '').localeCompare(a.assigned_at || ''))[0];
-        if (match) task = match;
+      const resolution = engine.resolveAgentTaskReference(lookupId);
+      if (resolution.status === 'ambiguous_legacy_label') {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: `Agent label is ambiguous: ${lookupId}`,
+              candidate_task_ids: resolution.candidate_task_ids,
+              hint: 'Pass the exact task_id returned by register_agent.',
+            }, null, 2),
+          }],
+          isError: true,
+        };
       }
-      if (!task) {
+      if (resolution.status === 'missing') {
         return {
           content: [{
             type: 'text',
@@ -543,8 +588,9 @@ Fields:
           isError: true,
         };
       }
-      const resolvedTaskId = task.id;
-      const resolvedAgentId = task.agent_id;
+      const task = resolution.task;
+      const resolvedTaskId = task.task_id ?? task.id;
+      const resolvedAgentId = task.agent_label ?? task.agent_id;
 
       let evidence_id: string | undefined;
       let transcript_bytes = 0;
@@ -582,6 +628,8 @@ Fields:
           type: 'text',
           text: JSON.stringify({
             task_id: resolvedTaskId,
+            agent_label: resolvedAgentId,
+            id: resolvedTaskId,
             agent_id: resolvedAgentId,
             event_id: event.event_id,
             evidence_id,
@@ -630,17 +678,22 @@ Fields:
       }
 
       // Visibility hook: warn (non-blocking) when an agent reaches a terminal
-      // state without first calling submit_agent_transcript. The agent task may
-      // be referenced either by its task.id or its agent.agent_id, so check both.
+      // state without first calling submit_agent_transcript. Exact task linkage
+      // wins; a legacy label-only event is accepted only when that label is
+      // unique, never across duplicate task labels.
       let transcript_warning_emitted = false;
       if (status === 'completed' || status === 'failed') {
-        const candidateIds = new Set<string>([task_id]);
-        if (task.agent_id) candidateIds.add(task.agent_id);
+        const agentLabel = task.agent_label ?? task.agent_id;
+        const uniqueLabel = engine.getAgentTasks()
+          .filter(candidate => (candidate.agent_label ?? candidate.agent_id) === agentLabel).length === 1;
         const history = engine.getFullHistory();
         const submitted = history.some(e =>
           e.event_type === 'agent_transcript_submitted'
-          && ((e.agent_id && candidateIds.has(e.agent_id))
-              || (e.linked_agent_task_id && candidateIds.has(e.linked_agent_task_id))),
+          && (
+            e.linked_agent_task_id === task_id
+            || e.agent_id === task_id
+            || (uniqueLabel && e.agent_id === agentLabel)
+          ),
         );
         if (!submitted) {
           engine.logActionEvent({
@@ -666,7 +719,12 @@ Fields:
           isError: true,
         };
       }
-      const response: Record<string, unknown> = { task_id, status, summary, updated: true };
+      const response: Record<string, unknown> = {
+        ...taskWireIdentity(task),
+        status,
+        summary,
+        updated: true,
+      };
       if (transcript_warning_emitted) response.transcript_warning = 'Call submit_agent_transcript before update_agent on terminal status to keep the primary session in the loop.';
       return {
         content: [{
@@ -718,7 +776,7 @@ its CIDR as its scoped subgraph.`,
 
       const rawFrontier = engine.computeFrontier();
       const { passed: frontier, filtered } = engine.filterFrontier(rawFrontier);
-      const dispatched: Array<{ task_id: string; agent_id: string; cidr: string; existing_nodes: number; skill: string }> = [];
+      const dispatched: Array<{ task_id: string; agent_label: string; id: string; agent_id: string; cidr: string; existing_nodes: number; skill: string }> = [];
       const skipped: Array<{ cidr: string; reason: string }> = [];
 
       const graphSnapshot = engine.exportGraph();
@@ -775,6 +833,8 @@ its CIDR as its scoped subgraph.`,
 
         dispatched.push({
           task_id: task.id,
+          agent_label: agent_id,
+          id: task.id,
           agent_id,
           cidr,
           existing_nodes: nodesInCidr.length,
@@ -867,6 +927,7 @@ The runtime watchdog will mark agents as "interrupted" if their last heartbeat i
 Returns the new heartbeat timestamp on success, or an error if the task is unknown / already in a terminal state.`,
       inputSchema: {
         task_id: z.string().describe('Task ID returned from register_agent'),
+        acknowledged_query_id: z.string().optional().describe('Answer query_id already received and acted on; stops redelivery.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -875,7 +936,33 @@ Returns the new heartbeat timestamp on success, or an error if the task is unkno
         openWorldHint: false,
       },
     },
-    withErrorBoundary('agent_heartbeat', async ({ task_id }) => {
+    withErrorBoundary('agent_heartbeat', async ({ task_id, acknowledged_query_id }) => {
+      const currentTask = engine.getTask(task_id);
+      if (!currentTask) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ ok: false, error: `task not found: ${task_id}` }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      if (acknowledged_query_id) {
+        const query = engine.getAgentQueryStore().get(acknowledged_query_id);
+        const ownerTaskId = query?.owner_task_id ?? query?.task_id;
+        if (!query || ownerTaskId !== task_id || query.status !== 'answered') {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                error: `query answer not found for task ${task_id}: ${acknowledged_query_id}`,
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
+      }
       const ok = engine.agentHeartbeat(task_id);
       if (!ok) {
         const task = engine.getTask(task_id);
@@ -891,6 +978,21 @@ Returns the new heartbeat timestamp on success, or an error if the task is unkno
         };
       }
       const task = engine.getTask(task_id)!;
+      const acknowledgedAnswer = acknowledged_query_id
+        ? engine.getAgentQueryStore().acknowledge(acknowledged_query_id, task_id)
+        : undefined;
+      if (acknowledged_query_id && !acknowledgedAnswer) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              error: `query answer not found for task ${task_id}: ${acknowledged_query_id}`,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
       // Deliver any pending operator steering directive on the heartbeat the
       // agent already runs — zero extra round-trips. The agent must
       // acknowledge_agent_directive and then act on it.
@@ -900,6 +1002,9 @@ Returns the new heartbeat timestamp on success, or an error if the task is unkno
       // heartbeat self-heals on the next beat. The agent matches pending_answer.
       // query_id to its ask_operator query_id and acts on it once.
       const answered = engine.getAgentQueryStore().getAnswerForTask(task_id);
+      if (answered) {
+        engine.getAgentQueryStore().markDelivered(answered.query_id, task_id);
+      }
       const pending_answer = answered
         ? { query_id: answered.query_id, question: answered.question, answer: answered.answer }
         : undefined;
@@ -909,8 +1014,12 @@ Returns the new heartbeat timestamp on success, or an error if the task is unkno
           text: JSON.stringify({
             ok: true,
             task_id,
+            agent_label: task.agent_label ?? task.agent_id,
+            id: task.task_id ?? task.id,
+            agent_id: task.agent_label ?? task.agent_id,
             heartbeat_at: task.heartbeat_at,
             heartbeat_ttl_seconds: task.heartbeat_ttl_seconds ?? 120,
+            ...(acknowledged_query_id ? { acknowledged_query_id } : {}),
             ...(pending ? { pending_directive: pending } : {}),
             ...(pending_answer ? { pending_answer } : {}),
           }, null, 2),
@@ -930,7 +1039,7 @@ Returns the new heartbeat timestamp on success, or an error if the task is unkno
       title: 'Ask the Operator',
       description: `Escalate a decision to the human operator and WAIT for their answer. Use this at a genuine fork you can't resolve yourself (ambiguous path, risky/irreversible step, missing context) — not for routine work.
 
-After calling this, keep calling \`agent_heartbeat({ task_id })\`; when the operator answers, the heartbeat response carries \`pending_answer: { query_id, question, answer }\`. Read the answer and proceed. If no answer arrives before your task times out, make the safest reasonable choice and note that you proceeded without an answer.`,
+After calling this, keep calling \`agent_heartbeat({ task_id })\`; when the operator answers, the heartbeat response carries \`pending_answer: { query_id, question, answer }\`. Read the answer, proceed, then acknowledge it on a later heartbeat with \`agent_heartbeat({ task_id, acknowledged_query_id: query_id })\`. If no answer arrives before your task times out, make the safest reasonable choice and note that you proceeded without an answer.`,
       inputSchema: {
         task_id: z.string().describe('Your agent task id'),
         agent_id: z.string().optional().describe('Your agent id (for attribution)'),
@@ -940,18 +1049,48 @@ After calling this, keep calling \`agent_heartbeat({ task_id })\`; when the oper
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     withErrorBoundary('ask_operator', async ({ task_id, agent_id, question, options }) => {
-      const query = engine.getAgentQueryStore().add({ task_id, agent_id, question, options });
+      const task = engine.getTask(task_id);
+      if (!task) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `task not found: ${task_id}` }) }],
+          isError: true,
+        };
+      }
+      const taskLabel = task.agent_label ?? task.agent_id;
+      if (agent_id && agent_id !== taskLabel) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              error: `agent_id "${agent_id}" does not match task ${task_id} (${taskLabel})`,
+            }),
+          }],
+          isError: true,
+        };
+      }
+      const query = engine.getAgentQueryStore().add({
+        owner_task_id: task.task_id ?? task.id,
+        owner_agent_label: taskLabel,
+        question,
+        options,
+      });
       engine.logActionEvent({
         description: `Agent asked the operator: ${question}`,
         event_type: 'agent_query',
         category: 'agent',
         result_classification: 'neutral',
-        agent_id,
+        agent_id: taskLabel,
         linked_agent_task_id: task_id,
         details: { reason: 'agent_query', query_id: query.query_id, question, options },
       });
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: true, query_id: query.query_id, status: 'open', note: 'Keep heartbeating; the answer arrives as pending_answer on agent_heartbeat.' }, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify({
+          ok: true,
+          query_id: query.query_id,
+          status: 'open',
+          note: 'Keep heartbeating; the answer arrives as pending_answer. After acting, acknowledge it with acknowledged_query_id on a later heartbeat.',
+        }, null, 2) }],
       };
     }),
   );
@@ -1044,7 +1183,7 @@ export interface DispatchResult {
   strategy: string;
   requested: number;
   total_items: number;
-  dispatched: Array<{ task_id: string; agent_id: string; frontier_item_id: string; scope_nodes: number; archetype: string; skill?: string }>;
+  dispatched: Array<{ task_id: string; agent_label: string; id: string; agent_id: string; frontier_item_id: string; scope_nodes: number; archetype: string; skill?: string }>;
   skipped: Array<{ frontier_item_id: string; reason: string }>;
   warning?: string;
   error?: string;
@@ -1141,7 +1280,16 @@ export function dispatchCampaignAgents(
       continue;
     }
 
-    dispatched.push({ task_id: task.id, agent_id, frontier_item_id: itemId, scope_nodes: scope.length, archetype: campaignArchetype, skill });
+    dispatched.push({
+      task_id: task.id,
+      agent_label: agent_id,
+      id: task.id,
+      agent_id,
+      frontier_item_id: itemId,
+      scope_nodes: scope.length,
+      archetype: campaignArchetype,
+      skill,
+    });
   }
 
   // F5: only activate the campaign once at least one agent is actually

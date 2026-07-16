@@ -220,6 +220,12 @@ export function renderRecovery(data: RecoveryResponse): string {
   if (recovery.state_migration) {
     out.push('', heading('State format'), renderStateMigrationStatus(recovery.state_migration));
   }
+  if (recovery.coordination_warnings?.length) {
+    out.push('', heading('Coordination recovery warnings'));
+    out.push(recovery.coordination_warnings
+      .map(warning => `  ${yellow('!')} ${warning.message}`)
+      .join('\n'));
+  }
   return out.join('\n');
 }
 

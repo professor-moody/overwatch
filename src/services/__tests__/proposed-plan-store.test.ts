@@ -33,17 +33,25 @@ describe('ProposedPlanStore', () => {
     const plan = store.add({ command: 'x', ops, summary: 's', now: 1000 });
     // Confirm 61s later, with no intervening getOpen()/add() to sweep it.
     expect(store.resolve(plan.plan_id, 'confirmed', 1000 + 61_000)).toBeNull();
-    // and it's gone from the store
-    expect(store.get(plan.plan_id)).toBeUndefined();
+    // and its expired state remains durable for recovery/audit
+    expect(store.get(plan.plan_id)).toMatchObject({
+      status: 'expired',
+      expires_at: 61_000,
+      expired_at: 61_000,
+    });
   });
 
-  it('prune drops plans older than the TTL', () => {
+  it('prune marks plans expired without discarding their body', () => {
     const store = new ProposedPlanStore(60_000); // 1 min TTL
     const plan = store.add({ command: 'x', ops, summary: 's', now: 1000 });
     expect(store.get(plan.plan_id)).toBeDefined();
     store.prune(1000 + 61_000);
-    expect(store.get(plan.plan_id)).toBeUndefined();
-    expect(store.size()).toBe(0);
+    expect(store.get(plan.plan_id)).toMatchObject({
+      status: 'expired',
+      command: 'x',
+      ops,
+    });
+    expect(store.size()).toBe(1);
   });
 
   it('describeResolution distinguishes confirmed / denied / expired / unknown after the plan is gone', () => {
@@ -97,6 +105,42 @@ describe('ProposedPlanStore', () => {
     expect(restored.getOpen(60_999).map(p => p.plan_id)).toEqual([plan.plan_id]);
     expect(restored.getOpen(61_000)).toEqual([]);
     expect(restored.describeResolution(plan.plan_id, 61_000)).toBe('expired');
+    expect(restored.get(plan.plan_id)).toMatchObject({
+      status: 'expired',
+      expires_at: 61_000,
+      expired_at: 61_000,
+    });
+  });
+
+  it('persists canonical ownership, confirmation, acknowledgement, and execution outcome', () => {
+    const store = new ProposedPlanStore();
+    const plan = store.add({
+      command: 'pause it',
+      ops,
+      summary: 'pause t1',
+      owner_task_id: 't1',
+      owner_agent_label: 'a1',
+      now: 1_000,
+    });
+    store.resolve(plan.plan_id, 'confirmed', 1_100);
+    store.recordExecutionOutcome(plan.plan_id, [{ ok: true }], 1_200);
+
+    expect(store.get(plan.plan_id)).toMatchObject({
+      owner_task_id: 't1',
+      owner_agent_label: 'a1',
+      source_task_id: 't1',
+      source_agent_id: 'a1',
+      status: 'confirmed',
+      confirmed_at: 1_100,
+      acknowledged_at: 1_100,
+      execution_outcome: {
+        status: 'succeeded',
+        completed_at: 1_200,
+        results: [{ ok: true }],
+      },
+    });
+    const restored = ProposedPlanStore.deserialize(store.serialize(), undefined, 2_000);
+    expect(restored.get(plan.plan_id)?.execution_outcome?.status).toBe('succeeded');
   });
 
   it('restores terminal tombstones and keeps existing listeners attached', () => {

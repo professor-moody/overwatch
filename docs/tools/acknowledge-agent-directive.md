@@ -24,7 +24,7 @@ Only a **live `headless_mcp` agent** calls this tool. Operator directives are de
 ## Usage Notes
 
 - Acknowledge promptly, then honor the directive — see the kind table in [`manage_agent_directive`](manage-agent-directive.md).
-- `pending_answer` (the reply to an [`ask_operator`](ask-operator.md) question) is **not** acknowledged this way — it is delivered at-least-once and the agent dedups by `query_id`.
+- `pending_answer` (the reply to an [`ask_operator`](ask-operator.md) question) is **not** acknowledged with this tool. After acting on it, pass its query ID as `acknowledged_query_id` on a later [`agent_heartbeat`](agent-heartbeat.md).
 
 ## See Also
 

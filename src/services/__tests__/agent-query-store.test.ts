@@ -38,7 +38,12 @@ describe('AgentQueryStore (Phase 3D)', () => {
 
     expect(store.getAnswerForTask('t1', 60_999)?.answer).toBe('go left');
     expect(store.getAnswerForTask('t1', 61_000)).toBeNull();
-    expect(store.get(q.query_id)).toBeUndefined();
+    expect(store.get(q.query_id)).toMatchObject({
+      status: 'expired',
+      answer: 'go left',
+      expires_at: 61_000,
+      expired_at: 61_000,
+    });
   });
 
   it('scopes delivery to the asking task', () => {
@@ -49,25 +54,33 @@ describe('AgentQueryStore (Phase 3D)', () => {
     expect(store.getAnswerForTask('t1', 1_001)?.answer).toBe('ans');
   });
 
-  it('expireForTask drops a terminated task\'s questions (no answering into the void)', () => {
+  it('expireForTask retains but closes a terminated task\'s questions', () => {
     const store = new AgentQueryStore();
     const open = store.add({ task_id: 't1', question: 'open?', now: 1000 });
     const ans = store.add({ task_id: 't1', question: 'answered?', now: 1000 });
     store.answer(ans.query_id, 'a', 1001);
     store.add({ task_id: 't2', question: 'other task', now: 1000 });
-    store.expireForTask('t1');
-    expect(store.get(open.query_id)).toBeUndefined();
-    expect(store.get(ans.query_id)).toBeUndefined();
+    store.expireForTask('t1', 1_002);
+    expect(store.get(open.query_id)).toMatchObject({ status: 'expired', expired_at: 1_002 });
+    expect(store.get(ans.query_id)).toMatchObject({
+      status: 'expired',
+      answer: 'a',
+      expired_at: 1_002,
+    });
     expect(store.getAnswerForTask('t1', 1_001)).toBeNull();
     expect(store.getOpen(1001).map(q => q.task_id)).toEqual(['t2']); // t2 untouched
   });
 
-  it('prune drops questions past the TTL', () => {
+  it('prune marks questions expired without discarding their body', () => {
     const store = new AgentQueryStore(60_000);
     const q = store.add({ task_id: 't1', question: 'x?', now: 1000 });
     expect(store.get(q.query_id)).toBeDefined();
     store.prune(1000 + 61_000);
-    expect(store.get(q.query_id)).toBeUndefined();
+    expect(store.get(q.query_id)).toMatchObject({
+      status: 'expired',
+      question: 'x?',
+      expired_at: 61_000,
+    });
   });
 
   it('onChange fires on add and answer', () => {
@@ -128,7 +141,38 @@ describe('AgentQueryStore (Phase 3D)', () => {
     expect(restored.get(query.query_id)?.expires_at).toBe(61_000);
     expect(restored.getOpen(60_999).map(q => q.query_id)).toEqual([query.query_id]);
     expect(restored.getOpen(61_000)).toEqual([]);
-    expect(restored.get(query.query_id)).toBeUndefined();
+    expect(restored.get(query.query_id)).toMatchObject({
+      status: 'expired',
+      expires_at: 61_000,
+      expired_at: 61_000,
+    });
+  });
+
+  it('tracks delivery and explicit acknowledgement without redelivering', () => {
+    const store = new AgentQueryStore();
+    const query = store.add({
+      owner_task_id: 't1',
+      owner_agent_label: 'a1',
+      question: 'which path?',
+      now: 1_000,
+    });
+    store.answer(query.query_id, 'left', 1_100);
+    store.markDelivered(query.query_id, 't1', 1_200);
+    expect(store.getAnswerForTask('t1', 1_200)).toMatchObject({
+      delivered_at: 1_200,
+      answer: 'left',
+    });
+    store.acknowledge(query.query_id, 't1', 1_300);
+    expect(store.getAnswerForTask('t1', 1_300)).toBeNull();
+    expect(store.get(query.query_id)).toMatchObject({
+      owner_task_id: 't1',
+      owner_agent_label: 'a1',
+      task_id: 't1',
+      agent_id: 'a1',
+      answered_at: 1_100,
+      delivered_at: 1_200,
+      acknowledged_at: 1_300,
+    });
   });
 
   it('restores answered questions and keeps existing listeners attached', () => {
