@@ -26,7 +26,7 @@ Engagements are directed property graphs — hosts, services, credentials, and t
 
 The graph is powered by [graphology](https://graphology.github.io/), a robust JavaScript graph library, with shortest-path analysis via `graphology-shortest-path` and community detection via `graphology-communities-louvain`.
 
-**Community detection** runs Louvain modularity optimization on an undirected projection of the graph. Each node gets a `community_id` attribute, materialized lazily and cached until the next topology change. Communities feed two consumers:
+**Community detection** runs Louvain modularity optimization on an undirected projection of the graph. Results are cached outside the durable graph and projected as `community_id` on public graph/frontier views, so derived layout data does not become replay authority. Communities feed two consumers:
 
 - **Frontier** — each `FrontierItem` carries `community_id` and `community_unexplored_count`, letting the LLM reason about cluster coverage
 - **Dashboard** — convex hull overlays color-code communities in the graph visualization

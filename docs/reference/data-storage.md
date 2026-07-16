@@ -82,7 +82,7 @@ file; an API/tool success means its revision/hash matches runtime and state.
 ### State format versions and migration
 
 A state file with no `state_version` is legacy V0. Current writers emit
-`state_version: 1` and `journal_version: 1`. V0 remains readable, but startup
+`state_version: 1` and `journal_version: 2`. V0 remains readable, but startup
 does not publish V1 until it has:
 
 1. acquired the migration/write lease and selected a valid recovery base;
@@ -144,11 +144,13 @@ The write-ahead log lives beside its state file and uses the state basename:
 └── state-<engagement-id>.journal.jsonl
 ```
 
-Engagements with `engagement_nonce` journal primitive durable mutations.
-Legacy engagements can acquire the same WAL before their first composite scope
-or graph-correction mutation. On every startup, any existing non-empty WAL is
-inspected and recovered regardless of whether the incoming config currently has
-an `engagement_nonce`; feature flags never make durable bytes disappear.
+Every engagement uses the WAL, including legacy configurations without an
+`engagement_nonce`. Journal V2 stores each logical `EngineTransaction` as a
+checksum-protected `tx_begin`, one or more bounded operation chunks, and a
+`tx_commit`. Recovery exposes only complete committed transactions and applies
+their operations atomically; an incomplete physical tail is never treated as a
+committed mutation. Existing primitive journal V1 records remain readable for
+migration and backward compatibility.
 
 Compaction removes only a contiguously applied prefix that is already covered
 by a durable recovery base. A malformed or incomplete tail is preserved, and a

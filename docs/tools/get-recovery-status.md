@@ -62,14 +62,29 @@ An abridged divergence response:
     "writable": false,
     "reason": "The active config file and durable state contain different configuration semantics.",
     "highest_allocated_seq": 14,
+    "highest_allocated_logical_seq": 14,
+    "highest_allocated_frame_seq": 43,
     "highest_on_disk_seq": 14,
+    "highest_physical_frame_seq": 43,
     "highest_contiguous_applied_seq": 14,
+    "highest_contiguous_applied_logical_seq": 14,
+    "journal": {
+      "enabled": true,
+      "format_version": 2,
+      "read": 0,
+      "attempted": 0,
+      "applied": 0,
+      "skipped": 0,
+      "failed": 0,
+      "malformed": false,
+      "preserved": true
+    },
     "state_migration": {
       "status": "current",
       "supported_state_version": 1,
-      "supported_journal_version": 1,
+      "supported_journal_version": 2,
       "observed_state_version": 1,
-      "observed_journal_version": 1,
+      "observed_journal_version": 2,
       "migration_required": false
     },
     "config_recovery": {

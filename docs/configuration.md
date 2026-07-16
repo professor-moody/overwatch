@@ -93,7 +93,7 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
 ### Active configuration ownership and recovery
 
 Persisted engagement state is explicitly versioned. A missing `state_version`
-is legacy V0; current writers use state V1 and primitive journal V1. Before a
+is legacy V0; current writers use state V1 and transaction journal V2. Before a
 V0 engagement can normalize configuration metadata or publish any V1
 checkpoint, Overwatch must completely replay its WAL and create a verified
 backup under `.migration-backups/`. Check readiness offline with:
