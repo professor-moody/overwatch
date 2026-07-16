@@ -79,7 +79,7 @@ describe('DispatchCommandService canonical identity', () => {
     const input = { target: '10.0.0.22' };
     const first = service.quickDeploy(input, metadata);
     const replay = service.quickDeploy(input, metadata);
-    const task = first.result?.task as Record<string, unknown>;
+    const task = first.result?.task as unknown as Record<string, unknown>;
 
     expect(task).toMatchObject({
       task_id: expect.any(String),
