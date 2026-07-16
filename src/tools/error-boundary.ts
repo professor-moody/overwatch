@@ -68,6 +68,9 @@ function classifyError(message: string): ErrorClassification {
 function handleError(toolName: string, err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   const stack = err instanceof Error ? err.stack : undefined;
+  const code = typeof (err as { code?: unknown } | null)?.code === 'string'
+    ? (err as { code: string }).code
+    : undefined;
   console.error(`[ERROR] Tool "${toolName}" threw:`, message);
   if (stack) console.error(stack);
 
@@ -78,6 +81,7 @@ function handleError(toolName: string, err: unknown) {
         success: false,
         error: message,
         classification: classifyError(message),
+        ...(code ? { code } : {}),
         tool: toolName,
       }),
     }],

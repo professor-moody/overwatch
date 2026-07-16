@@ -6,6 +6,7 @@
 import type { EngineContext, ActivityLogEntry } from './engine-context.js';
 import type { NodeProperties, NodeType, EngagementConfig, ScopeSuggestion } from '../types.js';
 import { isIpInScope, isValidCidr, isIPv6 } from './cidr.js';
+import type { ColdNodeRecord } from './cold-store.js';
 
 export interface ScopeManagerHost {
   ctx: EngineContext;
@@ -17,6 +18,14 @@ export interface ScopeManagerHost {
   runInferenceRules(nodeId: string): string[];
 }
 
+export interface ScopeUpdatePlan {
+  errors: string[];
+  before: EngagementConfig['scope'];
+  after: EngagementConfig['scope'];
+  promotions: Array<{ cold_record: ColdNodeRecord; hot_node: NodeProperties }>;
+  affected_node_count: number;
+}
+
 export function isValidDomain(domain: string): boolean {
   if (!domain || domain.length > 253) return false;
   if (/\s/.test(domain)) return false;
@@ -24,6 +33,97 @@ export function isValidDomain(domain: string): boolean {
   if (!domain.includes('.')) return false;
   const labels = domain.split('.');
   return labels.every(l => l.length > 0 && l.length <= 63 && /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(l));
+}
+
+/** Build the complete deterministic scope operation before any durable or
+ * in-memory mutation. The returned cold records freeze promotion provenance so
+ * live application and WAL replay produce the same hot inventory. */
+export function planScopeUpdate(
+  host: Pick<ScopeManagerHost, 'ctx'>,
+  changes: {
+    add_cidrs?: string[];
+    remove_cidrs?: string[];
+    add_domains?: string[];
+    remove_domains?: string[];
+    add_exclusions?: string[];
+    remove_exclusions?: string[];
+    replace_scope?: EngagementConfig['scope'];
+    reason: string;
+  },
+): ScopeUpdatePlan {
+  const errors: string[] = [];
+  const candidate = changes.replace_scope
+    ? JSON.parse(JSON.stringify(changes.replace_scope)) as EngagementConfig['scope']
+    : JSON.parse(JSON.stringify(host.ctx.config.scope)) as EngagementConfig['scope'];
+
+  const validateCidrs = (values: string[] | undefined, label: string): void => {
+    for (const cidr of values ?? []) {
+      if (isIPv6(cidr)) errors.push(`IPv6 CIDRs are not supported (scope is IPv4-only): ${cidr}`);
+      else if (!isValidCidr(cidr)) errors.push(`Invalid ${label}: ${cidr}`);
+    }
+  };
+  validateCidrs(changes.add_cidrs, 'CIDR');
+  validateCidrs(changes.remove_cidrs, 'CIDR to remove');
+  validateCidrs(changes.add_exclusions, 'exclusion');
+  validateCidrs(changes.remove_exclusions, 'exclusion to remove');
+  validateCidrs(candidate.cidrs, 'CIDR');
+  validateCidrs(candidate.exclusions, 'exclusion');
+  for (const domain of [...(changes.add_domains ?? []), ...(candidate.domains ?? [])]) {
+    if (!isValidDomain(domain)) errors.push(`Invalid domain format: ${domain}`);
+  }
+
+  const before = JSON.parse(JSON.stringify(host.ctx.config.scope)) as EngagementConfig['scope'];
+  if (errors.length > 0) {
+    return { errors, before, after: before, promotions: [], affected_node_count: 0 };
+  }
+
+  const addUnique = (target: string[], values: string[] | undefined): void => {
+    for (const value of values ?? []) if (!target.includes(value)) target.push(value);
+  };
+  const remove = (target: string[], values: string[] | undefined): string[] =>
+    values?.length ? target.filter(value => !values.includes(value)) : target;
+
+  addUnique(candidate.cidrs, changes.add_cidrs);
+  candidate.cidrs = remove(candidate.cidrs, changes.remove_cidrs);
+  addUnique(candidate.domains, changes.add_domains);
+  candidate.domains = remove(candidate.domains, changes.remove_domains);
+  addUnique(candidate.exclusions, changes.add_exclusions);
+  candidate.exclusions = remove(candidate.exclusions, changes.remove_exclusions);
+
+  let affectedNodeCount = 0;
+  host.ctx.graph.forEachNode((_id, attrs) => {
+    if (attrs.type !== 'host' || !attrs.ip) return;
+    const wasIn = isIpInScope(attrs.ip, before.cidrs, before.exclusions);
+    const nowIn = isIpInScope(attrs.ip, candidate.cidrs, candidate.exclusions);
+    if (wasIn !== nowIn) affectedNodeCount += 1;
+  });
+
+  const promotions: ScopeUpdatePlan['promotions'] = [];
+  host.ctx.coldStore.forEach(record => {
+    if (!record.ip) return;
+    const wasIn = isIpInScope(record.ip, before.cidrs, before.exclusions);
+    const nowIn = isIpInScope(record.ip, candidate.cidrs, candidate.exclusions);
+    if (wasIn || !nowIn) return;
+    promotions.push({
+      cold_record: JSON.parse(JSON.stringify(record)) as ColdNodeRecord,
+      hot_node: {
+        id: record.id,
+        type: record.type as NodeType,
+        label: record.label,
+        ip: record.ip,
+        hostname: record.hostname,
+        discovered_at: record.discovered_at,
+        last_seen_at: record.last_seen_at,
+        alive: record.alive,
+        discovered_by: record.provenance,
+        confidence: record.confidence ?? 1,
+      },
+    });
+    affectedNodeCount += 1;
+  });
+  promotions.sort((left, right) => left.cold_record.id.localeCompare(right.cold_record.id));
+
+  return { errors: [], before, after: candidate, promotions, affected_node_count: affectedNodeCount };
 }
 
 export function updateScope(

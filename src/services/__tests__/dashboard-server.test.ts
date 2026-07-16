@@ -2189,6 +2189,22 @@ describe('DashboardServer', () => {
       expect(res.body).toContain('state');
     });
 
+    it('protects the recovery status route with the same remote Bearer policy', () => {
+      process.env.OVERWATCH_DASHBOARD_TOKEN = 'right-token';
+      const rejected = nlRes();
+      (nlDashboard as any).handleHttp(nlReq('/api/recovery'), rejected);
+      expect(rejected.statusCode).toBe(401);
+
+      const accepted = nlRes();
+      (nlDashboard as any).handleHttp(
+        nlReq('/api/recovery', { authorization: 'Bearer right-token' }),
+        accepted,
+      );
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.body).toContain('recovery');
+      expect(accepted.headers['Cache-Control']).toBe('no-store');
+    });
+
     it('accepts /api/state with token query param', () => {
       process.env.OVERWATCH_DASHBOARD_TOKEN = 'right-token';
       const res = nlRes();
@@ -2222,6 +2238,43 @@ describe('DashboardServer', () => {
         headers: { Authorization: `Bearer ${token}`, Origin: origin },
       });
       expect(stateResponse.status).toBe(200);
+      const recoveryResponse = await fetch(`${httpBase}/api/recovery`, {
+        headers: { Authorization: `Bearer ${token}`, Origin: origin },
+      });
+      expect(recoveryResponse.status).toBe(200);
+      const reconciliationBody = JSON.stringify({
+        resolution: 'use_state',
+        expected_file_hash: 'a'.repeat(64),
+        expected_state_hash: 'b'.repeat(64),
+      });
+      const acceptedReconciliation = await fetch(`${httpBase}/api/recovery/config/resolve`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Origin: origin,
+          'Content-Type': 'application/json',
+        },
+        body: reconciliationBody,
+      });
+      // There is no divergence in this fixture; 409 proves the request passed
+      // both remote Bearer and same-origin gates and reached reconciliation.
+      expect(acceptedReconciliation.status).toBe(409);
+      const missingTokenReconciliation = await fetch(`${httpBase}/api/recovery/config/resolve`, {
+        method: 'POST',
+        headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: reconciliationBody,
+      });
+      expect(missingTokenReconciliation.status).toBe(401);
+      const foreignOriginReconciliation = await fetch(`${httpBase}/api/recovery/config/resolve`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Origin: 'https://foreign.example.test',
+          'Content-Type': 'application/json',
+        },
+        body: reconciliationBody,
+      });
+      expect(foreignOriginReconciliation.status).toBe(403);
       const bundleResponse = await fetch(`${httpBase}/api/bundle`, {
         headers: { Authorization: `Bearer ${token}`, Origin: origin },
       });

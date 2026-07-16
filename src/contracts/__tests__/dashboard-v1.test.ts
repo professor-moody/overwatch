@@ -4,9 +4,12 @@ import {
   CampaignCreateRequestSchema,
   CampaignListResponseSchema,
   CampaignSplitRequestSchema,
+  ConfigDivergenceResolveRequestSchema,
+  ConfigDivergenceResolveResponseSchema,
   FRONTIER_TYPES,
   FrontierListDtoSchema,
   ObjectiveCreateRequestSchema,
+  RecoveryStatusResponseSchema,
   SettingsPatchSchema,
 } from '../dashboard-v1.js';
 
@@ -57,6 +60,121 @@ describe('dashboard v1 contracts', () => {
     expect(CampaignActionRequestSchema.safeParse({ action: 'complete' }).success).toBe(false);
     expect(CampaignSplitRequestSchema.safeParse({ count: 1 }).success).toBe(false);
     expect(SettingsPatchSchema.safeParse({ enabled: true, time_window: null, ignored: true }).success).toBe(false);
+    expect(ConfigDivergenceResolveRequestSchema.safeParse({
+      resolution: 'use_state',
+      expected_file_hash: 'a'.repeat(64),
+      expected_state_hash: 'b'.repeat(64),
+      ignored: true,
+    }).success).toBe(false);
+  });
+
+  it('validates recovery reconciliation hashes and permits additive status fields', () => {
+    expect(ConfigDivergenceResolveRequestSchema.safeParse({
+      resolution: 'use_file',
+      expected_file_hash: 'not-a-hash',
+      expected_state_hash: 'b'.repeat(64),
+    }).success).toBe(false);
+    expect(ConfigDivergenceResolveRequestSchema.safeParse({
+      resolution: 'use_file',
+      expected_file_hash: 'a'.repeat(64),
+      expected_state_hash: 'b'.repeat(64),
+    }).success).toBe(true);
+
+    const parsed = RecoveryStatusResponseSchema.parse({
+      recovery: {
+        outcome: 'incomplete',
+        source: 'state',
+        complete: false,
+        writable: false,
+        state_recovery: {
+          outcome: 'clean',
+          source: 'state',
+          complete: true,
+          writable: true,
+        },
+        reason: 'configuration reconciliation is required',
+        base_checkpoint: 2,
+        highest_allocated_seq: 2,
+        highest_on_disk_seq: 2,
+        highest_contiguous_applied_seq: 2,
+        consecutive_persistence_failures: 0,
+        journal: {
+          enabled: true,
+          read: 0,
+          attempted: 0,
+          applied: 0,
+          skipped: 0,
+          failed: 0,
+          malformed: false,
+          preserved: true,
+          future_journal_field: true,
+        },
+        config_recovery: {
+          status: 'diverged',
+          resolution_required: true,
+          intent_present: false,
+          file_valid: true,
+          file_revision: 2,
+          state_revision: 1,
+          file_hash: 'a'.repeat(64),
+          state_hash: 'b'.repeat(64),
+          allowed_resolutions: ['use_file', 'use_state'],
+          conflicted_intent: {
+            archive_path: '/tmp/engagement.json.write-intent.json.conflict-audit.json',
+            intent_sha256: 'c'.repeat(64),
+            intent_checksum: 'd'.repeat(64),
+            reason: 'intent and file describe different durable states',
+            observed_file_hash: 'a'.repeat(64),
+            observed_state_hash: 'b'.repeat(64),
+            future_conflict_field: 'additive',
+          },
+          future_config_field: 'additive',
+        },
+        future_recovery_field: 'additive',
+      },
+      future_envelope_field: 'additive',
+    });
+    expect(parsed.recovery.config_recovery?.future_config_field).toBe('additive');
+    expect(parsed.recovery.config_recovery?.conflicted_intent?.future_conflict_field).toBe('additive');
+    expect(parsed.recovery.future_recovery_field).toBe('additive');
+    expect(RecoveryStatusResponseSchema.safeParse({
+      recovery: {
+        ...parsed.recovery,
+        config_recovery: {
+          ...parsed.recovery.config_recovery,
+          conflicted_intent: {
+            ...parsed.recovery.config_recovery?.conflicted_intent,
+            intent_sha256: 'not-a-hash',
+          },
+        },
+      },
+    }).success).toBe(false);
+
+    const resolution = ConfigDivergenceResolveResponseSchema.parse({
+      resolved: true,
+      mode: 'use_file',
+      config: {
+        id: 'engagement-1',
+        config_revision: 3,
+        config_hash: 'c'.repeat(64),
+        future_config_key: true,
+      },
+      recovery: {
+        status: 'recovered',
+        resolution_required: false,
+        intent_present: false,
+        future_status_key: 'additive',
+      },
+      future_response_key: 'additive',
+    });
+    expect(resolution.recovery.future_status_key).toBe('additive');
+    expect(resolution.future_response_key).toBe('additive');
+    expect(ConfigDivergenceResolveResponseSchema.safeParse({
+      resolved: true,
+      mode: 'use_file',
+      config: { id: 'engagement-1' },
+      recovery: { status: 'recovered', resolution_required: false, intent_present: false },
+    }).success).toBe(false);
   });
 
   it('matches core settings bounds without narrowing existing timeout compatibility', () => {

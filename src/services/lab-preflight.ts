@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync, readFileSync } from 'fs';
 import { dirname } from 'path';
 import { engagementConfigSchema, inferProfile } from '../types.js';
 import type {
+  ConfigRecoveryStatus,
   ExportedGraph,
   HealthReport,
   LabPreflightReport,
@@ -138,6 +139,7 @@ export function runLabPreflight(engine: GraphEngine, options: LabPreflightOption
 
   const persistenceCheck = evaluatePersistence(engine);
   checks.push(persistenceCheck);
+  checks.push(evaluateConfigConsistency(engine));
 
   const processCheck = evaluateProcessTracker(engine);
   checks.push(processCheck);
@@ -212,10 +214,24 @@ function buildInlineIssues(
   const issues: string[] = [];
   const graphStage = determineGraphStage(inputs.graph);
   const recoveryAssessment = recovery ? assessPersistenceRecovery(recovery) : undefined;
+  const configAssessment = recovery?.config_recovery
+    ? assessConfigRecovery(recovery.config_recovery)
+    : undefined;
 
-  if (recoveryAssessment?.status === 'fail') {
+  if (configAssessment?.status === 'fail') {
+    issues.push(`[CRITICAL] ${configAssessment.message}`);
+  } else if (configAssessment?.status === 'warning') {
+    issues.push(configAssessment.message);
+  }
+
+  // A config-only gate is already reported above with the actionable reason.
+  // Avoid replacing it with the combined status' less-specific persistence
+  // message in the compact get_state briefing.
+  if (recoveryAssessment?.status === 'fail' && configAssessment?.status !== 'fail') {
     issues.push(`[CRITICAL] ${recoveryAssessment.message}`);
-  } else if (recoveryAssessment?.status === 'warning') {
+  } else if (recoveryAssessment?.status === 'fail' && recovery?.persistence_reason) {
+    issues.push(`[CRITICAL] Persistence recovery is incomplete: ${recovery.persistence_reason}`);
+  } else if (recoveryAssessment?.status === 'warning' && configAssessment?.status !== 'warning') {
     issues.push(recoveryAssessment.message);
   }
 
@@ -339,7 +355,7 @@ function evaluatePersistence(engine: GraphEngine): LabReadinessCheck {
   const stateFilePath = engine.getStateFilePath();
 
   try {
-    const recovery = engine.getPersistenceRecoveryStatus();
+    const recovery = engine.getStatePersistenceRecoveryStatus();
 
     accessSync(dirname(stateFilePath), constants.R_OK | constants.W_OK);
 
@@ -384,6 +400,62 @@ function evaluatePersistence(engine: GraphEngine): LabReadinessCheck {
       details: { state_file: stateFilePath },
     };
   }
+}
+
+function evaluateConfigConsistency(engine: GraphEngine): LabReadinessCheck {
+  const recovery = engine.getConfigRecoveryStatus();
+  const assessment = assessConfigRecovery(recovery);
+  return {
+    name: 'config_consistency',
+    status: assessment.status,
+    message: assessment.message,
+    details: {
+      status: recovery.status,
+      resolution_required: recovery.resolution_required,
+      intent_present: recovery.intent_present,
+      file_valid: recovery.file_valid,
+      file_revision: recovery.file_revision,
+      state_revision: recovery.state_revision,
+      runtime_revision: recovery.runtime_revision,
+      file_hash: recovery.file_hash,
+      state_hash: recovery.state_hash,
+      runtime_hash: recovery.runtime_hash,
+      last_resolution: recovery.last_resolution,
+      allowed_resolutions: recovery.allowed_resolutions,
+      reason: recovery.reason,
+    },
+  };
+}
+
+export function assessConfigRecovery(recovery: ConfigRecoveryStatus): {
+  status: 'pass' | 'warning' | 'fail';
+  message: string;
+} {
+  if (recovery.status === 'write_incomplete') {
+    return {
+      status: 'fail',
+      message: `A known configuration write is incomplete and must be resumed by restarting${recovery.reason ? `: ${recovery.reason}` : '.'}`,
+    };
+  }
+  if (recovery.resolution_required || recovery.status === 'diverged') {
+    return {
+      status: 'fail',
+      message: `Configuration consistency requires explicit reconciliation${recovery.reason ? `: ${recovery.reason}` : '.'}`,
+    };
+  }
+  if (recovery.status === 'recovered') {
+    return {
+      status: 'warning',
+      message: 'Configuration consistency was recovered during this startup; review the recovery status before target execution.',
+    };
+  }
+  if (recovery.status === 'unmanaged') {
+    return {
+      status: 'pass',
+      message: 'Configuration is running in fileless managed-test mode.',
+    };
+  }
+  return { status: 'pass', message: 'File, runtime, and durable configuration are consistent.' };
 }
 
 function applyPersistenceRecovery(

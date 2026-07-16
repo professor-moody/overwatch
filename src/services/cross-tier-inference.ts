@@ -52,8 +52,20 @@ import { isCredentialMfaBlocked, isCredentialStaleOrExpired, isCredentialUsableF
 
 export interface CrossTierInferenceHost {
   ctx: EngineContext;
+  addNode?(props: NodeProperties): string;
   addEdge(source: string, target: string, props: EdgeProperties): { id: string; isNew: boolean };
   log(message: string, agentId?: string, extra?: Partial<ActivityLogEntry>): void;
+}
+
+function updateNode(
+  host: CrossTierInferenceHost,
+  id: string,
+  current: NodeProperties,
+  patch: Partial<NodeProperties>,
+): void {
+  const next = { ...current, ...patch, id, type: current.type } as NodeProperties;
+  if (host.addNode) host.addNode(next);
+  else host.ctx.graph.replaceNodeAttributes(id, next);
 }
 
 function nodesByType(ctx: EngineContext, type: string): Array<{ id: string; attrs: NodeProperties }> {
@@ -342,7 +354,7 @@ function ciTrustWildcard(host: CrossTierInferenceHost, agentId: string): number 
     if (!reason) continue;
 
     if (app.attrs.wildcard_trust === true) continue; // already flagged
-    host.ctx.graph.mergeNodeAttributes(app.id, {
+    updateNode(host, app.id, app.attrs, {
       wildcard_trust: true,
       wildcard_trust_reason: reason,
       finding_severity: 'high',
@@ -465,7 +477,7 @@ function mfaBypassViaAitm(host: CrossTierInferenceHost, agentId: string): number
       if (matches) appsAtRisk.add(app.id);
     }
 
-    host.ctx.graph.mergeNodeAttributes(cred.id, {
+    updateNode(host, cred.id, cred.attrs, {
       aitm_bypass: true,
       aitm_apps_at_risk: [...appsAtRisk],
       finding_severity: 'high',
@@ -527,7 +539,7 @@ function consentAbuse(host: CrossTierInferenceHost, agentId: string, threshold =
     if (matchedScopes.length === 0) continue;
     if (assigned < threshold) continue;
 
-    host.ctx.graph.mergeNodeAttributes(app.id, {
+    updateNode(host, app.id, app.attrs, {
       consent_phishing_target: true,
       consent_abuse_high_priv_scopes: matchedScopes,
       consent_abuse_assignment_count: assigned,

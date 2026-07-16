@@ -137,6 +137,8 @@ describe('Objective achievement with closed sessions (F1)', () => {
       getNodesByType: () => [],
       persist: () => {},
       log: () => {},
+      commitObjectives: (objectives: typeof ctx.config.objectives) => { ctx.config.objectives = objectives; },
+      nowIso: () => '2026-01-01T00:00:00.000Z',
     } as any);
 
     expect(ctx.config.objectives[0].achieved).toBe(false);
@@ -178,6 +180,8 @@ describe('Objective achievement with closed sessions (F1)', () => {
       getNodesByType: () => [],
       persist: () => {},
       log: () => {},
+      commitObjectives: (objectives: typeof ctx.config.objectives) => { ctx.config.objectives = objectives; },
+      nowIso: () => '2026-01-01T00:00:00.000Z',
     } as any);
 
     expect(ctx.config.objectives[0].achieved).toBe(true);

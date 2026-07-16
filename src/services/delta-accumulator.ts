@@ -3,6 +3,9 @@ import type { GraphUpdateDetail } from './engine-context.js';
 const DETAIL_KEYS = ['new_nodes', 'new_edges', 'updated_nodes', 'updated_edges', 'inferred_edges', 'removed_nodes', 'removed_edges'] as const;
 
 export class DeltaAccumulator {
+  /** A callback with no graph IDs still means the authoritative state changed
+   * (for example config/recovery health or activity-only persistence). */
+  private refreshPending = false;
   private pending: Record<(typeof DETAIL_KEYS)[number], Set<string>> = {
     new_nodes: new Set<string>(),
     new_edges: new Set<string>(),
@@ -14,6 +17,7 @@ export class DeltaAccumulator {
   };
 
   push(detail: GraphUpdateDetail): void {
+    this.refreshPending = true;
     for (const key of DETAIL_KEYS) {
       for (const value of detail[key] || []) {
         this.pending[key].add(value);
@@ -23,7 +27,8 @@ export class DeltaAccumulator {
 
   drain(): GraphUpdateDetail | null {
     const result: GraphUpdateDetail = {};
-    let hasValues = false;
+    let hasValues = this.refreshPending;
+    this.refreshPending = false;
 
     for (const key of DETAIL_KEYS) {
       const values = [...this.pending[key]];

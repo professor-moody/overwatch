@@ -70,6 +70,8 @@ describe.skipIf(!supportsLocalListen)('MCP HTTP Transport Integration', () => {
     expect(toolNames).toContain('update_scope');
     expect(toolNames).toContain('open_session');
     expect(toolNames).toContain('get_system_prompt');
+    expect(toolNames).toContain('get_recovery_status');
+    expect(toolNames).toContain('resolve_config_divergence');
   });
 
   it('get_state returns engagement state over HTTP', async () => {

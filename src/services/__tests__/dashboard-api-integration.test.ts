@@ -144,6 +144,8 @@ beforeAll(async () => {
     { name: 'parse_output', description: 'parse' },
     { name: 'report_finding', description: 'report' },
     { name: 'get_system_prompt', description: 'prompt' },
+    { name: 'get_recovery_status', description: 'recovery status' },
+    { name: 'resolve_config_divergence', description: 'config reconciliation' },
   ]);
   const result = await dashboard.start();
   if (!result.started) throw new Error(`dashboard failed to start: ${result.error}`);
@@ -331,6 +333,10 @@ describe('GET /api/mcp-tools', () => {
     expect(body.total).toBe(body.tools.length);
     expect(body.tools.map(tool => tool.name)).toContain('get_state');
     expect(body.categories).toHaveProperty('state-readiness');
+    expect(body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'get_recovery_status', category: 'state-readiness' }),
+      expect.objectContaining({ name: 'resolve_config_divergence', category: 'state-readiness' }),
+    ]));
   });
 });
 

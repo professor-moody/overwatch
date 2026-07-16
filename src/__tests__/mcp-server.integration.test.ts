@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { createConnection, createServer, type Socket } from 'net';
@@ -127,12 +127,14 @@ describe('MCP Server Integration', () => {
     cleanup();
     stateRoot = mkdtempSync(join(tmpdir(), 'overwatch-mcp-stdio-'));
     const stateFile = join(stateRoot, `state-${engagementId}.json`);
+    const configFile = join(stateRoot, 'engagement.json');
+    copyFileSync(ENGAGEMENT_JSON, configFile);
     transport = new StdioClientTransport({
       command: 'node',
       args: [resolve('./dist/index.js')],
       env: {
         ...process.env as Record<string, string>,
-        OVERWATCH_CONFIG: ENGAGEMENT_JSON,
+        OVERWATCH_CONFIG: configFile,
         OVERWATCH_SKILLS: SKILLS_DIR,
         OVERWATCH_STATE_FILE: stateFile,
         OVERWATCH_DASHBOARD_PORT: '0',
@@ -193,6 +195,8 @@ describe('MCP Server Integration', () => {
     expect(toolNames).toContain('get_evidence');
     expect(toolNames).toContain('dispatch_subnet_agents');
     expect(toolNames).toContain('ingest_azurehound');
+    expect(toolNames).toContain('get_recovery_status');
+    expect(toolNames).toContain('resolve_config_divergence');
   });
 
   it('get_state returns engagement state', async () => {

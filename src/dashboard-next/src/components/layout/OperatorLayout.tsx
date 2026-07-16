@@ -25,6 +25,7 @@ import { CredentialsPanel } from '../panels/CredentialsPanel';
 import { ReconPanel } from '../panels/ReconPanel';
 import { SmokePanel } from '../panels/SmokePanel';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
+import { RecoveryBanner } from '../shared/RecoveryBanner';
 
 export type PanelId =
   | 'overview'
@@ -140,6 +141,7 @@ export function OperatorLayout() {
         'flex-1 overflow-y-auto pt-12 transition-[padding-left] duration-200',
         sidebarExpanded ? 'pl-16 md:pl-56' : 'pl-16',
       )}>
+        <RecoveryBanner />
         {!connected && (
           <div className="mx-6 mt-2 mb-0 px-3 py-1.5 bg-destructive/5 border border-destructive/20 rounded text-xs text-destructive flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />

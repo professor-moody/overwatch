@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { setColorEnabled, formatTable, truncate, keyValues } from '../operator/format.js';
 import { resolveClientOptions, createClient, ApiError, type ApiClient } from '../operator/client.js';
 import { READ_COMMANDS, WRITE_COMMANDS } from '../operator/commands.js';
-import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents } from '../operator/render.js';
+import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents, renderRecovery } from '../operator/render.js';
 
 // Deterministic output: force color off for all assertions.
 beforeEach(() => setColorEnabled(false));
@@ -95,6 +95,19 @@ function fakeClient(map: Record<string, unknown>): ApiClient {
 }
 
 describe('read commands', () => {
+  it('recovery reads the dedicated degraded-safe endpoint', async () => {
+    const payload = { recovery: {
+      outcome: 'clean', source: 'state', complete: true, writable: true,
+      base_checkpoint: 2, highest_allocated_seq: 2, highest_on_disk_seq: 2,
+      highest_contiguous_applied_seq: 2, consecutive_persistence_failures: 0,
+      journal: { enabled: true, read: 0, attempted: 0, applied: 0, skipped: 0, failed: 0, malformed: false, preserved: false },
+    } };
+    const client = fakeClient({ '/api/recovery': payload });
+    const result = await READ_COMMANDS.recovery.run({ client, args: [] });
+    expect(result.data).toEqual(payload);
+    expect(result.text).toContain('Recovery');
+  });
+
   it('frontier filters by --type and caps with --max', async () => {
     const state = { state: { frontier: [
       { id: 'f1', type: 'network_discovery', description: 'a' },
@@ -137,6 +150,53 @@ function recordingClient(response: unknown = {}): { client: ApiClient; calls: Ar
 }
 
 describe('write commands', () => {
+  it('config reconcile posts the exact inspected hashes', async () => {
+    const { client, calls } = recordingClient({ resolved: true });
+    await WRITE_COMMANDS.config.run({
+      client,
+      args: ['reconcile', 'use_state', '--file-hash', 'a'.repeat(64), '--state-hash', 'b'.repeat(64)],
+    });
+    expect(calls).toEqual([{
+      path: '/api/recovery/config/resolve',
+      body: {
+        resolution: 'use_state',
+        expected_file_hash: 'a'.repeat(64),
+        expected_state_hash: 'b'.repeat(64),
+      },
+    }]);
+  });
+
+  it('config reconcile supports file authority with the same optimistic hashes', async () => {
+    const { client, calls } = recordingClient({ resolved: true });
+    await WRITE_COMMANDS.config.run({
+      client,
+      args: ['reconcile', 'use_file', '--file-hash', 'c'.repeat(64), '--state-hash', 'd'.repeat(64)],
+    });
+    expect(calls).toEqual([{
+      path: '/api/recovery/config/resolve',
+      body: {
+        resolution: 'use_file',
+        expected_file_hash: 'c'.repeat(64),
+        expected_state_hash: 'd'.repeat(64),
+      },
+    }]);
+  });
+
+  it('config reconcile rejects unsupported modes or missing and invalid hashes locally', async () => {
+    const { client, calls } = recordingClient();
+    await expect(WRITE_COMMANDS.config.run({ client, args: ['reconcile', 'guess'] })).rejects.toThrow(/use_file.*use_state/);
+    await expect(WRITE_COMMANDS.config.run({ client, args: ['reconcile', 'use_state'] })).rejects.toThrow(/file-hash/);
+    await expect(WRITE_COMMANDS.config.run({
+      client,
+      args: ['reconcile', 'use_state', '--file-hash', 'A'.repeat(64), '--state-hash', 'b'.repeat(64)],
+    })).rejects.toThrow(/file-hash/);
+    await expect(WRITE_COMMANDS.config.run({
+      client,
+      args: ['reconcile', 'use_state', '--file-hash', 'a'.repeat(64), '--state-hash', 'short'],
+    })).rejects.toThrow(/state-hash/);
+    expect(calls).toHaveLength(0);
+  });
+
   it('approve posts to the action approve endpoint', async () => {
     const { client, calls } = recordingClient();
     const out = await WRITE_COMMANDS.approve.run({ client, args: ['a11c'] });
@@ -180,6 +240,110 @@ describe('write commands', () => {
 });
 
 describe('renderers', () => {
+  it('renderRecovery exposes copyable config observations and revisions', () => {
+    const out = renderRecovery({
+      recovery: {
+        outcome: 'incomplete',
+        source: 'state',
+        complete: false,
+        writable: false,
+        reason: 'configuration reconciliation required',
+        state_recovery: {
+          outcome: 'incomplete',
+          source: 'state',
+          complete: false,
+          writable: false,
+          reason: 'WAL sequence gap at 5',
+        },
+        persistence_reason: 'WAL sequence gap at 5',
+        last_persistence_error: 'fsync failed before restart',
+        base_checkpoint: 1,
+        highest_allocated_seq: 1,
+        highest_on_disk_seq: 1,
+        highest_contiguous_applied_seq: 1,
+        consecutive_persistence_failures: 0,
+        journal: { enabled: true, path: '/tmp/state.wal.jsonl', read: 0, attempted: 0, applied: 0, skipped: 0, failed: 0, malformed: false, preserved: true },
+        config_recovery: {
+          status: 'diverged',
+          resolution_required: true,
+          intent_present: false,
+          file_valid: true,
+          file_revision: 4,
+          state_revision: 3,
+          runtime_revision: 3,
+          file_hash: 'a'.repeat(64),
+          state_hash: 'b'.repeat(64),
+          runtime_hash: 'b'.repeat(64),
+          allowed_resolutions: ['use_file', 'use_state'],
+          reason: 'file and state differ',
+        },
+      },
+    });
+    expect(out).toContain('observed file hash');
+    expect(out).toContain('a'.repeat(64));
+    expect(out).toContain('durable state hash');
+    expect(out).toContain('runtime revision');
+    expect(out).toContain('file and state differ');
+    expect(out).toContain('persistence reason');
+    expect(out).toContain('WAL sequence gap at 5');
+    expect(out).toContain('state/WAL health');
+    expect(out).toContain('degraded');
+    expect(out).toMatch(/base checkpoint:\s+1/);
+    expect(out).toMatch(/WAL preserved:\s+yes/);
+    expect(out).toMatch(/WAL malformed:\s+no/);
+    expect(out).toContain('last persistence error');
+    expect(out).toContain('fsync failed before restart');
+    expect(out).toContain('/tmp/state.wal.jsonl');
+  });
+
+  it('renderRecovery identifies a config-only write gate without blaming state or WAL recovery', () => {
+    const out = renderRecovery({
+      recovery: {
+        outcome: 'incomplete',
+        source: 'state',
+        complete: false,
+        writable: false,
+        reason: 'configuration reconciliation required',
+        state_recovery: {
+          outcome: 'clean',
+          source: 'state',
+          complete: true,
+          writable: true,
+        },
+        base_checkpoint: 8,
+        highest_allocated_seq: 8,
+        highest_on_disk_seq: 8,
+        highest_contiguous_applied_seq: 8,
+        consecutive_persistence_failures: 0,
+        journal: {
+          enabled: true,
+          read: 0,
+          attempted: 0,
+          applied: 0,
+          skipped: 0,
+          failed: 0,
+          malformed: false,
+          preserved: false,
+        },
+        config_recovery: {
+          status: 'diverged',
+          resolution_required: true,
+          intent_present: false,
+          file_valid: true,
+          file_hash: 'a'.repeat(64),
+          state_hash: 'b'.repeat(64),
+          allowed_resolutions: ['use_file', 'use_state'],
+        },
+      },
+    });
+
+    expect(out).toContain('combined status');
+    expect(out).toContain('read-only');
+    expect(out).toContain('state/WAL health');
+    expect(out).toContain('healthy · writes paused only for configuration reconciliation');
+    expect(out).not.toContain('persistence reason');
+  });
+
   it('renderStatus shows name, objective progress, and frontier', () => {
     const out = renderStatus({
       state: {

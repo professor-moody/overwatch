@@ -6,6 +6,10 @@ import { withErrorBoundary } from './error-boundary.js';
 
 const graphCorrectionOperationSchema = z.discriminatedUnion('kind', [
   z.object({
+    kind: z.literal('drop_node'),
+    node_id: z.string(),
+  }),
+  z.object({
     kind: z.literal('drop_edge'),
     source_id: z.string(),
     edge_type: edgeTypeSchema,
@@ -39,13 +43,14 @@ export function registerRemediationTools(server: McpServer, engine: GraphEngine)
 
 Use this for cleanup and remediation when the graph already contains bad data.
 Supported operations:
+- drop stale or invalid nodes, including as part of an atomic mixed correction
 - drop stale or invalid edges
 - replace an edge with the correct type/source/target
 - patch node properties, including normalized credential fields
 
 This is not a normal reporting path. Use report_finding and parse_output for new discoveries.`,
       inputSchema: {
-        reason: z.string().describe('Operator-provided reason for the correction batch.'),
+        reason: z.string().trim().min(1).describe('Operator-provided reason for the correction batch.'),
         action_id: z.string().optional().describe('Action ID to link this correction back to the triggering workflow.'),
         operations: z.array(graphCorrectionOperationSchema)
           .min(1)

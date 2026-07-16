@@ -36,6 +36,7 @@ import { buildGraphLayerStates, isCredentialFlowEdge, type GraphLayerId } from '
 import { clearGraphPositions, loadGraphPositions, saveGraphNodePosition } from '../../lib/graph-position-store';
 import { parseGraphTargetParams, resolveGraphTarget, type ResolvedGraphTarget } from '../../lib/graph-target';
 import { buildGraphFocusApplication } from '../../lib/graph-focus';
+import { RecoveryBanner } from '../shared/RecoveryBanner';
 
 const GRAPH_DRAWER_WIDTH = 384;
 const GRAPH_OVERLAY_GUTTER = 12;
@@ -801,6 +802,8 @@ export function GraphPage() {
         onUndo={handleUndo}
         undoCount={undoStackRef.current.length}
       />
+
+      <RecoveryBanner />
 
       {/* Edit mode banner */}
       {editMode && (

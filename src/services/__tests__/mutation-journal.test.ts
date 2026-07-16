@@ -4,6 +4,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import { MutationJournal, writeAllSync, type MutationType } from '../mutation-journal.js';
+import { EngineContext } from '../engine-context.js';
+import { createOverwatchGraph } from '../graphology-types.js';
 import type { EngagementConfig } from '../../types.js';
 
 const NONCE = 'b'.repeat(64);
@@ -246,6 +248,141 @@ describe('MutationJournal (P2.1)', () => {
       expect(existsSync(j.getPath())).toBe(false);
     });
 
+    it('strictly validates durable node-drop audit and incident-edge descriptors', () => {
+      const j = new MutationJournal(TEST_STATE);
+      const valid = {
+        payload_version: 1,
+        operation_id: 'drop-operation',
+        occurred_at: '2026-01-01T00:00:00.000Z',
+        reason: 'remove duplicate',
+        action_id: 'action-drop',
+        node_id: 'host-drop',
+        expected_type: 'host',
+        expected_node: {
+          node_id: 'host-drop',
+          props: { id: 'host-drop', type: 'host', label: 'drop' },
+        },
+        incident_edges: [{
+          edge_id: 'edge-drop',
+          source: 'host-drop',
+          target: 'host-peer',
+          edge_type: 'RELATED',
+          props: { type: 'RELATED', confidence: 1 },
+        }],
+      };
+      expect(j.append({ type: 'drop_node', payload: valid })).toMatchObject({ seq: 1 });
+
+      const invalidPayloads = [
+        { ...valid, operation_id: '' },
+        { ...valid, occurred_at: 'not-a-time' },
+        { ...valid, action_id: '' },
+        { ...valid, incident_edges: [...valid.incident_edges, { ...valid.incident_edges[0] }] },
+      ];
+      for (const payload of invalidPayloads) {
+        expect(() => j.append({ type: 'drop_node', payload })).toThrow(
+          'Refusing to append malformed WAL record',
+        );
+      }
+      expect(j.peekSeq()).toBe(1);
+    });
+
+    it('strictly validates frozen identity-rewrite deltas', () => {
+      const j = new MutationJournal(TEST_STATE);
+      const before = {
+        node_id: 'user-alice',
+        props: { id: 'user-alice', type: 'user', label: 'Alice' },
+      };
+      const after = {
+        node_id: 'user-alice',
+        props: { id: 'user-alice', type: 'user', label: 'Alice Canonical' },
+      };
+      const valid = {
+        payload_version: 1,
+        operation_id: 'identity-operation',
+        occurred_at: '2026-01-01T00:00:00.000Z',
+        canonical_node_id: 'user-alice',
+        node_changes: [{ node_id: 'user-alice', before, after }],
+        edge_changes: [],
+        audit_events: [{ description: 'Identity converged', details: {} }],
+        result: {
+          removed_nodes: [],
+          removed_edges: [],
+          new_edges: [],
+          updated_edges: [],
+          updated_canonical: true,
+          survivor_id: 'user-alice',
+        },
+      };
+      expect(j.append({ type: 'identity_rewrite', payload: valid })).toMatchObject({ seq: 1 });
+      expect(() => j.append({
+        type: 'identity_rewrite',
+        payload: { ...valid, node_changes: [] },
+      })).toThrow('Refusing to append malformed WAL record');
+      expect(() => j.append({
+        type: 'identity_rewrite',
+        payload: { ...valid, audit_events: [{ description: '', details: {} }] },
+      })).toThrow('Refusing to append malformed WAL record');
+      expect(() => j.append({
+        type: 'identity_rewrite',
+        payload: {
+          ...valid,
+          node_changes: [valid.node_changes[0], valid.node_changes[0]],
+        },
+      })).toThrow('Refusing to append malformed WAL record');
+      expect(j.peekSeq()).toBe(1);
+    });
+
+    it('strictly validates frozen graph-correction deltas', () => {
+      const j = new MutationJournal(TEST_STATE);
+      const before = {
+        node_id: 'host-corrected',
+        props: { id: 'host-corrected', type: 'host', label: 'Before' },
+      };
+      const after = {
+        node_id: 'host-corrected',
+        props: { id: 'host-corrected', type: 'host', label: 'After' },
+      };
+      const valid = {
+        payload_version: 1,
+        operation_id: 'correction-operation',
+        occurred_at: '2026-01-01T00:00:00.000Z',
+        reason: 'fix the host label',
+        action_id: 'action-correction',
+        operations: [{
+          kind: 'patch_node',
+          node_id: 'host-corrected',
+          set_properties: { label: 'After' },
+          unset_properties: [],
+        }],
+        node_changes: [{ node_id: 'host-corrected', before, after }],
+        edge_changes: [],
+        before_summary: { total_nodes: 1, total_edges: 0 },
+        after_summary: { total_nodes: 1, total_edges: 0 },
+        result: {
+          dropped_nodes: [],
+          dropped_edges: [],
+          replaced_edges: [],
+          patched_nodes: ['host-corrected'],
+        },
+      };
+      expect(j.append({ type: 'graph_corrected', payload: valid })).toMatchObject({ seq: 1 });
+
+      const invalidPayloads = [
+        { ...valid, operation_id: '' },
+        { ...valid, occurred_at: 'not-a-time' },
+        { ...valid, operations: [] },
+        { ...valid, operations: [{ kind: 'drop_node', node_id: '' }] },
+        { ...valid, node_changes: [valid.node_changes[0], valid.node_changes[0]] },
+        { ...valid, before_summary: { total_nodes: -1, total_edges: 0 } },
+      ];
+      for (const payload of invalidPayloads) {
+        expect(() => j.append({ type: 'graph_corrected', payload })).toThrow(
+          'Refusing to append malformed WAL record',
+        );
+      }
+      expect(j.peekSeq()).toBe(1);
+    });
+
     it('truncate removes the file entirely', () => {
       const j = new MutationJournal(TEST_STATE);
       j.append({ type: 'add_node', payload: { props: { id: 'a' } } });
@@ -427,6 +564,61 @@ describe('MutationJournal (P2.1)', () => {
       expect(recovered.peekSeq()).toBe(3);          // allocated above all physical records
       expect(recovered.getAppliedThroughSeq()).toBe(1);
       expect(() => recovered.markApplied(3)).toThrow('expected seq 2, got 3');
+    });
+
+    it('does not checkpoint a live journal mutation whose applier reports skipped', () => {
+      const ctx = new EngineContext(
+        createOverwatchGraph(),
+        makeConfig({ engagement_nonce: NONCE }),
+        TEST_STATE,
+      );
+      const journal = ctx.mutationJournal!;
+
+      expect(() => ctx.applyJournaledMutation(
+        'add_node',
+        { props: { id: 'skipped-live-node' } },
+        () => ({ status: 'skipped' as const, reason: 'synthetic live precondition mismatch' }),
+      )).toThrow('Durable mutation was not applied: synthetic live precondition mismatch');
+
+      expect(journal.getHighestPhysicalSeq()).toBe(1);
+      expect(journal.getAppliedThroughSeq()).toBe(0);
+      expect(journal.getAppendBlockedReason()).toContain(
+        'mutation seq 1 was durable but failed during in-memory application',
+      );
+      expect(() => ctx.applyJournaledMutation(
+        'add_node',
+        { props: { id: 'must-not-append-after-skipped-live-node' } },
+        () => 'generic callback result',
+      )).toThrow(/Mutation journal is read-only/);
+      expect(readFileSync(journal.getPath(), 'utf8').split('\n').filter(Boolean)).toHaveLength(1);
+    });
+
+    it('restores the journal and does not checkpoint a skipped live composite mutation', () => {
+      const ctx = new EngineContext(
+        createOverwatchGraph(),
+        makeConfig({ engagement_nonce: NONCE }),
+        TEST_STATE,
+      );
+      const journal = ctx.mutationJournal!;
+
+      expect(() => ctx.applyCompositeJournaledMutation(
+        'add_node',
+        { props: { id: 'skipped-live-composite-node' } },
+        () => ({ status: 'skipped' as const, reason: 'synthetic composite precondition mismatch' }),
+      )).toThrow('Durable composite mutation was not applied: synthetic composite precondition mismatch');
+
+      expect(ctx.mutationJournal).toBe(journal);
+      expect(journal.getHighestPhysicalSeq()).toBe(1);
+      expect(journal.getAppliedThroughSeq()).toBe(0);
+      expect(journal.getAppendBlockedReason()).toContain(
+        'composite mutation seq 1 was durable but failed during in-memory application',
+      );
+      expect(() => ctx.applyCompositeJournaledMutation(
+        'add_node',
+        { props: { id: 'must-not-append-after-skipped-live-composite-node' } },
+        () => ({ status: 'applied' as const }),
+      )).toThrow(/Mutation journal is read-only/);
+      expect(readFileSync(journal.getPath(), 'utf8').split('\n').filter(Boolean)).toHaveLength(1);
     });
 
     it('degrades legacy checkpoints that retain physical records at or below the claim', () => {
@@ -626,11 +818,61 @@ describe('MutationJournal (P2.1)', () => {
     });
   });
 
+  it('creates a scope WAL for an unmanaged legacy engine and replays a crash before checkpoint', () => {
+    const legacy = makeConfig({ engagement_nonce: undefined });
+    const first = trackedEngine(legacy, TEST_STATE);
+    first.persistImmediate();
+    const internal = first as unknown as {
+      persistence: { persistImmediate: () => void };
+      ctx: { mutationJournal: MutationJournal | null };
+      ensureCompositeJournal: () => void;
+    };
+    internal.ensureCompositeJournal();
+    internal.persistence.persistImmediate = () => {
+      throw new Error('synthetic crash before scope checkpoint');
+    };
+
+    expect(() => first.updateScope({
+      add_cidrs: ['10.20.20.0/24'],
+      reason: 'legacy scope crash recovery',
+    })).toThrow('synthetic crash');
+    expect(internal.ctx.mutationJournal).not.toBeNull();
+    expect(readFileSync(internal.ctx.mutationJournal!.getPath(), 'utf8')).toContain('"type":"scope_updated"');
+    first.dispose();
+    engines.delete(first);
+
+    const restarted = trackedEngine(legacy, TEST_STATE);
+    expect(restarted.getConfig().scope.cidrs).toContain('10.20.20.0/24');
+    expect(restarted.getPersistenceRecoveryStatus()).toMatchObject({
+      complete: true,
+      writable: true,
+      journal: { enabled: true },
+    });
+  });
+
   describe('integrated with engine', () => {
     it('does NOT journal when engagement_nonce is absent (legacy path)', () => {
       const eng = trackedEngine(makeConfig(), TEST_STATE); // no nonce
       eng.addNode({ id: 'x', type: 'host', label: 'x', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
       expect(existsSync(JOURNAL_PATH)).toBe(false);
+    });
+
+    it('reports an in-process journal enabled with its path after a legacy composite mutation', () => {
+      const eng = trackedEngine(makeConfig(), TEST_STATE);
+      eng.addNode({ id: 'x', type: 'host', label: 'x', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+      expect(eng.getPersistenceRecoveryStatus().journal).toMatchObject({ enabled: false });
+
+      eng.correctGraph('add durable operator annotation', [{
+        kind: 'patch_node',
+        node_id: 'x',
+        set_properties: { operator_note: 'reviewed' },
+      }]);
+
+      expect(existsSync(JOURNAL_PATH)).toBe(true);
+      expect(eng.getPersistenceRecoveryStatus().journal).toMatchObject({
+        enabled: true,
+        path: JOURNAL_PATH,
+      });
     });
 
     it('journals add_node and add_edge for engagements with engagement_nonce', () => {

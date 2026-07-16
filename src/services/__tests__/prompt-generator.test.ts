@@ -833,11 +833,12 @@ describe('prompt-generator', () => {
     });
 
     it('config.max_prompt_tokens is respected when options.max_prompt_tokens not set', () => {
-      // Use a budget too small to fit everything (500 forces trimming)
-      const tightConfig = { ...config, max_prompt_tokens: 500 };
+      // Use the minimum valid configured budget; it is still too small to fit
+      // everything and therefore forces trimming.
+      const tightConfig = { ...config, max_prompt_tokens: 1000 };
       const engine = createTestEngine(tightConfig);
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
-      // With 500 token budget, non-critical sections should be trimmed
+      // With the minimum configured budget, non-critical sections are trimmed.
       // Critical sections (identity + core loop) may overflow, but HIGH/MEDIUM/LOW should be gone
       expect(prompt).not.toContain('## Tool Reference');
       expect(prompt).not.toContain('## Current State Snapshot');

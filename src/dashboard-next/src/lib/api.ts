@@ -48,6 +48,8 @@ import {
   CampaignSplitResponseSchema,
   CampaignUpdateRequestSchema,
   CampaignUpdateResponseSchema,
+  ConfigDivergenceResolveRequestSchema,
+  ConfigDivergenceResolveResponseSchema,
   FrontierWeightsPatchSchema,
   FrontierWeightsResetResultSchema,
   FrontierWeightsUpdateResultSchema,
@@ -58,24 +60,41 @@ import {
   ObjectiveUpdateRequestSchema,
   ObjectiveUpdateResponseSchema,
   RawGraphDtoSchema,
+  RecoveryStatusResponseSchema,
   SettingsDtoSchema,
   SettingsPatchSchema,
   SettingsUpdateResultSchema,
   type AgentListResponse,
   type CampaignDetailResponse,
   type CampaignDispatchResponse,
+  type ConfigDivergenceResolveRequest,
+  type ConfigDivergenceResolveResponse,
   type ObjectiveCreateRequest,
   type ObjectiveUpdateRequest,
   type RawGraphDto,
+  type RecoveryStatusDto,
   type SettingsDto,
 } from '@overwatch/dashboard-contracts';
 import { dashboardFetch } from './dashboard-transport';
+import { useEngagementStore } from '../stores/engagement-store';
 
 const BASE = '';
 
 /** Same-origin URL for a screenshot evidence blob, rendered as an `<img>`. */
 export function evidenceImageUrl(evidenceId: string): string {
   return `${BASE}/api/evidence/${encodeURIComponent(evidenceId)}/image`;
+}
+
+export class DashboardApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly body?: unknown,
+  ) {
+    super(message);
+    this.name = 'DashboardApiError';
+  }
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -86,8 +105,34 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     headers,
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+    const raw = await res.text().catch(() => '');
+    let body: unknown;
+    try {
+      body = raw ? JSON.parse(raw) : undefined;
+    } catch {
+      body = raw;
+    }
+    if (body && typeof body === 'object' && 'recovery' in body) {
+      const parsed = RecoveryStatusResponseSchema.safeParse({
+        recovery: (body as { recovery?: unknown }).recovery,
+      });
+      if (parsed.success) {
+        // A mutation can discover config divergence or trip the persistence
+        // gate while the main WebSocket remains synchronized. Publish the
+        // structured 503 state immediately so the global recovery banner can
+        // never remain falsely healthy until a reconnect.
+        useEngagementStore.getState().setPersistenceRecovery(parsed.data.recovery);
+      }
+    }
+    const record = body && typeof body === 'object' ? body as Record<string, unknown> : undefined;
+    const detail = typeof record?.error === 'string' ? record.error : raw;
+    const prefix = `${res.status}${res.statusText ? ` ${res.statusText}` : ''}`;
+    throw new DashboardApiError(
+      `${prefix}${detail ? `: ${detail}` : ''}`,
+      res.status,
+      typeof record?.code === 'string' ? record.code : undefined,
+      body,
+    );
   }
   return res.json() as Promise<T>;
 }
@@ -588,6 +633,20 @@ export async function denyBatch(actionIds: string[], reason: string): Promise<{ 
 }
 
 // --- Config / Settings ---
+
+export async function getRecovery(): Promise<RecoveryStatusDto> {
+  return RecoveryStatusResponseSchema.parse(await fetchJson('/api/recovery', { cache: 'no-store' })).recovery;
+}
+
+export async function resolveConfigDivergence(
+  body: ConfigDivergenceResolveRequest,
+): Promise<ConfigDivergenceResolveResponse> {
+  const request = ConfigDivergenceResolveRequestSchema.parse(body);
+  return ConfigDivergenceResolveResponseSchema.parse(await fetchJson('/api/recovery/config/resolve', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  }));
+}
 
 export async function getConfig(): Promise<EngagementConfig> {
   return fetchJson('/api/config');

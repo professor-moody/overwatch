@@ -24,6 +24,8 @@ export interface FindingIngestionHost {
     removed_nodes: string[];
     removed_edges: string[];
     new_edges: string[];
+    updated_edges: string[];
+    survivor_id?: string;
     reverse_target?: string;
   };
   runInferenceRules(nodeId: string): string[];
@@ -34,7 +36,6 @@ export interface FindingIngestionHost {
   degradeExpiredCredentialEdges(nodeId: string): string[];
   evaluateObjectives(): void;
   persist(detail?: GraphUpdateDetail): void;
-  persistImmediate(detail?: GraphUpdateDetail): void;
   propertiesChanged(oldProps: NodeProperties, newProps: NodeProperties): boolean;
   invalidateFrontierCache(): void;
 }
@@ -150,16 +151,17 @@ export function ingestFindingImpl(
   for (const canonicalNodeId of reconciliationCandidates) {
     const reconciliation = host.reconcileCanonicalNode(canonicalNodeId, finding.agent_id, finding.action_id);
     if (reconciliation.updated_canonical) {
-      updatedNodes.push(canonicalNodeId);
+      updatedNodes.push(reconciliation.survivor_id ?? canonicalNodeId);
     }
     removedNodes.push(...reconciliation.removed_nodes);
     removedEdges.push(...reconciliation.removed_edges);
     newEdges.push(...reconciliation.new_edges);
+    updatedEdges.push(...reconciliation.updated_edges);
     for (const removedId of reconciliation.removed_nodes) {
-      const survivorId = reconciliation.removed_nodes.includes(canonicalNodeId)
-        ? reconciliation.reverse_target || canonicalNodeId
-        : canonicalNodeId;
+      const survivorId = reconciliation.survivor_id ?? canonicalNodeId;
       idRemap.set(removedId, survivorId);
+      removeAll(newNodes, removedId);
+      removeAll(updatedNodes, removedId);
     }
   }
 
@@ -296,11 +298,13 @@ export function ingestFindingImpl(
     if (typeof attrs.cred_domain === 'string' && attrs.cred_domain.length > 0) continue;
     const inferred = inferCredentialDomain(nodeId, host.ctx.graph);
     if (inferred) {
-      host.ctx.graph.mergeNodeAttributes(nodeId, {
+      host.addNode({
+        ...attrs,
         cred_domain: inferred.domain,
         cred_domain_inferred: true,
         cred_domain_source: 'graph_inference',
       });
+      updatedNodes.push(nodeId);
     }
   }
 
@@ -313,10 +317,10 @@ export function ingestFindingImpl(
   host.evaluateObjectives();
 
   const allIngestedNodeIds = [...new Set([
-    ...(finding.target_node_ids || []),
+    ...(finding.target_node_ids || []).map(nodeId => idRemap.get(nodeId) ?? nodeId),
     ...newNodes,
     ...updatedNodes,
-  ])];
+  ])].filter(nodeId => host.ctx.graph.hasNode(nodeId) || host.ctx.coldStore.has(nodeId));
 
   host.logActionEvent({
     description: `Finding ingested: ${newNodes.length} new nodes, ${newEdges.length} new edges, ${inferredEdges.length} inferred edges`,
@@ -343,18 +347,17 @@ export function ingestFindingImpl(
   // Persist with real delta detail for dashboard callbacks.
   const result = { new_nodes: newNodes, new_edges: newEdges, updated_nodes: updatedNodes, updated_edges: updatedEdges, inferred_edges: inferredEdges };
   const detail = { ...result, removed_nodes: removedNodes, removed_edges: removedEdges };
-  // An identity merge (removedNodes populated only by reconcileCanonicalNode) drops the
-  // alias node + rewires its edges via DIRECT graph ops that bypass the WAL — they're
-  // not journaled. On a WAL engagement a debounced persist() leaves a window where a
-  // crash replays the journal (which still has the alias's add) but NOT the merge,
-  // resurrecting the merged-away alias + duplicate edges. Force a snapshot so the merge
-  // is durable (the snapshot supersedes the WAL up to its seq). Gate on the journal
-  // being active: with no WAL, persistence is snapshot-only and a crash loses the whole
-  // ingest atomically (no resurrection), so forcing here would give no benefit while
-  // dropping the debounced flush that later cross-tier inference edges rely on. Merges
-  // are rare, so the extra write on the WAL path is negligible.
-  if (removedNodes.length > 0 && host.ctx.mutationJournal) host.persistImmediate(detail);
-  else host.persist(detail);
+  // Identity rewrites are themselves journaled composite mutations, so the
+  // ordinary debounced state flush is now safe; recovery replays the exact
+  // frozen node/edge delta instead of resurrecting aliases from primitive WAL
+  // records.
+  host.persist(detail);
 
   return result;
+}
+
+function removeAll(values: string[], target: string): void {
+  for (let index = values.length - 1; index >= 0; index--) {
+    if (values[index] === target) values.splice(index, 1);
+  }
 }

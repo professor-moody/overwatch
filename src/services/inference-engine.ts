@@ -9,6 +9,7 @@ import type { NodeProperties, EdgeProperties, NodeType, InferenceRule } from '..
 import { getCredentialMaterialKind, isCredentialUsableForAuth, isReusableDomainCredential } from './credential-utils.js';
 
 export type AddEdgeFn = (source: string, target: string, props: EdgeProperties) => { id: string; isNew: boolean };
+export type AddNodeFn = (props: NodeProperties) => string;
 export type GetNodeFn = (id: string) => NodeProperties | null;
 export type GetNodesByTypeFn = (type: NodeType) => NodeProperties[];
 
@@ -17,17 +18,20 @@ export class InferenceEngine {
   private addEdge: AddEdgeFn;
   private getNode: GetNodeFn;
   private getNodesByType: GetNodesByTypeFn;
+  private addNode?: AddNodeFn;
 
   constructor(
     ctx: EngineContext,
     addEdge: AddEdgeFn,
     getNode: GetNodeFn,
     getNodesByType: GetNodesByTypeFn,
+    addNode?: AddNodeFn,
   ) {
     this.ctx = ctx;
     this.addEdge = addEdge;
     this.getNode = getNode;
     this.getNodesByType = getNodesByType;
+    this.addNode = addNode;
   }
 
   addRule(rule: InferenceRule): void {
@@ -383,7 +387,13 @@ export class InferenceEngine {
     }
 
     if (inferredOs) {
-      this.ctx.graph.mergeNodeAttributes(hostNodeId, { os: inferredOs, os_inferred: true });
+      const existing = this.getNode(hostNodeId);
+      if (existing && this.addNode) {
+        this.addNode({ ...existing, os: inferredOs, os_inferred: true });
+      } else {
+        // Compatibility fallback for isolated inference-engine unit hosts.
+        this.ctx.graph.mergeNodeAttributes(hostNodeId, { os: inferredOs, os_inferred: true });
+      }
       this.ctx.logEvent({
         description: `Inferred OS for ${hostNodeId}: ${inferredOs} (from service signatures)`,
         category: 'inference',

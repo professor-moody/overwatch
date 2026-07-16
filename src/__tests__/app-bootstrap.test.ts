@@ -1,27 +1,269 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { createOverwatchApp, registerAllTools, shutdownOverwatchApp, ToolRegistrar, type OverwatchApp } from '../app.js';
 import { InProcessTapeController } from '../services/in-process-tape.js';
+import { EngagementManager } from '../services/engagement-manager.js';
+import { GraphEngine } from '../services/graph-engine.js';
+import type { EngagementConfig } from '../types.js';
+import { registerEngagementTools } from '../tools/engagement.js';
+import { withErrorBoundary } from '../tools/error-boundary.js';
+
+function recoveryConfig(): EngagementConfig {
+  return {
+    id: 'app-bootstrap-recovery',
+    name: 'App bootstrap recovery',
+    created_at: '2026-07-15T00:00:00.000Z',
+    scope: { cidrs: ['10.30.0.0/24'], domains: [], exclusions: [] },
+    objectives: [],
+    opsec: { name: 'pentest', max_noise: 0.7 },
+  };
+}
 
 describe('app bootstrap', () => {
-  it('creates the core app without binding a transport', () => {
+  it('starts read-only from durable state when the active config is missing, then permits use_state recovery', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-recovery-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-app-bootstrap-recovery.json');
+    const config = recoveryConfig();
+    writeFileSync(configPath, JSON.stringify(config));
+    const seed = new GraphEngine(config, stateFilePath, configPath);
+    seed.flushNow();
+    seed.dispose();
+    unlinkSync(configPath);
+
+    let app: OverwatchApp | undefined;
+    try {
+      app = createOverwatchApp({
+        configPath,
+        stateFilePath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      });
+      const recovery = app.engine.getConfigRecoveryStatus();
+      expect(recovery).toMatchObject({
+        status: 'diverged',
+        resolution_required: true,
+        file_valid: false,
+        allowed_resolutions: ['use_state'],
+      });
+      expect(recovery.file_hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(app.engine.isPersistenceWritable()).toBe(false);
+
+      app.engine.resolveConfigDivergence({
+        mode: 'use_state',
+        expected_file_hash: recovery.file_hash!,
+        expected_state_hash: recovery.state_hash!,
+      });
+      expect(existsSync(configPath)).toBe(true);
+      expect(app.engine.isPersistenceWritable()).toBe(true);
+    } finally {
+      if (app) await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes a bootstrap config before enabling managed ownership', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-bootstrap-'));
+    const configPath = join(dir, 'engagement.json');
+    const previous = process.env.OVERWATCH_BOOTSTRAP;
+    process.env.OVERWATCH_BOOTSTRAP = '1';
+    let app: OverwatchApp | undefined;
+    try {
+      app = createOverwatchApp({
+        configPath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      });
+      expect(existsSync(configPath)).toBe(true);
+      expect(app.engine.getConfigRecoveryStatus()).toMatchObject({
+        status: 'in_sync',
+        resolution_required: false,
+      });
+      expect(app.engine.isPersistenceWritable()).toBe(true);
+    } finally {
+      if (app) await shutdownOverwatchApp(app);
+      if (previous === undefined) delete process.env.OVERWATCH_BOOTSTRAP;
+      else process.env.OVERWATCH_BOOTSTRAP = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let an out-of-band config id change select a fresh state path', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-id-divergence-'));
+    const configPath = join(dir, 'engagement.json');
+    const original = recoveryConfig();
+    const originalStatePath = join(dir, `state-${original.id}.json`);
+    writeFileSync(configPath, JSON.stringify(original));
+    const seed = new GraphEngine(original, originalStatePath, configPath);
+    seed.flushNow();
+    seed.dispose();
+    const changed = { ...original, id: 'out-of-band-id' };
+    writeFileSync(configPath, JSON.stringify(changed));
+
+    let app: OverwatchApp | undefined;
+    try {
+      app = createOverwatchApp({ configPath, skillDir: resolve('./skills'), dashboardPort: 0 });
+      expect(app.engine.getStateFilePath()).toBe(originalStatePath);
+      expect(app.engine.getConfig().id).toBe(original.id);
+      expect(app.engine.getConfigRecoveryStatus()).toMatchObject({
+        status: 'diverged',
+        resolution_required: true,
+      });
+      expect(existsSync(join(dir, 'state-out-of-band-id.json'))).toBe(false);
+    } finally {
+      if (app) await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not substitute a sole neighboring state for a valid unrelated config', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-neighbor-state-'));
+    const configPath = join(dir, 'engagement.json');
+    const active = recoveryConfig();
+    const unrelated = {
+      ...recoveryConfig(),
+      id: 'unrelated-engagement',
+      name: 'Unrelated engagement',
+      created_at: '2026-07-14T00:00:00.000Z',
+    };
+    const unrelatedStatePath = join(dir, `state-${unrelated.id}.json`);
+    writeFileSync(configPath, JSON.stringify(active));
+    const seed = new GraphEngine(unrelated, unrelatedStatePath);
+    seed.persistImmediate();
+    seed.dispose();
+
+    let app: OverwatchApp | undefined;
+    try {
+      app = createOverwatchApp({ configPath, skillDir: resolve('./skills'), dashboardPort: 0 });
+      expect(app.engine.getStateFilePath()).toBe(join(dir, `state-${active.id}.json`));
+      expect(app.engine.getConfig().id).toBe(active.id);
+      expect(app.engine.getConfig().name).toBe(active.name);
+      expect(app.engine.getConfigRecoveryStatus()).toMatchObject({
+        status: 'in_sync',
+        resolution_required: false,
+      });
+    } finally {
+      if (app) await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never substitutes a neighboring state when an explicit recovery state is invalid', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-explicit-state-'));
+    const configPath = join(dir, 'engagement.json');
+    const explicitState = join(dir, 'state-explicit.json');
+    const unrelatedState = join(dir, 'state-unrelated.json');
+    writeFileSync(configPath, '{ malformed');
+    writeFileSync(explicitState, '{ corrupt');
+    writeFileSync(unrelatedState, JSON.stringify({ config: recoveryConfig() }));
+    try {
+      expect(() => createOverwatchApp({
+        configPath,
+        stateFilePath: explicitState,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      })).toThrow(/explicit durable state.*no valid recovery base/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('boots recovery interfaces from a retained snapshot when config and primary state are unusable', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-snapshot-bootstrap-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-app-bootstrap-recovery.json');
+    const config = recoveryConfig();
+    writeFileSync(configPath, JSON.stringify(config));
+    const seed = new GraphEngine(config, stateFilePath, configPath);
+    seed.flushNow();
+    seed.dispose();
+    const snapshots = join(dir, '.snapshots');
+    mkdirSync(snapshots, { recursive: true });
+    writeFileSync(
+      join(snapshots, 'state-app-bootstrap-recovery.snap-2026-07-15T00-00-00-000Z.json'),
+      readFileSync(stateFilePath),
+    );
+    writeFileSync(stateFilePath, '{ corrupt primary');
+    unlinkSync(configPath);
+
+    let app: OverwatchApp | undefined;
+    try {
+      app = createOverwatchApp({
+        configPath,
+        stateFilePath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      });
+      expect(app.engine.getPersistenceRecoveryStatus()).toMatchObject({
+        source: 'snapshot',
+        writable: false,
+        config_recovery: { status: 'diverged', file_valid: false },
+      });
+    } finally {
+      if (app) await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates the core app without binding a transport', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-core-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-app-bootstrap-recovery.json');
+    writeFileSync(configPath, JSON.stringify(recoveryConfig()));
     const app = createOverwatchApp({
-      configPath: resolve('./engagement.example.json'),
+      configPath,
+      stateFilePath,
       skillDir: resolve('./skills'),
       dashboardPort: 0,
     });
 
-    expect(app.server).toBeDefined();
-    expect(app.engine).toBeDefined();
-    expect(app.sessionManager).toBeDefined();
-    expect(app.dashboard).toBeNull();
+    try {
+      expect(app.server).toBeDefined();
+      expect(app.engine).toBeDefined();
+      expect(app.sessionManager).toBeDefined();
+      expect(app.dashboard).toBeNull();
+    } finally {
+      await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it('registers all tools without requiring stdio startup', () => {
+  it('exposes the live revisioned config to embedded callers', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-live-config-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-app-bootstrap-recovery.json');
+    writeFileSync(configPath, JSON.stringify(recoveryConfig()));
     const app = createOverwatchApp({
-      configPath: resolve('./engagement.example.json'),
+      configPath,
+      stateFilePath,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+    });
+
+    try {
+      const previousRevision = app.config.config_revision!;
+      app.engine.updateConfig({ name: 'Live embedded config' });
+      expect(app.config).toMatchObject({
+        name: 'Live embedded config',
+        config_revision: previousRevision + 1,
+      });
+      expect(app.config).toEqual(app.engine.getConfig());
+    } finally {
+      await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('registers all tools without requiring stdio startup', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-tools-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-app-bootstrap-recovery.json');
+    writeFileSync(configPath, JSON.stringify(recoveryConfig()));
+    const app = createOverwatchApp({
+      configPath,
+      stateFilePath,
       skillDir: resolve('./skills'),
       dashboardPort: 0,
     });
@@ -34,30 +276,38 @@ describe('app bootstrap', () => {
       },
     } as any;
 
-    registerAllTools(fakeServer, {
-      engine: app.engine,
-      skills: app.skills,
-      processTracker: app.processTracker,
-      sessionManager: app.sessionManager,
-      engagementManager: app.engagementManager,
-      getDashboardStatus: () => ({ enabled: false, running: false }),
-    });
+    try {
+      registerAllTools(fakeServer, {
+        engine: app.engine,
+        skills: app.skills,
+        processTracker: app.processTracker,
+        sessionManager: app.sessionManager,
+        engagementManager: app.engagementManager,
+        getDashboardStatus: () => ({ enabled: false, running: false }),
+      });
 
-    // Minimum expected tool count — increase this when adding new tools
-    expect(toolNames.length).toBeGreaterThanOrEqual(39);
-    expect(toolNames).toContain('get_state');
-    expect(toolNames).toContain('run_retrospective');
-    expect(toolNames).toContain('generate_report');
-    expect(toolNames).toContain('open_session');
-    expect(toolNames).toContain('create_engagement');
-    expect(toolNames).toContain('list_engagements');
-    expect(toolNames).toContain('add_objective');
-    expect(toolNames).toContain('set_opsec');
-    expect(toolNames).toContain('close_session');
-    expect(toolNames).toContain('update_scope');
-    expect(toolNames).toContain('get_system_prompt');
-    expect(toolNames).toContain('ingest_azurehound');
-    expect(toolNames).toContain('dispatch_subnet_agents');
+      // Minimum expected tool count — increase this when adding new tools
+      expect(toolNames).toHaveLength(82);
+      expect(new Set(toolNames).size).toBe(82);
+      expect(toolNames).toContain('get_state');
+      expect(toolNames).toContain('run_retrospective');
+      expect(toolNames).toContain('generate_report');
+      expect(toolNames).toContain('open_session');
+      expect(toolNames).toContain('create_engagement');
+      expect(toolNames).toContain('list_engagements');
+      expect(toolNames).toContain('add_objective');
+      expect(toolNames).toContain('set_opsec');
+      expect(toolNames).toContain('close_session');
+      expect(toolNames).toContain('update_scope');
+      expect(toolNames).toContain('get_system_prompt');
+      expect(toolNames).toContain('ingest_azurehound');
+      expect(toolNames).toContain('dispatch_subnet_agents');
+      expect(toolNames).toContain('get_recovery_status');
+      expect(toolNames).toContain('resolve_config_divergence');
+    } finally {
+      await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('keeps read-only MCP tools available while rejecting mutations in degraded recovery', async () => {
@@ -122,6 +372,14 @@ describe('app bootstrap', () => {
       description: 'refreshes durable process status despite a read annotation',
       annotations: { readOnlyHint: true },
     }, async () => ({ content: [{ type: 'text' as const, text: 'processes' }] }));
+    let recoveryResolutionCalls = 0;
+    registrar.registerTool('resolve_config_divergence', {
+      description: 'the narrow configuration recovery mutation',
+      annotations: { readOnlyHint: false },
+    }, async () => {
+      recoveryResolutionCalls++;
+      return { content: [{ type: 'text' as const, text: 'resolved' }] };
+    });
 
     const blocked = await handlers.get('mutating_test')!({});
     const allowed = await handlers.get('read_test')!({});
@@ -130,6 +388,7 @@ describe('app bootstrap', () => {
     const promptSnapshotBlocked = await handlers.get('get_system_prompt')!({ snapshot: true });
     const promptReadAllowed = await handlers.get('get_system_prompt')!({ snapshot: false });
     const processRefreshBlocked = await handlers.get('check_processes')!({});
+    const recoveryResolutionAllowed = await handlers.get('resolve_config_divergence')!({});
     expect(blocked).toMatchObject({ isError: true });
     expect(JSON.stringify(blocked)).toContain('PERSISTENCE_READ_ONLY');
     expect(mutationCalls).toBe(0);
@@ -140,6 +399,423 @@ describe('app bootstrap', () => {
     expect(promptSnapshotBlocked).toMatchObject({ isError: true });
     expect(promptReadAllowed).toMatchObject({ content: [{ text: 'prompt' }] });
     expect(processRefreshBlocked).toMatchObject({ isError: true });
+    expect(recoveryResolutionAllowed).toMatchObject({ content: [{ text: 'resolved' }] });
+    expect(recoveryResolutionCalls).toBe(1);
+  });
+
+  it('maps a late durability failure returned by the MCP error boundary to recovery read-only', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    const fakeServer = {
+      registerTool(name: string, _config: unknown, callback: (...args: unknown[]) => Promise<unknown>) {
+        handlers.set(name, callback);
+        return { enable() {}, disable() {}, enabled: true };
+      },
+    };
+    const healthyRecovery: ReturnType<GraphEngine['getPersistenceRecoveryStatus']> = {
+      outcome: 'clean',
+      source: 'state',
+      complete: true,
+      writable: true,
+      base_checkpoint: 7,
+      highest_allocated_seq: 7,
+      highest_on_disk_seq: 7,
+      highest_contiguous_applied_seq: 7,
+      consecutive_persistence_failures: 0,
+      journal: {
+        enabled: true,
+        read: 0,
+        attempted: 0,
+        applied: 0,
+        skipped: 0,
+        failed: 0,
+        malformed: false,
+        preserved: false,
+      },
+      config_recovery: {
+        status: 'in_sync',
+        resolution_required: false,
+        intent_present: false,
+      },
+    };
+    const lateRecovery: ReturnType<GraphEngine['getPersistenceRecoveryStatus']> = {
+      ...healthyRecovery,
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      reason: 'configuration write did not complete durably',
+      last_persistence_error: 'config fsync failed',
+      config_recovery: {
+        status: 'write_incomplete',
+        resolution_required: true,
+        intent_present: true,
+        allowed_resolutions: [],
+        reason: 'configuration write did not complete durably',
+      },
+    };
+    let writable = true;
+    const registrar = new ToolRegistrar(fakeServer as never, {
+      isPersistenceWritable: () => writable,
+      getPersistenceRecoveryStatus: () => writable ? healthyRecovery : lateRecovery,
+    });
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      registrar.registerTool('late_boundary_failure', {
+        description: 'fails during a durable write',
+        annotations: { readOnlyHint: false },
+      }, withErrorBoundary('late_boundary_failure', async () => {
+        writable = false;
+        throw Object.assign(new Error('config fsync failed'), { code: 'ENOSPC' });
+      }));
+
+      const result = await handlers.get('late_boundary_failure')!({}) as {
+        isError?: boolean;
+        content: Array<{ text: string }>;
+      };
+      const payload = JSON.parse(result.content[0].text);
+
+      expect(result.isError).toBe(true);
+      expect(payload).toMatchObject({
+        success: false,
+        error: 'config fsync failed',
+        code: 'PERSISTENCE_READ_ONLY',
+        persistence_error_code: 'ENOSPC',
+        classification: 'internal_error',
+        tool: 'late_boundary_failure',
+        recovery: {
+          writable: false,
+          last_persistence_error: 'config fsync failed',
+          config_recovery: { status: 'write_incomplete', intent_present: true },
+        },
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('does not globalize create_engagement inactive-file persistence failure while engine recovery is healthy', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    const fakeServer = {
+      registerTool(name: string, _config: unknown, callback: (...args: unknown[]) => Promise<unknown>) {
+        handlers.set(name, callback);
+        return { enable() {}, disable() {}, enabled: true };
+      },
+    };
+    const healthyRecovery: ReturnType<GraphEngine['getPersistenceRecoveryStatus']> = {
+      outcome: 'clean',
+      source: 'state',
+      complete: true,
+      writable: true,
+      base_checkpoint: 3,
+      highest_allocated_seq: 3,
+      highest_on_disk_seq: 3,
+      highest_contiguous_applied_seq: 3,
+      consecutive_persistence_failures: 0,
+      journal: {
+        enabled: true,
+        read: 0,
+        attempted: 0,
+        applied: 0,
+        skipped: 0,
+        failed: 0,
+        malformed: false,
+        preserved: false,
+      },
+      config_recovery: {
+        status: 'in_sync',
+        resolution_required: false,
+        intent_present: false,
+      },
+    };
+    const registrar = new ToolRegistrar(fakeServer as never, {
+      isPersistenceWritable: () => true,
+      getPersistenceRecoveryStatus: () => healthyRecovery,
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-inactive-create-'));
+    const manager = new EngagementManager(join(dir, 'engagement.json'), () => {
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    });
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      registerEngagementTools(registrar as never, {} as GraphEngine, manager);
+
+      const result = await handlers.get('create_engagement')!({
+        name: 'Inactive must persist',
+        dry_run: false,
+      }) as { isError?: boolean; content: Array<{ text: string }> };
+      const payload = JSON.parse(result.content[0].text);
+
+      expect(result.isError).toBe(true);
+      expect(payload).toMatchObject({
+        success: false,
+        code: 'ENGAGEMENT_PERSISTENCE_FAILED',
+        classification: 'internal_error',
+        tool: 'create_engagement',
+        error: expect.stringContaining('was not durably persisted: disk full'),
+      });
+      expect(payload).not.toHaveProperty('recovery');
+      expect(payload).not.toHaveProperty('persistence_error_code');
+    } finally {
+      stderr.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('adds late recovery to the rich run_tool interruption payload without dropping attribution', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    const fakeServer = {
+      registerTool(name: string, _config: unknown, callback: (...args: unknown[]) => Promise<unknown>) {
+        handlers.set(name, callback);
+        return { enable() {}, disable() {}, enabled: true };
+      },
+    };
+    const healthyRecovery: ReturnType<GraphEngine['getPersistenceRecoveryStatus']> = {
+      outcome: 'clean',
+      source: 'state',
+      complete: true,
+      writable: true,
+      base_checkpoint: 11,
+      highest_allocated_seq: 11,
+      highest_on_disk_seq: 11,
+      highest_contiguous_applied_seq: 11,
+      consecutive_persistence_failures: 0,
+      journal: {
+        enabled: true,
+        read: 0,
+        attempted: 0,
+        applied: 0,
+        skipped: 0,
+        failed: 0,
+        malformed: false,
+        preserved: false,
+      },
+    };
+    const lateRecovery: ReturnType<GraphEngine['getPersistenceRecoveryStatus']> = {
+      ...healthyRecovery,
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      reason: 'mutation journal append is ambiguous',
+      journal: {
+        ...healthyRecovery.journal,
+        preserved: true,
+      },
+    };
+    let recovery = healthyRecovery;
+    const registrar = new ToolRegistrar(fakeServer as never, {
+      isPersistenceWritable: () => recovery.writable,
+      getPersistenceRecoveryStatus: () => recovery,
+    });
+    registrar.registerTool('run_tool', {
+      description: 'instrumented target process',
+      annotations: { readOnlyHint: false },
+    }, async () => {
+      recovery = lateRecovery;
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            action_id: 'act-rich-interruption',
+            executed: false,
+            interrupted: true,
+            code: 'PERSISTENCE_READ_ONLY',
+            reason: 'persistence_degraded',
+            error: 'Target execution was interrupted because durable persistence became read-only.',
+            recovery: { writable: false, stale: true },
+            stdout_evidence_id: 'evidence-before-interruption',
+            phase: 'action_started',
+          }, null, 2),
+        }],
+        isError: true,
+      };
+    });
+
+    const result = await handlers.get('run_tool')!({}) as {
+      isError?: boolean;
+      content: Array<{ text: string }>;
+    };
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toHaveLength(1);
+    expect(payload).toMatchObject({
+      action_id: 'act-rich-interruption',
+      executed: false,
+      interrupted: true,
+      code: 'PERSISTENCE_READ_ONLY',
+      reason: 'persistence_degraded',
+      error: 'Target execution was interrupted because durable persistence became read-only.',
+      stdout_evidence_id: 'evidence-before-interruption',
+      phase: 'action_started',
+      recovery: {
+        complete: false,
+        writable: false,
+        reason: 'mutation journal append is ambiguous',
+      },
+    });
+    expect(payload.recovery).not.toHaveProperty('stale');
+  });
+
+  it('maps a rejected late storage error but preserves an ordinary MCP tool error', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    const fakeServer = {
+      registerTool(name: string, _config: unknown, callback: (...args: unknown[]) => Promise<unknown>) {
+        handlers.set(name, callback);
+        return { enable() {}, disable() {}, enabled: true };
+      },
+    };
+    let writable = true;
+    const recovery = () => ({
+      outcome: writable ? 'clean' as const : 'incomplete' as const,
+      source: 'state' as const,
+      complete: writable,
+      writable,
+      ...(!writable ? { reason: 'state persistence failed' } : {}),
+      base_checkpoint: 4,
+      highest_allocated_seq: 5,
+      highest_on_disk_seq: 5,
+      highest_contiguous_applied_seq: 4,
+      consecutive_persistence_failures: writable ? 0 : 3,
+      ...(!writable ? { last_persistence_error: 'state rename failed' } : {}),
+      journal: {
+        enabled: true,
+        read: 0,
+        attempted: 0,
+        applied: 0,
+        skipped: 0,
+        failed: 0,
+        malformed: false,
+        preserved: false,
+      },
+    });
+    const registrar = new ToolRegistrar(fakeServer as never, {
+      isPersistenceWritable: () => writable,
+      getPersistenceRecoveryStatus: recovery,
+    });
+    registrar.registerTool('late_rejection', {
+      description: 'rejects after storage fails',
+      annotations: { readOnlyHint: false },
+    }, async () => {
+      writable = false;
+      throw Object.assign(new Error('state rename failed'), { code: 'EIO' });
+    });
+    registrar.registerTool('ordinary_failure', {
+      description: 'returns an ordinary validation failure',
+      annotations: { readOnlyHint: false },
+    }, async () => ({
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({ success: false, error: 'target is required', classification: 'validation_error' }),
+      }],
+      isError: true,
+    }));
+
+    const rejected = await handlers.get('late_rejection')!({}) as { content: Array<{ text: string }> };
+    const rejectedPayload = JSON.parse(rejected.content[0].text);
+    expect(rejectedPayload).toMatchObject({
+      error: 'state rename failed',
+      code: 'PERSISTENCE_READ_ONLY',
+      recovery: { writable: false, consecutive_persistence_failures: 3 },
+    });
+
+    writable = true;
+    const ordinary = await handlers.get('ordinary_failure')!({}) as { content: Array<{ text: string }> };
+    expect(JSON.parse(ordinary.content[0].text)).toEqual({
+      success: false,
+      error: 'target is required',
+      classification: 'validation_error',
+    });
+  });
+
+  it('maps a late reconciliation write failure without masking a hash conflict', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    const fakeServer = {
+      registerTool(name: string, _config: unknown, callback: (...args: unknown[]) => Promise<unknown>) {
+        handlers.set(name, callback);
+        return { enable() {}, disable() {}, enabled: true };
+      },
+    };
+    const diverged: ReturnType<GraphEngine['getPersistenceRecoveryStatus']> = {
+      outcome: 'incomplete',
+      source: 'state',
+      complete: false,
+      writable: false,
+      reason: 'configuration reconciliation is required',
+      base_checkpoint: 2,
+      highest_allocated_seq: 2,
+      highest_on_disk_seq: 2,
+      highest_contiguous_applied_seq: 2,
+      consecutive_persistence_failures: 0,
+      journal: {
+        enabled: true,
+        read: 0,
+        attempted: 0,
+        applied: 0,
+        skipped: 0,
+        failed: 0,
+        malformed: false,
+        preserved: false,
+      },
+      config_recovery: {
+        status: 'diverged',
+        resolution_required: true,
+        intent_present: false,
+        allowed_resolutions: ['use_file', 'use_state'],
+      },
+    };
+    let recovery = diverged;
+    let attempt = 0;
+    const registrar = new ToolRegistrar(fakeServer as never, {
+      isPersistenceWritable: () => false,
+      getPersistenceRecoveryStatus: () => recovery,
+    });
+    registrar.registerTool('resolve_config_divergence', {
+      description: 'reconciles configuration',
+      annotations: { readOnlyHint: false },
+    }, async () => {
+      attempt++;
+      if (attempt === 1) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: 'Configuration changed after it was inspected',
+              code: 'CONFIG_HASH_CONFLICT',
+            }),
+          }],
+          isError: true,
+        };
+      }
+      recovery = {
+        ...diverged,
+        reason: 'configuration write did not complete durably',
+        last_persistence_error: 'config rename failed',
+        config_recovery: {
+          status: 'write_incomplete',
+          resolution_required: true,
+          intent_present: true,
+          allowed_resolutions: [],
+        },
+      };
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ success: false, error: 'config rename failed', code: 'EIO' }),
+        }],
+        isError: true,
+      };
+    });
+
+    const conflict = await handlers.get('resolve_config_divergence')!({}) as { content: Array<{ text: string }> };
+    expect(JSON.parse(conflict.content[0].text)).toMatchObject({ code: 'CONFIG_HASH_CONFLICT' });
+    expect(JSON.parse(conflict.content[0].text)).not.toHaveProperty('recovery');
+
+    const storageFailure = await handlers.get('resolve_config_divergence')!({}) as { content: Array<{ text: string }> };
+    expect(JSON.parse(storageFailure.content[0].text)).toMatchObject({
+      error: 'config rename failed',
+      code: 'PERSISTENCE_READ_ONLY',
+      recovery: { config_recovery: { status: 'write_incomplete', intent_present: true } },
+    });
   });
 
   it('always tears down runtime and disposes while skipping degraded durable writes', async () => {

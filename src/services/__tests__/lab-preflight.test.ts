@@ -356,8 +356,7 @@ describe('lab preflight', () => {
     const engine = createTestEngine(makeConfig({
       profile: 'single_host' as const,
     }));
-    Object.assign(engine, {
-      getPersistenceRecoveryStatus: vi.fn(() => ({
+    const incompleteRecovery = {
         outcome: 'incomplete',
         source: 'state',
         complete: false,
@@ -378,7 +377,10 @@ describe('lab preflight', () => {
           malformed: false,
           preserved: true,
         },
-      })),
+      } as const;
+    Object.assign(engine, {
+      getPersistenceRecoveryStatus: vi.fn(() => incompleteRecovery),
+      getStatePersistenceRecoveryStatus: vi.fn(() => incompleteRecovery),
     });
 
     const report = runLabPreflight(engine, {
@@ -399,6 +401,89 @@ describe('lab preflight', () => {
     });
     expect(inline.status).toBe('blocked');
     expect(inline.top_issues[0]).toContain('sequence gap');
+  });
+
+  it('reports configuration consistency as a distinct readiness check', () => {
+    const engine = createTestEngine(makeConfig({ profile: 'single_host' as const }));
+
+    const report = runLabPreflight(engine, {
+      profile: 'single_host',
+      toolStatuses: installedTools(['nmap']),
+      dashboard: { enabled: false, running: false },
+    });
+
+    expect(report.checks.find(check => check.name === 'config_consistency')).toMatchObject({
+      status: 'pass',
+      message: expect.stringContaining('fileless'),
+    });
+  });
+
+  it('blocks inline and full readiness when configuration reconciliation is required', () => {
+    const engine = createTestEngine(makeConfig({ profile: 'single_host' as const }));
+    const configRecovery = {
+      status: 'diverged' as const,
+      resolution_required: true,
+      intent_present: false,
+      file_valid: true,
+      file_revision: 2,
+      state_revision: 3,
+      file_hash: 'a'.repeat(64),
+      state_hash: 'b'.repeat(64),
+      reason: 'file and state differ',
+    };
+    const persistence = engine.getPersistenceRecoveryStatus();
+    Object.assign(engine, {
+      getConfigRecoveryStatus: vi.fn(() => configRecovery),
+      getPersistenceRecoveryStatus: vi.fn(() => ({
+        ...persistence,
+        outcome: 'incomplete' as const,
+        complete: false,
+        writable: false,
+        reason: configRecovery.reason,
+        config_recovery: configRecovery,
+      })),
+    });
+
+    const report = runLabPreflight(engine, {
+      profile: 'single_host',
+      toolStatuses: installedTools(['nmap']),
+      dashboard: { enabled: false, running: false },
+    });
+    const inline = summarizeInlineLabReadiness(engine);
+    const check = report.checks.find(item => item.name === 'config_consistency');
+
+    expect(check).toMatchObject({ status: 'fail' });
+    expect(check?.message).toContain('file and state differ');
+    expect(check?.details).not.toHaveProperty('config');
+    expect(inline.status).toBe('blocked');
+    expect(inline.top_issues[0]).toContain('explicit reconciliation');
+  });
+
+  it('warns when an interrupted configuration write recovered on startup', () => {
+    const engine = createTestEngine(makeConfig({ profile: 'single_host' as const }));
+    Object.assign(engine, {
+      getConfigRecoveryStatus: vi.fn(() => ({
+        status: 'recovered' as const,
+        resolution_required: false,
+        intent_present: false,
+        file_valid: true,
+        file_revision: 4,
+        state_revision: 4,
+        file_hash: 'c'.repeat(64),
+        state_hash: 'c'.repeat(64),
+      })),
+    });
+
+    const report = runLabPreflight(engine, {
+      profile: 'single_host',
+      toolStatuses: installedTools(['nmap']),
+      dashboard: { enabled: false, running: false },
+    });
+
+    expect(report.checks.find(check => check.name === 'config_consistency')).toMatchObject({
+      status: 'warning',
+      message: expect.stringContaining('recovered'),
+    });
   });
 
   it('web_app profile passes scope check with url_patterns and checks for web tools', () => {

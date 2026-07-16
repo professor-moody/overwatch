@@ -14,10 +14,10 @@
 // If it dies before (1), the in-memory state hasn't changed yet — nothing
 // to recover.
 //
-// The journal is gated on `engagement_nonce` (P1.2): only deterministic-ID
-// engagements get journaling. Legacy engagements keep the old
-// debounced-snapshot behavior, which avoids retrofitting WAL onto state
-// shapes that pre-date P1.x.
+// Managed active engagements enable the journal even when they pre-date
+// `engagement_nonce`; deterministic-ID engagements also enable it directly.
+// Existing journal bytes are always recovered, regardless of current config,
+// so a legacy/no-nonce config can never make a WAL tail invisible.
 //
 // Design notes:
 //   * Append mode: open-write-fsync-close per entry. Per-line cost ~1ms
@@ -34,6 +34,14 @@ import { dirname, join, basename } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
 import { decodeUtf8Fatal } from './durable-json.js';
+import type {
+  ConfigIntentConflict,
+  EdgeProperties,
+  EngagementConfig,
+  GraphCorrectionOperation,
+  NodeProperties,
+} from '../types.js';
+import type { ColdNodeRecord } from './cold-store.js';
 
 type WriteSyncLike = (
   fd: number,
@@ -90,7 +98,126 @@ export type MutationType =
   | 'lease_release'
   | 'lease_renew'
   | 'log_event'
-  | 'scope_updated';
+  | 'scope_updated'
+  | 'identity_rewrite'
+  | 'graph_corrected';
+
+export interface ScopeUpdatedMutationPayloadV1 {
+  payload_version: 1;
+  operation_id: string;
+  occurred_at: string;
+  reason: string;
+  source_config_hash: string;
+  source_file_hash: string;
+  target_config: EngagementConfig;
+  before_scope: EngagementConfig['scope'];
+  after_scope: EngagementConfig['scope'];
+  promotions: Array<{
+    cold_record: ColdNodeRecord;
+    hot_node: NodeProperties;
+  }>;
+  inferred_edges: Array<{
+    edge_id: string;
+    before?: IdentityRewriteEdgeStateV1;
+    after: IdentityRewriteEdgeStateV1;
+  }>;
+  inference_events: Array<{
+    description: string;
+    target_node_ids?: string[];
+    details?: Record<string, unknown>;
+  }>;
+  config_resolution?: 'use_file';
+  superseded_config_intent?: ConfigIntentConflict;
+  affected_node_count: number;
+}
+
+export interface DropNodeMutationPayloadV1 {
+  payload_version: 1;
+  operation_id: string;
+  occurred_at: string;
+  reason: string;
+  action_id?: string;
+  node_id: string;
+  expected_type: string;
+  expected_node: {
+    node_id: string;
+    props: NodeProperties;
+  };
+  incident_edges: Array<{
+    edge_id: string;
+    source: string;
+    target: string;
+    edge_type: string;
+    props: EdgeProperties;
+  }>;
+}
+
+export interface IdentityRewriteNodeStateV1 {
+  node_id: string;
+  props: NodeProperties;
+}
+
+export interface IdentityRewriteEdgeStateV1 {
+  edge_id: string;
+  source: string;
+  target: string;
+  props: EdgeProperties;
+}
+
+export interface IdentityRewriteMutationPayloadV1 {
+  payload_version: 1;
+  operation_id: string;
+  occurred_at: string;
+  canonical_node_id: string;
+  agent_id?: string;
+  action_id?: string;
+  node_changes: Array<{
+    node_id: string;
+    before?: IdentityRewriteNodeStateV1;
+    after?: IdentityRewriteNodeStateV1;
+  }>;
+  edge_changes: Array<{
+    edge_id: string;
+    before?: IdentityRewriteEdgeStateV1;
+    after?: IdentityRewriteEdgeStateV1;
+  }>;
+  audit_events: Array<{
+    description: string;
+    category?: 'system' | 'inference';
+    event_type?: 'system' | 'inference_generated';
+    result_classification?: 'success';
+    target_node_ids?: string[];
+    details: Record<string, unknown>;
+  }>;
+  result: {
+    removed_nodes: string[];
+    removed_edges: string[];
+    new_edges: string[];
+    updated_edges: string[];
+    updated_canonical: boolean;
+    survivor_id?: string;
+    reverse_target?: string;
+  };
+}
+
+export interface GraphCorrectedMutationPayloadV1 {
+  payload_version: 1;
+  operation_id: string;
+  occurred_at: string;
+  reason: string;
+  action_id?: string;
+  operations: GraphCorrectionOperation[];
+  node_changes: IdentityRewriteMutationPayloadV1['node_changes'];
+  edge_changes: IdentityRewriteMutationPayloadV1['edge_changes'];
+  before_summary: { total_nodes: number; total_edges: number };
+  after_summary: { total_nodes: number; total_edges: number };
+  result: {
+    dropped_nodes: string[];
+    dropped_edges: string[];
+    replaced_edges: Array<{ old_edge_id: string; new_edge_id: string }>;
+    patched_nodes: string[];
+  };
+}
 
 /** Records this binary can deterministically replay.  A string-shaped record
  *  from a newer writer is still unknown, even if its JSON envelope is valid;
@@ -100,11 +227,15 @@ const REPLAYABLE_MUTATION_TYPES = new Set<string>([
   'add_node',
   'merge_node_attrs',
   'replace_node_attrs',
+  'drop_node',
   'add_edge',
   'merge_edge_attrs',
   'drop_edge',
   'cold_add',
   'cold_promote',
+  'scope_updated',
+  'identity_rewrite',
+  'graph_corrected',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -143,6 +274,291 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
     case 'replace_node_attrs': {
       if (!isRecord(payload.props) || !nonEmptyString(payload.props.id)) {
         return { ok: false, reason: `${value.type} payload.props.id must be a non-empty string` };
+      }
+      break;
+    }
+    case 'drop_node': {
+      if (!Number.isSafeInteger(payload.payload_version) || (payload.payload_version as number) <= 0) {
+        return { ok: false, reason: 'drop_node payload.payload_version must be a positive safe integer' };
+      }
+      if (payload.payload_version !== 1) break;
+      if (
+        !nonEmptyString(payload.operation_id)
+        || !nonEmptyString(payload.reason)
+        || !nonEmptyString(payload.node_id)
+        || !nonEmptyString(payload.expected_type)
+      ) {
+        return { ok: false, reason: 'drop_node requires non-empty operation_id, reason, node_id, and expected_type strings' };
+      }
+      if (
+        !isRecord(payload.expected_node)
+        || payload.expected_node.node_id !== payload.node_id
+        || !isRecord(payload.expected_node.props)
+        || payload.expected_node.props.id !== payload.node_id
+        || payload.expected_node.props.type !== payload.expected_type
+      ) {
+        return { ok: false, reason: 'drop_node payload.expected_node must exactly identify the expected typed node' };
+      }
+      if (!nonEmptyString(payload.occurred_at) || !Number.isFinite(Date.parse(payload.occurred_at))) {
+        return { ok: false, reason: 'drop_node payload.occurred_at must be a valid timestamp string' };
+      }
+      if (payload.action_id !== undefined && !nonEmptyString(payload.action_id)) {
+        return { ok: false, reason: 'drop_node payload.action_id must be a non-empty string when present' };
+      }
+      if (!Array.isArray(payload.incident_edges)) {
+        return { ok: false, reason: 'drop_node payload.incident_edges must be an array' };
+      }
+      const edgeIds = new Set<string>();
+      for (const edge of payload.incident_edges) {
+        if (
+          !isRecord(edge)
+          || !nonEmptyString(edge.edge_id)
+          || !nonEmptyString(edge.source)
+          || !nonEmptyString(edge.target)
+          || !nonEmptyString(edge.edge_type)
+          || !isRecord(edge.props)
+          || edge.props.type !== edge.edge_type
+          || edgeIds.has(edge.edge_id)
+        ) {
+          return { ok: false, reason: 'drop_node incident edges require unique IDs, endpoints, and matching typed properties' };
+        }
+        if (edge.source !== payload.node_id && edge.target !== payload.node_id) {
+          return { ok: false, reason: 'drop_node incident edge must reference payload.node_id' };
+        }
+        edgeIds.add(edge.edge_id);
+      }
+      break;
+    }
+    case 'identity_rewrite': {
+      if (!Number.isSafeInteger(payload.payload_version) || (payload.payload_version as number) <= 0) {
+        return { ok: false, reason: 'identity_rewrite payload.payload_version must be a positive safe integer' };
+      }
+      if (payload.payload_version !== 1) break;
+      if (!nonEmptyString(payload.operation_id) || !nonEmptyString(payload.canonical_node_id)) {
+        return { ok: false, reason: 'identity_rewrite requires non-empty operation_id and canonical_node_id strings' };
+      }
+      if (!nonEmptyString(payload.occurred_at) || !Number.isFinite(Date.parse(payload.occurred_at))) {
+        return { ok: false, reason: 'identity_rewrite payload.occurred_at must be a valid timestamp string' };
+      }
+      for (const key of ['agent_id', 'action_id'] as const) {
+        if (payload[key] !== undefined && !nonEmptyString(payload[key])) {
+          return { ok: false, reason: `identity_rewrite payload.${key} must be a non-empty string when present` };
+        }
+      }
+      if (!Array.isArray(payload.node_changes) || payload.node_changes.length === 0) {
+        return { ok: false, reason: 'identity_rewrite payload.node_changes must be a non-empty array' };
+      }
+      const nodeIds = new Set<string>();
+      for (const change of payload.node_changes) {
+        if (!isRecord(change) || !nonEmptyString(change.node_id) || nodeIds.has(change.node_id)) {
+          return { ok: false, reason: 'identity_rewrite node changes require unique non-empty node IDs' };
+        }
+        if (change.before === undefined && change.after === undefined) {
+          return { ok: false, reason: 'identity_rewrite node change requires a before or after state' };
+        }
+        for (const phase of ['before', 'after'] as const) {
+          const state = change[phase];
+          if (state === undefined) continue;
+          if (
+            !isRecord(state)
+            || state.node_id !== change.node_id
+            || !isRecord(state.props)
+            || state.props.id !== change.node_id
+            || !nonEmptyString(state.props.type)
+          ) {
+            return { ok: false, reason: `identity_rewrite node change has an invalid ${phase} state` };
+          }
+        }
+        nodeIds.add(change.node_id);
+      }
+      if (!Array.isArray(payload.edge_changes)) {
+        return { ok: false, reason: 'identity_rewrite payload.edge_changes must be an array' };
+      }
+      const edgeIds = new Set<string>();
+      for (const change of payload.edge_changes) {
+        if (!isRecord(change) || !nonEmptyString(change.edge_id) || edgeIds.has(change.edge_id)) {
+          return { ok: false, reason: 'identity_rewrite edge changes require unique non-empty edge IDs' };
+        }
+        if (change.before === undefined && change.after === undefined) {
+          return { ok: false, reason: 'identity_rewrite edge change requires a before or after state' };
+        }
+        for (const phase of ['before', 'after'] as const) {
+          const state = change[phase];
+          if (state === undefined) continue;
+          if (
+            !isRecord(state)
+            || state.edge_id !== change.edge_id
+            || !nonEmptyString(state.source)
+            || !nonEmptyString(state.target)
+            || !isRecord(state.props)
+            || !nonEmptyString(state.props.type)
+          ) {
+            return { ok: false, reason: `identity_rewrite edge change has an invalid ${phase} state` };
+          }
+        }
+        edgeIds.add(change.edge_id);
+      }
+      if (!Array.isArray(payload.audit_events)) {
+        return { ok: false, reason: 'identity_rewrite payload.audit_events must be an array' };
+      }
+      for (const event of payload.audit_events) {
+        if (
+          !isRecord(event)
+          || !nonEmptyString(event.description)
+          || !isRecord(event.details)
+          || (event.category !== undefined && event.category !== 'system' && event.category !== 'inference')
+          || (event.event_type !== undefined && event.event_type !== 'system' && event.event_type !== 'inference_generated')
+          || (event.result_classification !== undefined && event.result_classification !== 'success')
+          || (event.target_node_ids !== undefined
+            && (!Array.isArray(event.target_node_ids) || event.target_node_ids.some(id => !nonEmptyString(id))))
+        ) {
+          return { ok: false, reason: 'identity_rewrite audit_events contain an invalid event descriptor' };
+        }
+      }
+      if (!isRecord(payload.result)) {
+        return { ok: false, reason: 'identity_rewrite payload.result must be an object' };
+      }
+      for (const key of ['removed_nodes', 'removed_edges', 'new_edges', 'updated_edges'] as const) {
+        if (!Array.isArray(payload.result[key]) || payload.result[key].some(id => !nonEmptyString(id))) {
+          return { ok: false, reason: `identity_rewrite payload.result.${key} must be a string array` };
+        }
+      }
+      if (typeof payload.result.updated_canonical !== 'boolean') {
+        return { ok: false, reason: 'identity_rewrite payload.result.updated_canonical must be boolean' };
+      }
+      for (const key of ['survivor_id', 'reverse_target'] as const) {
+        if (payload.result[key] !== undefined && !nonEmptyString(payload.result[key])) {
+          return { ok: false, reason: `identity_rewrite payload.result.${key} must be a non-empty string when present` };
+        }
+      }
+      break;
+    }
+    case 'graph_corrected': {
+      if (!Number.isSafeInteger(payload.payload_version) || (payload.payload_version as number) <= 0) {
+        return { ok: false, reason: 'graph_corrected payload.payload_version must be a positive safe integer' };
+      }
+      if (payload.payload_version !== 1) break;
+      if (!nonEmptyString(payload.operation_id) || !nonEmptyString(payload.reason)) {
+        return { ok: false, reason: 'graph_corrected requires non-empty operation_id and reason strings' };
+      }
+      if (!nonEmptyString(payload.occurred_at) || !Number.isFinite(Date.parse(payload.occurred_at))) {
+        return { ok: false, reason: 'graph_corrected payload.occurred_at must be a valid timestamp string' };
+      }
+      if (payload.action_id !== undefined && !nonEmptyString(payload.action_id)) {
+        return { ok: false, reason: 'graph_corrected payload.action_id must be a non-empty string when present' };
+      }
+      if (!Array.isArray(payload.operations) || payload.operations.length === 0) {
+        return { ok: false, reason: 'graph_corrected payload.operations must be a non-empty array' };
+      }
+      for (const operation of payload.operations) {
+        if (!isRecord(operation) || !nonEmptyString(operation.kind)) {
+          return { ok: false, reason: 'graph_corrected operations must be typed objects' };
+        }
+        if (operation.kind === 'drop_node') {
+          if (!nonEmptyString(operation.node_id)) {
+            return { ok: false, reason: 'graph_corrected drop_node requires node_id' };
+          }
+        } else if (operation.kind === 'drop_edge' || operation.kind === 'replace_edge') {
+          if (
+            !nonEmptyString(operation.source_id)
+            || !nonEmptyString(operation.target_id)
+            || !nonEmptyString(operation.edge_type)
+          ) {
+            return { ok: false, reason: `graph_corrected ${operation.kind} requires source_id, target_id, and edge_type` };
+          }
+        } else if (operation.kind === 'patch_node') {
+          if (
+            !nonEmptyString(operation.node_id)
+            || (operation.set_properties !== undefined && !isRecord(operation.set_properties))
+            || (operation.unset_properties !== undefined
+              && (!Array.isArray(operation.unset_properties)
+                || operation.unset_properties.some(key => !nonEmptyString(key))))
+          ) {
+            return { ok: false, reason: 'graph_corrected patch_node descriptor is invalid' };
+          }
+        } else {
+          return { ok: false, reason: `graph_corrected operation kind is unsupported: ${operation.kind}` };
+        }
+      }
+      if (!Array.isArray(payload.node_changes)) {
+        return { ok: false, reason: 'graph_corrected payload.node_changes must be an array' };
+      }
+      const nodeIds = new Set<string>();
+      for (const change of payload.node_changes) {
+        if (!isRecord(change) || !nonEmptyString(change.node_id) || nodeIds.has(change.node_id)) {
+          return { ok: false, reason: 'graph_corrected node changes require unique non-empty node IDs' };
+        }
+        if (change.before === undefined && change.after === undefined) {
+          return { ok: false, reason: 'graph_corrected node change requires a before or after state' };
+        }
+        for (const phase of ['before', 'after'] as const) {
+          const state = change[phase];
+          if (state === undefined) continue;
+          if (
+            !isRecord(state)
+            || state.node_id !== change.node_id
+            || !isRecord(state.props)
+            || state.props.id !== change.node_id
+            || !nonEmptyString(state.props.type)
+          ) {
+            return { ok: false, reason: `graph_corrected node change has an invalid ${phase} state` };
+          }
+        }
+        nodeIds.add(change.node_id);
+      }
+      if (!Array.isArray(payload.edge_changes)) {
+        return { ok: false, reason: 'graph_corrected payload.edge_changes must be an array' };
+      }
+      const edgeIds = new Set<string>();
+      for (const change of payload.edge_changes) {
+        if (!isRecord(change) || !nonEmptyString(change.edge_id) || edgeIds.has(change.edge_id)) {
+          return { ok: false, reason: 'graph_corrected edge changes require unique non-empty edge IDs' };
+        }
+        if (change.before === undefined && change.after === undefined) {
+          return { ok: false, reason: 'graph_corrected edge change requires a before or after state' };
+        }
+        for (const phase of ['before', 'after'] as const) {
+          const state = change[phase];
+          if (state === undefined) continue;
+          if (
+            !isRecord(state)
+            || state.edge_id !== change.edge_id
+            || !nonEmptyString(state.source)
+            || !nonEmptyString(state.target)
+            || !isRecord(state.props)
+            || !nonEmptyString(state.props.type)
+          ) {
+            return { ok: false, reason: `graph_corrected edge change has an invalid ${phase} state` };
+          }
+        }
+        edgeIds.add(change.edge_id);
+      }
+      for (const key of ['before_summary', 'after_summary'] as const) {
+        const summary = payload[key];
+        if (
+          !isRecord(summary)
+          || !Number.isSafeInteger(summary.total_nodes)
+          || (summary.total_nodes as number) < 0
+          || !Number.isSafeInteger(summary.total_edges)
+          || (summary.total_edges as number) < 0
+        ) {
+          return { ok: false, reason: `graph_corrected payload.${key} is invalid` };
+        }
+      }
+      if (!isRecord(payload.result)) {
+        return { ok: false, reason: 'graph_corrected payload.result must be an object' };
+      }
+      for (const key of ['dropped_nodes', 'dropped_edges', 'patched_nodes'] as const) {
+        if (!Array.isArray(payload.result[key]) || payload.result[key].some(id => !nonEmptyString(id))) {
+          return { ok: false, reason: `graph_corrected payload.result.${key} must be a string array` };
+        }
+      }
+      if (!Array.isArray(payload.result.replaced_edges) || payload.result.replaced_edges.some(replacement =>
+        !isRecord(replacement)
+        || !nonEmptyString(replacement.old_edge_id)
+        || !nonEmptyString(replacement.new_edge_id)
+      )) {
+        return { ok: false, reason: 'graph_corrected payload.result.replaced_edges is invalid' };
       }
       break;
     }
@@ -203,6 +619,136 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
     case 'cold_promote': {
       if (!nonEmptyString(payload.id)) {
         return { ok: false, reason: 'cold_promote payload.id must be a non-empty string' };
+      }
+      break;
+    }
+    case 'scope_updated': {
+      if (!Number.isSafeInteger(payload.payload_version) || (payload.payload_version as number) <= 0) {
+        return { ok: false, reason: 'scope_updated payload.payload_version must be a positive safe integer' };
+      }
+      // Future payload versions remain readable but unsupported. The replay
+      // applier will skip them and PR1 recovery will preserve the WAL.
+      if (payload.payload_version !== 1) break;
+      if (!nonEmptyString(payload.operation_id) || !nonEmptyString(payload.reason)) {
+        return { ok: false, reason: 'scope_updated requires non-empty operation_id and reason strings' };
+      }
+      if (!nonEmptyString(payload.occurred_at) || !Number.isFinite(Date.parse(payload.occurred_at))) {
+        return { ok: false, reason: 'scope_updated payload.occurred_at must be a valid timestamp string' };
+      }
+      if (typeof payload.source_config_hash !== 'string' || !/^[0-9a-f]{64}$/.test(payload.source_config_hash)) {
+        return { ok: false, reason: 'scope_updated payload.source_config_hash must be a lowercase SHA-256 hash' };
+      }
+      if (typeof payload.source_file_hash !== 'string' || !/^[0-9a-f]{64}$/.test(payload.source_file_hash)) {
+        return { ok: false, reason: 'scope_updated payload.source_file_hash must be a lowercase SHA-256 hash' };
+      }
+      if (!isRecord(payload.target_config) || !nonEmptyString(payload.target_config.id)) {
+        return { ok: false, reason: 'scope_updated payload.target_config must be an engagement config object' };
+      }
+      if (
+        !Number.isSafeInteger(payload.target_config.config_revision)
+        || (payload.target_config.config_revision as number) <= 0
+        || typeof payload.target_config.config_hash !== 'string'
+        || !/^[0-9a-f]{64}$/.test(payload.target_config.config_hash)
+      ) {
+        return { ok: false, reason: 'scope_updated target_config requires a positive config_revision and lowercase SHA-256 config_hash' };
+      }
+      for (const key of ['before_scope', 'after_scope'] as const) {
+        const scope = payload[key];
+        if (
+          !isRecord(scope)
+          || !Array.isArray(scope.cidrs)
+          || !Array.isArray(scope.domains)
+          || !Array.isArray(scope.exclusions)
+        ) {
+          return { ok: false, reason: `scope_updated payload.${key} requires cidrs, domains, and exclusions arrays` };
+        }
+      }
+      if (!Array.isArray(payload.promotions)) {
+        return { ok: false, reason: 'scope_updated payload.promotions must be an array' };
+      }
+      const promotionIds = new Set<string>();
+      for (const promotion of payload.promotions) {
+        if (!isRecord(promotion) || !isRecord(promotion.cold_record) || !isRecord(promotion.hot_node)) {
+          return { ok: false, reason: 'scope_updated promotions require cold_record and hot_node objects' };
+        }
+        if (
+          !nonEmptyString(promotion.cold_record.id)
+          || promotion.hot_node.id !== promotion.cold_record.id
+          || promotionIds.has(promotion.cold_record.id)
+        ) {
+          return { ok: false, reason: 'scope_updated promotion IDs must be non-empty, unique, and match the hot node' };
+        }
+        promotionIds.add(promotion.cold_record.id);
+      }
+      if (!Array.isArray(payload.inferred_edges)) {
+        return { ok: false, reason: 'scope_updated payload.inferred_edges must be an array' };
+      }
+      const inferredEdgeIds = new Set<string>();
+      for (const edge of payload.inferred_edges) {
+        if (
+          !isRecord(edge)
+          || !nonEmptyString(edge.edge_id)
+          || inferredEdgeIds.has(edge.edge_id)
+          || !isRecord(edge.after)
+          || edge.after.edge_id !== edge.edge_id
+          || !nonEmptyString(edge.after.source)
+          || !nonEmptyString(edge.after.target)
+          || !isRecord(edge.after.props)
+          || !nonEmptyString(edge.after.props.type)
+        ) {
+          return { ok: false, reason: 'scope_updated inferred_edges require unique IDs and exact typed after states' };
+        }
+        if (
+          edge.before !== undefined
+          && (
+            !isRecord(edge.before)
+            || edge.before.edge_id !== edge.edge_id
+            || !nonEmptyString(edge.before.source)
+            || !nonEmptyString(edge.before.target)
+            || !isRecord(edge.before.props)
+            || !nonEmptyString(edge.before.props.type)
+          )
+        ) {
+          return { ok: false, reason: 'scope_updated inferred edge has an invalid before state' };
+        }
+        inferredEdgeIds.add(edge.edge_id);
+      }
+      if (!Array.isArray(payload.inference_events)) {
+        return { ok: false, reason: 'scope_updated payload.inference_events must be an array' };
+      }
+      for (const event of payload.inference_events) {
+        if (
+          !isRecord(event)
+          || !nonEmptyString(event.description)
+          || (event.target_node_ids !== undefined && !Array.isArray(event.target_node_ids))
+          || (event.details !== undefined && !isRecord(event.details))
+        ) {
+          return { ok: false, reason: 'scope_updated inference_events contain an invalid event descriptor' };
+        }
+      }
+      if (payload.config_resolution !== undefined && payload.config_resolution !== 'use_file') {
+        return { ok: false, reason: 'scope_updated payload.config_resolution must be use_file when present' };
+      }
+      if (payload.superseded_config_intent !== undefined) {
+        const conflict = payload.superseded_config_intent;
+        if (
+          !isRecord(conflict)
+          || !nonEmptyString(conflict.archive_path)
+          || !nonEmptyString(conflict.reason)
+          || typeof conflict.intent_sha256 !== 'string'
+          || !/^[0-9a-f]{64}$/.test(conflict.intent_sha256)
+          || (conflict.intent_checksum !== undefined
+            && (typeof conflict.intent_checksum !== 'string' || !/^[0-9a-f]{64}$/.test(conflict.intent_checksum)))
+          || typeof conflict.observed_file_hash !== 'string'
+          || !/^[0-9a-f]{64}$/.test(conflict.observed_file_hash)
+          || typeof conflict.observed_state_hash !== 'string'
+          || !/^[0-9a-f]{64}$/.test(conflict.observed_state_hash)
+        ) {
+          return { ok: false, reason: 'scope_updated payload.superseded_config_intent is invalid' };
+        }
+      }
+      if (!Number.isSafeInteger(payload.affected_node_count) || (payload.affected_node_count as number) < 0) {
+        return { ok: false, reason: 'scope_updated payload.affected_node_count must be a non-negative safe integer' };
       }
       break;
     }

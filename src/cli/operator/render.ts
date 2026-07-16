@@ -6,7 +6,7 @@
 // src/dashboard-next/src/lib/api.ts / types.ts.
 
 import { bold, cyan, dim, green, red, yellow, blue, gray, formatTable, keyValues, heading } from './format.js';
-import type { PersistenceRecoveryStatus } from '../../types.js';
+import type { ConfigRecoveryStatus, PersistenceRecoveryStatus } from '../../types.js';
 
 const sev = (s: string): ((x: string) => string) => {
   switch (s) {
@@ -79,6 +79,95 @@ function renderPersistenceRecovery(recovery: PersistenceRecoveryStatus): string 
     return yellow(summary);
   }
   return green(summary);
+}
+
+interface RecoveryResponse {
+  recovery: PersistenceRecoveryStatus;
+}
+
+function renderConfigRecovery(recovery: ConfigRecoveryStatus): string {
+  const pairs: Array<[string, string]> = [
+    ['status', recovery.status],
+    ['resolution required', recovery.resolution_required ? 'yes' : 'no'],
+    ['write intent', recovery.intent_present ? 'present' : 'none'],
+  ];
+  if (recovery.file_valid !== undefined) pairs.push(['file valid', recovery.file_valid ? 'yes' : 'no']);
+  if (recovery.file_revision !== undefined) pairs.push(['file revision', String(recovery.file_revision)]);
+  if (recovery.state_revision !== undefined) pairs.push(['state revision', String(recovery.state_revision)]);
+  if (recovery.runtime_revision !== undefined) pairs.push(['runtime revision', String(recovery.runtime_revision)]);
+  if (recovery.file_hash) pairs.push(['observed file hash', recovery.file_hash]);
+  if (recovery.state_hash) pairs.push(['durable state hash', recovery.state_hash]);
+  if (recovery.runtime_hash) pairs.push(['runtime hash', recovery.runtime_hash]);
+  if (recovery.allowed_resolutions?.length) pairs.push(['allowed resolutions', recovery.allowed_resolutions.join(', ')]);
+  if (recovery.last_resolution) pairs.push(['last resolution', recovery.last_resolution]);
+  if (recovery.reason) pairs.push(['reason', recovery.reason]);
+  return keyValues(pairs);
+}
+
+function renderStateWalHealth(recovery: PersistenceRecoveryStatus): string {
+  const state = recovery.state_recovery;
+  if (state) {
+    if (!state.complete || !state.writable || state.outcome === 'incomplete' || state.outcome === 'reinitialized') {
+      return red(`degraded${state.reason ? ` · ${state.reason}` : ''}`);
+    }
+    if (
+      recovery.consecutive_persistence_failures > 0
+      || recovery.journal.malformed
+      || recovery.journal.preserved
+      || (state.outcome === 'recovered' && state.source === 'snapshot')
+    ) {
+      return yellow(`healthy with recovery warning${state.reason ? ` · ${state.reason}` : ''}`);
+    }
+    if (recovery.config_recovery?.status === 'write_incomplete' || recovery.config_recovery?.intent_present) {
+      return green('healthy · writes paused for configuration write recovery');
+    }
+    if (recovery.config_recovery?.resolution_required) {
+      return green('healthy · writes paused only for configuration reconciliation');
+    }
+    return green('healthy');
+  }
+  if (recovery.persistence_reason) {
+    return red(`degraded · ${recovery.persistence_reason}`);
+  }
+  if (recovery.config_recovery?.status === 'write_incomplete' || recovery.config_recovery?.intent_present) {
+    return green('healthy · writes paused for configuration write recovery');
+  }
+  if (recovery.config_recovery?.resolution_required) {
+    return green('healthy · writes paused only for configuration reconciliation');
+  }
+  if (!recovery.complete || !recovery.writable) {
+    return red(`degraded${recovery.reason ? ` · ${recovery.reason}` : ''}`);
+  }
+  if (recovery.consecutive_persistence_failures > 0 || recovery.journal.malformed) {
+    return yellow('degraded');
+  }
+  return green('healthy');
+}
+
+export function renderRecovery(data: RecoveryResponse): string {
+  const recovery = data.recovery;
+  const persistencePairs: Array<[string, string]> = [
+    ['combined status', renderPersistenceRecovery(recovery)],
+    ['state/WAL health', renderStateWalHealth(recovery)],
+    ['durable mutations', recovery.writable ? 'enabled' : 'paused'],
+    ['base checkpoint', String(recovery.base_checkpoint)],
+    ['applied / on-disk checkpoint', `${recovery.highest_contiguous_applied_seq}/${recovery.highest_on_disk_seq}`],
+    ['allocated sequence', String(recovery.highest_allocated_seq)],
+    ['WAL', recovery.journal.enabled ? `${recovery.journal.applied} applied · ${recovery.journal.skipped} skipped · ${recovery.journal.failed} failed` : 'disabled'],
+    ['WAL preserved', recovery.journal.preserved ? 'yes' : 'no'],
+    ['WAL malformed', recovery.journal.malformed ? 'yes' : 'no'],
+  ];
+  if (recovery.journal.path) persistencePairs.push(['WAL path', recovery.journal.path]);
+  if (recovery.persistence_reason) persistencePairs.push(['persistence reason', recovery.persistence_reason]);
+  if (recovery.last_persistence_error) persistencePairs.push(['last persistence error', recovery.last_persistence_error]);
+  const out = [
+    heading('Recovery'),
+    keyValues(persistencePairs),
+  ];
+  if (recovery.config_recovery) {
+    out.push('', heading('Active configuration'), renderConfigRecovery(recovery.config_recovery));
+  }
+  return out.join('\n');
 }
 
 export function renderStatus(data: StateResponse): string {

@@ -21,7 +21,11 @@ import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { computeEventHash, shouldChainEntry, GENESIS_HASH, buildCheckpoint, signCheckpoint, loadCheckpointSigningKey, shouldEmitCheckpoint, type ChainCheckpoint, type CheckpointEmitOptions } from './activity-chain.js';
 import { eventIdOrUuid } from './deterministic-id.js';
 import { FrontierLeases } from './frontier-leases.js';
-import { MutationJournal, type MutationType } from './mutation-journal.js';
+import {
+  MutationJournal,
+  type MutationApplyResult,
+  type MutationType,
+} from './mutation-journal.js';
 import { ProposedPlanStore } from './proposed-plan-store.js';
 import { AgentQueryStore } from './agent-query-store.js';
 
@@ -52,6 +56,7 @@ export type ActivityEventType =
   | 'session_access_confirmed'
   | 'session_access_unconfirmed'
   | 'scope_updated'
+  | 'config_updated'
   | 'thought'
   | 'system'
   | 'frontier_item_dropped'
@@ -133,6 +138,15 @@ export type GraphUpdateDetail = {
 export type GraphUpdateCallback = (detail: GraphUpdateDetail) => void;
 export const MAX_ACTIVITY_LOG_ENTRIES = 5000;
 
+function isSkippedMutationApplyResult(
+  value: unknown,
+): value is Extract<MutationApplyResult, { status: 'skipped' }> {
+  return typeof value === 'object'
+    && value !== null
+    && (value as { status?: unknown }).status === 'skipped'
+    && typeof (value as { reason?: unknown }).reason === 'string';
+}
+
 export class EngineContext {
   graph: OverwatchGraph;            // graphology Graph instance — may be replaced on recovery
   config: EngagementConfig;
@@ -208,7 +222,7 @@ export class EngineContext {
    *  + inferred-edge-confirmation log) into the already-restored activity log. */
   suppressMutationEvents = false;
 
-  constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
+  constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string, forceMutationJournal = false) {
     this.graph = graph;
     this.config = config;
     this.inferenceRules = [];
@@ -239,11 +253,12 @@ export class EngineContext {
     this.checkpointSigningKey = loadCheckpointSigningKey(process.env);
     this.deterministicSeq = 0;
     this.frontierLeases = new FrontierLeases();
-    // P2.1: new WAL creation is opt-in via engagement_nonce, but recovery must
-    // never ignore bytes that already exist on disk merely because the incoming
-    // config is a legacy/no-nonce shape. The persisted base may itself restore a
-    // nonce later; StatePersistence enables journaling at that point as well.
-    this.mutationJournal = config.engagement_nonce || MutationJournal.hasDataForState(stateFilePath)
+    // Managed app startup opts into WAL creation via forceMutationJournal;
+    // deterministic-ID contexts also opt in via engagement_nonce. Recovery must
+    // never ignore bytes already on disk merely because the incoming config is a
+    // legacy/no-nonce shape. The persisted base may restore a nonce later, and
+    // StatePersistence can enable the journal dynamically as well.
+    this.mutationJournal = forceMutationJournal || config.engagement_nonce || MutationJournal.hasDataForState(stateFilePath)
       ? new MutationJournal(stateFilePath)
       : null;
     this.journalSnapshotSeq = 0;
@@ -286,12 +301,46 @@ export class EngineContext {
     const seq = this.journalMutation(type, payload, source_action_id);
     try {
       const result = apply();
+      if (seq !== undefined && isSkippedMutationApplyResult(result)) {
+        throw new Error(`Durable mutation was not applied: ${result.reason}`);
+      }
       if (seq !== undefined) this.mutationJournal?.markApplied(seq);
       return result;
     } catch (error) {
       if (seq !== undefined) {
         this.mutationJournal?.blockAppends(
           `mutation seq ${seq} was durable but failed during in-memory application`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Apply a high-level mutation as one WAL record while suppressing nested
+   * primitive records. The outer record is the complete recovery authority. */
+  applyCompositeJournaledMutation<T>(
+    type: MutationType,
+    payload: Record<string, unknown>,
+    apply: () => T,
+    source_action_id?: string,
+  ): T {
+    this.persistenceWriteGuard?.();
+    const journal = this.mutationJournal;
+    const seq = this.journalMutation(type, payload, source_action_id);
+    this.mutationJournal = null;
+    try {
+      const result = apply();
+      if (seq !== undefined && isSkippedMutationApplyResult(result)) {
+        throw new Error(`Durable composite mutation was not applied: ${result.reason}`);
+      }
+      this.mutationJournal = journal;
+      if (seq !== undefined) journal?.markApplied(seq);
+      return result;
+    } catch (error) {
+      this.mutationJournal = journal;
+      if (seq !== undefined) {
+        journal?.blockAppends(
+          `composite mutation seq ${seq} was durable but failed during in-memory application`,
         );
       }
       throw error;

@@ -21,6 +21,8 @@ export interface ObjectiveManagerHost {
   queryGraph(query: GraphQuery): GraphQueryResult;
   persist(detail?: Record<string, unknown>): void;
   log(message: string, agentId?: string, extra?: Partial<ActivityLogEntry>): void;
+  commitObjectives(objectives: EngagementConfig['objectives'], source: string): void;
+  nowIso(): string;
 }
 
 // =============================================
@@ -39,8 +41,7 @@ export function addObjective(
     achievement_edge_types: obj.achievement_edge_types as EdgeType[] | undefined,
     achieved: false,
   };
-  host.ctx.config.objectives.push(objective);
-  host.persist();
+  host.commitObjectives([...host.ctx.config.objectives, objective], 'objective.add');
   return objective;
 }
 
@@ -49,17 +50,18 @@ export function updateObjective(
   id: string,
   updates: Record<string, unknown>,
 ): boolean {
-  const obj = host.ctx.config.objectives.find(o => o.id === id);
+  const objectives = structuredClone(host.ctx.config.objectives);
+  const obj = objectives.find(o => o.id === id);
   if (!obj) return false;
   if (typeof updates.description === 'string') obj.description = updates.description;
   if (typeof updates.target_node_type === 'string') obj.target_node_type = updates.target_node_type as NodeType;
   if (typeof updates.achieved === 'boolean') {
     obj.achieved = updates.achieved;
-    obj.achieved_at = updates.achieved ? new Date().toISOString() : undefined;
+    obj.achieved_at = updates.achieved ? host.nowIso() : undefined;
   }
   if (updates.target_criteria !== undefined) obj.target_criteria = updates.target_criteria as Record<string, unknown>;
   if (Array.isArray(updates.achievement_edge_types)) obj.achievement_edge_types = updates.achievement_edge_types as EdgeType[];
-  host.persist();
+  host.commitObjectives(objectives, 'objective.update');
   return true;
 }
 
@@ -67,10 +69,10 @@ export function removeObjective(
   host: ObjectiveManagerHost,
   id: string,
 ): boolean {
+  const objectives = host.ctx.config.objectives.filter(o => o.id !== id);
   const idx = host.ctx.config.objectives.findIndex(o => o.id === id);
   if (idx === -1) return false;
-  host.ctx.config.objectives.splice(idx, 1);
-  host.persist();
+  host.commitObjectives(objectives, 'objective.remove');
   return true;
 }
 
@@ -81,7 +83,18 @@ export function removeObjective(
 const DEFAULT_ACCESS_EDGE_TYPES = new Set(['HAS_SESSION', 'ADMIN_TO', 'OWNS_CRED']);
 
 export function evaluateObjectives(host: ObjectiveManagerHost): void {
-  for (const obj of host.ctx.config.objectives) {
+  const objectives = structuredClone(host.ctx.config.objectives);
+  const changed = evaluateObjectiveDraft(host, objectives);
+  if (changed) host.commitObjectives(objectives, 'objective.evaluate');
+  syncObjectiveNodes(host);
+}
+
+function evaluateObjectiveDraft(
+  host: ObjectiveManagerHost,
+  objectives: EngagementConfig['objectives'],
+): boolean {
+  let changed = false;
+  for (const obj of objectives) {
     if (obj.achieved) continue;
     // Check if objective criteria are met in the graph
     if (obj.target_criteria) {
@@ -118,13 +131,12 @@ export function evaluateObjectives(host: ObjectiveManagerHost): void {
       });
       if (obtained) {
         obj.achieved = true;
-        obj.achieved_at = new Date().toISOString();
-        host.log(`OBJECTIVE ACHIEVED: ${obj.description}`, undefined, { category: 'objective', outcome: 'success', event_type: 'objective_achieved' });
+        obj.achieved_at = host.nowIso();
+        changed = true;
       }
     }
   }
-
-  syncObjectiveNodes(host);
+  return changed;
 }
 
 export function recomputeObjectives(
@@ -136,24 +148,24 @@ export function recomputeObjectives(
     achieved_at: obj.achieved_at,
   }));
 
-  for (const obj of host.ctx.config.objectives) {
+  const objectives = structuredClone(host.ctx.config.objectives);
+  for (const obj of objectives) {
     obj.achieved = false;
     delete obj.achieved_at;
   }
-
-  evaluateObjectives(host);
-  const after = host.ctx.config.objectives.map(obj => ({
+  evaluateObjectiveDraft(host, objectives);
+  host.commitObjectives(objectives, 'objective.recompute');
+  syncObjectiveNodes(host);
+  const after = objectives.map(obj => ({
     id: obj.id,
     achieved: obj.achieved,
     achieved_at: obj.achieved_at,
   }));
-
-  host.persist();
   return { before, after };
 }
 
 export function syncObjectiveNodes(host: ObjectiveManagerHost): void {
-  const now = new Date().toISOString();
+  const now = host.nowIso();
   for (const objective of host.ctx.config.objectives) {
     const nodeId = `obj-${objective.id}`;
     const existing = host.getNode(nodeId);

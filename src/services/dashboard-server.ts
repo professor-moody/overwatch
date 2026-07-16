@@ -28,7 +28,11 @@ import {
   type Campaign,
 } from '../types.js';
 import type { DefensiveSignal, OpsecContext } from './opsec-tracker.js';
-import { EngagementManager } from './engagement-manager.js';
+import {
+  EngagementManager,
+  EngagementManagerError,
+  parseEngagementUpdate,
+} from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
 import { assembleReport, type ReportFormat } from './report-assembler.js';
@@ -59,6 +63,8 @@ import {
   CampaignSplitResponseSchema,
   CampaignUpdateRequestSchema,
   CampaignUpdateResponseSchema,
+  ConfigDivergenceResolveRequestSchema,
+  ConfigDivergenceResolveResponseSchema,
   FrontierWeightsPatchSchema,
   FrontierWeightsResetResultSchema,
   FrontierWeightsUpdateResultSchema,
@@ -68,6 +74,7 @@ import {
   ObjectiveDeleteResponseSchema,
   ObjectiveUpdateRequestSchema,
   ObjectiveUpdateResponseSchema,
+  RecoveryStatusResponseSchema,
   SettingsDtoSchema,
   SettingsPatchSchema,
   SettingsUpdateResultSchema,
@@ -78,7 +85,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 function categorizeMcpTool(name: string): string {
-  if (['get_state', 'next_task', 'get_system_prompt', 'run_lab_preflight', 'run_graph_health'].includes(name)) {
+  if (['get_state', 'next_task', 'get_system_prompt', 'run_lab_preflight', 'run_graph_health', 'get_recovery_status', 'resolve_config_divergence'].includes(name)) {
     return 'state-readiness';
   }
   if (
@@ -835,12 +842,13 @@ export class DashboardServer {
     // start target work or create a new durable mutation until recovery is
     // complete.  Keep the two POST-shaped pure-read operations available.
     const readOnlyPost = pathname === '/api/config/scope/preview' || pathname === '/api/graph/export';
+    const recoveryResolution = pathname === '/api/recovery/config/resolve' && method === 'POST';
     // Bundle generation records a durable audit event after streaming, so it
     // is a mutating operation even though its historical route uses GET.
     const mutatingGet = method === 'GET' && pathname === '/api/bundle';
     if (
       pathname.startsWith('/api/')
-      && ((['POST', 'PATCH', 'DELETE'].includes(method) && !readOnlyPost) || mutatingGet)
+      && ((['POST', 'PATCH', 'DELETE'].includes(method) && !readOnlyPost && !recoveryResolution) || mutatingGet)
       && !this.engine.isPersistenceWritable()
     ) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -852,7 +860,11 @@ export class DashboardServer {
       return;
     }
 
-    if (pathname === '/api/state') {
+    if (pathname === '/api/recovery' && method === 'GET') {
+      this.serveRecovery(res);
+    } else if (pathname === '/api/recovery/config/resolve' && method === 'POST') {
+      this.handleResolveConfigDivergence(req, res);
+    } else if (pathname === '/api/state') {
       this.serveState(res);
     } else if (pathname === '/api/graph') {
       this.serveGraph(res);
@@ -1189,16 +1201,23 @@ export class DashboardServer {
       }
       try {
         if (!this.requireWritablePersistence(res)) return;
-        const config = mergeTemplateWithConfig(template, overrides as any);
+        let config;
+        try {
+          config = mergeTemplateWithConfig(template, overrides as any);
+        } catch (error) {
+          throw new EngagementManagerError(
+            'ENGAGEMENT_VALIDATION_FAILED',
+            `Template overrides are invalid: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
         // Persist so a created-from-template engagement actually lands on disk
         // (it previously only returned the config). persistConfig is the shared
         // write gateway — it enforces id-safety, nonce minting, and no-overwrite.
         const engagement = this.engagementManager.persistConfig(config);
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ config, persisted: true, engagement }));
-      } catch (err: any) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+      } catch (error) {
+        this.respondEngagementManagerFailure(res, error);
       }
     }).catch(() => {
       if (!this.engine.isPersistenceWritable()) {
@@ -1296,16 +1315,13 @@ export class DashboardServer {
       const payload = SettingsUpdateResultSchema.parse({ updated: changed, opsec: this.engine.getConfig().opsec });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
-    }).catch(() => {
-      // updateConfig performs its own final guard. If the gate crossed after
-      // our post-body check, preserve the recovery status instead of
-      // misreporting the guarded failure as malformed JSON.
-      if (!this.engine.isPersistenceWritable()) {
-        this.requireWritablePersistence(res);
+    }).catch(error => {
+      if (error instanceof Error && error.message === 'Invalid JSON') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
         return;
       }
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      this.respondMutationFailure(res, error);
     });
   }
 
@@ -1372,8 +1388,7 @@ export class DashboardServer {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ updated: true, config: updated }));
       } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        this.respondMutationFailure(res, err);
       }
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1391,79 +1406,31 @@ export class DashboardServer {
         return;
       }
       try {
-        // 0.4: route cidrs/domains/exclusions through engine.updateScope so
-        // the safety pipeline (CIDR/IPv6 validation, cold→hot promotion,
-        // inference re-runs, scope_updated audit event) actually fires.
-        // The dashboard sends a Partial<ScopeConfig> "replace" payload; we
-        // diff it against the current scope to derive the add/remove deltas
-        // updateScope expects.
         const incoming = body as Record<string, unknown>;
         const current = this.engine.getConfig().scope;
-        const arr = (v: unknown): string[] | undefined =>
-          Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
-        const incomingCidrs = arr(incoming.cidrs);
-        const incomingDomains = arr(incoming.domains);
-        const incomingExclusions = arr(incoming.exclusions);
-
-        const diff = (next: string[] | undefined, prev: string[]): { add: string[]; remove: string[] } => {
-          if (!next) return { add: [], remove: [] };
-          const nextSet = new Set(next);
-          const prevSet = new Set(prev);
-          return {
-            add: next.filter(x => !prevSet.has(x)),
-            remove: prev.filter(x => !nextSet.has(x)),
-          };
-        };
-        const cidrsDiff = diff(incomingCidrs, current.cidrs);
-        const domainsDiff = diff(incomingDomains, current.domains);
-        const exclusionsDiff = diff(incomingExclusions, current.exclusions);
-
-        const hasNetworkChanges =
-          cidrsDiff.add.length + cidrsDiff.remove.length +
-          domainsDiff.add.length + domainsDiff.remove.length +
-          exclusionsDiff.add.length + exclusionsDiff.remove.length > 0;
-
-        let scopeResult: ReturnType<typeof this.engine.updateScope> | undefined;
-        if (hasNetworkChanges) {
-          scopeResult = this.engine.updateScope({
-            add_cidrs: cidrsDiff.add,
-            remove_cidrs: cidrsDiff.remove,
-            add_domains: domainsDiff.add,
-            remove_domains: domainsDiff.remove,
-            add_exclusions: exclusionsDiff.add,
-            remove_exclusions: exclusionsDiff.remove,
-            reason: 'dashboard scope update',
-          });
-          if (!scopeResult.applied) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: scopeResult.errors.join('; '), errors: scopeResult.errors }));
-            return;
+        const next = structuredClone(current);
+        for (const key of ['cidrs', 'domains', 'exclusions', 'hosts', 'url_patterns', 'aws_accounts', 'azure_subscriptions', 'gcp_projects'] as const) {
+          if (Array.isArray(incoming[key])) {
+            (next as unknown as Record<string, unknown>)[key] = incoming[key].filter(value => typeof value === 'string');
           }
         }
-
-        // Non-network scope fields (hosts, url_patterns, aws_accounts, etc.)
-        // are not handled by updateScope; route them through updateConfig's
-        // partial-merge path. Only forward the keys the caller actually sent.
-        const passthrough: Record<string, unknown> = {};
-        for (const k of ['hosts', 'url_patterns', 'aws_accounts', 'azure_subscriptions', 'gcp_projects'] as const) {
-          if (Array.isArray(incoming[k])) passthrough[k] = incoming[k];
-        }
-        if (Object.keys(passthrough).length > 0) {
-          this.engine.updateConfig({ scope: passthrough });
+        if (Array.isArray(incoming.cross_tier_links)) next.cross_tier_links = incoming.cross_tier_links as NonNullable<typeof next.cross_tier_links>;
+        const scopeResult = this.engine.updateScopeConfig(next, 'dashboard scope update');
+        if (!scopeResult.applied) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: scopeResult.errors.join('; '), errors: scopeResult.errors }));
+          return;
         }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           updated: true,
           scope: this.engine.getConfig().scope,
-          ...(scopeResult ? {
-            applied: scopeResult.applied,
-            affected_node_count: scopeResult.affected_node_count,
-          } : {}),
+          applied: scopeResult.applied,
+          affected_node_count: scopeResult.affected_node_count,
         }));
       } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        this.respondMutationFailure(res, err);
       }
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1546,9 +1513,13 @@ export class DashboardServer {
       const payload = ObjectiveCreateResponseSchema.parse({ created: true, objective });
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    }).catch(error => {
+      if (error instanceof Error && (error.message === 'Invalid JSON' || error.message === 'Body too large')) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+      this.respondMutationFailure(res, error);
     });
   }
 
@@ -1571,23 +1542,32 @@ export class DashboardServer {
       const payload = ObjectiveUpdateResponseSchema.parse({ updated: true });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    }).catch(error => {
+      if (error instanceof Error && (error.message === 'Invalid JSON' || error.message === 'Body too large')) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+      this.respondMutationFailure(res, error);
     });
   }
 
   private handleDeleteObjective(id: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
-    const ok = this.engine.removeObjective(id);
-    if (!ok) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Objective not found' }));
-      return;
+    if (!this.requireWritablePersistence(res)) return;
+    try {
+      const ok = this.engine.removeObjective(id);
+      if (!ok) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Objective not found' }));
+        return;
+      }
+      const payload = ObjectiveDeleteResponseSchema.parse({ deleted: true });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error) {
+      this.respondMutationFailure(res, error);
     }
-    const payload = ObjectiveDeleteResponseSchema.parse({ deleted: true });
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(payload));
   }
 
   // ---- Agent dispatch endpoint ----
@@ -2049,9 +2029,13 @@ export class DashboardServer {
         archetype: arch.id,
         scope: { added_cidrs: add_cidrs, added_domains: add_domains, affected_node_count: scopeResult.affected_node_count },
       }));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    }).catch(error => {
+      if (error instanceof Error && (error.message === 'Invalid JSON' || error.message === 'Body too large')) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+      this.respondMutationFailure(res, error);
     });
   }
 
@@ -2569,6 +2553,49 @@ export class DashboardServer {
     const historyCount = this.engine.getFullHistory().length;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ state, graph, history_count: historyCount }));
+  }
+
+  private serveRecovery(res: ServerResponse): void {
+    const payload = RecoveryStatusResponseSchema.parse({
+      recovery: this.engine.getPersistenceRecoveryStatus(),
+    });
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    });
+    res.end(JSON.stringify(payload));
+  }
+
+  private handleResolveConfigDivergence(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const parsed = ConfigDivergenceResolveRequestSchema.safeParse(body);
+      if (!parsed.success) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'Invalid configuration reconciliation request',
+          issues: parsed.error.issues,
+        }));
+        return;
+      }
+      try {
+        const result = this.engine.resolveConfigDivergence({
+          mode: parsed.data.resolution,
+          expected_file_hash: parsed.data.expected_file_hash,
+          expected_state_hash: parsed.data.expected_state_hash,
+        });
+        const payload = ConfigDivergenceResolveResponseSchema.parse(result);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      } catch (error) {
+        this.respondMutationFailure(res, error, {
+          conflictWhen: message => /No active configuration divergence/i.test(message),
+        });
+      }
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
   }
 
   private serveHistory(url: string, res: ServerResponse): void {
@@ -3736,6 +3763,99 @@ export class DashboardServer {
     return false;
   }
 
+  /** Map the inactive-engagement file store's stable failure classes to HTTP. */
+  private respondEngagementManagerFailure(res: ServerResponse, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!(error instanceof EngagementManagerError)) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: message,
+        code: 'ENGAGEMENT_INTERNAL_ERROR',
+      }));
+      return;
+    }
+
+    const status = error.code === 'ENGAGEMENT_NOT_FOUND'
+      ? 404
+      : error.code === 'ENGAGEMENT_VALIDATION_FAILED'
+        ? 400
+        : error.code === 'ENGAGEMENT_CONFLICT'
+          ? 409
+          : 503;
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: message, code: error.code }));
+  }
+
+  /**
+   * Map an error thrown at a durable dashboard mutation boundary without
+   * disguising storage failure as bad operator input. Configuration writes
+   * can fail after the initial writable check and may rethrow the underlying
+   * filesystem error (for example ENOSPC) rather than a persistence-specific
+   * error class, so classification also consults the combined recovery state
+   * installed by the failed write.
+   */
+  private respondMutationFailure(
+    res: ServerResponse,
+    error: unknown,
+    options: { conflictWhen?: (message: string) => boolean } = {},
+  ): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const rawCode = typeof (error as { code?: unknown } | null)?.code === 'string'
+      ? (error as { code: string }).code
+      : undefined;
+
+    const recovery = this.engine.getPersistenceRecoveryStatus();
+    const configRecovery = recovery.config_recovery;
+    const recoveryShowsIncompleteWrite = configRecovery?.status === 'write_incomplete'
+      || configRecovery?.intent_present === true;
+    const conflict = rawCode === 'CONFIG_HASH_CONFLICT'
+      || options.conflictWhen?.(message) === true;
+    // A late file race can first surface as CONFIG_HASH_CONFLICT after the
+    // config service has already made a durable write intent authoritative.
+    // In that state this is no longer an ordinary optimistic conflict: the
+    // operator must see the recovery envelope and stop issuing mutations.
+    if (conflict && !recoveryShowsIncompleteWrite) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: message,
+        code: rawCode ?? 'CONFIG_HASH_CONFLICT',
+      }));
+      return;
+    }
+
+    const storageErrorCode = rawCode !== undefined && [
+      'EACCES',
+      'EBUSY',
+      'EDQUOT',
+      'EIO',
+      'EMFILE',
+      'ENFILE',
+      'ENOSPC',
+      'EPERM',
+      'EROFS',
+      'PERSISTENCE_READ_ONLY',
+      'CONFIG_WRITE_INCOMPLETE',
+    ].includes(rawCode);
+    const persistenceMessage = /\b(?:persistence|persist(?:ed|ence|ing)?|durab(?:le|ly|ility)|fsync|journal|snapshot|WAL|read[- ]only)\b|write (?:did not complete|is incomplete)/i.test(message);
+    const persistenceFailure = storageErrorCode
+      || recoveryShowsIncompleteWrite
+      || (!recovery.writable && persistenceMessage)
+      || persistenceMessage;
+
+    if (persistenceFailure) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: message,
+        code: 'PERSISTENCE_READ_ONLY',
+        recovery,
+      }));
+      return;
+    }
+
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: message }));
+  }
+
   private readJsonBody(req: IncomingMessage, maxBytes: number = 64 * 1024): Promise<any> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
@@ -4228,9 +4348,8 @@ export class DashboardServer {
         });
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(summary));
-      } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message ?? 'Internal error' }));
+      } catch (error) {
+        this.respondEngagementManagerFailure(res, error);
       }
     }).catch(err => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -4268,15 +4387,24 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Expected JSON object' }));
         return;
       }
-      if (!this.requireWritablePersistence(res)) return;
-      const updated = this.engagementManager!.updateEngagement(id, body);
-      if (!updated) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Engagement not found: ${id}` }));
+      let update: ReturnType<typeof parseEngagementUpdate>;
+      try {
+        update = parseEngagementUpdate(body, id);
+      } catch (error) {
+        this.respondEngagementManagerFailure(res, error);
         return;
       }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ updated: true }));
+      try {
+        if (!this.requireWritablePersistence(res)) return;
+        const activeEngagement = id === this.engine.getConfig().id;
+        if (activeEngagement) this.engine.updateConfig(update);
+        else this.engagementManager!.updateEngagement(id, update);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ updated: true }));
+      } catch (error) {
+        if (id === this.engine.getConfig().id) this.respondMutationFailure(res, error);
+        else this.respondEngagementManagerFailure(res, error);
+      }
     }).catch(err => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON: ' + err.message }));
@@ -4770,10 +4898,8 @@ export class DashboardServer {
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: message }));
+    } catch (error: unknown) {
+      this.respondMutationFailure(res, error);
     }
   }
 }
