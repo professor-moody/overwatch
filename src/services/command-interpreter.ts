@@ -30,6 +30,8 @@ export type OperatorOp =
   | { op: 'dispatch'; target_node_ids: string[]; archetype?: string; skill?: string; objective?: string };
 
 export interface InterpreterTask {
+  task_id?: string;
+  agent_label?: string;
   id: string;
   agent_id: string;
   status: string;
@@ -52,11 +54,14 @@ const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
 const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9-]+\.)+[a-z]{2,}$/i;
 
 function resolveTasks(ref: string, tasks: InterpreterTask[]): InterpreterTask[] {
-  const exact = tasks.filter(t => t.id === ref || t.agent_id === ref);
-  if (exact.length) return exact;
+  const exactTask = tasks.filter(t => (t.task_id ?? t.id) === ref || t.id === ref);
+  if (exactTask.length) return exactTask;
+  const exactLabel = tasks.filter(t => (t.agent_label ?? t.agent_id) === ref || t.agent_id === ref);
+  if (exactLabel.length) return exactLabel;
   const needle = ref.toLowerCase();
   return tasks.filter(t =>
-    t.agent_id.toLowerCase().includes(needle) || (t.skill ?? '').toLowerCase().includes(needle));
+    (t.agent_label ?? t.agent_id).toLowerCase().includes(needle)
+    || (t.skill ?? '').toLowerCase().includes(needle));
 }
 
 function resolveActionId(ref: string, ids: string[]): string | null {
@@ -79,10 +84,20 @@ export function interpretCommand(text: string, state: InterpreterState): Interpr
     const running = state.tasks.filter(t => t.status === 'running');
     if (/^(all|everything|all agents)$/i.test(ref)) {
       if (running.length === 0) unresolved.push({ text: raw, reason: `no running agents to ${kind}` });
-      for (const t of running) ops.push({ op: 'directive', task_id: t.id, agent_label: t.agent_id, kind });
+      for (const t of running) ops.push({
+        op: 'directive',
+        task_id: t.task_id ?? t.id,
+        agent_label: t.agent_label ?? t.agent_id,
+        kind,
+      });
     } else {
       const matches = resolveTasks(ref, running);
-      if (matches.length === 1) ops.push({ op: 'directive', task_id: matches[0].id, agent_label: matches[0].agent_id, kind });
+      if (matches.length === 1) ops.push({
+        op: 'directive',
+        task_id: matches[0].task_id ?? matches[0].id,
+        agent_label: matches[0].agent_label ?? matches[0].agent_id,
+        kind,
+      });
       else if (matches.length === 0) unresolved.push({ text: raw, reason: `no running agent matches "${ref}"` });
       else unresolved.push({ text: raw, reason: `"${ref}" matches ${matches.length} agents — be specific (agent id)` });
     }
@@ -96,7 +111,13 @@ export function interpretCommand(text: string, state: InterpreterState): Interpr
     const note = tell[2].trim();
     const running = state.tasks.filter(t => t.status === 'running');
     const matches = resolveTasks(ref, running);
-    if (matches.length === 1) ops.push({ op: 'directive', task_id: matches[0].id, agent_label: matches[0].agent_id, kind: 'instruct', note });
+    if (matches.length === 1) ops.push({
+      op: 'directive',
+      task_id: matches[0].task_id ?? matches[0].id,
+      agent_label: matches[0].agent_label ?? matches[0].agent_id,
+      kind: 'instruct',
+      note,
+    });
     else if (matches.length === 0) unresolved.push({ text: raw, reason: `no running agent matches "${ref}"` });
     else unresolved.push({ text: raw, reason: `"${ref}" matches ${matches.length} agents — be specific (agent id)` });
     return finalize(ops, unresolved);

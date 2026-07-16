@@ -67,7 +67,8 @@ The sample lists are capped for payload size; the counts are always exact. Nodes
 
 ## Side Effects
 
-- Stores the plan in `ProposedPlanStore` (in-memory, 10-min TTL) keyed by a minted `plan_id`.
+- Stores the plan in the durable `ProposedPlanStore`, keyed by a minted `plan_id`, with its original absolute 10-minute decision window.
+- Persists canonical owner task/label, confirmation or denial, acknowledgement, and the eventual execution outcome. Restart never extends the decision window.
 - Emits a `plan_proposed` activity event, surfaced in the operator console as a planner card.
 
 ## Usage Notes

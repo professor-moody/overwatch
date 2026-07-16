@@ -62,6 +62,37 @@ describe('submit_agent_transcript', () => {
     rmSync(testDir, { recursive: true, force: true });
   });
 
+  it('register_agent accepts canonical agent_label and returns synchronized aliases', async () => {
+    engine.addNode({
+      id: 'host-canonical',
+      type: 'host',
+      label: '10.10.10.2',
+      ip: '10.10.10.2',
+      discovered_at: new Date().toISOString(),
+      discovered_by: 'test',
+      confidence: 1,
+    });
+    const result = await handlers.register_agent({
+      agent_label: 'canonical-agent',
+      frontier_item_id: 'frontier-node-host-canonical',
+      subgraph_node_ids: ['host-canonical'],
+    });
+    const payload = parse(result);
+    expect(payload).toMatchObject({
+      task_id: expect.any(String),
+      agent_label: 'canonical-agent',
+      id: expect.any(String),
+      agent_id: 'canonical-agent',
+    });
+    expect(payload.id).toBe(payload.task_id);
+    expect(engine.getTask(payload.task_id)).toMatchObject({
+      task_id: payload.task_id,
+      agent_label: 'canonical-agent',
+      id: payload.task_id,
+      agent_id: 'canonical-agent',
+    });
+  });
+
   it('stores transcript as evidence and emits a linked event', async () => {
     const task_id = await registerAgent(handlers, engine, 'agent-A');
     const transcript = '{"role":"user","text":"go"}\n{"role":"assistant","text":"done"}\n';
@@ -117,6 +148,79 @@ describe('submit_agent_transcript', () => {
     });
     expect(result.isError).toBe(true);
     expect(parse(result).error).toMatch(/not found/);
+  });
+
+  it('rejects an ambiguous legacy label instead of selecting the newest task', async () => {
+    for (const taskId of ['task-shared-a', 'task-shared-b']) {
+      engine.registerAgent({
+        id: taskId,
+        agent_id: 'shared-label',
+        assigned_at: new Date().toISOString(),
+        status: 'running',
+        frontier_item_id: `fi-${taskId}`,
+        subgraph_node_ids: [],
+      });
+    }
+    const result = await handlers.submit_agent_transcript({
+      agent_id: 'shared-label',
+      summary: 'must not guess',
+    });
+    expect(result.isError).toBe(true);
+    expect(parse(result)).toMatchObject({
+      error: 'Agent label is ambiguous: shared-label',
+      candidate_task_ids: ['task-shared-a', 'task-shared-b'],
+    });
+    expect(engine.getFullHistory().filter(e => e.event_type === 'agent_transcript_submitted')).toEqual([]);
+  });
+
+  it('redelivers answered questions until the agent explicitly acknowledges them', async () => {
+    const task_id = await registerAgent(handlers, engine, 'agent-question');
+    const query = engine.getAgentQueryStore().add({
+      owner_task_id: task_id,
+      owner_agent_label: 'agent-question',
+      question: 'left or right?',
+    });
+    engine.getAgentQueryStore().answer(query.query_id, 'left');
+
+    const first = parse(await handlers.agent_heartbeat({ task_id }));
+    expect(first.pending_answer).toMatchObject({
+      query_id: query.query_id,
+      answer: 'left',
+    });
+    expect(engine.getAgentQueryStore().get(query.query_id)?.delivered_at).toBeDefined();
+
+    const second = parse(await handlers.agent_heartbeat({ task_id }));
+    expect(second.pending_answer?.query_id).toBe(query.query_id);
+
+    const acknowledged = parse(await handlers.agent_heartbeat({
+      task_id,
+      acknowledged_query_id: query.query_id,
+    }));
+    expect(acknowledged.acknowledged_query_id).toBe(query.query_id);
+    expect(acknowledged.pending_answer).toBeUndefined();
+    expect(engine.getAgentQueryStore().get(query.query_id)?.acknowledged_at).toBeDefined();
+  });
+
+  it('does not use another duplicate-label task transcript to satisfy close-out', async () => {
+    for (const taskId of ['task-dupe-a', 'task-dupe-b']) {
+      engine.registerAgent({
+        id: taskId,
+        agent_id: 'duplicate-label',
+        assigned_at: new Date().toISOString(),
+        status: 'running',
+        frontier_item_id: `fi-${taskId}`,
+        subgraph_node_ids: [],
+      });
+    }
+    await handlers.submit_agent_transcript({
+      task_id: 'task-dupe-a',
+      summary: 'task A wrapped',
+    });
+    const result = parse(await handlers.update_agent({
+      task_id: 'task-dupe-b',
+      status: 'completed',
+    }));
+    expect(result.transcript_warning).toBeTruthy();
   });
 
   it('update_agent emits instrumentation_warning when closed without a transcript', async () => {

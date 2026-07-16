@@ -2098,7 +2098,14 @@ export class DashboardServer {
   // Nothing mutates without an explicit confirm.
   private buildInterpreterState(): InterpreterState {
     return {
-      tasks: this.engine.getAgentTasks().map(t => ({ id: t.id, agent_id: t.agent_id, status: t.status, skill: t.skill })),
+      tasks: this.engine.getAgentTasks().map(t => ({
+        task_id: t.task_id ?? t.id,
+        agent_label: t.agent_label ?? t.agent_id,
+        id: t.id,
+        agent_id: t.agent_id,
+        status: t.status,
+        skill: t.skill,
+      })),
       pendingActionIds: this.engine.getPendingActionQueue().getPending().map(a => a.action_id),
     };
   }
@@ -2344,6 +2351,9 @@ export class DashboardServer {
         }
         if (grammarPlan) this.engine.deleteCommandPlan(b.plan_id);
         const results = executeOps(this.engine, plan.ops, 'operator');
+        if (proposed) {
+          this.engine.getProposedPlanStore().recordExecutionOutcome(b.plan_id, results);
+        }
         // Record BEFORE responding so a duplicate confirm racing this one is idempotent.
         this.engine.recordCommandOutcome(b.plan_id, results);
         this.engine.logActionEvent({
@@ -3130,13 +3140,16 @@ export class DashboardServer {
       res.end(JSON.stringify({ error: 'Agent task not found' }));
       return;
     }
-    const agentId = task.agent_id;
+    const agentId = task.agent_label ?? task.agent_id;
+    const uniqueLabel = this.engine.getAgentTasks()
+      .filter(candidate => (candidate.agent_label ?? candidate.agent_id) === agentId).length === 1;
     // Include events tagged with either the human-readable agent_id or the
     // task UUID — submit_agent_transcript / log_action_event events are
     // recorded against linked_agent_task_id, which the simple agent_id filter
     // would miss.
     const entries = this.engine.getFullHistory().filter(e =>
-      e.agent_id === agentId || (e as { linked_agent_task_id?: string }).linked_agent_task_id === taskId
+      (e as { linked_agent_task_id?: string }).linked_agent_task_id === taskId
+      || (uniqueLabel && e.agent_id === agentId)
     );
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ entries, total: entries.length }));
@@ -3154,9 +3167,13 @@ export class DashboardServer {
     const rawLimit = params.get('limit') || undefined;
     const limit = rawLimit ? parseInt(rawLimit, 10) : 80;
     const after = params.get('after') || undefined;
+    const agentLabel = task.agent_label ?? task.agent_id;
+    const allowLegacyLabel = this.engine.getAgentTasks()
+      .filter(candidate => (candidate.agent_label ?? candidate.agent_id) === agentLabel).length === 1;
     const events = buildAgentConsoleEvents(this.engine.getFullHistory(), task, {
       limit: Number.isFinite(limit) && limit > 0 ? limit : 80,
       after,
+      allowLegacyLabel,
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ events, total: events.length }));
@@ -3324,7 +3341,7 @@ export class DashboardServer {
       const op: OperatorOp = {
         op: 'directive',
         task_id: taskId,
-        agent_label: task.agent_id,
+        agent_label: task.agent_label ?? task.agent_id,
         kind: kind as AgentDirectiveKind,
         node_ids: Array.isArray(b.node_ids) ? (b.node_ids as unknown[]).filter(x => typeof x === 'string') as string[] : undefined,
         frontier_types: Array.isArray(b.frontier_types) ? (b.frontier_types as unknown[]).filter(x => typeof x === 'string') as string[] : undefined,
@@ -3332,13 +3349,18 @@ export class DashboardServer {
       };
       const results = executeOps(this.engine, [op], 'operator');
       this.engine.logActionEvent({
-        description: `Operator directive: ${kind} → ${task.agent_id}`,
+        description: `Operator directive: ${kind} → ${task.agent_label ?? task.agent_id}`,
         event_type: 'operator_command',
         category: 'system',
         source_kind: 'dashboard',
         result_classification: results[0]?.ok ? 'success' : 'failure',
         linked_agent_task_id: taskId,
-        details: { reason: 'operator_command', source: 'dashboard', command: `${kind} ${task.agent_id}`, results },
+        details: {
+          reason: 'operator_command',
+          source: 'dashboard',
+          command: `${kind} ${task.agent_label ?? task.agent_id}`,
+          results,
+        },
       });
       this.engine.persist();
       res.writeHead(200, { 'Content-Type': 'application/json' });

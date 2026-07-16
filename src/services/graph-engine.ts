@@ -13,6 +13,15 @@ import type { ActivityLogEntry, ActivityLogInput, GraphUpdateCallback, GraphUpda
 import { StatePersistence } from './state-persistence.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { AgentManager } from './agent-manager.js';
+import {
+  agentLabelOf,
+  coordinationRecoveryWarning,
+  mergeCoordinationRecoveryWarnings,
+  normalizeAgentTask,
+  taskIdOf,
+  type AgentIdentityResolution,
+  type AgentTaskInput,
+} from './agent-identity.js';
 import { isTargetFacing } from './agent-archetypes.js';
 import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
@@ -358,7 +367,7 @@ export class GraphEngine {
       // mutations can be durably checkpointed.
       this.reconcileSessionEdgesOnStartup();
       this.reconcileSessionDescriptorsOnStartup();
-      this.agentMgr.reconcileOnStartup();
+      this.reconcileAgentsOnStartup();
       this.reconcilePendingApprovalsOnStartup();
       try {
         // The checkpoint-zero bootstrap base was published earlier in this
@@ -1846,12 +1855,11 @@ export class GraphEngine {
       if (linkedTaskId) task = this.agentMgr.getTask(linkedTaskId);
     }
     if (!task && params.agent_id) {
-      task = this.agentMgr.getTask(params.agent_id);
-      if (!task) {
-        const matches = this.agentMgr.getAll().filter(candidate =>
-          candidate.agent_id === params.agent_id &&
-          (!params.frontier_item_id || candidate.frontier_item_id === params.frontier_item_id));
-        if (matches.length === 1) task = matches[0];
+      const resolution = this.agentMgr.resolveTaskReference(params.agent_id);
+      if (resolution.status === 'exact' || resolution.status === 'unique_legacy_label') {
+        if (!params.frontier_item_id || resolution.task.frontier_item_id === params.frontier_item_id) {
+          task = resolution.task;
+        }
       }
     }
 
@@ -3287,7 +3295,7 @@ export class GraphEngine {
   // Agent Management (delegated to AgentManager)
   // =============================================
 
-  registerAgent(task: AgentTask): {
+  registerAgent(task: AgentTaskInput | AgentTask): {
     ok: boolean;
     lease_conflict?: { existing_task_id: string; existing_agent_id: string };
     node_conflict?: { existing_task_id: string; existing_agent_id: string; node_id: string };
@@ -3301,14 +3309,15 @@ export class GraphEngine {
       );
     }
     this.assertPersistenceWritable();
+    const canonicalTask = normalizeAgentTask(task);
     // Operator-policy dispatch cap: refuse (don't register) when a target-facing
     // agent would exceed the per-subnet / per-target limit. Checked BEFORE
     // register() so no lease is taken and — critically — no event is logged, so
     // a refusal can't perturb replay determinism. The cap is a deferral, not a
     // drop: the caller surfaces it (429 / skip) and re-dispatches when a slot frees.
-    const cap = this.checkDispatchCap(task);
+    const cap = this.checkDispatchCap(canonicalTask);
     if (cap) return { ok: false, cap_exceeded: cap };
-    const result = this.agentMgr.register(task);
+    const result = this.agentMgr.register(canonicalTask);
     this.persist();
     return result;
   }
@@ -3377,6 +3386,13 @@ export class GraphEngine {
   getTask(taskId: string): AgentTask | null {
     const task = this.agentMgr.getTask(taskId);
     return task ? detached(task) : null;
+  }
+
+  resolveAgentTaskReference(reference: string): AgentIdentityResolution {
+    const result = this.agentMgr.resolveTaskReference(reference);
+    return result.status === 'exact' || result.status === 'unique_legacy_label'
+      ? { ...result, task: detached(result.task) }
+      : detached(result);
   }
 
   /** All known agent tasks (running, completed, failed, interrupted). */
@@ -3506,12 +3522,22 @@ export class GraphEngine {
     if (!this.ctx.isDraftingTransaction()) {
       return this.transactDurableSlices(
         'reap stale agents',
-        ['agents', 'activity', 'frontier'],
+        ['agents', 'plans_questions', 'approvals', 'activity', 'frontier'],
         () => this.reapStaleAgents(now),
       );
     }
     this.assertPersistenceWritable();
+    const runningBefore = new Set(this.agentMgr.getAll()
+      .filter(task => task.status === 'running')
+      .map(taskIdOf));
     const reaped = this.agentMgr.reapStaleHeartbeats(now);
+    if (reaped > 0) {
+      for (const taskId of runningBefore) {
+        if (this.agentMgr.getTask(taskId)?.status === 'interrupted') {
+          this.abortApprovalsForTask(taskId, 'heartbeat timeout');
+        }
+      }
+    }
     if (reaped > 0) this.persist();
     return reaped;
   }
@@ -3526,12 +3552,20 @@ export class GraphEngine {
     if (!this.ctx.isDraftingTransaction()) {
       return this.transactDurableSlices(
         'reconcile agents on startup',
-        ['agents', 'activity', 'frontier'],
+        ['agents', 'plans_questions', 'approvals', 'activity', 'frontier'],
         () => this.reconcileAgentsOnStartup(),
       );
     }
     this.assertPersistenceWritable();
+    const runningBefore = this.agentMgr.getAll()
+      .filter(task => task.status === 'running')
+      .map(taskIdOf);
     const count = this.agentMgr.reconcileOnStartup();
+    for (const taskId of runningBefore) {
+      if (this.agentMgr.getTask(taskId)?.status === 'interrupted') {
+        this.abortApprovalsForTask(taskId, 'daemon restart');
+      }
+    }
     if (count > 0) this.persist();
     return count;
   }
@@ -3720,7 +3754,7 @@ export class GraphEngine {
     if (!this.ctx.isDraftingTransaction()) {
       return this.transactDurableSlices(
         'update agent lifecycle',
-        ['agents', 'campaigns', 'plans_questions', 'activity', 'frontier'],
+        ['agents', 'campaigns', 'plans_questions', 'approvals', 'activity', 'frontier'],
         () => this.updateAgentStatus(taskId, status, summary),
       );
     }
@@ -3728,6 +3762,9 @@ export class GraphEngine {
     const task = this.agentMgr.getTask(taskId);
     const ok = this.agentMgr.updateStatus(taskId, status, summary);
     if (ok) {
+      if (status === 'completed' || status === 'failed' || status === 'interrupted') {
+        this.abortApprovalsForTask(taskId, summary ?? `agent ${status}`);
+      }
       // Campaign progress aggregation: when a campaign agent reaches terminal state,
       // update campaign progress and check abort conditions.
       if (task?.campaign_id && (status === 'completed' || status === 'failed')) {
@@ -4598,6 +4635,10 @@ export class GraphEngine {
    *  and CLI read surfaces.  It is intentionally not itself persisted. */
   getPersistenceRecoveryStatus(): PersistenceRecoveryStatus {
     const persistence = this.persistence.getRecoveryStatus();
+    const coordination_warnings = detached(this.ctx.coordinationRecoveryWarnings);
+    const coordinationFields = coordination_warnings.length > 0
+      ? { coordination_warnings }
+      : {};
     const state_recovery = {
       outcome: persistence.outcome,
       source: persistence.source,
@@ -4623,6 +4664,7 @@ export class GraphEngine {
       const persistenceBlocked = !persistence.complete || !persistence.writable;
       return {
         ...persistence,
+        ...coordinationFields,
         outcome: 'incomplete',
         complete: false,
         writable: false,
@@ -4635,7 +4677,12 @@ export class GraphEngine {
       };
     }
     if (!configRecovery.resolution_required) {
-      return { ...persistence, state_recovery, config_recovery: configRecovery };
+      return {
+        ...persistence,
+        ...coordinationFields,
+        state_recovery,
+        config_recovery: configRecovery,
+      };
     }
     const persistenceBlocked = !persistence.complete || !persistence.writable;
     const configReason = configRecovery.reason ?? 'configuration reconciliation is required';
@@ -4643,6 +4690,7 @@ export class GraphEngine {
       .filter((reason): reason is string => Boolean(reason));
     return {
       ...persistence,
+      ...coordinationFields,
       outcome: 'incomplete',
       complete: false,
       writable: false,
@@ -4716,7 +4764,7 @@ export class GraphEngine {
     this.evaluateObjectives();
     this.reconcileSessionEdgesOnStartup();
     this.reconcileSessionDescriptorsOnStartup();
-    this.agentMgr.reconcileOnStartup();
+    this.reconcileAgentsOnStartup();
     this.reconcilePendingApprovalsOnStartup();
     this.persistence.persistImmediate();
     this.runAutoHealthCheck('configuration recovery startup reconciliation');
@@ -4789,27 +4837,18 @@ export class GraphEngine {
     });
   }
 
-  /** Resolve the owning campaign for a noise event from the IDs the action
-   * lifecycle has on hand: the frontier item's running task first, then the
-   * task matching the agent_id (by agent_id or task id). The noise is being
-   * generated *now*, so a currently-running match wins over a finished task
-   * left in the agents map — otherwise an agent that reused its id across
-   * campaigns could attribute live noise to its previous (completed) campaign.
-   * Returns undefined when no campaign owns the work (ad-hoc/manual actions). */
+  /** Resolve campaign ownership by frontier item or an exact/unique task
+   * reference. Duplicate legacy labels are deliberately left unattributed. */
   private resolveNoiseCampaignId(frontier_item_id?: string, agent_id?: string): string | undefined {
     if (frontier_item_id) {
       const task = this.getRunningTaskForFrontierItem(frontier_item_id);
       if (task?.campaign_id) return task.campaign_id;
     }
     if (agent_id) {
-      let fallback: string | undefined;
-      for (const task of this.ctx.agents.values()) {
-        if (task.id !== agent_id && task.agent_id !== agent_id) continue;
-        if (!task.campaign_id) continue;
-        if (task.status === 'running') return task.campaign_id;
-        fallback ??= task.campaign_id;
+      const resolution = this.agentMgr.resolveTaskReference(agent_id);
+      if (resolution.status === 'exact' || resolution.status === 'unique_legacy_label') {
+        return resolution.task.campaign_id;
       }
-      return fallback;
     }
     return undefined;
   }
@@ -4987,7 +5026,7 @@ export class GraphEngine {
     if (!this.ctx.isDraftingTransaction()) {
       return this.transactDurableSlices(
         'record session descriptor',
-        ['session_descriptors'],
+        ['agents', 'session_descriptors'],
         () => this.recordSessionDescriptor(metadata),
       );
     }
@@ -5022,13 +5061,27 @@ export class GraphEngine {
     const recordedAt = this.ctx.nowIso();
     const prior = this.ctx.sessionDescriptors.find(entry => entry.session_id === metadata.id);
     const ownerReference = nonEmpty(metadata.claimed_by) ?? nonEmpty(metadata.agent_id);
-    const exactTask = ownerReference
-      ? this.ctx.agents.get(ownerReference)
+    const ownerResolution = ownerReference
+      ? this.agentMgr.resolveTaskReference(ownerReference)
+      : { status: 'missing' as const };
+    const ownerTask = ownerResolution.status === 'exact'
+      || ownerResolution.status === 'unique_legacy_label'
+      ? ownerResolution.task
       : undefined;
-    const labelMatches = ownerReference && !exactTask
-      ? [...this.ctx.agents.values()].filter(task => task.agent_id === ownerReference)
-      : [];
-    const ownerTask = exactTask ?? (labelMatches.length === 1 ? labelMatches[0] : undefined);
+    let recoveryWarning: string | undefined;
+    if (ownerReference && ownerResolution.status === 'ambiguous_legacy_label') {
+      const warning = coordinationRecoveryWarning({
+        relationship: `session:${metadata.id}`,
+        reference: ownerReference,
+        candidate_task_ids: ownerResolution.candidate_task_ids,
+        payload: metadata,
+      });
+      this.ctx.coordinationRecoveryWarnings = mergeCoordinationRecoveryWarnings(
+        this.ctx.coordinationRecoveryWarnings,
+        [warning],
+      );
+      recoveryWarning = warning.message;
+    }
     const resumableListener = metadata.kind === 'socket'
       && metadata.mode === 'listen'
       && metadata.accept_mode === 'rearm'
@@ -5047,7 +5100,8 @@ export class GraphEngine {
       host: nonEmpty(metadata.host),
       user: nonEmpty(metadata.user),
       port: metadata.port,
-      owner_task_id: ownerTask?.id,
+      owner_task_id: ownerTask ? taskIdOf(ownerTask) : undefined,
+      ...(recoveryWarning ? { recovery_warning: recoveryWarning } : {}),
       target_node: nonEmpty(metadata.target_node),
       principal_node: nonEmpty(metadata.principal_node),
       credential_node: nonEmpty(metadata.credential_node),
@@ -5123,15 +5177,41 @@ export class GraphEngine {
     if (!this.ctx.isDraftingTransaction()) {
       return this.transactDurableSlices(
         'record approval request',
-        ['approvals'],
+        ['agents', 'approvals'],
         () => this.recordApprovalRequest(action),
       );
     }
     this.assertPersistenceWritable();
+    const ownerReference = action.task_id ?? action.agent_label ?? action.agent_id;
+    const ownerResolution = ownerReference
+      ? this.agentMgr.resolveTaskReference(ownerReference)
+      : { status: 'missing' as const };
+    let recoveryWarning: string | undefined;
+    if (ownerResolution.status === 'ambiguous_legacy_label') {
+      const warning = coordinationRecoveryWarning({
+        relationship: `approval:${action.action_id}`,
+        reference: ownerReference!,
+        candidate_task_ids: ownerResolution.candidate_task_ids,
+        payload: action,
+      });
+      this.ctx.coordinationRecoveryWarnings = mergeCoordinationRecoveryWarnings(
+        this.ctx.coordinationRecoveryWarnings,
+        [warning],
+      );
+      recoveryWarning = warning.message;
+    }
+    const ownerTask = ownerResolution.status === 'exact'
+      || ownerResolution.status === 'unique_legacy_label'
+      ? ownerResolution.task
+      : undefined;
     const now = new Date(); // clock-ok: approval submitted_at/timeout_at is real-time (approval records aren't in the graph hash)
     const timeoutMs = this.ctx.config.opsec.approval_timeout_ms ?? 300_000;
     const record: DurableApprovalRecord = {
       ...action,
+      task_id: ownerTask ? taskIdOf(ownerTask) : action.task_id,
+      agent_label: ownerTask ? agentLabelOf(ownerTask) : action.agent_label ?? action.agent_id,
+      agent_id: ownerTask ? agentLabelOf(ownerTask) : action.agent_id,
+      ...(recoveryWarning ? { recovery_warning: recoveryWarning } : {}),
       status: 'pending',
       submitted_at: now.toISOString(),
       timeout_at: new Date(now.getTime() + timeoutMs).toISOString(), // clock-ok: derived from the marked approval `now` (real-time; not in the graph hash)
@@ -5205,7 +5285,14 @@ export class GraphEngine {
     this.assertPersistenceWritable();
     const task = this.getTask(task_id);
     if (!task) return 0;
-    const aborted = this.ctx.pendingActionQueue.abortByAgent(task.agent_id, reason);
+    const label = agentLabelOf(task);
+    const labelIsUnique = this.agentMgr.getAll()
+      .filter(candidate => agentLabelOf(candidate) === label).length === 1;
+    const aborted = this.ctx.pendingActionQueue.abortByTask(
+      taskIdOf(task),
+      labelIsUnique ? label : undefined,
+      reason,
+    );
     for (const resolution of aborted) this.resolveApprovalRequest(resolution);
     return aborted.length;
   }

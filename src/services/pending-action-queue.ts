@@ -23,7 +23,13 @@ export interface PendingAction {
   opsec_context: OpsecContext;
   validation_result: 'valid' | 'warning_only';
   frontier_item_id?: string;
+  /** Canonical owning task relationship. */
+  task_id?: string;
+  /** Canonical owning task label for display. */
+  agent_label?: string;
+  /** Legacy display/ownership alias retained for one minor release. */
   agent_id?: string;
+  recovery_warning?: string;
   status: 'pending' | 'approved' | 'denied' | 'timeout' | 'aborted';
 }
 
@@ -224,11 +230,19 @@ export class PendingActionQueue {
    * the matching durable approval records. No-op for a falsy agentId (avoids
    * sweeping up primary-session actions that carry no agent_id).
    */
-  abortByAgent(agentId: string | undefined, reason = 'requesting agent terminated'): ActionResolution[] {
-    if (!agentId) return [];
+  abortByTask(
+    taskId: string | undefined,
+    legacyAgentLabel?: string,
+    reason = 'requesting agent terminated',
+  ): ActionResolution[] {
+    if (!taskId && !legacyAgentLabel) return [];
     const out: ActionResolution[] = [];
     for (const [id, action] of [...this.pending]) {
-      if (action.agent_id !== agentId) continue;
+      const exactTask = taskId && action.task_id === taskId;
+      const legacyMatch = action.task_id === undefined
+        && legacyAgentLabel !== undefined
+        && (action.agent_label ?? action.agent_id) === legacyAgentLabel;
+      if (!exactTask && !legacyMatch) continue;
       const resolution: ActionResolution = {
         action_id: id,
         status: 'aborted',
@@ -239,6 +253,11 @@ export class PendingActionQueue {
       out.push(resolution);
     }
     return out;
+  }
+
+  /** @deprecated Compatibility wrapper for callers that only have a label. */
+  abortByAgent(agentId: string | undefined, reason = 'requesting agent terminated'): ActionResolution[] {
+    return this.abortByTask(undefined, agentId, reason);
   }
 
   private resolveAction(action_id: string, resolution: ActionResolution): void {

@@ -69,7 +69,7 @@ What concretely makes the two surfaces *one* system:
 - **One state file** per engagement; the terminal and dashboard both read and write it.
 - **One activity log** records every action from either surface; the dashboard subscribes to engine updates and broadcasts deltas over WebSocket.
 
-The only deliberately ephemeral, in-memory state is short-lived by design — planner proposals and unanswered agent questions expire on a TTL (a question outliving the agent that asked it is dead weight). Everything that matters across a restart is in the state file.
+Planner proposals and agent questions are durable coordination records. Their original absolute TTLs survive restart; expired records are marked truthfully, and confirmation, answer, delivery, acknowledgement, and execution outcomes remain available as bounded history. Only live runtime handles and buffers remain deliberately ephemeral.
 
 ## Where to go next
 

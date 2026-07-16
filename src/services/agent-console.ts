@@ -1,5 +1,6 @@
 import type { ActivityLogEntry } from './engine-context.js';
 import type { AgentTask } from '../types.js';
+import { agentLabelOf, taskIdOf } from './agent-identity.js';
 
 export type AgentConsoleKind =
   | 'thought'
@@ -50,15 +51,24 @@ export interface AgentConsoleEvent {
 export interface AgentConsoleQuery {
   limit?: number;
   after?: string;
+  allowLegacyLabel?: boolean;
 }
 
-export function activityMatchesAgent(entry: ActivityLogEntry, task: AgentTask): boolean {
-  return entry.agent_id === task.agent_id
-    || entry.agent_id === task.id
-    || entry.linked_agent_task_id === task.id
-    || entry.details?.agent_id === task.agent_id
-    || entry.details?.task_id === task.id
-    || entry.details?.linked_agent_task_id === task.id;
+export function activityMatchesAgent(
+  entry: ActivityLogEntry,
+  task: AgentTask,
+  allowLegacyLabel = true,
+): boolean {
+  const taskId = taskIdOf(task);
+  const agentLabel = agentLabelOf(task);
+  return entry.agent_id === taskId
+    || entry.linked_agent_task_id === taskId
+    || entry.details?.task_id === taskId
+    || entry.details?.linked_agent_task_id === taskId
+    || (allowLegacyLabel && (
+      entry.agent_id === agentLabel
+      || entry.details?.agent_id === agentLabel
+    ));
 }
 
 export function buildAgentConsoleEvents(
@@ -67,7 +77,7 @@ export function buildAgentConsoleEvents(
   query: AgentConsoleQuery = {},
 ): AgentConsoleEvent[] {
   let matched = entries
-    .filter(entry => activityMatchesAgent(entry, task))
+    .filter(entry => activityMatchesAgent(entry, task, query.allowLegacyLabel ?? true))
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
   const after = query.after;
@@ -92,7 +102,7 @@ export function activityToAgentConsoleEvent(entry: ActivityLogEntry, task?: Agen
   if (entry.event_type === 'heartbeat') return null;
 
   const sourceKind = task ? 'subagent' : (entry.source_kind || inferSourceKind(entry));
-  const subAgentId = task?.id
+  const subAgentId = (task ? taskIdOf(task) : undefined)
     || entry.linked_agent_task_id
     || entry.agent_id
     || stringDetail(entry.details?.task_id)

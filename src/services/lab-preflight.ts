@@ -518,9 +518,12 @@ export function assessPersistenceRecovery(recovery: PersistenceRecoveryStatus): 
 
   const recoveryWarning = (recovery.outcome === 'recovered' && recovery.source === 'snapshot')
     || recovery.consecutive_persistence_failures > 0
-    || recovery.journal.preserved;
+    || recovery.journal.preserved
+    || (recovery.coordination_warnings?.length ?? 0) > 0;
   if (recoveryWarning) {
-    const message = recovery.consecutive_persistence_failures > 0
+    const message = (recovery.coordination_warnings?.length ?? 0) > 0
+      ? `${recovery.coordination_warnings!.length} legacy coordination relationship(s) could not be linked without guessing.`
+      : recovery.consecutive_persistence_failures > 0
       ? `Persistence has ${recovery.consecutive_persistence_failures} consecutive write failure(s)${reasonSuffix}.`
       : recovery.journal.preserved
         ? 'The mutation journal remains preserved for inspection after persistence recovery.'

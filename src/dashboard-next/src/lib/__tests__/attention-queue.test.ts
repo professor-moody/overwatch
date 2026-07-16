@@ -177,8 +177,8 @@ describe('buildAttentionQueue — stuck agents', () => {
   it('does NOT flag an idle agent that is blocked (pending approval) — no double-count', () => {
     const v = buildAttentionQueue({
       now: NOW,
-      agents: [idle({ id: 'tb', agent_id: 'web-2' })],
-      pendingActions: [action({ action_id: 'a1', agent_id: 'web-2' })],
+      agents: [idle({ task_id: 'tb', id: 'tb', agent_label: 'web-2', agent_id: 'web-2' })],
+      pendingActions: [action({ action_id: 'a1', task_id: 'tb', agent_id: 'web-2' })],
     });
     expect(v.counts.stuck).toBe(0);
     expect(v.counts.approval).toBe(1);

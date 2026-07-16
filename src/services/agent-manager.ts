@@ -6,6 +6,13 @@
 
 import type { EngineContext } from './engine-context.js';
 import type { AgentTask } from '../types.js';
+import {
+  agentLabelOf,
+  normalizeAgentTask,
+  resolveAgentIdentity,
+  taskIdOf,
+  type AgentIdentityResolution,
+} from './agent-identity.js';
 
 /**
  * Default heartbeat TTL (seconds) for a running agent that didn't specify one.
@@ -27,6 +34,12 @@ export class AgentManager {
     lease_conflict?: { existing_task_id: string; existing_agent_id: string };
     node_conflict?: { existing_task_id: string; existing_agent_id: string; node_id: string };
   } {
+    // Normalize once at the durable boundary. Mutating the caller's object keeps
+    // the historical object-identity behavior of AgentManager.register while
+    // ensuring every stored task has canonical fields and synchronized aliases.
+    Object.assign(task, normalizeAgentTask(task));
+    const taskId = taskIdOf(task);
+    const agentLabel = agentLabelOf(task);
     // Node-scoped dispatch dedup: a dispatch with target nodes but NO frontier_item_id
     // (planner `dispatch` op / deploy-at-node) can't take a frontier lease, so nothing
     // stopped a re-issued command from launching a SECOND identical agent at the same
@@ -38,22 +51,22 @@ export class AgentManager {
       const targetNodes = new Set(task.subgraph_node_ids);
       const sig = `${task.archetype ?? ''}|${task.role ?? ''}`;
       for (const other of this.ctx.agents.values()) {
-        if (other.id === task.id) continue;
+        if (taskIdOf(other) === taskId) continue;
         if (other.status !== 'running' && other.status !== 'pending') continue;
         if (other.frontier_item_id) continue; // frontier work is deduped by its lease
         if (`${other.archetype ?? ''}|${other.role ?? ''}` !== sig) continue;
         const overlap = (other.subgraph_node_ids ?? []).find(n => targetNodes.has(n));
         if (overlap) {
           this.ctx.logEvent({
-            description: `Agent registration refused: ${task.agent_id} duplicates work at ${overlap} (held by ${other.agent_id})`,
-            agent_id: task.agent_id,
+            description: `Agent registration refused: ${agentLabel} duplicates work at ${overlap} (held by ${agentLabelOf(other)})`,
+            agent_id: agentLabel,
             category: 'agent',
             event_type: 'instrumentation_warning',
-            linked_agent_task_id: task.id,
+            linked_agent_task_id: taskId,
             result_classification: 'failure',
-            details: { reason: 'node_dispatch_dedup', node_id: overlap, existing_task_id: other.id, existing_agent_id: other.agent_id },
+            details: { reason: 'node_dispatch_dedup', node_id: overlap, existing_task_id: taskIdOf(other), existing_agent_id: agentLabelOf(other) },
           });
-          return { ok: false, node_conflict: { existing_task_id: other.id, existing_agent_id: other.agent_id, node_id: overlap } };
+          return { ok: false, node_conflict: { existing_task_id: taskIdOf(other), existing_agent_id: agentLabelOf(other), node_id: overlap } };
         }
       }
     }
@@ -65,14 +78,14 @@ export class AgentManager {
     if (task.frontier_item_id) {
       const result = this.ctx.frontierLeases.acquire({
         frontier_item_id: task.frontier_item_id,
-        agent_id: task.agent_id,
-        task_id: task.id,
+        agent_id: agentLabel,
+        task_id: taskId,
         now: this.ctx.nowIso(),
       });
       if (!result.ok && result.existing) {
         this.ctx.logEvent({
-          description: `Agent registration refused: ${task.agent_id} cannot claim ${task.frontier_item_id} (held by task ${result.existing.task_id})`,
-          agent_id: task.agent_id,
+          description: `Agent registration refused: ${agentLabel} cannot claim ${task.frontier_item_id} (held by task ${result.existing.task_id})`,
+          agent_id: agentLabel,
           category: 'agent',
           event_type: 'instrumentation_warning',
           frontier_item_id: task.frontier_item_id,
@@ -106,14 +119,14 @@ export class AgentManager {
     if (task.status === 'running' && !task.heartbeat_at) {
       task.heartbeat_at = this.ctx.nowIso();
     }
-    this.ctx.agents.set(task.id, task);
+    this.ctx.agents.set(taskId, task);
     this.ctx.logEvent({
-      description: `Agent dispatched: ${task.agent_id} for ${task.frontier_item_id}`,
-      agent_id: task.agent_id,
+      description: `Agent dispatched: ${agentLabel} for ${task.frontier_item_id}`,
+      agent_id: agentLabel,
       category: 'agent',
       event_type: 'agent_registered',
       frontier_item_id: task.frontier_item_id,
-      linked_agent_task_id: task.id,
+      linked_agent_task_id: taskId,
       result_classification: 'neutral',
       details: {
         skill: task.skill,
@@ -136,50 +149,60 @@ export class AgentManager {
     return this.ctx.agents.get(taskId) || null;
   }
 
+  resolveTaskReference(reference: string): AgentIdentityResolution {
+    return resolveAgentIdentity(this.ctx.agents.values(), reference);
+  }
+
   updateStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {
     const task = this.ctx.agents.get(taskId);
     if (!task) return false;
-    // Terminal states are MONOTONIC: once a task is terminal it stays terminal and does
-    // not flip to a DIFFERENT terminal state. A late natural completed/failed must never
-    // overwrite an interrupt (operator cancel / heartbeat-reap) — that would turn a
-    // cancelled task into a false success and mis-count its campaign. The one allowed
-    // override is an interrupt winning over a prior completed/failed, so an operator
-    // cancel still registers even after the agent reported done. (Symmetric replays and
-    // any other terminal→terminal transition no-op.)
+    return this.transition(task, status, {
+      summary,
+      completedAt: this.ctx.nowIso(),
+      eventType: 'agent_updated',
+    });
+  }
+
+  private transition(
+    task: AgentTask,
+    status: AgentTask['status'],
+    options: {
+      summary?: string;
+      completedAt: string;
+      eventType: 'agent_updated' | 'instrumentation_warning';
+      reason?: string;
+      details?: Record<string, unknown>;
+    },
+  ): boolean {
+    // Terminal states are strictly monotonic. Once durable truth says a task
+    // completed, failed, or was interrupted, later process races cannot rewrite
+    // that outcome into a different terminal state.
     const TERMINAL: AgentTask['status'][] = ['completed', 'failed', 'interrupted'];
     const currentTerminal = TERMINAL.includes(task.status);
     const incomingTerminal = TERMINAL.includes(status);
-    if (currentTerminal) {
-      const isCancelOverride = status === 'interrupted' && task.status !== 'interrupted';
-      if (!isCancelOverride) return false;
-    }
+    if (currentTerminal) return false;
     task.status = status;
-    if (summary) task.result_summary = summary;
-    // Stamp completed_at for EVERY terminal state (including interrupted) so lifecycle
-    // consumers — attention-card aging, elapsed time — have an end timestamp; interrupted
-    // previously got none and its attention card never aged out. Keep the first stamp on
-    // a cancel-override.
+    if (options.summary) task.result_summary = options.summary;
+    const taskId = taskIdOf(task);
+    const agentLabel = agentLabelOf(task);
     if (incomingTerminal) {
-      task.completed_at = task.completed_at ?? new Date().toISOString();
-    }
-    // P1.4: release any frontier lease this task held.
-    if (status === 'completed' || status === 'failed' || status === 'interrupted') {
+      task.completed_at = task.completed_at ?? options.completedAt;
       this.ctx.frontierLeases.releaseByTask(taskId);
-      // 3D: drop this task's open/answered questions so a dead agent's question
-      // doesn't linger in the operator inbox or get answered into the void.
-      this.ctx.agentQueryStore.expireForTask(taskId);
+      this.ctx.agentQueryStore.expireForTask(taskId, Date.parse(options.completedAt));
     }
     this.ctx.logEvent({
-      description: `Agent ${task.agent_id} ${status}${summary ? `: ${summary}` : ''}`,
-      agent_id: task.agent_id,
+      description: `Agent ${agentLabel} ${status}${options.summary ? `: ${options.summary}` : ''}`,
+      agent_id: agentLabel,
       category: 'agent',
-      event_type: 'agent_updated',
+      event_type: options.eventType,
       frontier_item_id: task.frontier_item_id,
-      linked_agent_task_id: task.id,
+      linked_agent_task_id: taskId,
       result_classification: status === 'completed' ? 'success' : status === 'failed' ? 'failure' : 'neutral',
       details: {
         status,
-        summary,
+        summary: options.summary,
+        reason: options.reason,
+        ...options.details,
       },
     });
     return true;
@@ -203,11 +226,27 @@ export class AgentManager {
    */
   ensureRunningAgent(agentId: string | undefined, now?: string): AgentTask | null {
     if (!agentId || agentId.trim().length === 0) return null;
-    for (const task of this.ctx.agents.values()) {
-      if (task.agent_id === agentId && task.status === 'running') return task;
+    const matches = [...this.ctx.agents.values()]
+      .filter(task => agentLabelOf(task) === agentId && task.status === 'running');
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      this.ctx.logEvent({
+        description: `Agent label "${agentId}" is ambiguous; process activity was left unlinked`,
+        agent_id: agentId,
+        category: 'agent',
+        event_type: 'instrumentation_warning',
+        result_classification: 'failure',
+        details: {
+          reason: 'ambiguous_legacy_agent_label',
+          candidate_task_ids: matches.map(taskIdOf).sort(),
+        },
+      });
+      return null;
     }
     const ts = now ?? this.ctx.nowIso();
     const task: AgentTask = {
+      task_id: `auto-${agentId}-${ts}`,
+      agent_label: agentId,
       id: `auto-${agentId}-${ts}`,
       agent_id: agentId,
       assigned_at: ts,
@@ -234,17 +273,17 @@ export class AgentManager {
     if (TERMINAL.includes(task.status)) return false;
     task.heartbeat_at = now ?? new Date().toISOString();
     // P1.4: heartbeat extends any lease this task holds.
-    this.ctx.frontierLeases.renew(task.id, task.heartbeat_at);
+    this.ctx.frontierLeases.renew(taskIdOf(task), task.heartbeat_at);
     // A `silent` keepalive (supervisor-driven liveness) skips the activity event —
     // it's not agent progress, and emitting one per queued task per tick would spam
     // the log. The beat + lease renewal above are all the reaper needs.
     if (opts?.silent) return true;
     this.ctx.logEvent({
-      description: `Agent heartbeat: ${task.agent_id}`,
-      agent_id: task.agent_id,
+      description: `Agent heartbeat: ${agentLabelOf(task)}`,
+      agent_id: agentLabelOf(task),
       category: 'agent',
       event_type: 'heartbeat',
-      linked_agent_task_id: task.id,
+      linked_agent_task_id: taskIdOf(task),
       frontier_item_id: task.frontier_item_id,
       result_classification: 'neutral',
       details: { heartbeat_at: task.heartbeat_at },
@@ -268,26 +307,18 @@ export class AgentManager {
       const last = Date.parse(task.heartbeat_at);
       if (Number.isNaN(last)) continue;
       if (cutoffNow - last <= ttl) continue;
-      task.status = 'interrupted';
-      task.completed_at = new Date(cutoffNow).toISOString();
-      task.result_summary = task.result_summary ?? `heartbeat_timeout: last beat ${task.heartbeat_at}, ttl ${ttl / 1000}s`;
-      // P1.4: release lease the moment the task is declared dead.
-      this.ctx.frontierLeases.releaseByTask(task.id);
-      this.ctx.logEvent({
-        description: `Agent ${task.agent_id} interrupted: heartbeat timeout`,
-        agent_id: task.agent_id,
-        category: 'agent',
-        event_type: 'instrumentation_warning',
-        linked_agent_task_id: task.id,
-        frontier_item_id: task.frontier_item_id,
-        result_classification: 'failure',
+      const summary = task.result_summary
+        ?? `heartbeat_timeout: last beat ${task.heartbeat_at}, ttl ${ttl / 1000}s`;
+      if (this.transition(task, 'interrupted', {
+        summary,
+        completedAt: new Date(cutoffNow).toISOString(),
+        eventType: 'instrumentation_warning',
+        reason: 'heartbeat_timeout',
         details: {
-          reason: 'heartbeat_timeout',
           heartbeat_at: task.heartbeat_at,
           heartbeat_ttl_seconds: task.heartbeat_ttl_seconds ?? DEFAULT_HEARTBEAT_TTL_SECONDS,
         },
-      });
-      reaped++;
+      })) reaped++;
     }
     return reaped;
   }
@@ -307,10 +338,12 @@ export class AgentManager {
     let count = 0;
     for (const task of this.ctx.agents.values()) {
       if (task.status === 'running') {
-        task.status = 'interrupted';
-        task.completed_at = new Date().toISOString();
-        this.ctx.frontierLeases.releaseByTask(task.id);
-        count++;
+        if (this.transition(task, 'interrupted', {
+          summary: task.result_summary ?? 'interrupted by daemon restart',
+          completedAt: this.ctx.nowIso(),
+          eventType: 'agent_updated',
+          reason: 'startup_reconciliation',
+        })) count++;
       }
     }
     if (count > 0) {
@@ -339,11 +372,11 @@ export class AgentManager {
     if (!TERMINAL.includes(task.status)) return false;
     this.ctx.agents.delete(taskId);
     this.ctx.logEvent({
-      description: `Agent ${task.agent_id} dismissed from the roster`,
-      agent_id: task.agent_id,
+      description: `Agent ${agentLabelOf(task)} dismissed from the roster`,
+      agent_id: agentLabelOf(task),
       category: 'agent',
       event_type: 'agent_updated',
-      linked_agent_task_id: task.id,
+      linked_agent_task_id: taskIdOf(task),
       frontier_item_id: task.frontier_item_id,
       result_classification: 'neutral',
       details: { reason: 'dismissed', prior_status: task.status },

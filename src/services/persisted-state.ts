@@ -21,6 +21,7 @@ import type { DurableApprovalRecord } from './pending-action-queue.js';
 import type { TrackedProcess } from './process-tracker.js';
 import type { SerializedProposedPlanStore } from './proposed-plan-store.js';
 import type { SerializedAgentQueryStore } from './agent-query-store.js';
+import type { CoordinationRecoveryWarning } from './agent-identity.js';
 import type { OperatorOp } from './command-interpreter.js';
 
 export const CURRENT_STATE_VERSION = 1 as const;
@@ -145,6 +146,7 @@ export interface PersistedSessionDescriptorV1 {
   user?: string;
   port?: number;
   owner_task_id?: string;
+  recovery_warning?: string;
   target_node?: string;
   principal_node?: string;
   credential_node?: string;
@@ -225,6 +227,7 @@ export interface PersistedStateV1 {
   graph: unknown;
   activityLog: ActivityLogEntry[];
   agents: Array<[string, AgentTask]>;
+  coordinationRecoveryWarnings?: CoordinationRecoveryWarning[];
   campaigns: Array<[string, Campaign]>;
   agentDirectives: Array<[string, AgentDirective[]]>;
   approvalRequests: Array<[string, DurableApprovalRecord]>;
@@ -562,6 +565,40 @@ function validateProposedPlans(value: unknown, path: string): void {
     if (!['open', 'confirmed', 'denied', 'expired'].includes(status)) {
       throw new PersistedStateVersionError(`${path}.plans[${index}].status is invalid`, CURRENT_STATE_VERSION, 'invalid');
     }
+    for (const field of [
+      'owner_task_id',
+      'owner_agent_label',
+      'source_task_id',
+      'source_agent_id',
+      'recovery_warning',
+    ] as const) {
+      if (plan[field] !== undefined) {
+        requireString(plan[field], `${path}.plans[${index}].${field}`, field === 'recovery_warning');
+      }
+    }
+    for (const field of [
+      'resolved_at',
+      'confirmed_at',
+      'denied_at',
+      'expired_at',
+      'acknowledged_at',
+    ] as const) {
+      if (plan[field] !== undefined) requireSafeInteger(plan[field], `${path}.plans[${index}].${field}`);
+    }
+    if (plan.execution_outcome !== undefined) {
+      const outcome = requireRecord(plan.execution_outcome, `${path}.plans[${index}].execution_outcome`);
+      if (!['succeeded', 'partial', 'failed'].includes(
+        requireString(outcome.status, `${path}.plans[${index}].execution_outcome.status`),
+      )) {
+        throw new PersistedStateVersionError(
+          `${path}.plans[${index}].execution_outcome.status is invalid`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      requireSafeInteger(outcome.completed_at, `${path}.plans[${index}].execution_outcome.completed_at`);
+      requireArray(outcome.results, `${path}.plans[${index}].execution_outcome.results`);
+    }
     validateOperatorOps(plan.ops, `${path}.plans[${index}].ops`);
   }
   for (const [index, candidate] of requireArray(store.tombstones, `${path}.tombstones`).entries()) {
@@ -585,11 +622,16 @@ function validateAgentQueries(value: unknown, path: string): void {
       throw new PersistedStateVersionError(`${path}.queries contains duplicate query_id ${queryId}`, CURRENT_STATE_VERSION, 'invalid');
     }
     queryIds.add(queryId);
-    if (query.task_id !== undefined) {
-      requireString(query.task_id, `${path}.queries[${index}].task_id`);
-    }
-    if (query.agent_id !== undefined) {
-      requireString(query.agent_id, `${path}.queries[${index}].agent_id`);
+    for (const field of [
+      'owner_task_id',
+      'owner_agent_label',
+      'task_id',
+      'agent_id',
+      'recovery_warning',
+    ] as const) {
+      if (query[field] !== undefined) {
+        requireString(query[field], `${path}.queries[${index}].${field}`, field === 'recovery_warning');
+      }
     }
     requireString(query.question, `${path}.queries[${index}].question`);
     requireSafeInteger(query.created_at, `${path}.queries[${index}].created_at`);
@@ -601,6 +643,9 @@ function validateAgentQueries(value: unknown, path: string): void {
     if (status === 'answered') {
       requireString(query.answer, `${path}.queries[${index}].answer`, true);
       requireSafeInteger(query.answered_at, `${path}.queries[${index}].answered_at`);
+    }
+    for (const field of ['delivered_at', 'acknowledged_at', 'expired_at'] as const) {
+      if (query[field] !== undefined) requireSafeInteger(query[field], `${path}.queries[${index}].${field}`);
     }
     if (query.options !== undefined) {
       requireArray(query.options, `${path}.queries[${index}].options`)
@@ -646,6 +691,7 @@ function validateSessionDescriptors(value: unknown, path: string): void {
       'host',
       'user',
       'owner_task_id',
+      'recovery_warning',
       'target_node',
       'principal_node',
       'credential_node',
@@ -767,6 +813,17 @@ function validateAgentTask(value: unknown, path: string, key: string): void {
     throw new PersistedStateVersionError(`${path}.id must match map key`, CURRENT_STATE_VERSION, 'invalid');
   }
   requireString(task.agent_id, `${path}.agent_id`);
+  if (task.task_id !== undefined && requireString(task.task_id, `${path}.task_id`) !== key) {
+    throw new PersistedStateVersionError(`${path}.task_id must match map key`, CURRENT_STATE_VERSION, 'invalid');
+  }
+  if (task.agent_label !== undefined
+    && requireString(task.agent_label, `${path}.agent_label`) !== task.agent_id) {
+    throw new PersistedStateVersionError(
+      `${path}.agent_label must match compatibility alias agent_id`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
   requireIsoDate(task.assigned_at, `${path}.assigned_at`);
   if (!['pending', 'running', 'completed', 'failed', 'interrupted'].includes(
     requireString(task.status, `${path}.status`),
@@ -779,6 +836,30 @@ function validateAgentTask(value: unknown, path: string, key: string): void {
   if (task.heartbeat_at !== undefined) requireIsoDate(task.heartbeat_at, `${path}.heartbeat_at`);
   if (task.heartbeat_ttl_seconds !== undefined) {
     requireSafeInteger(task.heartbeat_ttl_seconds, `${path}.heartbeat_ttl_seconds`, 1);
+  }
+}
+
+function validateCoordinationRecoveryWarnings(value: unknown, path: string): void {
+  const ids = new Set<string>();
+  for (const [index, candidate] of requireArray(value, path).entries()) {
+    const warning = requireRecord(candidate, `${path}[${index}]`);
+    const id = requireString(warning.warning_id, `${path}[${index}].warning_id`);
+    if (ids.has(id)) {
+      throw new PersistedStateVersionError(
+        `${path} contains duplicate warning_id ${id}`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    ids.add(id);
+    requireString(warning.relationship, `${path}[${index}].relationship`);
+    requireString(warning.reference, `${path}[${index}].reference`);
+    requireString(warning.message, `${path}[${index}].message`);
+    if (warning.candidate_task_ids !== undefined) {
+      requireArray(warning.candidate_task_ids, `${path}[${index}].candidate_task_ids`)
+        .forEach((taskId, taskIndex) =>
+          requireString(taskId, `${path}[${index}].candidate_task_ids[${taskIndex}]`));
+    }
   }
 }
 
@@ -866,6 +947,11 @@ function validateApproval(value: unknown, path: string, key: string): void {
     throw new PersistedStateVersionError(`${path}.status is invalid`, CURRENT_STATE_VERSION, 'invalid');
   }
   if (approval.resolved_at !== undefined) requireIsoDate(approval.resolved_at, `${path}.resolved_at`);
+  for (const field of ['task_id', 'agent_label', 'agent_id', 'recovery_warning'] as const) {
+    if (approval[field] !== undefined) {
+      requireString(approval[field], `${path}.${field}`, field === 'recovery_warning');
+    }
+  }
 }
 
 function validateTrackedProcesses(value: unknown, path: string): void {
@@ -979,6 +1065,12 @@ export function validatePersistedStateV1(value: unknown): PersistedStateV1 {
   validateActivityLog(record.activityLog, 'persisted activityLog');
   validateColdStore(record.coldStore, 'persisted coldStore');
   validateMapTuples(record.agents, 'persisted agents', validateAgentTask);
+  if (record.coordinationRecoveryWarnings !== undefined) {
+    validateCoordinationRecoveryWarnings(
+      record.coordinationRecoveryWarnings,
+      'persisted coordinationRecoveryWarnings',
+    );
+  }
   validateMapTuples(record.campaigns, 'persisted campaigns', validateCampaign);
   validateMapTuples(record.agentDirectives, 'persisted agentDirectives', validateDirectiveList);
   validateMapTuples(record.approvalRequests, 'persisted approvalRequests', validateApproval);

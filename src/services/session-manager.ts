@@ -169,6 +169,7 @@ export interface SessionCreateOptions {
   host?: string;
   user?: string;
   port?: number;
+  owner_task_id?: string;
   agent_id?: string;
   target_node?: string;
   principal_node?: string;
@@ -206,6 +207,7 @@ function validateSessionCreateOptions(options: SessionCreateOptions): void {
     ['bind_host', options.bind_host],
     ['advertise_host', options.advertise_host],
     ['user', options.user],
+    ['owner_task_id', options.owner_task_id],
     ['agent_id', options.agent_id],
     ['target_node', options.target_node],
     ['principal_node', options.principal_node],
@@ -335,7 +337,7 @@ export class SessionManager {
       credential_node: options.credential_node,
       action_id: options.action_id,
       frontier_item_id: options.frontier_item_id,
-      claimed_by: options.agent_id,
+      claimed_by: options.owner_task_id ?? options.agent_id,
       started_at: now,
       last_activity_at: now,
       capabilities: {

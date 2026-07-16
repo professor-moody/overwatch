@@ -65,10 +65,11 @@ function freshnessFor(agent: AgentInfo, now: number): HeartbeatFreshness {
 
 /** Does an open agent question belong to this agent (by task id or label)? */
 export function awaitingAnswerFor(agent: AgentInfo, queries: AgentQuery[]): boolean {
-  const ids = new Set([agent.id, agent.agent_id].filter((v): v is string => !!v));
-  return queries.some(q => q.status !== 'answered' && (
-    (!!q.task_id && ids.has(q.task_id)) || (!!q.agent_id && ids.has(q.agent_id))
-  ));
+  const taskIds = new Set([agent.task_id, agent.id].filter((v): v is string => !!v));
+  return queries.some(q =>
+    q.status === 'open'
+    && !!(q.owner_task_id ?? q.task_id)
+    && taskIds.has((q.owner_task_id ?? q.task_id)!));
 }
 
 /**
@@ -80,11 +81,12 @@ export function awaitingAnswerFor(agent: AgentInfo, queries: AgentQuery[]): bool
  * as backend work in Phase 2.)
  */
 export function pendingApprovalFor(agent: AgentInfo, actions: PendingAction[]): boolean {
-  const ids = new Set([agent.id, agent.agent_id].filter((v): v is string => !!v));
+  const taskId = agent.task_id ?? agent.id;
   const frontier = agent.frontier_item_id;
   return actions.some(a =>
-    (!!a.agent_id && ids.has(a.agent_id)) ||
-    (!!frontier && !!a.frontier_item_id && a.frontier_item_id === frontier),
+    a.task_id === taskId
+    || (!a.task_id && a.agent_id === taskId)
+    || (!!frontier && !!a.frontier_item_id && a.frontier_item_id === frontier),
   );
 }
 

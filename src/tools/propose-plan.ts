@@ -121,14 +121,45 @@ export function recordProposedPlan(engine: GraphEngine, args: ProposePlanArgs): 
     }
   }
 
+  const ownerReference = task_id ?? agent_id;
+  const ownerResolution = ownerReference
+    ? engine.resolveAgentTaskReference(ownerReference)
+    : { status: 'missing' as const };
+  if (ownerResolution.status === 'ambiguous_legacy_label') {
+    return {
+      ok: false,
+      error: `agent label "${ownerReference}" is ambiguous; pass the exact task_id`,
+    };
+  }
+  if (ownerReference && ownerResolution.status === 'missing') {
+    return { ok: false, error: `planner task not found: ${ownerReference}` };
+  }
+  const ownerTask = ownerResolution.status === 'exact'
+    || ownerResolution.status === 'unique_legacy_label'
+    ? ownerResolution.task
+    : undefined;
+  const ownerTaskId = ownerTask?.task_id ?? ownerTask?.id;
+  const ownerAgentLabel = ownerTask?.agent_label ?? ownerTask?.agent_id;
+  if (
+    task_id
+    && agent_id
+    && ownerTask
+    && agent_id !== ownerTaskId
+    && agent_id !== ownerAgentLabel
+  ) {
+    return {
+      ok: false,
+      error: `agent_id "${agent_id}" does not match planner task ${ownerTaskId} (${ownerAgentLabel})`,
+    };
+  }
   const scope_preview = computeScopePreview(engine, ops);
   const plan = engine.getProposedPlanStore().add({
     command: command ?? '',
     ops,
     summary,
     rationale,
-    source_task_id: task_id,
-    source_agent_id: agent_id,
+    owner_task_id: ownerTaskId,
+    owner_agent_label: ownerAgentLabel,
     scope_preview,
   });
 
@@ -137,8 +168,8 @@ export function recordProposedPlan(engine: GraphEngine, args: ProposePlanArgs): 
     event_type: 'plan_proposed',
     category: 'agent',
     result_classification: 'neutral',
-    agent_id,
-    linked_agent_task_id: task_id,
+    agent_id: ownerAgentLabel,
+    linked_agent_task_id: ownerTaskId,
     details: { reason: 'plan_proposed', plan_id: plan.plan_id, command: command ?? '', summary, ops },
   });
 

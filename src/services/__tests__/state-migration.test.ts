@@ -173,6 +173,13 @@ describe('PersistedStateV1 and migration', () => {
 
   it('round-trips the complete V1 coordination surface without runtime handles or secrets', () => {
     const engine = open(config(), false);
+    engine.registerAgent({
+      id: 'task-1',
+      agent_id: 'agent-1',
+      assigned_at: NOW,
+      status: 'completed',
+      subgraph_node_ids: [],
+    });
     const proposed = engine.getProposedPlanStore().add({
       command: 'pause task',
       summary: 'pause task',
@@ -261,6 +268,14 @@ describe('PersistedStateV1 and migration', () => {
     expect(state.agentQueries).toMatchObject({
       queries: [expect.objectContaining({ query_id: query.query_id })],
     });
+    expect(state.agents).toEqual(expect.arrayContaining([
+      ['task-1', expect.objectContaining({
+        task_id: 'task-1',
+        agent_label: 'agent-1',
+        id: 'task-1',
+        agent_id: 'agent-1',
+      })],
+    ]));
     expect(state.commandPlans).toEqual(expect.arrayContaining([
       [commandPlan, expect.objectContaining({ command: 'scan 10.20.30.10' })],
     ]));
@@ -281,7 +296,10 @@ describe('PersistedStateV1 and migration', () => {
 
     const restarted = open(config(), false);
     expect(restarted.getProposedPlanStore().get(proposed.plan_id)).toBeDefined();
-    expect(restarted.getAgentQueryStore().get(query.query_id)).toBeDefined();
+    expect(restarted.getAgentQueryStore().get(query.query_id)).toMatchObject({
+      owner_task_id: 'task-1',
+      owner_agent_label: 'agent-1',
+    });
     expect(restarted.getCommandPlan(commandPlan)?.command).toBe('scan 10.20.30.10');
     expect(restarted.getCommandOutcome('completed-plan')?.results).toEqual([{ ok: true }]);
     expect(restarted.getSessionDescriptors()).toEqual([

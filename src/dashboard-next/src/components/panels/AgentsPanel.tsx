@@ -130,19 +130,23 @@ export function AgentsPanel() {
     for (const a of agents) m.set(a.id, a.elapsed_ms);
     return m;
   }, [agents]);
-  // Select by task id OR agent label so deep-links from other panels (e.g. a
-  // SessionRow chip carrying the agent label) resolve.
+  // Exact task IDs win; a legacy label resolves only when it names one task.
   const activeAgent = activeAgentId === 'all'
     ? null
-    : agents.find(agent => agent.id === activeAgentId || agent.agent_id === activeAgentId) || null;
+    : agents.find(agent => (agent.task_id ?? agent.id) === activeAgentId)
+      ?? (() => {
+        const labelMatches = agents.filter(agent =>
+          (agent.agent_label ?? agent.agent_id) === activeAgentId);
+        return labelMatches.length === 1 ? labelMatches[0] : null;
+      })();
 
   // The focused agent's conversation: its (already agent-scoped) console events
   // interleaved with its open questions. Empty when no agent is focused.
   const agentThreadEntries = useMemo(
     () => activeAgent
       ? buildAgentThread(consoleEvents, agentQueries, {
-          agentId: activeAgent.id,
-          agentLabel: activeAgent.agent_id || activeAgent.id,
+          agentId: activeAgent.task_id ?? activeAgent.id,
+          agentLabel: activeAgent.agent_label ?? activeAgent.agent_id,
           limit: 200,
         })
       : [],
@@ -158,8 +162,13 @@ export function AgentsPanel() {
   const [searchParams] = useSearchParams();
   useEffect(() => {
     const item = searchParams.get('item');
-    if (item && agents.some(a => a.id === item || a.agent_id === item)) {
-      setActiveAgentId(item);
+    if (item) {
+      const exact = agents.find(agent => (agent.task_id ?? agent.id) === item);
+      const labelMatches = exact
+        ? []
+        : agents.filter(agent => (agent.agent_label ?? agent.agent_id) === item);
+      const resolved = exact ?? (labelMatches.length === 1 ? labelMatches[0] : undefined);
+      if (resolved) setActiveAgentId(resolved.task_id ?? resolved.id);
     }
   }, [searchParams, agents]);
 
@@ -301,7 +310,8 @@ export function AgentsPanel() {
       }
       // Per-agent drawer: both the poll (getAgentConsole) and the WS push use the
       // SERVER builder, so merging is consistent — no flip.
-      const incoming = all.filter(item => item.agent_id === activeAgent.id || item.agent_id === activeAgent.agent_id);
+      const activeTaskId = activeAgent.task_id ?? activeAgent.id;
+      const incoming = all.filter(item => item.agent_id === activeTaskId);
       if (incoming.length === 0) return;
       setConsoleEvents(prev => mergeConsoleEvents(prev, incoming));
     };

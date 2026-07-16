@@ -81,23 +81,22 @@ export function groupSessions(sessions: SessionInfo[]): Record<SessionGroup, Ses
 /**
  * Sessions owned/claimed by a given agent. Phase 4b uses this to bridge the
  * Operator Console and the Sessions workspace: the focused agent shows an
- * "Open session →" chip, and a session shows a "view agent →" chip. Matches on
- * either the agent's task id or its display label, since `session.agent_id` /
- * `session.claimed_by` may carry either depending on who opened the session.
+ * "Open session →" chip, and a session shows a "view agent →" chip. New
+ * sessions carry the canonical task ID in `claimed_by`; the `agent_id ===
+ * task_id` fallback exists only for the historical wire shape and never matches
+ * a display label.
  */
 export function sessionsForAgent(
   sessions: SessionInfo[],
-  agent: { id?: string; agent_id?: string } | null | undefined,
+  agent: { task_id?: string; id?: string; agent_id?: string } | null | undefined,
 ): SessionInfo[] {
   if (!agent) return [];
-  const ids = new Set(
-    [agent.id, agent.agent_id].filter((v): v is string => typeof v === 'string' && v.length > 0),
-  );
-  if (ids.size === 0) return [];
+  const taskId = agent.task_id ?? agent.id;
+  if (!taskId) return [];
   return sessions.filter(
     (session) =>
-      (!!session.agent_id && ids.has(session.agent_id)) ||
-      (!!session.claimed_by && ids.has(session.claimed_by)),
+      session.claimed_by === taskId
+      || (!session.claimed_by && session.agent_id === taskId),
   );
 }
 
@@ -149,14 +148,14 @@ export function relatedSessionActivity(session: SessionInfo, entries: ActivityEn
     session.id,
     session.action_id,
     session.frontier_item_id,
-    session.agent_id,
     session.claimed_by,
     session.target_node,
   ].filter((value): value is string => typeof value === 'string' && value.length > 0));
 
   return entries.filter(entry => {
     if (entry.action_id && ids.has(entry.action_id)) return true;
-    if (entry.agent_id && ids.has(entry.agent_id)) return true;
+    if (entry.linked_agent_task_id && ids.has(entry.linked_agent_task_id)) return true;
+    if (!entry.linked_agent_task_id && entry.agent_id && ids.has(entry.agent_id)) return true;
     if (entry.frontier_item_id && ids.has(entry.frontier_item_id)) return true;
     if (Array.isArray(entry.target_node_ids) && entry.target_node_ids.some(nodeId => ids.has(nodeId))) return true;
     const details = entry.details || {};

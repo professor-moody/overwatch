@@ -47,6 +47,12 @@ describe('AgentManager', () => {
       const task = makeTask();
       mgr.register(task);
       expect(mgr.getTask('task-1')).toBe(task);
+      expect(task).toMatchObject({
+        task_id: 'task-1',
+        agent_label: 'agent-1',
+        id: 'task-1',
+        agent_id: 'agent-1',
+      });
     });
 
     it('logs an agent_registered event', () => {
@@ -112,6 +118,24 @@ describe('AgentManager', () => {
       const { mgr } = setup();
       expect(mgr.getTask('nonexistent')).toBeNull();
     });
+
+    it('resolves a unique legacy label but never guesses between duplicates', () => {
+      const { mgr } = setup();
+      mgr.register(makeTask({ id: 'task-a', agent_id: 'shared', frontier_item_id: 'fi-a' }));
+      expect(mgr.resolveTaskReference('shared')).toMatchObject({
+        status: 'unique_legacy_label',
+        task: { task_id: 'task-a' },
+      });
+      mgr.register(makeTask({ id: 'task-b', agent_id: 'shared', frontier_item_id: 'fi-b' }));
+      expect(mgr.resolveTaskReference('shared')).toEqual({
+        status: 'ambiguous_legacy_label',
+        candidate_task_ids: ['task-a', 'task-b'],
+      });
+      expect(mgr.resolveTaskReference('task-b')).toMatchObject({
+        status: 'exact',
+        task: { agent_label: 'shared' },
+      });
+    });
   });
 
   describe('updateStatus', () => {
@@ -163,12 +187,13 @@ describe('AgentManager', () => {
       expect(mgr.getTask('task-1')!.status).toBe('interrupted'); // not a false success
     });
 
-    it('allows an interrupt to override a prior completed (operator cancel wins)', () => {
+    it('terminal is monotonic: a late interrupt does not rewrite completed truth', () => {
       const { mgr } = setup();
       mgr.register(makeTask());
       mgr.updateStatus('task-1', 'completed', 'done');
-      expect(mgr.updateStatus('task-1', 'interrupted', 'cancelled anyway')).toBe(true);
-      expect(mgr.getTask('task-1')!.status).toBe('interrupted');
+      expect(mgr.updateStatus('task-1', 'interrupted', 'cancelled anyway')).toBe(false);
+      expect(mgr.getTask('task-1')!.status).toBe('completed');
+      expect(mgr.getTask('task-1')!.result_summary).toBe('done');
     });
 
     it('a completed/failed does not overwrite another terminal (no flip-flop)', () => {
@@ -275,6 +300,54 @@ describe('AgentManager', () => {
       const auto = mgr.ensureRunningAgent('subagent-1');
       expect(auto!.id).toBe('t1');
       expect(mgr.getAll()).toHaveLength(1);
+    });
+
+    it('does not guess when more than one running task shares a legacy label', () => {
+      const { mgr, ctx } = setup();
+      mgr.register(makeTask({ id: 't1', agent_id: 'shared', frontier_item_id: 'fi-A' }));
+      mgr.register(makeTask({ id: 't2', agent_id: 'shared', frontier_item_id: 'fi-B' }));
+      expect(mgr.ensureRunningAgent('shared')).toBeNull();
+      expect(mgr.getAll()).toHaveLength(2);
+      expect(ctx.activityLog.some(entry =>
+        entry.event_type === 'instrumentation_warning'
+        && entry.details?.reason === 'ambiguous_legacy_agent_label')).toBe(true);
+    });
+  });
+
+  describe('centralized terminal transitions', () => {
+    it('heartbeat reaping releases the lease and expires the task question through one transition path', () => {
+      const { mgr, ctx } = setup();
+      mgr.register(makeTask({
+        heartbeat_at: '2026-03-20T00:00:00.000Z',
+        heartbeat_ttl_seconds: 30,
+      }));
+      const query = ctx.agentQueryStore.add({
+        owner_task_id: 'task-1',
+        owner_agent_label: 'agent-1',
+        question: 'continue?',
+        now: Date.parse('2026-03-20T00:00:00.000Z'),
+      });
+
+      expect(mgr.reapStaleHeartbeats('2026-03-20T00:01:00.000Z')).toBe(1);
+      expect(mgr.getTask('task-1')).toMatchObject({
+        status: 'interrupted',
+        completed_at: '2026-03-20T00:01:00.000Z',
+      });
+      expect(ctx.frontierLeases.list('2026-03-20T00:01:00.000Z')).toEqual([]);
+      expect(ctx.agentQueryStore.get(query.query_id)).toMatchObject({
+        status: 'expired',
+        expired_at: Date.parse('2026-03-20T00:01:00.000Z'),
+      });
+    });
+
+    it('startup reconciliation cannot rewrite an already-terminal task', () => {
+      const { mgr } = setup();
+      mgr.register(makeTask({ status: 'completed', completed_at: '2026-03-20T00:05:00.000Z' }));
+      expect(mgr.reconcileOnStartup()).toBe(0);
+      expect(mgr.getTask('task-1')).toMatchObject({
+        status: 'completed',
+        completed_at: '2026-03-20T00:05:00.000Z',
+      });
     });
   });
 });

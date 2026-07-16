@@ -18,6 +18,9 @@ export type AgentQueryStatus = 'open' | 'answered' | 'expired';
 
 export interface AgentQuery {
   query_id: string;
+  owner_task_id?: string;
+  owner_agent_label?: string;
+  /** Legacy ownership aliases retained for one minor release. */
   task_id?: string;
   agent_id?: string;
   question: string;
@@ -29,9 +32,15 @@ export interface AgentQuery {
   /** Absolute expiry; restart must not extend this deadline. */
   expires_at: number;
   answered_at?: number;
+  delivered_at?: number;
+  acknowledged_at?: number;
+  expired_at?: number;
+  recovery_warning?: string;
 }
 
 export interface AddAgentQueryArgs {
+  owner_task_id?: string;
+  owner_agent_label?: string;
   task_id?: string;
   agent_id?: string;
   question: string;
@@ -42,6 +51,7 @@ export interface AddAgentQueryArgs {
 // 30 min — matches the headless wall-clock timeout; a question outliving the
 // agent that asked it is dead weight.
 const DEFAULT_TTL_MS = 30 * 60_000;
+const RECORD_CAP = 500;
 
 export interface SerializedAgentQueryStore {
   queries: AgentQuery[];
@@ -56,6 +66,19 @@ export class AgentQueryStore {
     | undefined;
 
   constructor(private ttlMs: number = DEFAULT_TTL_MS) {}
+
+  private trimRecords(): void {
+    if (this.queries.size <= RECORD_CAP) return;
+    const removable = [...this.queries.values()]
+      .filter(query => query.status !== 'open')
+      .sort((a, b) =>
+        (a.acknowledged_at ?? a.expired_at ?? a.answered_at ?? a.expires_at)
+        - (b.acknowledged_at ?? b.expired_at ?? b.answered_at ?? b.expires_at));
+    for (const query of removable) {
+      if (this.queries.size <= RECORD_CAP) break;
+      this.queries.delete(query.query_id);
+    }
+  }
 
   /** Register a change listener (dashboard broadcast + persistence coexist). */
   onChange(cb: () => void): () => void {
@@ -95,8 +118,10 @@ export class AgentQueryStore {
       this.pruneInternal(now, false);
       const query: AgentQuery = {
         query_id: randomUUID(),
-        task_id: args.task_id,
-        agent_id: args.agent_id,
+        owner_task_id: args.owner_task_id ?? args.task_id,
+        owner_agent_label: args.owner_agent_label ?? args.agent_id,
+        task_id: args.owner_task_id ?? args.task_id,
+        agent_id: args.owner_agent_label ?? args.agent_id,
         question: args.question,
         options: args.options,
         status: 'open',
@@ -104,6 +129,7 @@ export class AgentQueryStore {
         expires_at: now + this.ttlMs,
       };
       this.queries.set(query.query_id, query);
+      this.trimRecords();
       this.notifyChange();
       return query;
     });
@@ -168,6 +194,43 @@ export class AgentQueryStore {
     query.answered_at = now;
   }
 
+  markDelivered(query_id: string, task_id: string, now: number = Date.now()): AgentQuery | null {
+    return this.runMutation('mark agent query answer delivered', () => {
+      const query = this.queries.get(query_id);
+      if (
+        !query
+        || query.status !== 'answered'
+        || (query.owner_task_id ?? query.task_id) !== task_id
+        || query.acknowledged_at !== undefined
+      ) {
+        return null;
+      }
+      if (query.delivered_at === undefined) {
+        query.delivered_at = now;
+        this.notifyChange();
+      }
+      return query;
+    });
+  }
+
+  acknowledge(query_id: string, task_id: string, now: number = Date.now()): AgentQuery | null {
+    return this.runMutation('acknowledge agent query answer', () => {
+      const query = this.queries.get(query_id);
+      if (
+        !query
+        || query.status !== 'answered'
+        || (query.owner_task_id ?? query.task_id) !== task_id
+      ) {
+        return null;
+      }
+      if (query.acknowledged_at === undefined) {
+        query.acknowledged_at = now;
+        this.notifyChange();
+      }
+      return query;
+    });
+  }
+
   /**
    * Heartbeat delivery: the most-recently-answered question for a task. This
    * PEEKS (does not consume) so delivery is at-least-once — a dropped heartbeat
@@ -180,44 +243,55 @@ export class AgentQueryStore {
     try { this.prune(now); } catch { /* degraded reads filter without mutating */ }
     const answered = [...this.queries.values()]
       .filter(q =>
-        q.task_id === task_id
+        (q.owner_task_id ?? q.task_id) === task_id
         && q.status === 'answered'
+        && q.acknowledged_at === undefined
         && q.expires_at > now)
       .sort((a, b) => (b.answered_at ?? 0) - (a.answered_at ?? 0));
     return answered[0] ?? null;
   }
 
-  /**
-   * Drop every question for a task — called when the task reaches a terminal
-   * state so a dead agent's question can't linger in the operator inbox (or be
-   * answered into the void).
-   */
-  expireForTask(task_id: string): void {
+  /** Mark every still-actionable question for a terminal task as expired. */
+  expireForTask(task_id: string, now: number = Date.now()): void {
     this.runMutation('expire agent queries for task', () => {
       let changed = false;
-      for (const [id, q] of this.queries) {
-        if (q.task_id === task_id) { this.queries.delete(id); changed = true; }
+      for (const q of this.queries.values()) {
+        if (
+          (q.owner_task_id ?? q.task_id) === task_id
+          && q.status !== 'expired'
+          && q.acknowledged_at === undefined
+        ) {
+          q.status = 'expired';
+          q.expired_at = now;
+          changed = true;
+        }
       }
+      this.trimRecords();
       if (changed) this.notifyChange();
     });
   }
 
-  /** Sweep questions older than the TTL (open ones effectively expire). */
+  /** Mark questions older than their original absolute TTL as expired. */
   prune(now: number = Date.now()): void {
     this.runMutation('prune agent queries', () => this.pruneInternal(now, false));
   }
 
   private pruneInternal(now: number, guard: boolean, notify = true): void {
-    const expired = [...this.queries.entries()]
-      .filter(([, query]) => {
+    const expired = [...this.queries.values()]
+      .map(query => {
         const expiresAt = Number.isFinite(query.expires_at)
           ? query.expires_at
           : query.created_at + this.ttlMs;
-        return expiresAt <= now;
-      });
+        return { query, expiresAt };
+      })
+      .filter(({ query, expiresAt }) => query.status !== 'expired' && expiresAt <= now);
     if (expired.length === 0) return;
     if (guard) this.mutationGuard?.();
-    for (const [id] of expired) this.queries.delete(id);
+    for (const { query, expiresAt } of expired) {
+      query.status = 'expired';
+      query.expired_at = expiresAt;
+    }
+    this.trimRecords();
     if (notify) this.notifyChange();
   }
 
@@ -237,14 +311,21 @@ export class AgentQueryStore {
       if (!candidate || typeof candidate !== 'object') continue;
       const query = candidate as AgentQuery;
       if (typeof query.query_id !== 'string' || typeof query.created_at !== 'number') continue;
+      const ownerTaskId = query.owner_task_id ?? query.task_id;
+      const ownerAgentLabel = query.owner_agent_label ?? query.agent_id;
       this.queries.set(query.query_id, {
         ...(JSON.parse(JSON.stringify(query)) as AgentQuery),
+        owner_task_id: ownerTaskId,
+        owner_agent_label: ownerAgentLabel,
+        task_id: ownerTaskId,
+        agent_id: ownerAgentLabel,
         expires_at: Number.isFinite(query.expires_at)
           ? query.expires_at
           : query.created_at + this.ttlMs,
       });
     }
     this.pruneInternal(now, false, false);
+    this.trimRecords();
   }
 
   static deserialize(data: unknown, ttlMs: number = DEFAULT_TTL_MS, now: number = Date.now()): AgentQueryStore {
@@ -255,5 +336,9 @@ export class AgentQueryStore {
 
   size(): number {
     return this.queries.size;
+  }
+
+  getAll(): AgentQuery[] {
+    return [...this.queries.values()];
   }
 }

@@ -454,10 +454,24 @@ export interface ProposedPlan {
   ops: OperatorOp[];
   summary: string;
   rationale?: string;
+  owner_task_id?: string;
+  owner_agent_label?: string;
   source_task_id?: string;
   source_agent_id?: string;
   created_at: number;
+  expires_at?: number;
   status: string;
+  resolved_at?: number;
+  confirmed_at?: number;
+  denied_at?: number;
+  expired_at?: number;
+  acknowledged_at?: number;
+  execution_outcome?: {
+    status: 'succeeded' | 'partial' | 'failed';
+    completed_at: number;
+    results: unknown[];
+  };
+  recovery_warning?: string;
 }
 
 /** Phase 1: interpret a free-form command into a previewable plan (no mutation). */
@@ -484,6 +498,8 @@ export async function getProposedPlans(): Promise<{ plans: ProposedPlan[] }> {
 
 export interface AgentQuery {
   query_id: string;
+  owner_task_id?: string;
+  owner_agent_label?: string;
   task_id?: string;
   agent_id?: string;
   question: string;
@@ -491,6 +507,12 @@ export interface AgentQuery {
   status: string;
   answer?: string;
   created_at: number;
+  expires_at?: number;
+  answered_at?: number;
+  delivered_at?: number;
+  acknowledged_at?: number;
+  expired_at?: number;
+  recovery_warning?: string;
 }
 
 /** Open questions agents are waiting on. */
