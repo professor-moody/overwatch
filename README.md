@@ -10,19 +10,28 @@ It runs as a **multi-agent operator cockpit**: a human operator drives a primary
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install
-npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm run setup -- --daemon --template ctf --name "My Lab" --cidr 10.10.10.0/24
 npm run build
 npm run doctor
+npm run start:daemon
 ```
 
 > **Note:** `node-pty` is an optional native dependency used for local PTY sessions. It requires native build tools (Python 3, C++ compiler). If it fails to install, the rest of Overwatch works normally — only `local_pty` sessions will be unavailable.
 
-`npm run setup` creates local-only `.mcp.json`, `.claude/settings.json`, and
+`npm run setup -- --daemon` creates local-only `.mcp.json`,
+`.overwatch-mcp-token`, `.claude/settings.json`, and
 `engagement.json` files with absolute paths and a fresh engagement nonce. The
 live graph state persists separately to `state-<engagement-id>.json` beside the
 config unless `OVERWATCH_STATE_FILE` is set.
 
-If you create config files manually, `.mcp.json` should use absolute paths:
+Leave the daemon running, open `http://127.0.0.1:8384`, and run `claude` in
+another terminal. Claude, the dashboard, the `overwatch` CLI, and dispatched
+agents then share one engine and one engagement without competing writers.
+
+For a solo Claude-only session, omit `--daemon`; setup retains the compatible
+stdio configuration where Claude launches and owns Overwatch itself.
+
+If you create a solo stdio config manually, `.mcp.json` should use absolute paths:
 
 ```json
 {
@@ -39,9 +48,10 @@ If you create config files manually, `.mcp.json` should use absolute paths:
 }
 ```
 
-Then run `claude`. `.mcp.json` starts Overwatch; `.claude/settings.json` enables hooks that keep Claude using Overwatch instead of drifting into raw target-facing Bash. See the full [Getting Started](https://professor-moody.github.io/overwatch/getting-started/) guide.
-
-That's **stdio** mode (Claude launches Overwatch for one session). To run it as a persistent **HTTP daemon** that the dashboard, the `overwatch` CLI, and multiple agents share on one live engagement, see [Two ways to run Overwatch](https://professor-moody.github.io/overwatch/getting-started/#two-ways-to-run-overwatch).
+Then run `claude`. `.claude/settings.json` enables hooks that keep Claude using
+Overwatch instead of drifting into raw target-facing Bash. See the full
+[Getting Started](https://professor-moody.github.io/overwatch/getting-started/)
+guide.
 
 ## Documentation
 

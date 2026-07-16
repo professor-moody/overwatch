@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
-const root = resolve(dirname(new URL(import.meta.url).pathname), '..');
+const sourceRoot = resolve(dirname(new URL(import.meta.url).pathname), '..');
+const root = resolve(process.env.OVERWATCH_SETUP_ROOT || sourceRoot);
 
 function usage(exitCode = 0) {
   console.log(`Usage: npm run setup -- [options]
@@ -16,6 +17,7 @@ Options:
   --domain <domain>   Scope domain. Can be repeated.
   --host <host>       Scope host. Can be repeated.
   --exclude <value>   Scope exclusion. Can be repeated.
+  --daemon            Configure Claude, dashboard, CLI, and agents to share one HTTP daemon.
   --force             Overwrite existing .mcp.json/.claude/settings.json/engagement.json
   --dry-run           Print generated files without writing
 `);
@@ -29,6 +31,7 @@ function parseArgs(argv) {
     domains: [],
     hosts: [],
     exclusions: [],
+    daemon: false,
     force: false,
     dryRun: false,
   };
@@ -68,6 +71,9 @@ function parseArgs(argv) {
       case '--exclude':
         out.exclusions.push(next());
         break;
+      case '--daemon':
+        out.daemon = true;
+        break;
       case '--force':
         out.force = true;
         break;
@@ -91,14 +97,35 @@ function writeJson(path, value, opts) {
   if (existsSync(path) && !opts.force && !opts.dryRun) {
     throw new Error(`${rel} already exists. Re-run with --force to overwrite.`);
   }
-  const text = JSON.stringify(value, null, 2) + '\n';
+  const printable = opts.dryRun && rel === '.mcp.json'
+    ? JSON.parse(JSON.stringify(value, (_key, candidate) =>
+        typeof candidate === 'string' && candidate.startsWith('Bearer ')
+          ? 'Bearer <redacted>'
+          : candidate))
+    : value;
+  const text = JSON.stringify(printable, null, 2) + '\n';
   if (opts.dryRun) {
     console.log(`\n--- ${rel} ---\n${text}`);
     return;
   }
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, text);
+  writeFileSync(path, JSON.stringify(value, null, 2) + '\n', {
+    ...(opts.mode ? { mode: opts.mode } : {}),
+  });
+  if (opts.mode) chmodSync(path, opts.mode);
   console.log(`wrote ${rel}`);
+}
+
+function writeSecret(path, value, opts) {
+  const rel = path.replace(root + '/', '');
+  if (opts.dryRun) {
+    console.log(`would write ${rel} (0600 secret; value hidden)`);
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, value, { mode: 0o600 });
+  chmodSync(path, 0o600);
+  console.log(`wrote ${rel} (0600)`);
 }
 
 function slugify(input) {
@@ -112,7 +139,7 @@ function slugify(input) {
 function resolveTemplate(template) {
   const direct = resolve(process.cwd(), template);
   if (existsSync(direct)) return direct;
-  const named = join(root, 'engagement-templates', template.endsWith('.json') ? template : `${template}.json`);
+  const named = join(sourceRoot, 'engagement-templates', template.endsWith('.json') ? template : `${template}.json`);
   if (existsSync(named)) return named;
   throw new Error(`Template not found: ${template}`);
 }
@@ -123,7 +150,7 @@ const template = readJson(templatePath);
 const name = opts.name || template.name || 'Overwatch Engagement';
 const id = opts.id || slugify(name || opts.template);
 
-const engagement = {
+const generatedEngagement = {
   ...template,
   id,
   name,
@@ -142,24 +169,67 @@ const engagement = {
 const engagementPath = join(root, 'engagement.json');
 const mcpPath = join(root, '.mcp.json');
 const claudeSettingsPath = join(root, '.claude', 'settings.json');
-const mcp = {
-  mcpServers: {
-    overwatch: {
+const existingEngagement = opts.daemon
+  && !opts.force
+  && existsSync(engagementPath)
+  ? readJson(engagementPath)
+  : undefined;
+const engagement = existingEngagement ?? generatedEngagement;
+const tokenPath = join(root, '.overwatch-mcp-token');
+let daemonToken;
+if (opts.daemon) {
+  daemonToken = existsSync(tokenPath)
+    ? readFileSync(tokenPath, 'utf8').trim()
+    : randomBytes(32).toString('hex');
+  if (!daemonToken) daemonToken = randomBytes(32).toString('hex');
+}
+const existingMcp = existsSync(mcpPath)
+  ? readJson(mcpPath)
+  : {};
+const httpPort = Number(process.env.OVERWATCH_HTTP_PORT || '3000');
+if (!Number.isSafeInteger(httpPort) || httpPort < 1 || httpPort > 65535) {
+  throw new Error('OVERWATCH_HTTP_PORT must be an integer from 1 through 65535');
+}
+const overwatchMcp = opts.daemon ? {
+      type: 'http',
+      url: `http://127.0.0.1:${httpPort}/mcp`,
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+      },
+    } : {
       command: 'node',
       args: [join(root, 'dist', 'index.js')],
       env: {
         OVERWATCH_CONFIG: engagementPath,
         OVERWATCH_SKILLS: join(root, 'skills'),
       },
-    },
+    };
+const mcp = {
+  ...existingMcp,
+  mcpServers: {
+    ...(existingMcp.mcpServers || {}),
+    overwatch: overwatchMcp,
   },
 };
-const claudeSettings = readJson(join(root, '.claude', 'settings.example.json'));
+const claudeSettings = readJson(join(sourceRoot, '.claude', 'settings.example.json'));
 
 try {
-  writeJson(engagementPath, engagement, opts);
-  writeJson(mcpPath, mcp, opts);
-  writeJson(claudeSettingsPath, claudeSettings, opts);
+  if (existingEngagement) {
+    console.log('kept existing engagement.json (daemon setup never replaces engagement state)');
+  } else {
+    writeJson(engagementPath, engagement, opts);
+  }
+  writeJson(
+    mcpPath,
+    mcp,
+    opts.daemon ? { ...opts, force: true, mode: 0o600 } : opts,
+  );
+  if (existsSync(claudeSettingsPath) && opts.daemon && !opts.force && !opts.dryRun) {
+    console.log('kept existing .claude/settings.json');
+  } else {
+    writeJson(claudeSettingsPath, claudeSettings, opts);
+  }
+  if (opts.daemon && daemonToken) writeSecret(tokenPath, daemonToken, opts);
   const statePath = join(root, `state-${engagement.id}.json`);
   const s = engagement.scope || {};
   const scopeItems = [...(s.cidrs || []), ...(s.domains || []), ...(s.hosts || [])];
@@ -182,7 +252,10 @@ try {
 Next steps:
   npm install
   npm run build
-  npm run doctor${scopeItems.length === 0 ? '        # add scope first — see above' : ''}
+  npm run doctor${scopeItems.length === 0 ? '        # add scope first — see above' : ''}${opts.daemon ? `
+  npm run start:daemon
+  # Leave that running, then open http://127.0.0.1:8384 and run claude in another terminal.` : `
+  claude`}
 
 State persists to ${statePath} unless OVERWATCH_STATE_FILE is set.`);
 } catch (err) {

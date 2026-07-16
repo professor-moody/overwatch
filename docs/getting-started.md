@@ -1,6 +1,6 @@
 # Getting Started
 
-This page gets you from a clean clone to "AI is doing recon on my lab" in about five minutes. There are [**two ways to run Overwatch**](#two-ways-to-run-overwatch) — the Quick Start below uses the simplest (stdio); running it as a persistent daemon is a first-class alternative, not an afterthought. Genuinely optional extras (audit trail, tape proxy) live in [Advanced Setup](#advanced-setup).
+This page gets you from a clean clone to "AI is doing recon on my lab" in about five minutes. There are [**two ways to run Overwatch**](#two-ways-to-run-overwatch). The Quick Start uses the shared daemon because it is the straightforward path for terminal Claude, the dashboard, the CLI, and dispatched agents to work together without competing writers. Stdio remains the supported solo fallback.
 
 !!! tip "Already past setup?"
     Jump to the [Operator Playbook](playbook/index.md) for what to actually do once Overwatch is running, or the [End-to-End Walkthrough](playbook/walkthrough.md) for a narrated lab engagement. Working a specific engagement type? Start from an **Assessment Guide**: [Web Assessment](assessments/web-assessment.md) or [Internal AD / Network](assessments/internal-ad-network.md).
@@ -11,7 +11,7 @@ This page gets you from a clean clone to "AI is doing recon on my lab" in about 
 
 Overwatch is **one engine** — the same graph, tools, and dashboard either way. What differs is how clients attach to it:
 
-| | **stdio** *(Quick Start below)* | **HTTP daemon** |
+| | **stdio** *(solo fallback)* | **HTTP daemon** *(recommended)* |
 |---|---|---|
 | How it starts | `claude` launches Overwatch as a child process | You run `npm start -- --http`; it stays up on its own |
 | Lifetime | Lives and dies with that one `claude` session | Long-lived; survives client restarts |
@@ -19,11 +19,11 @@ Overwatch is **one engine** — the same graph, tools, and dashboard either way.
 | Dashboard | Yes, on `:8384` | Yes, on `:8384` |
 | Best for | Solo operator, fastest first run | Dashboard-driven ops, multi-agent dispatch, the `overwatch` CLI, remote/shared instances |
 
-Both bring up the live dashboard. Pick **stdio** to get going in five minutes (the Quick Start). Pick the **daemon** when you want more than one thing steering the same live engagement — see [Run as a persistent daemon](#run-as-a-persistent-daemon-http). Install and engagement setup (steps 1–3) are identical; only how you launch differs.
+Both bring up the live dashboard. Pick the **daemon** whenever you use the dashboard, CLI, planner, dispatched agents, or more than one Claude client. Pick **stdio** only when one Claude session should own the entire process.
 
 ---
 
-## Quick Start (stdio · 5 minutes)
+## Quick Start (shared daemon · 5 minutes) { #quick-start-5-minutes }
 
 ### 1. Install
 
@@ -31,9 +31,10 @@ Both bring up the live dashboard. Pick **stdio** to get going in five minutes (t
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install
-npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm run setup -- --daemon --template ctf --name "My Lab" --cidr 10.10.10.0/24
 npm run build
 npm run doctor
+npm run start:daemon
 ```
 
 Requires **Node.js 20+** and the **Claude Code CLI** (`claude`).
@@ -48,13 +49,15 @@ need, then use the `check_tools` MCP tool as a preflight.
 Start with the general-purpose **`ctf.json`** template — it has no OPSEC constraints, auto-approves everything, and works for any lab, CTF, HTB box, or "I just want to try Overwatch" scenario. It's the friendliest first run.
 
 ```bash
-npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm run setup -- --daemon --template ctf --name "My Lab" --cidr 10.10.10.0/24
 ```
 
 This creates a local `engagement.json` from the template, fills in the CIDR,
-adds a fresh `engagement_nonce`, and writes `.mcp.json` / `.claude/settings.json`
-with absolute paths. Re-run with `--force` only when you intentionally want to
-replace existing local config.
+adds a fresh `engagement_nonce`, and writes an authenticated HTTP `.mcp.json`,
+`.overwatch-mcp-token`, and `.claude/settings.json`. Leave
+`npm run start:daemon` running, open `http://127.0.0.1:8384`, and start `claude`
+in another terminal. Re-running `setup -- --daemon` keeps an existing
+`engagement.json`; it only refreshes the shared-client wiring.
 
 If you prefer to edit manually, copy `engagement.example.json` or a template to
 `engagement.json` and fill in **just two things**:
@@ -106,41 +109,26 @@ Use two local config files:
 
 | File | Purpose |
 |------|---------|
-| `.mcp.json` | Starts the Overwatch MCP server. |
+| `.mcp.json` | Connects Claude to the shared Overwatch MCP daemon. |
 | `.claude/settings.json` | Enables Claude Code hooks that keep Claude using Overwatch correctly. |
 
-Both files are local and gitignored because they contain machine-specific paths.
-
-First, create `.mcp.json`:
-
-```bash
-cp .mcp.example.json .mcp.json
-```
-
-Edit `.mcp.json` with absolute paths:
+Both files are local and gitignored. The setup command already created them.
+The daemon form looks like this:
 
 ```json
 {
   "mcpServers": {
     "overwatch": {
-      "command": "node",
-      "args": ["/absolute/path/to/overwatch/dist/index.js"],
-      "env": {
-        "OVERWATCH_CONFIG": "/absolute/path/to/overwatch/engagement.json",
-        "OVERWATCH_SKILLS": "/absolute/path/to/overwatch/skills"
-      }
+      "type": "http",
+      "url": "http://127.0.0.1:3000/mcp",
+      "headers": { "Authorization": "Bearer <local setup token>" }
     }
   }
 }
 ```
 
-Then enable the Claude hooks:
-
-```bash
-cp .claude/settings.example.json .claude/settings.json
-```
-
-That is the recommended setup: `.mcp.json` contains `mcpServers`, and `.claude/settings.json` contains `hooks`.
+`setup -- --daemon` preserves any other MCP servers already present in this
+file and updates only `mcpServers.overwatch`.
 
 !!! important "Do not skip hooks"
     Hooks keep Claude from drifting away from Overwatch during long sessions. They block raw target-facing Bash and remind Claude to put discoveries into the graph. Full setup and verification steps are in [Claude Code Hooks](claude-hooks.md).
@@ -149,16 +137,26 @@ That is the recommended setup: `.mcp.json` contains `mcpServers`, and `.claude/s
 
 ```bash
 cd /absolute/path/to/overwatch
+npm run start:daemon
+```
+
+Leave that terminal running. In a second terminal:
+
+```bash
+cd /absolute/path/to/overwatch
 claude
 ```
 
-Claude Code starts the Overwatch MCP server automatically and reads [`AGENTS.md`](https://github.com/professor-moody/overwatch/blob/main/AGENTS.md) as the primary session prompt. The first thing the AI does is call `get_state()` to load the engagement briefing.
+Claude Code connects to the already-running Overwatch engine and reads
+[`AGENTS.md`](https://github.com/professor-moody/overwatch/blob/main/AGENTS.md)
+as the primary session prompt. The dashboard, CLI, Claude, and dispatched agents
+now share the same state.
 
 ### 5. Open the dashboard
 
 In another tab: **<http://localhost:8384>**
 
-You'll see the live engagement graph, frontier items, agent activity, and discovered credentials in real time as the AI works. It starts automatically — no extra setup.
+You'll see the live engagement graph, frontier items, agent activity, and discovered credentials in real time as the AI works.
 
 **You're ready.** Jump to [What to say next](#what-to-say-next).
 
@@ -200,13 +198,17 @@ All three returning clean output means you're good.
 
 ## Run as a persistent daemon (HTTP)
 
-The Quick Start runs Overwatch over **stdio** — Claude Code launches it as a child process that lives and dies with that one `claude` session. Run it as a long-lived **HTTP daemon** when you want the dashboard as a first-class control surface, the [`overwatch` CLI](cli.md), a terminal `claude`, and dispatched sub-agents to all share the *same* live engagement — or when the server should outlive any single client (a remote box, a shared instance).
+The Quick Start already runs Overwatch as an **HTTP daemon** so the dashboard,
+the [`overwatch` CLI](cli.md), terminal Claude, and dispatched sub-agents share
+the same live engagement. This section explains the wiring and how to switch an
+older solo stdio setup.
 
-**Steps 1–3 above are identical** (install, pick a template, wire config). Instead of Step 4, start the daemon yourself:
+`setup -- --daemon` already wires Claude to this endpoint and creates the same
+stable token the daemon will reuse:
 
 ```bash
 cd /absolute/path/to/overwatch
-npm start -- --http                 # or: OVERWATCH_TRANSPORT=http node dist/index.js --http
+npm run start:daemon                # alias: npm start -- --http
 ```
 
 It binds two loopback ports:
@@ -220,10 +222,11 @@ Every MCP client gets its own `mcp-session-id`, but they all read and write the 
 
 ### Point Claude Code at the daemon
 
-Instead of the stdio `.mcp.json` from Step 3, use the HTTP form — there's a ready template at `.mcp.http.example.json`:
+If you started with solo stdio mode, switch safely without replacing the
+engagement:
 
 ```bash
-cp .mcp.http.example.json .mcp.json
+npm run setup -- --daemon
 ```
 
 ```json
@@ -238,13 +241,10 @@ cp .mcp.http.example.json .mcp.json
 }
 ```
 
-The `/mcp` endpoint **fails closed**: it requires a bearer token by default — *even on loopback* — because it exposes the full tool surface (including target-facing `run_bash`) to every connecting client. Set a stable one and start the daemon with it:
-
-```bash
-OVERWATCH_TRANSPORT=http OVERWATCH_MCP_TOKEN=<token> node dist/index.js --http
-```
-
-If you don't set `OVERWATCH_MCP_TOKEN`, the daemon generates one and writes it `0600` to `.overwatch-mcp-token` beside the state file — read it from there. For trusted single-user dev only, `OVERWATCH_MCP_REQUIRE_TOKEN=0` disables the check.
+The `/mcp` endpoint requires a bearer token by default, even on loopback.
+Setup writes it into the local `.mcp.json` and stores the same value `0600` in
+`.overwatch-mcp-token`; daemon restarts reuse that file automatically. You can
+still provide `OVERWATCH_MCP_TOKEN` explicitly when managing secrets externally.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

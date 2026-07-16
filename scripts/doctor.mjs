@@ -30,6 +30,64 @@ async function isPortFree(port) {
   });
 }
 
+async function probeDashboard(port) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: controller.signal,
+    });
+    if (!response.ok) return false;
+    const body = await response.json();
+    return Boolean(
+      body
+      && typeof body === 'object'
+      && (
+        'health_checks' in body
+        || 'status' in body
+        || 'issues' in body
+      )
+    );
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeMcp(config) {
+  if (!config || typeof config.url !== 'string') {
+    return { status: 'invalid', detail: 'HTTP MCP config has no URL' };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await fetch(config.url, {
+      method: 'GET',
+      headers: config.headers || {},
+      signal: controller.signal,
+    });
+    if (response.status === 401 || response.status === 403) {
+      return {
+        status: 'unauthorized',
+        detail: `${config.url} rejected the configured bearer token (${response.status})`,
+      };
+    }
+    return {
+      status: 'reachable',
+      detail: `${config.url} responded (${response.status})`,
+    };
+  } catch (error) {
+    return {
+      status: 'unreachable',
+      detail: `${config.url} is not reachable`,
+      error,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function which(cmd) {
   try {
     return execFileSync('sh', ['-lc', `command -v ${cmd}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -52,8 +110,30 @@ else add('fail', 'Dashboard build', 'dist/dashboard-next/index.html is missing',
 
 const mcpPath = join(root, '.mcp.json');
 const claudeSettingsPath = join(root, '.claude', 'settings.json');
+let mcpMode = 'missing';
+let overwatchMcpConfig = null;
 if (existsSync(mcpPath)) add('pass', 'MCP config', mcpPath);
 else add('fail', 'MCP config', '.mcp.json is missing', 'Run: npm run setup');
+if (existsSync(mcpPath)) {
+  try {
+    const mcp = readJson(mcpPath)?.mcpServers?.overwatch;
+    overwatchMcpConfig = mcp;
+    mcpMode = mcp?.type === 'http' || typeof mcp?.url === 'string'
+      ? 'http'
+      : typeof mcp?.command === 'string'
+        ? 'stdio'
+        : 'unknown';
+    if (mcpMode === 'http') {
+      add('pass', 'MCP operating mode', 'shared HTTP daemon');
+    } else if (mcpMode === 'stdio') {
+      add('pass', 'MCP operating mode', 'private stdio process');
+    } else {
+      add('warn', 'MCP operating mode', 'unrecognized .mcp.json shape');
+    }
+  } catch {
+    add('fail', 'MCP operating mode', '.mcp.json could not be parsed');
+  }
+}
 
 if (existsSync(claudeSettingsPath)) add('pass', 'Claude hooks config', claudeSettingsPath);
 else add('warn', 'Claude hooks config', '.claude/settings.json is missing', 'Run: npm run setup');
@@ -93,8 +173,65 @@ if (config) {
 
 const dashboardPort = Number(process.env.OVERWATCH_DASHBOARD_PORT || '8384');
 if (Number.isFinite(dashboardPort)) {
-  if (await isPortFree(dashboardPort)) add('pass', 'Dashboard port', `127.0.0.1:${dashboardPort} is free`);
-  else add('warn', 'Dashboard port', `127.0.0.1:${dashboardPort} is already in use`, 'Use OVERWATCH_DASHBOARD_PORT=<free-port>.');
+  const free = await isPortFree(dashboardPort);
+  const runningDashboard = !free && await probeDashboard(dashboardPort);
+  const mcpProbe = mcpMode === 'http'
+    ? await probeMcp(overwatchMcpConfig)
+    : undefined;
+  if (mcpProbe?.status === 'reachable') {
+    add('pass', 'MCP daemon endpoint', mcpProbe.detail);
+  } else if (mcpProbe?.status === 'unauthorized') {
+    add(
+      'fail',
+      'MCP daemon endpoint',
+      mcpProbe.detail,
+      'Run: npm run setup -- --daemon  (refreshes only the Overwatch MCP entry and token).',
+    );
+  } else if (mcpProbe && mcpProbe.status !== 'invalid') {
+    add(
+      'warn',
+      'MCP daemon endpoint',
+      mcpProbe.detail,
+      'Run: npm run start:daemon',
+    );
+  } else if (mcpProbe?.status === 'invalid') {
+    add('fail', 'MCP daemon endpoint', mcpProbe.detail, 'Run: npm run setup -- --daemon');
+  }
+  if (runningDashboard && mcpProbe?.status === 'reachable') {
+    add('pass', 'Shared daemon', `dashboard and MCP are both reachable`);
+  } else if (runningDashboard) {
+    if (mcpMode === 'stdio') {
+      add(
+        'fail',
+        'Process ownership',
+        `An Overwatch instance is already running at http://127.0.0.1:${dashboardPort}, but Claude is configured to launch another stdio writer.`,
+        'Run: npm run setup -- --daemon  (keeps engagement.json and points Claude at the existing daemon).',
+      );
+    } else {
+      add(
+        'fail',
+        'Shared daemon',
+        'dashboard is reachable but the configured MCP endpoint is not usable',
+        'Confirm OVERWATCH_HTTP_PORT and rerun: npm run setup -- --daemon',
+      );
+    }
+  } else if (free && mcpMode === 'http') {
+    add(
+      'warn',
+      'Shared daemon',
+      `not running on 127.0.0.1:${dashboardPort}`,
+      'Run: npm run start:daemon',
+    );
+  } else if (free) {
+    add('pass', 'Dashboard port', `127.0.0.1:${dashboardPort} is free`);
+  } else {
+    add(
+      'warn',
+      'Dashboard port',
+      `127.0.0.1:${dashboardPort} is occupied by another service`,
+      'Stop that service or set OVERWATCH_DASHBOARD_PORT=<free-port>.',
+    );
+  }
 }
 
 for (const cmd of ['nmap', 'curl', 'python3', 'socat', 'fuser']) {
