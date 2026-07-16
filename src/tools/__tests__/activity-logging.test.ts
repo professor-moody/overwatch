@@ -316,6 +316,30 @@ describe('structured activity logging tools', () => {
     expect(history.some(candidate => candidate.event_type === 'finding_ingested')).toBe(true);
   });
 
+  it('parse_output replays one durable result without ingesting or logging twice', async () => {
+    const request = {
+      tool_name: 'nxc',
+      output: 'SMB  10.10.10.2  445  ACME\\\\scanner  [+]  Windows Server 2019',
+      action_id: 'action-parse-idempotent',
+      ingest: true,
+      command_id: 'parse-command-idempotent',
+      idempotency_key: 'parse-retry-idempotent',
+    };
+    const first = await handlers.parse_output(request);
+    const second = await handlers.parse_output(request);
+
+    expect(second).toEqual(first);
+    expect(engine.getFullHistory().filter(candidate =>
+      candidate.action_id === request.action_id
+      && candidate.event_type === 'parse_output')).toHaveLength(1);
+    expect(engine.getFullHistory().filter(candidate =>
+      candidate.action_id === request.action_id
+      && candidate.event_type === 'finding_ingested')).toHaveLength(1);
+    expect(engine.listApplicationCommands().filter(command =>
+      command.command_kind === 'parse_output.execute')).toHaveLength(1);
+    expect(JSON.stringify(engine.listApplicationCommands())).not.toContain(request.output);
+  });
+
   it('parse_output returns a warning when action context is omitted', async () => {
     const result = await handlers.parse_output({
       tool_name: 'nxc',
@@ -545,7 +569,7 @@ describe('structured activity logging tools', () => {
     // First exhaust all candidates of a given type
     engine.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
     await handlers.dispatch_agents({
-      count: 100,
+      count: 20,
       strategy: 'top_priority',
       types: ['incomplete_node'],
       hops: 1,

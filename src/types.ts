@@ -1117,6 +1117,10 @@ export interface AgentTask {
   // its bootstrap prompt). The 'planner' role carries the operator's free-form
   // command + a snapshot of steerable state here so it can propose a plan.
   objective?: string;
+  /** Durable application command that created/owns this task, when any.
+   * Planner tasks use it to publish queued/running/plan-ready truth without
+   * inferring lifecycle from dashboard polling. */
+  application_command_id?: string;
   // Operator-chosen Claude model for the headless spawn, passed straight through
   // as `claude -p --model <id>`. Unset → the CLI's own default. Validated at
   // dispatch against `EngagementConfig.available_models` when that list is set.

@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 import type { ConfigIntentConflict, ConfigRecoveryStatus, EngagementConfig } from '../types.js';
 import { engagementConfigSchema } from '../types.js';
+import type { PersistedApplicationCommandV1 } from './persisted-state.js';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
 import { parseJsonBytes } from './durable-json.js';
 
@@ -48,7 +49,10 @@ export interface EngagementConfigServiceHost {
     config: EngagementConfig,
     context: ConfigApplyContext,
     event?: ConfigCommitEvent,
+    applicationCommand?: PersistedApplicationCommandV1,
   ): void;
+  recordApplicationCommand?(command: PersistedApplicationCommandV1): void;
+  hasApplicationCommand?(idempotencyKey: string): boolean;
   persistRuntimeState(): void;
   recordConfigEvent(input: ConfigCommitEvent): void;
 }
@@ -62,7 +66,9 @@ interface ConfigFileObservation {
 }
 
 interface ConfigWriteIntentV1 {
-  version: 1;
+  /** V2 adds the application-command envelope. Older binaries reject it
+   * instead of completing the config write while silently losing idempotency. */
+  version: 1 | 2;
   engagement_id: string;
   created_at: string;
   source: string;
@@ -73,6 +79,8 @@ interface ConfigWriteIntentV1 {
   config: EngagementConfig;
   /** Audit reference for an intent that explicit reconciliation supersedes. */
   superseded_intent_conflict?: ConfigIntentConflict;
+  /** Command outcome committed atomically with the runtime/durable config. */
+  application_command?: PersistedApplicationCommandV1;
   intent_checksum: string;
 }
 
@@ -607,6 +615,46 @@ function cloneConfig(config: EngagementConfig): EngagementConfig {
   return JSON.parse(JSON.stringify(config)) as EngagementConfig;
 }
 
+function cloneApplicationCommand(
+  command: PersistedApplicationCommandV1,
+): PersistedApplicationCommandV1 {
+  return JSON.parse(JSON.stringify(command)) as PersistedApplicationCommandV1;
+}
+
+function isEmbeddedApplicationCommand(
+  value: unknown,
+): value is PersistedApplicationCommandV1 {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const command = value as Partial<PersistedApplicationCommandV1>;
+  return typeof command.command_id === 'string'
+    && command.command_id.length > 0
+    && command.command_id.length <= 256
+    && typeof command.idempotency_key === 'string'
+    && command.idempotency_key.length > 0
+    && command.idempotency_key.length <= 512
+    && typeof command.input_sha256 === 'string'
+    && /^[a-f0-9]{64}$/.test(command.input_sha256)
+    && typeof command.command_kind === 'string'
+    && command.command_kind.length > 0
+    && [
+      'mcp',
+      'dashboard',
+      'cli',
+      'planner',
+      'scripted_runner',
+      'headless_runner',
+      'system',
+    ].includes(command.transport ?? '')
+    && (command.actor_task_id === null
+      || typeof command.actor_task_id === 'string')
+    && command.status === 'succeeded'
+    && typeof command.created_at === 'string'
+    && Number.isFinite(Date.parse(command.created_at))
+    && typeof command.completed_at === 'string'
+    && Number.isFinite(Date.parse(command.completed_at))
+    && command.validated_input !== undefined;
+}
+
 function hashObservationMarker(value: unknown): string {
   return createHash('sha256').update(canonicalJson(value)).digest('hex');
 }
@@ -896,12 +944,26 @@ export class EngagementConfigService {
     config: EngagementConfig,
     context: ConfigApplyContext,
     event?: ConfigCommitEvent,
+    applicationCommand?: PersistedApplicationCommandV1,
   ): void {
     if (this.host.commitRuntimeConfig) {
-      this.host.commitRuntimeConfig(config, context, event);
+      this.host.commitRuntimeConfig(
+        config,
+        context,
+        event,
+        applicationCommand,
+      );
     } else {
       this.host.applyRuntimeConfig(config, context);
       if (event) this.host.recordConfigEvent(event);
+      if (applicationCommand) {
+        if (!this.host.recordApplicationCommand) {
+          throw new Error(
+            'The config host cannot persist an embedded application command.',
+          );
+        }
+        this.host.recordApplicationCommand(applicationCommand);
+      }
     }
     this.host.persistRuntimeState();
   }
@@ -919,6 +981,58 @@ export class EngagementConfigService {
     }
 
     return this.commitDesired(next, source, false, this.status.file_hash);
+  }
+
+  commitWithCommand(
+    nextConfig: EngagementConfig,
+    source: string,
+    buildCommand: (
+      committedConfig: EngagementConfig,
+    ) => PersistedApplicationCommandV1,
+  ): {
+    config: EngagementConfig;
+    command: PersistedApplicationCommandV1;
+  } {
+    this.assertWritable();
+    this.verifyManagedFileUnchanged();
+    const current = this.host.getRuntimeConfig();
+    const semanticChange = !configsSemanticallyEqual(current, nextConfig);
+    const next = semanticChange
+      ? withConfigMetadata(
+          nextConfig,
+          Math.max(current.config_revision ?? 0, 0) + 1,
+        )
+      : cloneConfig(current);
+    const command = cloneApplicationCommand(buildCommand(next));
+    if (command.status !== 'succeeded') {
+      throw new Error(
+        'A configuration write intent may only embed a succeeded application command.',
+      );
+    }
+    if (!this.configPath) {
+      this.commitRuntime(
+        next,
+        {
+          source,
+          recovery: false,
+          semantic_change: semanticChange,
+        },
+        undefined,
+        command,
+      );
+      this.durableConfig = cloneConfig(next);
+      return { config: cloneConfig(next), command };
+    }
+
+    const config = this.commitDesired(
+      next,
+      source,
+      false,
+      this.status.file_hash,
+      undefined,
+      command,
+    );
+    return { config, command };
   }
 
   /** Re-establish file/runtime/state ownership after an explicit state
@@ -1226,7 +1340,10 @@ export class EngagementConfigService {
     return this.commitPreparedResolution(prepared);
   }
 
-  commitPreparedResolution(prepared: PreparedConfigResolution): ResolveConfigDivergenceResult {
+  commitPreparedResolution(
+    prepared: PreparedConfigResolution,
+    applicationCommand?: PersistedApplicationCommandV1,
+  ): ResolveConfigDivergenceResult {
     return this.applyPreparedResolution(prepared, target =>
       this.commitDesired(
         target,
@@ -1234,8 +1351,23 @@ export class EngagementConfigService {
         true,
         prepared.expected_file_hash,
         prepared.intent_conflict,
+        applicationCommand,
       ),
     );
+  }
+
+  previewPreparedResolution(
+    prepared: PreparedConfigResolution,
+  ): ResolveConfigDivergenceResult {
+    return {
+      resolved: true,
+      mode: prepared.mode,
+      config: cloneConfig(prepared.config),
+      recovery: {
+        ...this.inSyncStatus(prepared.config, 'recovered'),
+        last_resolution: prepared.mode,
+      },
+    };
   }
 
   prepareResolution(input: ResolveConfigDivergenceInput): PreparedConfigResolution {
@@ -1326,6 +1458,7 @@ export class EngagementConfigService {
     recovery: boolean,
     expectedFileHash?: string,
     supersededIntentConflict?: ConfigIntentConflict,
+    applicationCommand?: PersistedApplicationCommandV1,
   ): EngagementConfig {
     const stateBefore = this.host.getRuntimeConfig();
     const fileBefore = this.observeFile();
@@ -1348,6 +1481,9 @@ export class EngagementConfigService {
         ? {
             superseded_intent_conflict: JSON.parse(JSON.stringify(supersededIntentConflict)) as ConfigIntentConflict,
           }
+        : {}),
+      ...(applicationCommand
+        ? { application_command: cloneApplicationCommand(applicationCommand) }
         : {}),
     });
 
@@ -1384,8 +1520,20 @@ export class EngagementConfigService {
               : {}),
           },
         },
+        intent.application_command,
       );
       this.assertTargetConverged(next);
+      if (
+        intent.application_command
+        && this.host.hasApplicationCommand
+        && !this.host.hasApplicationCommand(
+          intent.application_command.idempotency_key,
+        )
+      ) {
+        throw new Error(
+          'Configuration converged without its embedded application command.',
+        );
+      }
       this.durableConfig = cloneConfig(next);
       this.removeIntent(intent.intent_checksum);
       this.status = this.inSyncStatus(next, recovery ? 'recovered' : 'in_sync');
@@ -1420,7 +1568,14 @@ export class EngagementConfigService {
 
     if (fileHash !== intent.to_hash) this.writeConfig(intent.config, fileHash);
     const stateNeedsCompletion = stateHash !== intent.to_hash;
-    if (stateNeedsCompletion) {
+    const commandNeedsCompletion = Boolean(
+      intent.application_command
+      && this.host.hasApplicationCommand
+      && !this.host.hasApplicationCommand(
+        intent.application_command.idempotency_key,
+      ),
+    );
+    if (stateNeedsCompletion || commandNeedsCompletion) {
       this.commitRuntime(
         intent.config,
         {
@@ -1428,25 +1583,42 @@ export class EngagementConfigService {
           recovery: true,
           semantic_change: !configsSemanticallyEqual(state, intent.config),
         },
-        {
-          description: 'Completed interrupted configuration write',
-          result: 'success',
-          details: {
-            source: intent.source,
-            config_revision: intent.to_revision,
-            config_hash: intent.to_hash,
-            expected_file_hash: intent.from_file_hash,
-            previous_state_hash: intent.from_state_hash,
-            target_hash: intent.to_hash,
-            intent_checksum: intent.intent_checksum,
-            ...(intent.superseded_intent_conflict
-              ? { superseded_config_intent: intent.superseded_intent_conflict }
-              : {}),
-          },
-        },
+        stateNeedsCompletion
+          ? {
+              description: 'Completed interrupted configuration write',
+              result: 'success',
+              details: {
+                source: intent.source,
+                config_revision: intent.to_revision,
+                config_hash: intent.to_hash,
+                expected_file_hash: intent.from_file_hash,
+                previous_state_hash: intent.from_state_hash,
+                target_hash: intent.to_hash,
+                intent_checksum: intent.intent_checksum,
+                ...(intent.superseded_intent_conflict
+                  ? {
+                      superseded_config_intent:
+                        intent.superseded_intent_conflict,
+                    }
+                  : {}),
+              },
+            }
+          : undefined,
+        intent.application_command,
       );
     }
     this.assertTargetConverged(intent.config);
+    if (
+      intent.application_command
+      && this.host.hasApplicationCommand
+      && !this.host.hasApplicationCommand(
+        intent.application_command.idempotency_key,
+      )
+    ) {
+      throw new Error(
+        'Recovered configuration is missing its embedded application command.',
+      );
+    }
     this.durableConfig = cloneConfig(intent.config);
     this.removeIntent(intent.intent_checksum);
     this.status = this.inSyncStatus(intent.config, 'recovered');
@@ -1663,7 +1835,10 @@ export class EngagementConfigService {
   }
 
   private createIntent(input: Omit<ConfigWriteIntentV1, 'version' | 'intent_checksum'>): ConfigWriteIntentV1 {
-    const body: Omit<ConfigWriteIntentV1, 'intent_checksum'> = { version: 1, ...input };
+    const body: Omit<ConfigWriteIntentV1, 'intent_checksum'> = {
+      version: input.application_command ? 2 : 1,
+      ...input,
+    };
     return { ...body, intent_checksum: checksumIntent(body) };
   }
 
@@ -1672,7 +1847,10 @@ export class EngagementConfigService {
     const value = parseJsonBytes(readFileSync(path));
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Config write intent must be an object.');
     const candidate = value as ConfigWriteIntentV1;
-    if (candidate.version !== 1 || candidate.engagement_id !== candidate.config?.id) {
+    if (
+      (candidate.version !== 1 && candidate.version !== 2)
+      || candidate.engagement_id !== candidate.config?.id
+    ) {
       throw new Error('Config write intent metadata is invalid.');
     }
     const { intent_checksum, ...body } = candidate;
@@ -1686,6 +1864,10 @@ export class EngagementConfigService {
       || config.config_hash !== candidate.to_hash
       || (candidate.superseded_intent_conflict !== undefined
         && !isIntentConflict(candidate.superseded_intent_conflict))
+      || (candidate.version === 1
+        && candidate.application_command !== undefined)
+      || (candidate.version === 2
+        && !isEmbeddedApplicationCommand(candidate.application_command))
     ) {
       throw new Error('Config write intent target metadata is inconsistent.');
     }

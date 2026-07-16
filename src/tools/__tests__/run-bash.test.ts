@@ -475,6 +475,16 @@ describe('run_bash tool', () => {
       parsed: false, parse_status: 'no_data', parse_outcome: 'no_data',
       nodes_parsed: 0, edges_parsed: 0, isError: true,
     });
+    const actionEvents = engine.getFullHistory().filter(event =>
+      event.action_id === payload.action_id);
+    expect(actionEvents.map(event => event.event_type)).toEqual(
+      expect.arrayContaining(['parse_output', 'action_failed']),
+    );
+    expect(actionEvents.findIndex(event => event.event_type === 'parse_output'))
+      .toBeLessThan(actionEvents.findIndex(event => event.event_type === 'action_failed'));
+    expect(actionEvents.some(event => event.event_type === 'action_completed')).toBe(false);
+    expect(actionEvents.find(event => event.event_type === 'action_failed')?.details)
+      .toMatchObject({ reason: 'parse_failed', parse_outcome: 'no_data' });
   });
 
   it('preserves Entra tenant context through inline run_bash parsing', async () => {

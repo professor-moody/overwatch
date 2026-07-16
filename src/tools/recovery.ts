@@ -3,10 +3,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { toolText } from './_tool-output.js';
 import { withErrorBoundary } from './error-boundary.js';
+import { RecoveryCommandService } from '../services/recovery-command-service.js';
 
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 
 export function registerRecoveryTools(server: McpServer, engine: GraphEngine): void {
+  const commands = new RecoveryCommandService(engine);
   server.registerTool(
     'get_recovery_status',
     {
@@ -32,12 +34,18 @@ export function registerRecoveryTools(server: McpServer, engine: GraphEngine): v
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
-    withErrorBoundary('resolve_config_divergence', async params => toolText(
-      engine.resolveConfigDivergence({
+    withErrorBoundary('resolve_config_divergence', async params => {
+      const execution = commands.resolveConfig({
         mode: params.resolution,
         expected_file_hash: params.expected_file_hash,
         expected_state_hash: params.expected_state_hash,
-      }),
-    )),
+      }, { transport: 'mcp' });
+      return toolText({
+        ...execution.result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
+    }),
   );
 }

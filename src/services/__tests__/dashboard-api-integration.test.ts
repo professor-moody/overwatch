@@ -25,6 +25,7 @@ import type { EngagementConfig } from '../../types.js';
 import {
   FrontierWeightsResetResultSchema,
   FrontierWeightsUpdateResultSchema,
+  GraphCorrectionResultSchema,
   HealthDtoSchema,
   ObjectiveDeleteResponseSchema,
   ObjectiveCreateResponseSchema,
@@ -167,10 +168,14 @@ async function getJson<T = unknown>(path: string): Promise<{ status: number; bod
   return { status: res.status, body };
 }
 
-async function postJson<T = unknown>(path: string, body: unknown): Promise<{ status: number; body: T }> {
+async function postJson<T = unknown>(
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: T }> {
   const res = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
   const responseBody = res.headers.get('content-type')?.includes('json')
@@ -246,6 +251,62 @@ describe('GET /api/graph', () => {
     const graph = RawGraphDtoSchema.parse(exported.body);
     expect(graph.nodes.some(node => node.id === 'cloud-id-power')).toBe(true);
     expect(graph.nodes.find(node => node.id === 'cloud-id-power')?.properties.type).toBe('cloud_identity');
+  });
+});
+
+describe('POST /api/graph/correct', () => {
+  it('rejects the legacy patch shape and applies set_properties exactly once', async () => {
+    engine.addNode({
+      id: 'graph-correction-api-node',
+      type: 'host',
+      label: 'before correction',
+      ip: '10.0.0.88',
+      discovered_at: NOW,
+      confidence: 1,
+    });
+    const legacy = await postJson('/api/graph/correct', {
+      reason: 'legacy no-op shape',
+      operations: [{
+        kind: 'patch_node',
+        node_id: 'graph-correction-api-node',
+        patch: { label: 'must not apply' },
+      }],
+    });
+    expect(legacy.status).toBe(400);
+    expect(engine.getNode('graph-correction-api-node')?.label)
+      .toBe('before correction');
+
+    const headers = {
+      'Idempotency-Key': 'dashboard-graph-correction-retry',
+      'X-Overwatch-Command-Id': 'dashboard-graph-correction-command',
+    };
+    const body = {
+      reason: 'apply canonical patch',
+      operations: [{
+        kind: 'patch_node',
+        node_id: 'graph-correction-api-node',
+        set_properties: { label: 'after correction' },
+      }],
+    };
+    const first = await postJson('/api/graph/correct', body, headers);
+    expect(first.status).toBe(200);
+    expect(GraphCorrectionResultSchema.parse(first.body)).toMatchObject({
+      patched_nodes: ['graph-correction-api-node'],
+      command_id: 'dashboard-graph-correction-command',
+      replayed: false,
+    });
+    expect(engine.getNode('graph-correction-api-node')?.label)
+      .toBe('after correction');
+    const second = await postJson('/api/graph/correct', body, headers);
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({
+      command_id: 'dashboard-graph-correction-command',
+      replayed: true,
+    });
+    expect(engine.getFullHistory().filter(event =>
+      event.event_type === 'graph_corrected'
+      && event.details?.reason === 'apply canonical patch',
+    )).toHaveLength(1);
   });
 });
 
@@ -580,13 +641,23 @@ describe('encoded objective IDs', () => {
     const updated = await patchJson(path, {
       description: 'Updated objective', target_criteria: { label: 'after', tier: 0 },
     });
-    expect(ObjectiveUpdateResponseSchema.parse(updated.body)).toEqual({ updated: true });
+    expect(ObjectiveUpdateResponseSchema.parse(updated.body)).toMatchObject({
+      updated: true,
+      command_id: expect.any(String),
+      idempotency_key: expect.any(String),
+      replayed: false,
+    });
     expect(engine.getConfig().objectives.find(objective => objective.id === id)?.target_criteria)
       .toEqual({ label: 'after', tier: 0 });
 
     const deleted = await fetch(`${baseUrl}${path}`, { method: 'DELETE' });
     expect(deleted.status).toBe(200);
-    expect(ObjectiveDeleteResponseSchema.parse(await deleted.json())).toEqual({ deleted: true });
+    expect(ObjectiveDeleteResponseSchema.parse(await deleted.json())).toMatchObject({
+      deleted: true,
+      command_id: expect.any(String),
+      idempotency_key: expect.any(String),
+      replayed: false,
+    });
   });
 });
 
@@ -954,21 +1025,55 @@ describe('GET /api/actions/pending', () => {
 describe('POST /api/actions/{approve,deny}-batch', () => {
   // Seed a live pending approval; submit() returns a promise that resolves when the
   // operator (here, the batch endpoint) approves/denies it.
-  const seed = (id: string) => engine.getPendingActionQueue().submit(
-    { action_id: id, technique: 'enumeration', description: `test ${id}`, target_ip: '10.0.0.9' } as never,
-  ) as Promise<{ status: string; reason?: string }>;
+  const seed = (id: string) => {
+    const pending = {
+      action_id: id,
+      technique: 'enumeration',
+      description: `test ${id}`,
+      target_ip: '10.0.0.9',
+      opsec_context: {
+        global_noise_spent: 0,
+        noise_budget_remaining: 1,
+        recommended_approach: 'normal' as const,
+        defensive_signals: [],
+      },
+      validation_result: 'valid' as const,
+    };
+    engine.recordApprovalRequest(pending);
+    return engine.getPendingActionQueue().submit(pending) as Promise<{
+      status: string;
+      reason?: string;
+    }>;
+  };
 
   it('approve-batch resolves the listed actions and skips unknown ids', async () => {
     const p1 = seed('batch-a1');
     const p2 = seed('batch-a2');
+    const headers = {
+      'Idempotency-Key': 'dashboard-batch-approve-1',
+      'X-Overwatch-Command-Id': 'dashboard-batch-approve-command-1',
+    };
     const { status, body } = await postJson<{ ok: boolean; resolved: number; total: number }>(
-      '/api/actions/approve-batch', { action_ids: ['batch-a1', 'batch-a2', 'ghost-id'] });
+      '/api/actions/approve-batch',
+      { action_ids: ['batch-a1', 'batch-a2', 'ghost-id'] },
+      headers,
+    );
     expect(status).toBe(200);
     expect(body.resolved).toBe(2);   // 2 real, unknown id skipped (not an error)
     expect(body.total).toBe(3);
     const [r1, r2] = await Promise.all([p1, p2]);
     expect(r1.status).toBe('approved');
     expect(r2.status).toBe('approved');
+
+    const replay = await postJson<{ ok: boolean; resolved: number; total: number }>(
+      '/api/actions/approve-batch',
+      { action_ids: ['batch-a1', 'batch-a2', 'ghost-id'] },
+      headers,
+    );
+    expect(replay).toEqual({
+      status: 200,
+      body: { ok: true, resolved: 2, total: 3 },
+    });
   });
 
   it('deny-batch requires a non-empty reason', async () => {

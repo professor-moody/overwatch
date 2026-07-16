@@ -202,6 +202,13 @@ export interface ScopeUpdatedMutationPayloadV1 {
   }>;
   config_resolution?: 'use_file';
   superseded_config_intent?: ConfigIntentConflict;
+  /** Optional absolute after-state for a high-level command that must commit
+   * with the scope/config change (for example quick-deploy's agent task and
+   * idempotent response record). Hashes prevent replay from overwriting a
+   * divergent later state while remaining idempotent after partial apply. */
+  state_patch?: DurableStatePatchV1;
+  state_patch_before_sha256?: string;
+  state_patch_after_sha256?: string;
   affected_node_count: number;
 }
 
@@ -285,6 +292,11 @@ export interface GraphCorrectedMutationPayloadV1 {
   edge_changes: IdentityRewriteMutationPayloadV1['edge_changes'];
   before_summary: { total_nodes: number; total_edges: number };
   after_summary: { total_nodes: number; total_edges: number };
+  /** Optional command-state envelope committed with the destructive graph
+   * correction so retries cannot repeat it after a lost response. */
+  state_patch?: DurableStatePatchV1;
+  state_patch_before_sha256?: string;
+  state_patch_after_sha256?: string;
   result: {
     dropped_nodes: string[];
     dropped_edges: string[];

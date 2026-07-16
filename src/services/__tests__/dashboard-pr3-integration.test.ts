@@ -192,7 +192,7 @@ describe('PR3 exact campaign HTTP contracts', () => {
     const cloned = await request(`/api/campaigns/${encodeURIComponent(campaign.id)}/clone`, 'POST', {});
     const clone = CampaignCloneResponseSchema.parse(cloned.body).campaign;
     const deleted = await request(`/api/campaigns/${encodeURIComponent(clone.id)}`, 'DELETE');
-    expect(CampaignDeleteResponseSchema.parse(deleted.body)).toEqual({ deleted: true });
+    expect(CampaignDeleteResponseSchema.parse(deleted.body)).toMatchObject({ deleted: true });
     expect(CampaignListResponseSchema.parse((await request('/api/campaigns')).body).campaigns.some(c => c.id === campaign.id)).toBe(true);
   });
 

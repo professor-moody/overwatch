@@ -6,6 +6,7 @@ import type { EngagementManager, CreateEngagementInput } from '../services/engag
 import { buildEngagementConfig } from '../services/engagement-builder.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { toolText } from './_tool-output.js';
+import { EngagementCommandService } from '../services/engagement-command-service.js';
 
 // ============================================================
 // Engagement setup tools — conversational, no hand-edited JSON
@@ -15,7 +16,15 @@ import { toolText } from './_tool-output.js';
 // not live until the server is (re)started pointed at it; the result carries the
 // activation steps. No live engine reload (out of scope by design).
 
-export function registerEngagementTools(server: McpServer, engine: GraphEngine, engagementManager: EngagementManager): void {
+export function registerEngagementTools(
+  server: McpServer,
+  engine: GraphEngine,
+  engagementManager: EngagementManager,
+  commands: Pick<
+    EngagementCommandService,
+    'addObjective' | 'updateOpsec'
+  > = new EngagementCommandService(engine),
+): void {
   server.registerTool(
     'create_engagement',
     {
@@ -105,13 +114,19 @@ the built config without writing. Does not touch the currently running engagemen
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     withErrorBoundary('add_objective', async (params) => {
-      const objective = engine.addObjective({
+      const execution = commands.addObjective({
         description: params.description,
         target_node_type: params.target_node_type,
         target_criteria: params.target_criteria,
         achievement_edge_types: params.achievement_edge_types,
+      }, { transport: 'mcp' });
+      return toolText({
+        added: true,
+        objective: execution.result!.objective,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
       });
-      return toolText({ added: true, objective });
     }),
   );
 
@@ -171,26 +186,22 @@ the built config without writing. Does not touch the currently running engagemen
         });
       }
 
-      // Route the mutation through the engine write gate. Mutating the object
-      // returned by getConfig() first would alter live state before a degraded
-      // persistence gate had a chance to reject the change.
-      const nextOpsec = { ...opsec };
-      if (params.max_noise !== undefined) nextOpsec.max_noise = params.max_noise;
-      if (params.enabled !== undefined) nextOpsec.enabled = params.enabled;
-      if (params.approval_mode !== undefined) nextOpsec.approval_mode = params.approval_mode;
-      if (params.approval_timeout_ms !== undefined) nextOpsec.approval_timeout_ms = params.approval_timeout_ms;
-      if (params.time_window !== undefined) nextOpsec.time_window = params.time_window ?? undefined;
-      if (params.blacklisted_techniques !== undefined) nextOpsec.blacklisted_techniques = params.blacklisted_techniques;
-      engine.updateConfig({ opsec: nextOpsec });
-      engine.logActionEvent({
-        description: `OPSEC policy updated: ${params.reason}`,
-        event_type: 'system',
-        category: 'system',
-        result_classification: 'success',
-        details: { before, after, reason: params.reason, weakening_warnings: warnings },
+      const execution = commands.updateOpsec({
+        max_noise: params.max_noise,
+        enabled: params.enabled,
+        approval_mode: params.approval_mode,
+        approval_timeout_ms: params.approval_timeout_ms,
+        time_window: params.time_window,
+        blacklisted_techniques: params.blacklisted_techniques,
+      }, params.reason, {
+        transport: 'mcp',
       });
-
-      return toolText({ applied: true, reason: params.reason, before, after, ...(warnings.length ? { weakening_warnings: warnings } : {}) });
+      return toolText({
+        ...execution.result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
     }),
   );
 }

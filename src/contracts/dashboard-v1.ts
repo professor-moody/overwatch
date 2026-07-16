@@ -467,6 +467,70 @@ export const ObjectiveCreateResponseSchema = z.object({ created: z.literal(true)
 export const ObjectiveUpdateResponseSchema = z.object({ updated: z.literal(true) }).passthrough();
 export const ObjectiveDeleteResponseSchema = z.object({ deleted: z.literal(true) }).passthrough();
 
+const GraphCorrectionOperationBaseSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('drop_node'),
+    node_id: z.string().trim().min(1),
+  }).strict(),
+  z.object({
+    kind: z.literal('drop_edge'),
+    source_id: z.string().trim().min(1),
+    edge_type: edgeTypeSchema,
+    target_id: z.string().trim().min(1),
+  }).strict(),
+  z.object({
+    kind: z.literal('replace_edge'),
+    source_id: z.string().trim().min(1),
+    edge_type: edgeTypeSchema,
+    target_id: z.string().trim().min(1),
+    new_source_id: z.string().trim().min(1).optional(),
+    new_edge_type: edgeTypeSchema.optional(),
+    new_target_id: z.string().trim().min(1).optional(),
+    confidence: z.number().min(0).max(1).optional(),
+    properties: z.record(z.unknown()).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('patch_node'),
+    node_id: z.string().trim().min(1),
+    set_properties: z.record(z.unknown()).optional(),
+    unset_properties: z.array(z.string().trim().min(1)).optional(),
+  }).strict(),
+]);
+export const GraphCorrectionOperationSchema =
+  GraphCorrectionOperationBaseSchema.superRefine((operation, context) => {
+    if (
+      operation.kind === 'patch_node'
+      && Object.keys(operation.set_properties ?? {}).length === 0
+      && (operation.unset_properties?.length ?? 0) === 0
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'patch_node requires set_properties and/or unset_properties',
+      });
+    }
+  });
+export type GraphCorrectionOperationDto = z.infer<
+  typeof GraphCorrectionOperationSchema
+>;
+export const GraphCorrectionRequestSchema = z.object({
+  reason: z.string().trim().min(1),
+  action_id: z.string().trim().min(1).optional(),
+  operations: z.array(GraphCorrectionOperationSchema).min(1),
+}).strict();
+export const GraphCorrectionResultSchema = z.object({
+  dropped_nodes: z.array(z.string()),
+  dropped_edges: z.array(z.string()),
+  replaced_edges: z.array(z.object({
+    old_edge_id: z.string(),
+    new_edge_id: z.string(),
+  }).strict()),
+  patched_nodes: z.array(z.string()),
+}).passthrough();
+export type GraphCorrectionResultDto = z.infer<
+  typeof GraphCorrectionResultSchema
+>;
+
 export const FrontierWeightsDtoSchema = z.object({
   fan_out: z.record(z.number().nonnegative()),
   noise: z.record(z.number().min(0).max(1)),

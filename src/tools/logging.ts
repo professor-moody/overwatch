@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
+import { EngagementCommandService } from '../services/engagement-command-service.js';
 
 const actionEventTypeSchema = z.enum([
   'action_planned',
@@ -14,6 +15,7 @@ const actionEventTypeSchema = z.enum([
 const resultClassificationSchema = z.enum(['success', 'failure', 'partial', 'neutral']);
 
 export function registerLoggingTools(server: McpServer, engine: GraphEngine): void {
+  const engagementCommands = new EngagementCommandService(engine);
   server.registerTool(
     'log_action_event',
     {
@@ -154,7 +156,15 @@ Recommended flow:
           if (!existing) {
             const warning = `Auto-detected: technique '${technique}' has failed ${recentFailures.length} times recently`;
             failurePatterns.push({ technique, warning });
-            engine.updateConfig({ failure_patterns: failurePatterns });
+            engagementCommands.patchConfig(
+              { failure_patterns: failurePatterns },
+              {
+                command_id: `failure-pattern:${technique}`,
+                idempotency_key: `failure-pattern:${technique}`,
+                transport: 'system',
+                actor_task_id: null,
+              },
+            );
             auto_pattern_added = warning;
           }
         }

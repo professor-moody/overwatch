@@ -39,6 +39,7 @@ import type {
 } from './durable-state-patch.js';
 import type {
   PersistedArtifactReferencesV1,
+  PersistedApplicationCommandV1,
   PersistedCommandOutcomeV1,
   PersistedCommandPlanV1,
   PersistedPlaybookRunV1,
@@ -206,6 +207,7 @@ export class EngineContext {
    * planner proposals instead of disappearing with DashboardServer. */
   commandPlans: Map<string, Omit<PersistedCommandPlanV1, 'plan_id'>>;
   commandOutcomes: Map<string, Omit<PersistedCommandOutcomeV1, 'plan_id'>>;
+  applicationCommands: Map<string, PersistedApplicationCommandV1>;
   /** Runtime-neutral descriptors only; handles, buffers, env and secrets stay
    * in SessionManager/TaskExecutionService and are never serialized. */
   sessionDescriptors: PersistedSessionDescriptorV1[];
@@ -308,6 +310,7 @@ export class EngineContext {
     this.coordinationRecoveryWarnings = [];
     this.commandPlans = new Map();
     this.commandOutcomes = new Map();
+    this.applicationCommands = new Map();
     this.sessionDescriptors = [];
     this.runtimeRuns = [];
     this.playbookRuns = new Map();
@@ -564,6 +567,7 @@ export class EngineContext {
           slices.command_state = structuredClone({
             commandPlans: [...this.commandPlans.entries()],
             commandOutcomes: [...this.commandOutcomes.entries()],
+            applicationCommands: [...this.applicationCommands.entries()],
           });
           break;
         case 'opsec':
@@ -660,6 +664,7 @@ export class EngineContext {
         case 'command_state':
           this.commandPlans = new Map(value.commandPlans);
           this.commandOutcomes = new Map(value.commandOutcomes);
+          this.applicationCommands = new Map(value.applicationCommands ?? []);
           break;
         case 'opsec':
           this.opsecTracker = OpsecTracker.deserialize(value, this);
@@ -720,6 +725,7 @@ export class EngineContext {
       agentQueryStore: this.agentQueryStore,
       commandPlans: this.commandPlans,
       commandOutcomes: this.commandOutcomes,
+      applicationCommands: this.applicationCommands,
       opsecTracker: this.opsecTracker,
       frontierLinkage: this.frontierLinkage,
       frontierWeights: this.frontierWeights,

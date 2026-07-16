@@ -159,8 +159,23 @@ describe('recovery tools', () => {
       resolved: true,
       mode: 'use_state',
       recovery: { status: 'recovered', resolution_required: false },
+      command_id: expect.any(String),
+      replayed: false,
     });
     expect(engine.isPersistenceWritable()).toBe(true);
+
+    const repeated = await handlers.resolve_config_divergence({
+      resolution: 'use_state',
+      expected_file_hash: recovery.file_hash,
+      expected_state_hash: recovery.state_hash,
+    });
+    expect(repeated.isError).toBeUndefined();
+    expect(JSON.parse(repeated.content[0].text)).toMatchObject({
+      resolved: true,
+      mode: 'use_state',
+      command_id: payload.command_id,
+      replayed: true,
+    });
   });
 
   it('fails closed for stale hashes and when no divergence remains', async () => {

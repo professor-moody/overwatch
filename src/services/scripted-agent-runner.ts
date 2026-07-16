@@ -269,6 +269,12 @@ export class ScriptedAgentRunner {
       parse_with: parser,
       noise_estimate: 0.05,
       invoking_tool: 'run_tool',
+      redact_args_in_log: true,
+      redact_secrets: [credValue],
+      command_id: `scripted-process:${task.id}:${item.id}`,
+      idempotency_key: `scripted-process:${task.id}:${item.id}:token-validation`,
+      command_transport: 'scripted_runner',
+      actor_task_id: task.id,
       abortSignal: signal,
     });
 

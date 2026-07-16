@@ -447,6 +447,38 @@ describe('PendingActionQueue', () => {
       expect(resolvedEvent).toBeDefined();
       expect((resolvedEvent!.data as ActionResolution).status).toBe('timeout');
     });
+
+    it('still settles the approval when an event listener throws', async () => {
+      const { queue } = makeQueue({ approval_mode: 'approve-all' });
+      queue.onEvent(type => {
+        if (type === 'action_resolved') throw new Error('socket closed');
+      });
+
+      const promise = queue.submit(makeSubmitPayload({ action_id: 'ev-throw' }));
+      expect(queue.approve('ev-throw')).toMatchObject({ status: 'approved' });
+      await expect(promise).resolves.toMatchObject({ status: 'approved' });
+      expect(queue.getPendingCount()).toBe(0);
+    });
+  });
+
+  it('rejects a duplicate pending action id without replacing the first waiter', async () => {
+    const { queue } = makeQueue({ approval_mode: 'approve-all' });
+    const first = queue.submit(makeSubmitPayload({ action_id: 'duplicate-live' }));
+    const second = queue.submit(makeSubmitPayload({
+      action_id: 'duplicate-live',
+      description: 'different retry payload',
+    }));
+
+    await expect(second).rejects.toMatchObject({
+      code: 'APPROVAL_ALREADY_PENDING',
+    });
+    expect(queue.getPendingCount()).toBe(1);
+    queue.deny('duplicate-live', 'resolved once');
+    await expect(first).resolves.toMatchObject({
+      status: 'denied',
+      reason: 'resolved once',
+    });
+    expect(queue.getPendingCount()).toBe(0);
   });
 
   // ==== Submitted action fields ====

@@ -72,6 +72,8 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
         parser_context: ParserContextSchema.optional().describe('Optional credential, tenant, repository, branch, cloud, target, domain, host, or provider-specific parser context'),
         parse_stream: z.enum(['stdout', 'stderr', 'combined', 'auto']).optional().describe("Which captured stream feeds the parser. 'stdout' (default), 'stderr' for tools that emit on stderr, 'combined' to concat, 'auto' to pick stdout if non-empty else stderr."),
         noise_estimate: z.number().min(0).max(1).optional().describe('Predicted noise level (overrides validation estimate when present)'),
+        command_id: z.string().min(1).optional().describe('Stable application-command ID for status correlation and safe retries.'),
+        idempotency_key: z.string().min(1).optional().describe('Stable retry key. Reusing it with identical input returns the original result without executing again.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -116,6 +118,8 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
         parse_stream: params.parse_stream,
         noise_estimate: params.noise_estimate,
         invoking_tool: 'run_tool',
+        command_id: params.command_id,
+        idempotency_key: params.idempotency_key,
         abortSignal: extra?.signal,
       });
     }),

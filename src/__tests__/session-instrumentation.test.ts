@@ -15,6 +15,10 @@ import type {
   SessionReadResult,
 } from '../types.js';
 import type { ActivityLogEntry } from '../services/engine-context.js';
+import {
+  SESSION_COMMAND_TERMINAL,
+  type SessionToolResponse,
+} from '../services/session-command-service.js';
 
 interface MockEngineState {
   validate: (action: any) => { valid: boolean; errors: string[]; warnings: string[]; opsec_context: any };
@@ -126,7 +130,22 @@ function buildHarness(opts: {
     }),
   } as unknown as GraphEngine;
 
-  registerSessionTools(fakeServer, sessionManager as any, engine);
+  registerSessionTools(fakeServer, sessionManager as any, engine, {
+    execute: async (
+      _descriptor: unknown,
+      operation: (
+        bindActionId: (actionId: string) => void,
+      ) => Promise<SessionToolResponse>,
+    ) => {
+      const response = await operation(() => {});
+      const terminal = response[SESSION_COMMAND_TERMINAL];
+      if (terminal) {
+        delete response[SESSION_COMMAND_TERMINAL];
+        engine.logActionEvent(terminal);
+      }
+      return response;
+    },
+  } as any);
   return { handlers, sessionManager, sendCommand, state };
 }
 

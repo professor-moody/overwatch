@@ -32,7 +32,10 @@ function buildHandlers() {
     ingestFinding: vi.fn(),
   };
 
-  registerParseOutputTools(fakeServer, engine as any);
+  registerParseOutputTools(fakeServer, engine as any, {
+    execute: async (_descriptor: unknown, operation: () => unknown) => operation(),
+    resolveActorTaskId: () => null,
+  } as any);
   return { handlers, engine };
 }
 

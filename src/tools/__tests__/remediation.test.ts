@@ -14,7 +14,20 @@ function buildHandlers() {
     correctGraph: vi.fn(),
   };
 
-  registerRemediationTools(fakeServer, engine as any);
+  registerRemediationTools(fakeServer, engine as any, {
+    correct(input: any) {
+      return {
+        command_id: 'test-graph-correction-command',
+        idempotency_key: 'test-graph-correction-idempotency',
+        replayed: false,
+        result: engine.correctGraph(
+          input.reason,
+          input.operations,
+          input.action_id,
+        ),
+      };
+    },
+  } as any);
   return { handlers, engine };
 }
 

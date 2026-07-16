@@ -16,6 +16,12 @@ import { execFileSync } from 'child_process';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { isAcceptableParserExit } from '../services/parsers/index.js';
 import { parseAndMaybeIngest, type ParseIngestResult } from '../services/parse-ingest.js';
+import {
+  ProcessCommandService,
+  PROCESS_COMMAND_TERMINAL,
+  buildProcessRequestFingerprint,
+  type PersistedProcessCommandResult,
+} from '../services/process-command-service.js';
 import { actionIdOrUuid } from '../services/deterministic-id.js';
 import {
   spawnManagedRuntimeSupervisor,
@@ -1070,12 +1076,32 @@ export interface InstrumentedProcessOpts {
    * executed, instead of orphaning the request until the approval timeout.
    */
   abortSignal?: AbortSignal;
+
+  // Transport-neutral command identity. Public MCP callers normally supply
+  // these through the invocation context; internal scripted/headless adapters
+  // pass them directly so restart retries cannot execute the same operation
+  // twice.
+  command_id?: string;
+  idempotency_key?: string;
+  command_transport?: 'mcp' | 'dashboard' | 'cli' | 'planner' | 'scripted_runner' | 'headless_runner' | 'system';
+  actor_task_id?: string | null;
 }
 
 export interface InstrumentedProcessResponse {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
   [key: string]: unknown;
+}
+
+const processCommandServices = new WeakMap<GraphEngine, ProcessCommandService>();
+
+function processCommandServiceFor(engine: GraphEngine): ProcessCommandService {
+  let service = processCommandServices.get(engine);
+  if (!service) {
+    service = new ProcessCommandService(engine);
+    processCommandServices.set(engine, service);
+  }
+  return service;
 }
 
 /**
@@ -1216,7 +1242,7 @@ export function startAgentKeepalive(
   return stop;
 }
 
-export async function runInstrumentedProcess(
+async function runInstrumentedProcessCore(
   engine: GraphEngine,
   opts: InstrumentedProcessOpts,
 ): Promise<InstrumentedProcessResponse> {
@@ -1857,7 +1883,8 @@ export async function runInstrumentedProcess(
   // only after the last point where the gate could transition between turns.
   executionAbort.dispose();
 
-  // ---- 5. Terminal lifecycle event ----
+  // Process exit semantics are known now; action semantics are finalized only
+  // after any requested parser/ingest has completed below.
   // Phase I: a non-zero exit no longer suppresses parsing. Tools like
   // nuclei/sqlmap/gobuster routinely return 1 to signal "no match" — the
   // captured output is still parseable. A requested parser is invoked even
@@ -1869,81 +1896,22 @@ export async function runInstrumentedProcess(
   // drive overall success — a known "no findings" exit (e.g. nuclei exit 1
   // with empty result set) should not surface as `action_failed`/isError:true.
   // Without `parse_with`, fall back to strict exit-code 0.
-  const succeeded = !result.spawn_error && !result.timed_out && (
+  const processSucceeded = !result.spawn_error && !result.timed_out && (
     parse_with ? parserExitOk : result.exit_code === 0
   );
   const partialParse = parseable && parse_with !== undefined && !parserExitOk;
-  const terminalEventType = succeeded ? 'action_completed' as const : 'action_failed' as const;
   const failureReason = result.spawn_error
     ? 'spawn_error'
     : result.timed_out
       ? 'timeout'
-      : !succeeded && result.exit_code !== 0
+      : !processSucceeded && result.exit_code !== 0
         ? 'nonzero_exit'
         : undefined;
 
-  engine.finishRuntimeAction({
-    run_id: runtimeRunId,
-    lifecycle: result.timed_out || abortSignal?.aborted
-      ? 'interrupted'
-      : succeeded
-        ? 'completed'
-        : 'failed',
-    evidence_state: stdoutCaptureError || stderrCaptureError
-      ? 'failed'
-      : stdoutInfo.total > 0 || stderrInfo.total > 0
-        ? 'captured'
-        : 'none',
-    exit_code: result.exit_code,
-    exit_signal: result.signal,
-    event: {
-      description: resolvedDescription,
-      agent_id,
-      linked_agent_task_id: ownerTaskId,
-      action_id: normalizedActionId,
-      event_type: terminalEventType,
-      category: 'frontier',
-      frontier_type: frontierType,
-      tool_name,
-      technique,
-      command_repr,
-      target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
-      target_ips: targetIpsForEvents(),
-      target_cidrs: targetCidrsForEvents(),
-      frontier_item_id,
-      result_classification: succeeded ? 'success' : 'failure',
-      details: {
-        exit_code: result.exit_code,
-        signal: result.signal,
-        duration_ms: result.duration_ms,
-        timed_out: result.timed_out,
-        stdout_evidence_id,
-        stderr_evidence_id,
-        stdout_truncated: stdoutInfo.truncated,
-        stderr_truncated: stderrInfo.truncated,
-        stdout_total_bytes: stdoutInfo.total,
-        stderr_total_bytes: stderrInfo.total,
-        stdout_dropped_bytes: result.stdout.dropped_bytes || undefined,
-        stderr_dropped_bytes: result.stderr.dropped_bytes || undefined,
-        evidence_capture_error: stdoutCaptureError || stderrCaptureError
-          ? { stdout: stdoutCaptureError, stderr: stderrCaptureError }
-          : undefined,
-        spawn_error: result.spawn_error,
-        reason: failureReason,
-        command: command_repr,
-        binary,
-        args: loggedArgs,
-        invoking_tool: opts.invoking_tool,
-        operator_infra: operator_infra || undefined,
-      },
-    },
-  });
-  // Live stream is finished now that the terminal event + evidence are
-  // persisted; connected viewers get `action_done` and fall back to the
-  // durable evidence route. The buffer self-evicts shortly after.
-  liveOutput.markDone(normalizedActionId);
-
-  // ---- 6. Optional inline parse + ingest ----
+  // ---- 5. Optional inline parse + ingest ----
+  // Parsing is part of the promised process command, so it must finish before
+  // action_completed is published. Otherwise a crash can leave an apparently
+  // complete action whose requested graph mutation never landed.
   let parse_summary: ParseIngestResult | undefined;
   if (parse_with && !result.spawn_error) {
       const fullStdoutInline = result.stdout.toFullString();
@@ -2122,7 +2090,81 @@ export async function runInstrumentedProcess(
       });
   }
 
-  return {
+  // ---- 6. Terminal lifecycle draft ----
+  // The ProcessCommandService commits this runtime/action terminal and the
+  // application-command receipt in one durable transaction.
+  const parseFailed = parse_summary?.isError === true;
+  const parsePartial = parse_summary?.parse_outcome === 'partial';
+  const actionSucceeded = processSucceeded && !parseFailed;
+  const terminalRuntimeInput: Parameters<GraphEngine['finishRuntimeAction']>[0] = {
+    run_id: runtimeRunId,
+    lifecycle: result.timed_out || abortSignal?.aborted
+      ? 'interrupted'
+      : processSucceeded
+        ? 'completed'
+        : 'failed',
+    evidence_state: stdoutCaptureError || stderrCaptureError
+      ? 'failed'
+      : stdoutInfo.total > 0 || stderrInfo.total > 0
+        ? 'captured'
+        : 'none',
+    exit_code: result.exit_code,
+    exit_signal: result.signal,
+    event: {
+      description: resolvedDescription,
+      agent_id,
+      linked_agent_task_id: ownerTaskId,
+      action_id: normalizedActionId,
+      event_type: actionSucceeded ? 'action_completed' : 'action_failed',
+      category: 'frontier',
+      frontier_type: frontierType,
+      tool_name,
+      technique,
+      command_repr,
+      target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
+      target_ips: targetIpsForEvents(),
+      target_cidrs: targetCidrsForEvents(),
+      frontier_item_id,
+      linked_finding_ids: parse_summary?.finding_id
+        ? [parse_summary.finding_id]
+        : undefined,
+      result_classification: parsePartial
+        ? 'partial'
+        : actionSucceeded
+          ? 'success'
+          : 'failure',
+      details: {
+        exit_code: result.exit_code,
+        signal: result.signal,
+        duration_ms: result.duration_ms,
+        timed_out: result.timed_out,
+        stdout_evidence_id,
+        stderr_evidence_id,
+        stdout_truncated: stdoutInfo.truncated,
+        stderr_truncated: stderrInfo.truncated,
+        stdout_total_bytes: stdoutInfo.total,
+        stderr_total_bytes: stderrInfo.total,
+        stdout_dropped_bytes: result.stdout.dropped_bytes || undefined,
+        stderr_dropped_bytes: result.stderr.dropped_bytes || undefined,
+        evidence_capture_error: stdoutCaptureError || stderrCaptureError
+          ? { stdout: stdoutCaptureError, stderr: stderrCaptureError }
+          : undefined,
+        spawn_error: result.spawn_error,
+        reason: parseFailed ? 'parse_failed' : failureReason,
+        parse_status: parse_summary?.parse_status,
+        parse_outcome: parse_summary?.parse_outcome,
+        parse_finding_id: parse_summary?.finding_id,
+        parse_campaign_id: parse_summary?.campaign_id,
+        command: command_repr,
+        binary,
+        args: loggedArgs,
+        invoking_tool: opts.invoking_tool,
+        operator_infra: operator_infra || undefined,
+      },
+    },
+  };
+
+  const response: InstrumentedProcessResponse = {
     content: [{
       type: 'text',
       text: JSON.stringify({
@@ -2146,6 +2188,157 @@ export async function runInstrumentedProcess(
         parse_summary,
       }, null, 2),
     }],
-    isError: !succeeded || !!parse_summary?.isError,
+    isError: !actionSucceeded,
   };
+  Object.defineProperty(response, PROCESS_COMMAND_TERMINAL, {
+    value: terminalRuntimeInput,
+    enumerable: false,
+    configurable: true,
+  });
+  // The durable terminal is committed by ProcessCommandService immediately
+  // after this response returns. Marking the live stream done is an ephemeral
+  // UI signal and does not establish durable completion.
+  liveOutput.markDone(normalizedActionId);
+  return response;
+}
+
+function replayStoredProcessResponse(
+  opts: InstrumentedProcessOpts,
+  receipt: PersistedProcessCommandResult,
+  storedResponse: InstrumentedProcessResponse,
+): InstrumentedProcessResponse {
+  const response = structuredClone(storedResponse);
+  const entry = response.content.find(candidate => candidate.type === 'text');
+  if (!entry) {
+    throw new Error('stored process response has no text payload');
+  }
+  const payload = JSON.parse(entry.text);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('stored process response payload is not an object');
+  }
+  if (receipt.executed === true) {
+    // The derived artifact never stores argv. Rehydrate it from the retry only
+    // after actor/idempotency/input-shape compatibility has been established.
+    if (!opts.redact_args_in_log) {
+      const {
+        action_id,
+        executed,
+        binary,
+        ...remainder
+      } = payload as Record<string, unknown>;
+      entry.text = JSON.stringify({
+        action_id,
+        executed,
+        binary,
+        args: opts.args,
+        ...remainder,
+      }, null, 2);
+      return response;
+    }
+  }
+  entry.text = JSON.stringify(payload, null, 2);
+  return response;
+}
+
+/**
+ * Durable, transport-neutral entry point for every managed one-shot process.
+ * The persisted command descriptor contains routing metadata plus a SHA-256
+ * digest of the exact request; raw arguments and environment values are not
+ * stored in the command record. Exact retries join an in-flight call or
+ * reconstruct the response from existing evidence instead of spawning a
+ * second target process.
+ */
+export async function runInstrumentedProcess(
+  engine: GraphEngine,
+  opts: InstrumentedProcessOpts,
+): Promise<InstrumentedProcessResponse> {
+  if (!engine.isPersistenceWritable()) {
+    return persistenceInterruptedResponse(engine, opts.action_id);
+  }
+  const requestShape = {
+    invoking_tool: opts.invoking_tool,
+    binary: opts.binary,
+    args: opts.args,
+    command_repr: opts.command_repr,
+    cwd: opts.cwd,
+    env: opts.env ?? {},
+    timeout_ms: opts.timeout_ms ?? resolveDefaultActionTimeoutMs(),
+    frontier_item_id: opts.frontier_item_id,
+    agent_id: opts.agent_id,
+    description: opts.description,
+    tool_name: opts.tool_name,
+    technique: opts.technique,
+    target_node: opts.target_node,
+    target_node_ids: opts.target_node_ids,
+    target_ip: opts.target_ip,
+    target_ips: opts.target_ips,
+    target_cidr: opts.target_cidr,
+    target_cidrs: opts.target_cidrs,
+    target_url: opts.target_url,
+    cloud_resource: opts.cloud_resource,
+    validate: opts.validate !== false,
+    redact_args_in_log: opts.redact_args_in_log === true,
+    redact_secrets: opts.redact_secrets ?? [],
+    allow_unverified_scope: opts.allow_unverified_scope === true,
+    operator_infra: opts.operator_infra === true,
+    parse_with: opts.parse_with,
+    parser_context: opts.parser_context ?? {},
+    parse_stream: opts.parse_stream ?? 'stdout',
+    noise_estimate: opts.noise_estimate,
+  };
+  const descriptor = {
+    invoking_tool: opts.invoking_tool,
+    action_id: opts.action_id,
+    frontier_item_id: opts.frontier_item_id,
+    agent_id: opts.agent_id,
+    tool_name: opts.tool_name,
+    technique: opts.technique,
+    target_node_ids: [
+      ...(opts.target_node ? [opts.target_node] : []),
+      ...(opts.target_node_ids ?? []),
+    ].filter((value, index, values) => values.indexOf(value) === index),
+    target_ips: [
+      ...(opts.target_ip ? [opts.target_ip] : []),
+      ...(opts.target_ips ?? []),
+    ].filter((value, index, values) => values.indexOf(value) === index),
+    target_cidrs: [
+      ...(opts.target_cidr ? [opts.target_cidr] : []),
+      ...(opts.target_cidrs ?? []),
+    ].filter((value, index, values) => values.indexOf(value) === index),
+    has_target_url: opts.target_url !== undefined,
+    has_cloud_resource: opts.cloud_resource !== undefined,
+    timeout_ms: opts.timeout_ms ?? resolveDefaultActionTimeoutMs(),
+    validate: opts.validate !== false,
+    allow_unverified_scope: opts.allow_unverified_scope === true,
+    operator_infra: opts.operator_infra === true,
+    parse_with: opts.parse_with,
+    parse_stream: opts.parse_stream ?? 'stdout',
+    env_keys: Object.keys(opts.env ?? {}).sort(),
+    redacts_arguments: opts.redact_args_in_log === true,
+    redacted_secret_count: opts.redact_secrets?.length ?? 0,
+    request_fingerprint: buildProcessRequestFingerprint(requestShape),
+  };
+  const actorResolution = opts.actor_task_id === undefined && opts.agent_id
+    ? engine.resolveAgentTaskReference(opts.agent_id)
+    : undefined;
+  const actorTaskId = opts.actor_task_id !== undefined
+    ? opts.actor_task_id
+    : actorResolution?.status === 'exact'
+      || actorResolution?.status === 'unique_legacy_label'
+      ? actorResolution.task.task_id ?? actorResolution.task.id
+      : null;
+  return processCommandServiceFor(engine).execute(
+    descriptor,
+    () => runInstrumentedProcessCore(engine, opts),
+    (receipt, storedResponse) =>
+      replayStoredProcessResponse(opts, receipt, storedResponse),
+    {
+      command_id: opts.command_id,
+      idempotency_key: opts.idempotency_key,
+      transport: opts.command_transport,
+      actor_task_id: actorTaskId,
+      action_id: opts.action_id,
+      frontier_item_id: opts.frontier_item_id,
+    },
+  );
 }

@@ -248,6 +248,54 @@ export interface PersistedCommandOutcomeV1 {
   results: unknown[];
 }
 
+export type ApplicationCommandTransport =
+  | 'mcp'
+  | 'dashboard'
+  | 'cli'
+  | 'planner'
+  | 'scripted_runner'
+  | 'headless_runner'
+  | 'system';
+
+export type ApplicationCommandStatus =
+  | 'accepted'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'interrupted';
+
+/**
+ * Durable transport-neutral command record.
+ *
+ * The map is keyed by the actor-scoped idempotency identity. Keeping this
+ * separate from the legacy ten-minute plan result cache lets preceding V1
+ * readers continue to ignore the additive field while current binaries retain
+ * response-ready command truth across retries and restarts.
+ */
+export interface PersistedApplicationCommandV1 {
+  command_id: string;
+  idempotency_key: string;
+  input_sha256: string;
+  validated_input: unknown;
+  command_kind: string;
+  transport: ApplicationCommandTransport;
+  actor_task_id: string | null;
+  action_id?: string;
+  frontier_item_id?: string;
+  plan_id?: string;
+  status: ApplicationCommandStatus;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  result?: unknown;
+  error?: {
+    code?: string;
+    message: string;
+    details?: unknown;
+  };
+  entity_refs?: Record<string, string | string[]>;
+}
+
 /**
  * The public V1 shape intentionally retains the legacy flat field names. That
  * keeps rollback/replay compatibility simple while making every category and
@@ -273,6 +321,8 @@ export interface PersistedStateV1 {
   agentQueries: SerializedAgentQueryStore;
   commandPlans: Array<[string, Omit<PersistedCommandPlanV1, 'plan_id'>]>;
   commandOutcomes: Array<[string, Omit<PersistedCommandOutcomeV1, 'plan_id'>]>;
+  /** Additive in PR10; absent means no transport-neutral commands exist yet. */
+  applicationCommands?: Array<[string, PersistedApplicationCommandV1]>;
   coldStore: ColdNodeRecord[];
   opsecTracker: unknown;
   frontierLinkage: unknown;
@@ -1444,6 +1494,110 @@ export function validatePersistedStateV1(value: unknown): PersistedStateV1 {
     requireSafeInteger(outcome.expires_at, `${path}.expires_at`);
     requireArray(outcome.results, `${path}.results`);
   });
+  if (record.applicationCommands !== undefined) {
+    const commandIds = new Set<string>();
+    validateMapTuples(record.applicationCommands, 'persisted applicationCommands', (candidate, path, key) => {
+      const command = requireRecord(candidate, path);
+      const commandId = requireString(command.command_id, `${path}.command_id`);
+      if (commandIds.has(commandId)) {
+        throw new PersistedStateVersionError(
+          `persisted applicationCommands contains duplicate command_id ${commandId}`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      commandIds.add(commandId);
+      const idempotencyKey = requireString(command.idempotency_key, `${path}.idempotency_key`);
+      if (idempotencyKey !== key) {
+        throw new PersistedStateVersionError(
+          `${path}.idempotency_key must match map key`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      if (commandId.length > 256 || idempotencyKey.length > 512) {
+        throw new PersistedStateVersionError(
+          `${path} command identifiers exceed their supported length`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      if (!/^[a-f0-9]{64}$/.test(requireString(command.input_sha256, `${path}.input_sha256`))) {
+        throw new PersistedStateVersionError(
+          `${path}.input_sha256 must be a lowercase SHA-256 digest`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      if (command.validated_input === undefined) {
+        throw new PersistedStateVersionError(
+          `${path}.validated_input is required`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      try {
+        JSON.stringify(command.validated_input);
+      } catch {
+        throw new PersistedStateVersionError(
+          `${path}.validated_input must be JSON-serializable`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      requireString(command.command_kind, `${path}.command_kind`);
+      if (![
+        'mcp',
+        'dashboard',
+        'cli',
+        'planner',
+        'scripted_runner',
+        'headless_runner',
+        'system',
+      ].includes(requireString(command.transport, `${path}.transport`))) {
+        throw new PersistedStateVersionError(
+          `${path}.transport is invalid`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      if (command.actor_task_id !== null) {
+        requireString(command.actor_task_id, `${path}.actor_task_id`);
+      }
+      if (!['accepted', 'running', 'succeeded', 'failed', 'interrupted'].includes(
+        requireString(command.status, `${path}.status`),
+      )) {
+        throw new PersistedStateVersionError(
+          `${path}.status is invalid`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      requireIsoDate(command.created_at, `${path}.created_at`);
+      if (command.started_at !== undefined) requireIsoDate(command.started_at, `${path}.started_at`);
+      if (command.completed_at !== undefined) requireIsoDate(command.completed_at, `${path}.completed_at`);
+      for (const field of ['action_id', 'frontier_item_id', 'plan_id'] as const) {
+        if (command[field] !== undefined) requireString(command[field], `${path}.${field}`);
+      }
+      if (command.error !== undefined) {
+        const error = requireRecord(command.error, `${path}.error`);
+        requireString(error.message, `${path}.error.message`, true);
+        if (error.code !== undefined) requireString(error.code, `${path}.error.code`);
+      }
+      if (command.entity_refs !== undefined) {
+        const refs = requireRecord(command.entity_refs, `${path}.entity_refs`);
+        for (const [name, value] of Object.entries(refs)) {
+          if (typeof value === 'string') {
+            requireString(value, `${path}.entity_refs.${name}`);
+          } else {
+            for (const [index, item] of requireArray(value, `${path}.entity_refs.${name}`).entries()) {
+              requireString(item, `${path}.entity_refs.${name}[${index}]`);
+            }
+          }
+        }
+      }
+    });
+  }
   validateOpsecTracker(record.opsecTracker, 'persisted opsecTracker');
   validateFrontierLinkage(record.frontierLinkage, 'persisted frontierLinkage');
   validateFrontierLeases(record.frontierLeases, 'persisted frontierLeases');

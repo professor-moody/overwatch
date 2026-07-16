@@ -301,7 +301,12 @@ describe('F8 — send_to_session falls back to session.host when no explicit tar
       getEvidenceStore: () => ({ store: () => 'ev-1' }),
     };
 
-    registerSessionTools(fakeServer, sessionManager, engine);
+    registerSessionTools(fakeServer, sessionManager, engine, {
+      execute: async (
+        _descriptor: unknown,
+        operation: (bindActionId: (actionId: string) => void) => Promise<unknown>,
+      ) => operation(() => {}),
+    } as any);
     await handlers.send_to_session({ session_id: 'sess-ssh', command: 'whoami' });
 
     expect(validateMock).toHaveBeenCalled();

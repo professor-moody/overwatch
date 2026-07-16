@@ -64,6 +64,18 @@ describe('AgentManager', () => {
       expect(events[0].details).toMatchObject({ skill: 'nmap_scan' });
     });
 
+    it('describes a planner dispatch without rendering an undefined frontier', () => {
+      const { mgr, ctx } = setup();
+      mgr.register(makeTask({
+        frontier_item_id: undefined,
+        subgraph_node_ids: [],
+        role: 'planner',
+      }));
+      const event = ctx.activityLog.find(entry => entry.event_type === 'agent_registered');
+      expect(event?.description).toBe('Agent dispatched: agent-1 as operator planner');
+      expect(event?.description).not.toContain('undefined');
+    });
+
     it('overwrites when the same task id is registered twice', () => {
       const { mgr } = setup();
       mgr.register(makeTask({ skill: 'scan_a' }));

@@ -134,6 +134,11 @@ export class PendingActionQueue {
     action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>,
     opts?: { signal?: AbortSignal },
   ): Promise<ActionResolution> {
+    if (this.pending.has(action.action_id)) {
+      const error = new Error(`Action ${action.action_id} is already awaiting approval.`);
+      (error as Error & { code: string }).code = 'APPROVAL_ALREADY_PENDING';
+      return Promise.reject(error);
+    }
     const now = new Date();
     const timeoutMs = this.ctx.config.opsec.approval_timeout_ms ?? DEFAULT_TIMEOUT_MS;
     const pendingAction: PendingAction = {
@@ -157,7 +162,11 @@ export class PendingActionQueue {
     }
 
     this.pending.set(action.action_id, pendingAction);
-    this.eventCallback?.('action_pending', pendingAction);
+    try {
+      this.eventCallback?.('action_pending', pendingAction);
+    } catch {
+      // Dashboard/socket notification is best-effort and cannot own the queue.
+    }
 
     return new Promise<ActionResolution>((resolve) => {
       this.resolveCallbacks.set(action.action_id, resolve);
@@ -196,29 +205,48 @@ export class PendingActionQueue {
   }
 
   approve(action_id: string, operator_notes?: string): ActionResolution | null {
-    if (!this.pending.has(action_id)) return null;
-
-    const resolution: ActionResolution = {
-      action_id,
-      status: 'approved',
-      resolved_at: new Date().toISOString(),
-      operator_notes,
-    };
-    this.resolveAction(action_id, resolution);
+    const resolution = this.prepareResolution(action_id, 'approved', operator_notes);
+    if (!resolution) return null;
+    this.commitPreparedResolution(resolution);
     return resolution;
   }
 
   deny(action_id: string, reason?: string): ActionResolution | null {
-    if (!this.pending.has(action_id)) return null;
-
-    const resolution: ActionResolution = {
-      action_id,
-      status: 'denied',
-      resolved_at: new Date().toISOString(),
-      reason,
-    };
-    this.resolveAction(action_id, resolution);
+    const resolution = this.prepareResolution(action_id, 'denied', reason);
+    if (!resolution) return null;
+    this.commitPreparedResolution(resolution);
     return resolution;
+  }
+
+  /**
+   * Build a resolution without touching timers, callbacks, or the awaiting
+   * Promise. Application commands use this during speculative transaction
+   * drafting, commit durable approval truth first, then deliver the prepared
+   * resolution exactly once after the journal transaction succeeds.
+   */
+  prepareResolution(
+    action_id: string,
+    status: 'approved' | 'denied',
+    note?: string,
+  ): ActionResolution | null {
+    if (!this.pending.has(action_id)) return null;
+    return {
+      action_id,
+      status,
+      resolved_at: new Date().toISOString(),
+      ...(status === 'approved'
+        ? { operator_notes: note }
+        : { reason: note }),
+    };
+  }
+
+  commitPreparedResolution(resolution: ActionResolution): boolean {
+    if (!this.pending.has(resolution.action_id)) {
+      const existing = this.resolved.get(resolution.action_id);
+      return existing?.status === resolution.status;
+    }
+    this.resolveAction(resolution.action_id, resolution);
+    return true;
   }
 
   /**
@@ -292,14 +320,16 @@ export class PendingActionQueue {
       }
     }
 
-    // Notify event listener
-    this.eventCallback?.('action_resolved', resolution);
-
-    // Resolve the awaiting Promise
     const cb = this.resolveCallbacks.get(action_id);
-    if (cb) {
-      cb(resolution);
+    try {
+      // A dashboard/socket listener is observational. Its failure must never
+      // strand the action Promise after the queue has already resolved it.
+      this.eventCallback?.('action_resolved', resolution);
+    } catch {
+      // Best-effort notification only.
+    } finally {
       this.resolveCallbacks.delete(action_id);
+      cb?.(resolution);
     }
   }
 

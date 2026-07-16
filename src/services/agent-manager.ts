@@ -120,8 +120,17 @@ export class AgentManager {
       task.heartbeat_at = this.ctx.nowIso();
     }
     this.ctx.agents.set(taskId, task);
+    const dispatchTarget = task.frontier_item_id
+      ? `for frontier ${task.frontier_item_id}`
+      : task.role === 'planner'
+        ? 'as operator planner'
+        : task.subgraph_node_ids?.length
+          ? `at ${task.subgraph_node_ids.length} node(s)`
+          : task.objective
+            ? 'for an operator objective'
+            : 'without a frontier lease';
     this.ctx.logEvent({
-      description: `Agent dispatched: ${agentLabel} for ${task.frontier_item_id}`,
+      description: `Agent dispatched: ${agentLabel} ${dispatchTarget}`,
       agent_id: agentLabel,
       category: 'agent',
       event_type: 'agent_registered',
@@ -129,6 +138,13 @@ export class AgentManager {
       linked_agent_task_id: taskId,
       result_classification: 'neutral',
       details: {
+        task_id: taskId,
+        agent_label: agentLabel,
+        archetype: task.archetype,
+        role: task.role,
+        backend: task.backend,
+        frontier_item_id: task.frontier_item_id,
+        campaign_id: task.campaign_id,
         skill: task.skill,
         subgraph_node_ids: task.subgraph_node_ids,
       },

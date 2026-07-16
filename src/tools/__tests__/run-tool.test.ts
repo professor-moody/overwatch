@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -90,6 +90,239 @@ describe('run_tool', () => {
       action_terminal_event_id: expect.any(String),
       evidence_state: 'captured',
     }));
+  });
+
+  it('replays an explicit idempotency key after restart without spawning again', async () => {
+    const config = makeConfig();
+    const statePath = join(testDir, 'state.json');
+    const counterPath = join(testDir, 'process-count.txt');
+    const secret = 'sentinel-process-secret';
+    engine.dispose();
+    engine = new GraphEngine(config, statePath);
+    handlers = {};
+    const register = () => {
+      const fakeServer = {
+        registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
+          handlers[name] = handler;
+        },
+      } as unknown as McpServer;
+      registerRunToolTool(fakeServer, engine);
+    };
+    register();
+    const args = [
+      '-e',
+      [
+        "const fs = require('fs');",
+        `const path = ${JSON.stringify(counterPath)};`,
+        "let count = 0; try { count = Number(fs.readFileSync(path, 'utf8')); } catch {}",
+        "fs.writeFileSync(path, String(count + 1));",
+        "process.stdout.write('completed-once');",
+      ].join(' '),
+    ];
+    const request = {
+      binary: process.execPath,
+      args,
+      env: { OVERWATCH_TEST_TOKEN: secret },
+      validate: false,
+      command_id: 'process-command-restart-1',
+      idempotency_key: 'process-retry-restart-1',
+    };
+
+    const first = await handlers.run_tool(request);
+    expect(parseTextResult(first).stdout).toBe('completed-once');
+    expect(readFileSync(counterPath, 'utf8')).toBe('1');
+    expect(JSON.stringify(engine.listApplicationCommands())).not.toContain(secret);
+    expect(JSON.stringify(engine.listApplicationCommands())).not.toContain('completed-once');
+
+    engine.dispose();
+    engine = new GraphEngine(config, statePath);
+    handlers = {};
+    register();
+    const replay = await handlers.run_tool(request);
+
+    expect(replay).toEqual(first);
+    expect(readFileSync(counterPath, 'utf8')).toBe('1');
+    expect(engine.getFullHistory().filter(event =>
+      event.event_type === 'action_started')).toHaveLength(1);
+    expect(engine.listApplicationCommands().filter(command =>
+      command.command_kind === 'process.execute')).toHaveLength(1);
+  });
+
+  it('scopes identical retry keys by canonical agent task', async () => {
+    const counterPath = join(testDir, 'actor-count.txt');
+    for (const [taskId, label] of [['task-a', 'agent-a'], ['task-b', 'agent-b']] as const) {
+      engine.registerAgent({
+        id: taskId,
+        task_id: taskId,
+        agent_id: label,
+        agent_label: label,
+        assigned_at: new Date().toISOString(),
+        status: 'running',
+        subgraph_node_ids: [],
+      });
+    }
+    const args = [
+      '-e',
+      [
+        "const fs = require('fs');",
+        `const path = ${JSON.stringify(counterPath)};`,
+        "let count = 0; try { count = Number(fs.readFileSync(path, 'utf8')); } catch {}",
+        "fs.writeFileSync(path, String(count + 1));",
+      ].join(' '),
+    ];
+    for (const agent_id of ['agent-a', 'agent-b']) {
+      const result = await handlers.run_tool({
+        binary: process.execPath,
+        args,
+        validate: false,
+        agent_id,
+        idempotency_key: 'same-client-retry-key',
+      });
+      expect(result.isError).toBeFalsy();
+    }
+    expect(readFileSync(counterPath, 'utf8')).toBe('2');
+    expect(engine.listApplicationCommands().filter(command =>
+      command.command_kind === 'process.execute')).toHaveLength(2);
+  });
+
+  it('joins concurrent retries so only one target process is spawned', async () => {
+    const counterPath = join(testDir, 'concurrent-count.txt');
+    const request = {
+      binary: process.execPath,
+      args: [
+        '-e',
+        [
+          "const fs = require('fs');",
+          `const path = ${JSON.stringify(counterPath)};`,
+          "let count = 0; try { count = Number(fs.readFileSync(path, 'utf8')); } catch {}",
+          "fs.writeFileSync(path, String(count + 1));",
+          "setTimeout(() => process.stdout.write('joined'), 150);",
+        ].join(' '),
+      ],
+      validate: false,
+      command_id: 'process-command-concurrent',
+      idempotency_key: 'process-retry-concurrent',
+    };
+
+    const [first, second] = await Promise.all([
+      handlers.run_tool(request),
+      handlers.run_tool(request),
+    ]);
+
+    expect(second).toEqual(first);
+    expect(readFileSync(counterPath, 'utf8')).toBe('1');
+    expect(engine.getFullHistory().filter(event =>
+      event.event_type === 'action_started')).toHaveLength(1);
+  });
+
+  it('fails closed when a replay artifact is missing and never respawns', async () => {
+    const counterPath = join(testDir, 'missing-response-count.txt');
+    const request = {
+      binary: process.execPath,
+      args: [
+        '-e',
+        [
+          "const fs = require('fs');",
+          `const path = ${JSON.stringify(counterPath)};`,
+          "let count = 0; try { count = Number(fs.readFileSync(path, 'utf8')); } catch {}",
+          "fs.writeFileSync(path, String(count + 1));",
+          "process.stdout.write('captured');",
+        ].join(' '),
+      ],
+      validate: false,
+      command_id: 'process-command-missing-response',
+      idempotency_key: 'process-retry-missing-response',
+    };
+    await handlers.run_tool(request);
+    const command = engine.listApplicationCommands().find(candidate =>
+      candidate.command_id === request.command_id)!;
+    const responseEvidenceId = (
+      command.result as { response_evidence_id: string }
+    ).response_evidence_id;
+    const record = engine.getEvidenceStore().getRecord(responseEvidenceId)!;
+    unlinkSync(join(
+      testDir,
+      'evidence',
+      `${record.blob_key ?? record.evidence_id}.content`,
+    ));
+
+    const replay = await handlers.run_tool(request);
+    expect(replay.isError).toBe(true);
+    expect(parseTextResult(replay)).toMatchObject({
+      executed: false,
+      code: 'COMMAND_RESPONSE_UNAVAILABLE',
+    });
+    expect(readFileSync(counterPath, 'utf8')).toBe('1');
+  });
+
+  it('terminalizes the runtime and command when replay-response storage fails', async () => {
+    const counterPath = join(testDir, 'response-store-failure-count.txt');
+    const store = engine.getEvidenceStore();
+    const originalStore = store.store.bind(store);
+    vi.spyOn(store, 'store').mockImplementation(input => {
+      if (input.filename === 'application-command-response.json') {
+        throw new Error('synthetic response artifact failure');
+      }
+      return originalStore(input);
+    });
+    const request = {
+      binary: process.execPath,
+      args: [
+        '-e',
+        [
+          "const fs = require('fs');",
+          `const path = ${JSON.stringify(counterPath)};`,
+          "let count = 0; try { count = Number(fs.readFileSync(path, 'utf8')); } catch {}",
+          "fs.writeFileSync(path, String(count + 1));",
+          "process.stdout.write('finished');",
+        ].join(' '),
+      ],
+      validate: false,
+      command_id: 'process-response-store-failure',
+      idempotency_key: 'process-response-store-failure-key',
+    };
+
+    const first = await handlers.run_tool(request);
+    const retry = await handlers.run_tool(request);
+    const command = engine.getApplicationCommandById(request.command_id)!;
+
+    expect(parseTextResult(first)).toMatchObject({
+      code: 'COMMAND_RESPONSE_PERSIST_FAILED',
+      executed: false,
+    });
+    expect(retry).toEqual(first);
+    expect(readFileSync(counterPath, 'utf8')).toBe('1');
+    expect(command).toMatchObject({
+      status: 'failed',
+      error: { code: 'COMMAND_RESPONSE_PERSIST_FAILED' },
+    });
+    expect(engine.getRuntimeRuns()).toContainEqual(expect.objectContaining({
+      lifecycle: 'completed',
+      finalization_status: 'completed',
+    }));
+    expect(engine.getFullHistory().filter(event =>
+      event.event_type === 'action_completed')).toHaveLength(1);
+  });
+
+  it('rejects one explicit retry key reused for different same-shape argv', async () => {
+    const first = await handlers.run_tool({
+      binary: process.execPath,
+      args: ['-e', "process.stdout.write('foo')"],
+      validate: false,
+      idempotency_key: 'changed-same-shape-process',
+    });
+    const conflict = await handlers.run_tool({
+      binary: process.execPath,
+      args: ['-e', "process.stdout.write('bar')"],
+      validate: false,
+      idempotency_key: 'changed-same-shape-process',
+    });
+
+    expect(first.isError).toBeFalsy();
+    expect(conflict.isError).toBe(true);
+    expect(parseTextResult(conflict)).toMatchObject({
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
   });
 
   it('preserves GitHub repository and branch context through inline run_tool parsing', async () => {

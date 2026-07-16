@@ -72,6 +72,7 @@ function handleError(toolName: string, err: unknown) {
   const code = typeof (err as { code?: unknown } | null)?.code === 'string'
     ? (err as { code: string }).code
     : undefined;
+  const details = (err as { details?: unknown } | null)?.details;
   console.error(`[ERROR] Tool "${toolName}" threw:`, message);
   if (stack) console.error(stack);
 
@@ -83,6 +84,9 @@ function handleError(toolName: string, err: unknown) {
         error: message,
         classification: classifyError(message, code),
         ...(code ? { code } : {}),
+        ...(details && typeof details === 'object' && !Array.isArray(details)
+          ? details as Record<string, unknown>
+          : {}),
         tool: toolName,
       }),
     }],

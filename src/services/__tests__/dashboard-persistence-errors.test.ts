@@ -187,7 +187,7 @@ describe('dashboard durable mutation error responses', () => {
   it('maps a coded config write-incomplete failure to stable 503 recovery', async () => {
     const error = new Error('Configuration write did not complete durably');
     (error as Error & { code: string }).code = 'CONFIG_WRITE_INCOMPLETE';
-    vi.spyOn(engine, 'updateConfig').mockImplementation(() => { throw error; });
+    vi.spyOn(engine, 'commitConfigApplicationCommand').mockImplementation(() => { throw error; });
 
     const response = await invoke('handleUpdateConfig', { name: 'must not land' });
 
@@ -219,7 +219,7 @@ describe('dashboard durable mutation error responses', () => {
       },
     };
     vi.spyOn(engine, 'getPersistenceRecoveryStatus').mockReturnValue(recovery);
-    vi.spyOn(engine, 'updateScopeConfig').mockImplementation(() => {
+    vi.spyOn(engine, 'commitConfigApplicationCommand').mockImplementation(() => {
       throw new Error('Atomic replacement failed unexpectedly');
     });
 
@@ -240,7 +240,7 @@ describe('dashboard durable mutation error responses', () => {
   it('maps a late active-engagement persistence refusal to the same 503 envelope', async () => {
     const error = new Error('Durable persistence became read-only');
     (error as Error & { code: string }).code = 'PERSISTENCE_READ_ONLY';
-    vi.spyOn(engine, 'updateConfig').mockImplementation(() => { throw error; });
+    vi.spyOn(engine, 'commitConfigApplicationCommand').mockImplementation(() => { throw error; });
 
     const response = await invoke('handleUpdateEngagement', { name: 'must not land' });
 
@@ -308,7 +308,7 @@ describe('dashboard durable mutation error responses', () => {
     const activeBefore = engine.getConfig();
     (dashboard as any).engagementManager = manager;
 
-    const activeUpdate = vi.spyOn(engine, 'updateConfig');
+    const activeUpdate = vi.spyOn(engine, 'commitConfigApplicationCommand');
     const inactiveUpdate = vi.spyOn(manager, 'updateEngagement');
     const invalidUpdates: Record<string, unknown>[] = [
       {},
@@ -390,7 +390,7 @@ describe('dashboard durable mutation error responses', () => {
   it('keeps optimistic configuration conflicts at 409', async () => {
     const error = new Error('Configuration changed after it was inspected');
     (error as Error & { code: string }).code = 'CONFIG_HASH_CONFLICT';
-    vi.spyOn(engine, 'updateConfig').mockImplementation(() => { throw error; });
+    vi.spyOn(engine, 'commitConfigApplicationCommand').mockImplementation(() => { throw error; });
 
     const response = await invoke('handleUpdateConfig', { name: 'stale edit' });
 
@@ -425,7 +425,7 @@ describe('dashboard durable mutation error responses', () => {
       new Error('Configuration changed while its durable write intent was being prepared.'),
       { code: 'CONFIG_HASH_CONFLICT' },
     );
-    vi.spyOn(engine, 'updateConfig').mockImplementation(() => { throw error; });
+    vi.spyOn(engine, 'commitConfigApplicationCommand').mockImplementation(() => { throw error; });
 
     const response = await invoke('handleUpdateConfig', { name: 'raced edit' });
 
@@ -443,20 +443,16 @@ describe('dashboard durable mutation error responses', () => {
   });
 
   it('keeps ordinary scope validation failures at 400', async () => {
-    vi.spyOn(engine, 'updateScopeConfig').mockImplementation(() => {
-      throw new Error('Invalid scope update: invalid CIDR');
-    });
-
     const response = await invoke('handleUpdateScope', { cidrs: ['not-a-cidr'] });
 
     expect(response).toEqual({
       status: 400,
-      body: { error: 'Invalid scope update: invalid CIDR' },
+      body: { error: 'Scope validation failed: Invalid CIDR in scope.cidrs: not-a-cidr' },
     });
   });
 
   it('maps a late objective-create persistence refusal to 503 recovery', async () => {
-    vi.spyOn(engine, 'addObjective').mockImplementation(() => { throw persistenceRefusal(); });
+    vi.spyOn(engine, 'commitConfigApplicationCommand').mockImplementation(() => { throw persistenceRefusal(); });
 
     const response = await invokeDurableSurface('handleAddObjective', { description: 'Must persist' });
 
@@ -464,7 +460,11 @@ describe('dashboard durable mutation error responses', () => {
   });
 
   it('maps a late objective-update persistence refusal to 503 recovery', async () => {
-    vi.spyOn(engine, 'updateObjective').mockImplementation(() => { throw persistenceRefusal(); });
+    engine.updateConfig({
+      ...engine.getConfig(),
+      objectives: [{ id: 'objective-test', description: 'Existing', achieved: false }],
+    });
+    vi.spyOn(engine, 'commitConfigApplicationCommand').mockImplementation(() => { throw persistenceRefusal(); });
 
     const response = await invokeDurableSurface('handleUpdateObjective', { description: 'Must persist' });
 
@@ -472,7 +472,11 @@ describe('dashboard durable mutation error responses', () => {
   });
 
   it('maps a late objective-delete persistence refusal to 503 recovery', async () => {
-    vi.spyOn(engine, 'removeObjective').mockImplementation(() => { throw persistenceRefusal(); });
+    engine.updateConfig({
+      ...engine.getConfig(),
+      objectives: [{ id: 'objective-test', description: 'Existing', achieved: false }],
+    });
+    vi.spyOn(engine, 'commitConfigApplicationCommand').mockImplementation(() => { throw persistenceRefusal(); });
 
     const response = await invokeDurableSurface('handleDeleteObjective');
 
@@ -480,7 +484,9 @@ describe('dashboard durable mutation error responses', () => {
   });
 
   it('maps a late quick-deploy scope persistence refusal to 503 recovery', async () => {
-    vi.spyOn(engine, 'updateScope').mockImplementation(() => { throw persistenceRefusal(); });
+    vi.spyOn(engine, 'runAtomicScopeCommand').mockImplementation(() => {
+      throw persistenceRefusal();
+    });
 
     const response = await invokeDurableSurface('handleQuickDeploy', { target: '10.72.0.5' });
 
@@ -488,26 +494,27 @@ describe('dashboard durable mutation error responses', () => {
   });
 
   it('maps a late graph-correction persistence refusal to 503 recovery', async () => {
-    vi.spyOn(engine, 'correctGraph').mockImplementation(() => { throw persistenceRefusal(); });
+    vi.spyOn(engine, 'correctGraphApplicationCommand').mockImplementation(() => { throw persistenceRefusal(); });
 
     const response = await invokeDurableSurface('handleGraphCorrect', {
       reason: 'durable correction',
-      operations: [{ op: 'drop_node', node_id: 'missing' }],
+      operations: [{ kind: 'drop_node', node_id: 'missing' }],
     });
 
     expectPersistenceRefusal(response);
   });
 
   it('preserves objective not-found and graph-correction validation responses', async () => {
-    vi.spyOn(engine, 'updateObjective').mockReturnValue(false);
-
     const notFound = await invokeDurableSurface('handleUpdateObjective', { description: 'Unknown objective' });
     const invalidCorrection = await invokeDurableSurface('handleGraphCorrect', { reason: 'missing operations' });
 
-    expect(notFound).toEqual({ status: 404, body: { error: 'Objective not found' } });
-    expect(invalidCorrection).toEqual({
+    expect(notFound).toEqual({
+      status: 404,
+      body: { code: 'OBJECTIVE_NOT_FOUND', error: 'Objective not found.' },
+    });
+    expect(invalidCorrection).toMatchObject({
       status: 400,
-      body: { error: 'reason (string) and operations (array) are required' },
+      body: { error: 'Invalid graph correction request' },
     });
   });
 });

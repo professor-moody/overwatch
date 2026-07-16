@@ -3,7 +3,7 @@
 // Core app construction separated from transport startup.
 // ============================================================
 
-import { readFileSync, readdirSync, existsSync, writeFileSync } from 'fs';
+import { chmodSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 import { randomUUID, createHash } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
@@ -84,6 +84,10 @@ import { ToolTelemetry } from './services/tool-telemetry.js';
 import { setTelemetry, getTelemetry } from './tools/error-boundary.js';
 import { InProcessTapeController, type TapeStartSource } from './services/in-process-tape.js';
 import { reconcileRuntimeOwnershipOnStartup } from './services/runtime-ownership-recovery.js';
+import {
+  ApplicationCommandService,
+  withApplicationCommandInvocation,
+} from './services/application-command-service.js';
 
 type DashboardStatusProvider = () => {
   enabled: boolean;
@@ -240,9 +244,19 @@ function persistenceReadOnlyToolResult(
  */
 export class ToolRegistrar implements OverwatchToolRegistrar {
   private entries: ToolEntry[] = [];
+  /**
+   * Stdio requests do not carry an MCP session id. Keep one opaque namespace
+   * for this registrar lifetime so a retransmitted JSON-RPC request is
+   * idempotent in-process without colliding with a later daemon lifetime.
+   */
+  private readonly invocationNamespace = `mcp-runtime-${randomUUID()}`;
+
   constructor(
     private server: McpServer,
-    private persistenceGate?: Pick<GraphEngine, 'isPersistenceWritable' | 'getPersistenceRecoveryStatus'>,
+    private persistenceGate?: Pick<
+      GraphEngine,
+      'isPersistenceWritable' | 'getPersistenceRecoveryStatus'
+    > & Partial<Pick<GraphEngine, 'resolveAgentTaskReference'>>,
   ) {}
   registerTool<OutputArgs extends ZodRawShapeCompat | AnySchema, InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined>(
     name: string,
@@ -286,7 +300,53 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
       }
       const invoke = cb as unknown as (...callbackArgs: unknown[]) => unknown;
       try {
-        const result = await invoke(...args);
+        const extra = args[1] && typeof args[1] === 'object'
+          ? args[1] as {
+              requestId?: string | number;
+              sessionId?: string;
+            }
+          : undefined;
+        const explicitTaskId = typeof inputRecord.task_id === 'string'
+          ? inputRecord.task_id
+          : undefined;
+        const agentReference = typeof inputRecord.agent_id === 'string'
+          ? inputRecord.agent_id
+          : undefined;
+        const actorResolution = !explicitTaskId
+          && agentReference
+          && this.persistenceGate?.resolveAgentTaskReference
+          ? this.persistenceGate.resolveAgentTaskReference(agentReference)
+          : undefined;
+        const resolvedActorTaskId = explicitTaskId
+          ?? (
+            actorResolution?.status === 'exact'
+            || actorResolution?.status === 'unique_legacy_label'
+              ? actorResolution.task.task_id ?? actorResolution.task.id
+              : undefined
+          );
+        const result = await withApplicationCommandInvocation(
+          {
+            transport: 'mcp',
+            actor_task_id: resolvedActorTaskId ?? null,
+            ...(extra?.requestId !== undefined
+              ? { request_id: String(extra.requestId) }
+              : {}),
+            session_id: extra?.sessionId ?? this.invocationNamespace,
+            ...(typeof inputRecord.command_id === 'string'
+              ? { command_id: inputRecord.command_id }
+              : {}),
+            ...(typeof inputRecord.idempotency_key === 'string'
+              ? { idempotency_key: inputRecord.idempotency_key }
+              : {}),
+            ...(typeof inputRecord.action_id === 'string'
+              ? { action_id: inputRecord.action_id }
+              : {}),
+            ...(typeof inputRecord.frontier_item_id === 'string'
+              ? { frontier_item_id: inputRecord.frontier_item_id }
+              : {}),
+          },
+          () => invoke(...args),
+        );
         const failure = mutatesDurableState
           ? failureFromToolResult(result)
           : undefined;
@@ -328,6 +388,7 @@ export type OverwatchApp = {
   server: McpServer;
   dashboard: DashboardServer | null;
   taskExecution: TaskExecutionService;
+  applicationCommands: ApplicationCommandService;
   telemetry: ToolTelemetry;
   tape: InProcessTapeController;
   httpTransports?: Record<string, StreamableHTTPServerTransport>;
@@ -672,6 +733,8 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   // supplied configPath) opts into revisioned write-through ownership.
   const managedConfigPath = options.config && !options.configPath ? undefined : resolvedConfigPath;
   const engine = new GraphEngine(config, stateFilePath, managedConfigPath);
+  const applicationCommands = new ApplicationCommandService(engine);
+  applicationCommands.recoverInterruptedCommands();
   const authoritativeConfig = engine.getConfig();
   const skillDir = options.skillDir || process.env.OVERWATCH_SKILLS || './skills';
   const skills = new SkillIndex(skillDir);
@@ -686,6 +749,11 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   // orphan groups are signaled; reused or unverifiable PIDs remain untouched
   // and surface through recovery status.
   const reconcileRuntimeOwnership = () => {
+    // A config-divergent startup is intentionally read-only, so the first
+    // recovery pass above cannot close accepted/running commands. This handler
+    // is also invoked after explicit config reconciliation; retry command
+    // recovery before process ownership and before writable service resumes.
+    applicationCommands.recoverInterruptedCommands();
     reconcileRuntimeOwnershipOnStartup(engine);
   };
   engine.setRuntimeOwnershipRecoveryHandler(reconcileRuntimeOwnership);
@@ -730,7 +798,16 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   });
 
   const dashboardPort = options.dashboardPort ?? parseInt(process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
-  const dashboard = dashboardPort > 0 ? new DashboardServer(engine, dashboardPort, undefined, sessionManager, configPath) : null;
+  const dashboard = dashboardPort > 0
+    ? new DashboardServer(
+        engine,
+        dashboardPort,
+        undefined,
+        sessionManager,
+        configPath,
+        applicationCommands,
+      )
+    : null;
 
   // In-process tape controller. Always constructed; only opens a writer when
   // explicitly enabled via env, engagement config, or dashboard toggle.
@@ -812,6 +889,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     server,
     dashboard,
     taskExecution,
+    applicationCommands,
     telemetry: getTelemetry()!,
     tape,
   };
@@ -865,6 +943,13 @@ export const DEFAULT_APPROVAL_TIMEOUT_MS = 300_000; // 5 minutes
 // orphans the pending action. We add headroom on top of the approval timeout.
 export const MCP_REQUEST_TIMEOUT_MARGIN_MS = 60_000; // 1 minute
 
+export function resolveMcpTokenPath(): string {
+  const configured = process.env.OVERWATCH_MCP_TOKEN_FILE;
+  if (configured) return resolve(configured);
+  const configPath = resolve(process.env.OVERWATCH_CONFIG || './engagement.json');
+  return join(dirname(configPath), '.overwatch-mcp-token');
+}
+
 export type StartHttpAppOptions = {
   port?: number;
   host?: string;
@@ -891,7 +976,14 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
     || process.env.OVERWATCH_MCP_REQUIRE_TOKEN === 'false';
   const requireMcpToken = !requireDisabled;
   if (requireMcpToken && !process.env.OVERWATCH_MCP_TOKEN) {
-    const generated = randomUUID().replace(/-/g, '');
+    const tokenPath = resolveMcpTokenPath();
+    let generated: string;
+    try {
+      const existing = readFileSync(tokenPath, 'utf8').trim();
+      generated = existing || randomUUID().replace(/-/g, '');
+    } catch {
+      generated = randomUUID().replace(/-/g, '');
+    }
     process.env.OVERWATCH_MCP_TOKEN = generated;
     // Do NOT print the secret to stderr — it persists in logs / terminal
     // scrollback / log aggregation. Write it to a 0600 file beside the engagement
@@ -899,15 +991,17 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
     // sub-agents read the env var in-process; an operator wiring .mcp.http.json
     // reads the file.
     const fingerprint = createHash('sha256').update(generated).digest('hex').slice(0, 12);
-    let tokenPath: string;
+    let tokenPersisted = false;
     try {
-      tokenPath = join(dirname(app.engine.getStateFilePath()), '.overwatch-mcp-token');
       writeFileSync(tokenPath, generated, { mode: 0o600 });
+      chmodSync(tokenPath, 0o600);
+      tokenPersisted = true;
     } catch {
-      tokenPath = '(could not write token file — set OVERWATCH_MCP_TOKEN yourself)';
+      console.error('[overwatch] could not persist the MCP token file — set OVERWATCH_MCP_TOKEN explicitly before the next restart.');
     }
-    console.error(`[overwatch] /mcp auth required — generated a token (sha256:${fingerprint}…), written 0600 to ${tokenPath}`);
-    console.error('[overwatch] set OVERWATCH_MCP_TOKEN yourself for a stable token (used by .mcp.http.example.json and headless sub-agents).');
+    console.error(tokenPersisted
+      ? `[overwatch] /mcp auth required — using the stable token at ${tokenPath} (sha256:${fingerprint}…).`
+      : `[overwatch] /mcp auth required — using an in-memory token for this run (sha256:${fingerprint}…).`);
   }
   expressApp.use('/mcp', createMcpAuthMiddleware({ host, requireToken: requireMcpToken }));
 
