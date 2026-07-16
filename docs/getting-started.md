@@ -331,11 +331,27 @@ If none of the templates fit, the full schema is in [Configuration](configuratio
     - WebSocket disconnects? It auto-reconnects every 3s and falls back to HTTP polling. Check for a proxy/firewall blocking WS.
 
 ??? failure "Corrupted state file"
-    Atomic write-rename normally prevents this. If it happens (disk full mid-write):
+    Do not delete or rename the primary state, WAL, `.snapshots/`, config
+    intents, migration intents, or quarantine files. Restart recovery evaluates
+    all retained bases and replays only a contiguous valid WAL prefix; if it
+    cannot prove a complete result, Overwatch stays inspectable and read-only.
 
-    1. Delete the broken `state-<id>.json`.
-    2. Look for snapshot files (`state-<id>.json.bak.*`) and rename the most recent valid one.
-    3. Or just restart — Overwatch reseeds the graph from `engagement.json`.
+    1. Stop target execution.
+    2. Copy the complete engagement directory.
+    3. Run `overwatch state migrate --check --state-file <path> --config-file <path>`
+       against the stopped engagement or its copy.
+    4. Inspect `overwatch recovery` when the daemon can start.
+    5. Restore a verified migration backup or repair a copied bundle rather
+       than reseeding over the original bytes.
 
 ??? tip "Starting fresh"
-    Delete `state-<id>.json` and restart. The server rebuilds the graph from `engagement.json` on next launch.
+    Preserve the old engagement and select a genuinely new state path:
+
+    ```bash
+    cp -a /path/to/engagement /path/to/engagement-before-reset
+    export OVERWATCH_STATE_FILE=/path/to/engagement/state-<id>-fresh-$(date +%Y%m%d%H%M%S).json
+    # Restart Overwatch with the same validated engagement.json
+    ```
+
+    A new path creates a fresh graph without making the old state, WAL,
+    snapshots, evidence, reports, or migration backups unreachable.

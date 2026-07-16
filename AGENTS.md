@@ -62,7 +62,7 @@ Console-first IA. The **Console** is the operator's home; nav is grouped **Conso
 
 ### Terminal CLI (`overwatch`)
 
-A standalone terminal operator client over the same `/api/*` surface — for operators who prefer the shell, and runnable in a second pane while the model drives. Read: `overwatch status` / `frontier` / `findings` / `agents` / `approvals` / `opsec` / `sessions` / `queries`. Operate: `approve` / `deny` / `answer` / `deploy` / `dispatch`. `--json` emits compact raw API JSON (a token-cheap way for a shell-capable sub-agent to pull state without an MCP round-trip). Needs the engagement running (`npm start -- --http`); loopback needs no auth (remote: `--token`/`OVERWATCH_DASHBOARD_TOKEN`). See [Terminal CLI](docs/cli.md).
+A standalone terminal operator client over the same `/api/*` surface — for operators who prefer the shell, and runnable in a second pane while the model drives. Read: `overwatch status` / `frontier` / `findings` / `agents` / `approvals` / `opsec` / `sessions` / `queries`. Operate: `approve` / `deny` / `answer` / `deploy` / `dispatch`. `--json` emits compact raw API JSON (a token-cheap way for a shell-capable sub-agent to pull state without an MCP round-trip). These live commands need the engagement running (`npm start -- --http`); loopback needs no auth (remote: `--token`/`OVERWATCH_DASHBOARD_TOKEN`). The offline `overwatch state migrate --check --state-file ... [--config-file ...]` command inspects migration readiness without a daemon or writes. See [Terminal CLI](docs/cli.md).
 
 ### Sessions (interactive shells / sockets)
 

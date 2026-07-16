@@ -104,14 +104,19 @@ Overwatch survives compaction because the graph lives outside the context window
     - Current frontier items
     - Active agents
     - Recent activity
-4. The LLM resumes exactly where it left off
+4. The LLM receives the durable operational truth needed to continue. Live
+   runtime handles are reported honestly as interrupted or resume-available
+   rather than being presented as still connected.
 
-This also works across server restarts, session handoffs, and multi-day engagements.
+This durable-state reconstruction also works across server restarts, session
+handoffs, and multi-day engagements. Unsaved browser drafts, sockets, PTYs,
+process objects, and other live handles are intentionally not reconstructed.
 
 **Startup Reconciliation:** On restart, the engine automatically reconciles runtime-dependent state:
 - **HAS_SESSION edges** are downgraded from `session_live=true` to `session_live=false` since no runtime sessions survive a restart.
 - **Running agents** are marked as `interrupted` since the sub-agent processes no longer exist.
-- **Tracked processes** are checked for PID liveness; dead PIDs are marked as completed.
+- **Tracked processes** are checked for PID liveness; unverifiable/dead PIDs are
+  marked `unknown` unless an owned lifecycle observer recorded a terminal result.
 
 ## Node ID Conventions
 

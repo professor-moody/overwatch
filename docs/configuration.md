@@ -92,6 +92,22 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
 
 ### Active configuration ownership and recovery
 
+Persisted engagement state is explicitly versioned. A missing `state_version`
+is legacy V0; current writers use state V1 and primitive journal V1. Before a
+V0 engagement can normalize configuration metadata or publish any V1
+checkpoint, Overwatch must completely replay its WAL and create a verified
+backup under `.migration-backups/`. Check readiness offline with:
+
+```bash
+overwatch state migrate --check \
+  --config-file /path/to/engagement.json \
+  --state-file /path/to/state-engagement-id.json
+```
+
+An unsupported newer format remains read-only and byte-preserved. Do not point
+an older binary at migrated V1 files; restore the complete checksummed migration
+backup into a clean engagement directory first.
+
 For the active engagement, `engagement.json`, the live engine, and the config
 embedded in durable state are one revisioned value. Overwatch adds two managed
 fields:

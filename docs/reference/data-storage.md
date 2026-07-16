@@ -64,17 +64,59 @@ The active engagement's full in-memory state is periodically flushed to a separa
 
 This single JSON file contains:
 
+- **Format envelope** — `state_version` and `journal_version`
 - **Engagement metadata** — id, name, scope, phases, campaigns, objectives, opsec profile
 - **Knowledge graph** — all nodes and edges with their properties
 - **Credential material** — `cred_value` and related fields when a parser/tool captured reusable material
 - **Activity log** — up to 5,000 most-recent entries (tiered truncation preserves milestones)
-- **Agent registry** — registered agents and their status
+- **Orchestration state** — agents, campaigns, approvals, directives, leases, frontier linkage and weights
+- **Coordination state** — proposed plans, questions/answers, command previews/outcomes, playbook slots, process ownership, and secret-free session descriptors
 - **Chain checkpoints** — hash-chain integrity anchors (when `hash_chain_enabled: true`)
+- **External artifact references** — evidence/report manifests, tapes, bundles, and cookie jars by path/hash rather than embedded content
 
 Set `OVERWATCH_STATE_FILE=/path/to/state.json` to override the default. The
 server writes this file on every tool call that mutates state (debounced) and on
 clean shutdown. Active configuration changes also atomically update the config
 file; an API/tool success means its revision/hash matches runtime and state.
+
+### State format versions and migration
+
+A state file with no `state_version` is legacy V0. Current writers emit
+`state_version: 1` and `journal_version: 1`. V0 remains readable, but startup
+does not publish V1 until it has:
+
+1. acquired the migration/write lease and selected a valid recovery base;
+2. created and verified a checksummed backup of config, state, WAL, snapshots,
+   rollback/config intents, and config-recovery artifacts;
+3. completely replayed the backed-up legacy WAL;
+4. reverified the source inventory and durably recorded the migration intent;
+   and
+5. written the first V1 checkpoint.
+
+Backups live beside state:
+
+```
+<state-dir>/.migration-backups/
+└── state-<id>-<timestamp>-v0-to-v1-<uuid>/
+    ├── files/
+    ├── manifest.json
+    ├── manifest.sha256
+    └── complete
+```
+
+While a migration or filesystem write boundary is active, Overwatch may create
+`<state>.migration-lock/` or `<state>.writer-lock/`. They coordinate state,
+WAL, snapshot, and active-config writers across processes. Do not remove a live
+lock; startup validates process identity and only reclaims a stale owner.
+
+Use `overwatch state migrate --check` before an upgrade to inspect the selected
+base, WAL readiness, format versions, and config agreement without modifying
+engagement files. An unsupported newer state or journal version starts
+read-only and is never replaced, reseeded, compacted, or downgraded.
+
+To run an older binary after migration, restore the **complete verified
+migration backup into a clean engagement directory** first. Merely checking out
+an older binary against V1 files is not a rollback.
 
 ### Snapshots
 
@@ -193,6 +235,7 @@ A typical engagement directory after one session:
 ├── engagement.json.write-intent.json # present only while a config write needs completion
 ├── state-example-engagement.json     # live graph, activity log, agents, campaigns
 ├── state-example-engagement.journal.jsonl # WAL when durable mutations are pending
+├── .migration-backups/                 # verified V0→V1 rollback authorities
 ├── .snapshots/
 │   └── state-example-engagement.snap-2026-07-15T18-30-00-000Z-21409.json
 ├── engagements/
@@ -224,7 +267,7 @@ The state file contains the full graph, activity log, agents, campaigns, and che
 
 **To move to another machine:** copy the directory, set `OVERWATCH_CONFIG` to point at the new path, and start the server.
 
-**To export a shareable bundle:** use `bundle_engagement`. It produces a portable `.tar.gz` containing the state file, evidence blobs, generated reports, `bundle-manifest.json`, and the mutation journal when present. Optional snapshots can be included. Registered JSON-RPC tapes are referenced in the manifest but are not copied.
+**To export a shareable bundle:** use `bundle_engagement`. It produces a portable `.tar.gz` containing the state file, evidence blobs, generated reports, `bundle-manifest.json`, and the mutation journal when present. The manifest records the state and journal format versions. Optional snapshots can be included. Registered JSON-RPC tapes are referenced in the manifest but are not copied.
 
 **To export only the graph:** use `export_graph`. It returns a JSON graph dump for external analysis, custom reporting, or visualization; it is not a full evidence/report bundle.
 
@@ -232,9 +275,22 @@ Bundles and graph exports inherit the same operator-confidential boundary as the
 
 ---
 
-## What is NOT stored on disk
+## State taxonomy
 
-- **MCP session state** — in-memory only, lost on restart. Agents re-register on reconnect.
-- **Pending action queue** — reconstructed from the activity log on startup.
-- **Cache** — path-graph projections and community detection caches are rebuilt on demand.
-- **Runtime-only external connectors** — for example, a live PostgreSQL connection handle is session-scoped; only the redacted display DSN survives reload.
+Durable state includes graph/config truth, evidence references, orchestration,
+approvals, directives, proposals, questions/answers, command idempotency
+outcomes, tracked-process ownership, and secret-free session descriptors.
+
+The following remain intentionally ephemeral:
+
+- PTYs, sockets, child-process objects, live WebSocket clients, and terminal buffers
+- database connection handles
+- uncaptured environment variables, adapter/runtime passwords and private keys,
+  and unsaved browser drafts (credential values deliberately ingested into the
+  graph remain durable operator-confidential state)
+- path-graph projections, UI projections, telemetry buffers, and other rebuildable caches
+
+After restart, durable descriptors may say that a process or session existed,
+but no runtime handle is fabricated. Process liveness becomes `unknown`; active
+session descriptors become interrupted/non-live with only their explicit resume
+intent retained.
