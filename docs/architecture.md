@@ -33,7 +33,7 @@ The graph is powered by [graphology](https://graphology.github.io/), a robust Ja
 
 ### MCP Server, Not a Prompt
 
-The orchestrator survives context compaction by design — it's not in the context window. After compaction, `get_state()` reconstructs a complete briefing from the graph. Zero information loss.
+The orchestrator survives context compaction by design — it's not in the context window. After compaction, `get_state()` reconstructs an operational briefing from durable graph and coordination state. Live handles, terminal buffers, unsaved UI drafts, and other explicitly ephemeral runtime state are not reconstructed.
 
 Two transports are supported:
 

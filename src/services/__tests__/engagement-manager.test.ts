@@ -121,6 +121,90 @@ describe('EngagementManager — editing the ACTIVE engagement targets the live c
   });
 });
 
+describe('EngagementManager — degraded read-only lifecycle', () => {
+  let dir: string;
+  let activePath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'overwatch-eng-read-only-'));
+    activePath = join(dir, 'engagement.json');
+    writeFileSync(activePath, JSON.stringify({
+      id: 'active-recovery',
+      name: 'Active Recovery',
+      created_at: '2026-01-01T00:00:00.000Z',
+      scope: { cidrs: [], domains: [], exclusions: [] },
+      objectives: [],
+      opsec: {
+        name: 'pentest',
+        max_noise: 0.5,
+        blacklisted_techniques: [],
+      },
+    }, null, 2));
+  });
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('projects the active config without creating engagements storage', () => {
+    const readOnly = new EngagementManager(
+      activePath,
+      undefined,
+      { readOnly: true },
+    );
+
+    expect(readOnly.isReadOnly()).toBe(true);
+    expect(existsSync(readOnly.engagementsDir)).toBe(false);
+    expect(readOnly.listEngagements()).toEqual([
+      expect.objectContaining({
+        id: 'active-recovery',
+        name: 'Active Recovery',
+        is_active: true,
+        config_path: activePath,
+      }),
+    ]);
+    expect(existsSync(readOnly.engagementsDir)).toBe(false);
+  });
+
+  it('enables writes in place, initializes storage, and mirrors the active config', () => {
+    const manager = new EngagementManager(
+      activePath,
+      undefined,
+      { readOnly: true },
+    );
+    expectManagerError(
+      () => manager.createEngagement({ name: 'Blocked Before Recovery' }),
+      'ENGAGEMENT_PERSISTENCE_FAILED',
+    );
+
+    manager.enableWrites();
+    manager.enableWrites();
+
+    expect(manager.isReadOnly()).toBe(false);
+    expect(existsSync(manager.engagementsDir)).toBe(true);
+    expect(existsSync(join(manager.engagementsDir, 'active-recovery.json'))).toBe(true);
+    const created = manager.createEngagement({ name: 'Allowed After Recovery' });
+    expect(existsSync(created.config_path)).toBe(true);
+  });
+
+  it('fails closed if the shared persistence probe degrades after startup', () => {
+    let writable = true;
+    const manager = new EngagementManager(
+      activePath,
+      undefined,
+      {
+        isWritable: () => writable,
+      },
+    );
+    expect(manager.createEngagement({ name: 'Allowed Initially' })).toBeDefined();
+
+    writable = false;
+    expect(manager.isReadOnly()).toBe(true);
+    expectManagerError(
+      () => manager.createEngagement({ name: 'Blocked After Degradation' }),
+      'ENGAGEMENT_PERSISTENCE_FAILED',
+    );
+  });
+});
+
 // ============================================================
 // Dashboard create-flow round-trip
 // Mirrors the exact payload shape posted by the React EngagementsPanel

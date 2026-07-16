@@ -1,9 +1,9 @@
 # Terminal Operator CLI (`overwatch`)
 
-`overwatch` is a standalone command-line client for a **live** engagement. It is a
-thin client over the same `/api/*` HTTP surface the [Live Dashboard](dashboard.md)
-uses, so you can watch and steer the *same* engagement the model is driving —
-from your own shell (e.g. a second pane) — without round-tripping through Claude.
+`overwatch` is primarily a standalone command-line client for a **live**
+engagement. Most commands use the same `/api/*` HTTP surface as the
+[Live Dashboard](dashboard.md). The local `state migrate --check` command is the
+exception: it inspects persisted files without requiring a running server.
 
 It is **not** part of `claude`/MCP. It's a separate binary you run yourself:
 
@@ -36,6 +36,7 @@ overwatch <command> [options]
 |---|---|
 | `overwatch status` | Engagement snapshot: graph, objectives, access, agents, approvals, top frontier, readiness |
 | `overwatch recovery` | WAL/state recovery plus active file/runtime/state config convergence and exact reconciliation hashes |
+| `overwatch state migrate --check [--state-file PATH] [--config-file PATH]` | Side-effect-free local V0/V1, WAL, snapshot, and config migration readiness |
 | `overwatch frontier [--max N] [--type TYPE]` | Candidate next actions (the deterministic frontier) |
 | `overwatch findings [--severity S]` | Classified findings + severity summary |
 | `overwatch agents` | Running agent roster |
@@ -93,6 +94,26 @@ Do not reconcile a `write_incomplete` status: restart to let Overwatch complete
 its known write intent. Config reconciliation is also refused while underlying
 WAL/state recovery is incomplete.
 
+## State migration preflight
+
+Run this before upgrading a copied or stopped engagement:
+
+```bash
+overwatch state migrate --check \
+  --config-file /path/to/engagement.json \
+  --state-file /path/to/state-engagement-id.json
+```
+
+If `--state-file` is omitted, the CLI derives it from the config ID. The command
+does not contact HTTP and does not create, rename, checkpoint, or compact
+engagement files. It reports the selected primary/snapshot base, observed and
+supported state/journal versions, WAL preflight blockers, config semantic
+agreement, and whether revision 1 may be seeded.
+
+Exit status is 0 for a current or migration-ready state and 1 for missing or
+blocked state. A newer unsupported format must be opened with a compatible
+binary; Overwatch deliberately refuses to downgrade or reseed it.
+
 ## Options
 
 | Flag | Effect |
@@ -101,6 +122,8 @@ WAL/state recovery is incomplete.
 | `--no-color` | Disable ANSI color |
 | `--url <url>` | API base URL (default: `$OVERWATCH_URL` or `http://127.0.0.1:8384`) |
 | `--token <tok>` | Bearer token for a remote, non-loopback server (`$OVERWATCH_DASHBOARD_TOKEN`) |
+| `--state-file <path>` | Local state path for `state migrate --check` (`$OVERWATCH_STATE_FILE`) |
+| `--config-file <path>` | Local config path for `state migrate --check` (`$OVERWATCH_CONFIG`) |
 | `--help` | Help, or `overwatch <command> --help` |
 
 Color auto-disables when output is piped or `NO_COLOR` is set, so

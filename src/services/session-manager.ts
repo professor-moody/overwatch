@@ -191,6 +191,55 @@ export interface SessionCreateOptions {
   initial_wait_ms?: number;
 }
 
+function validateSessionCreateOptions(options: SessionCreateOptions): void {
+  const requiredStrings: Array<[string, string | undefined]> = [
+    ['title', options.title],
+  ];
+  const optionalStrings: Array<[string, string | undefined]> = [
+    ['host', options.host],
+    ['bind_host', options.bind_host],
+    ['advertise_host', options.advertise_host],
+    ['user', options.user],
+    ['agent_id', options.agent_id],
+    ['target_node', options.target_node],
+    ['principal_node', options.principal_node],
+    ['credential_node', options.credential_node],
+    ['action_id', options.action_id],
+    ['frontier_item_id', options.frontier_item_id],
+  ];
+  for (const [field, value] of [...requiredStrings, ...optionalStrings]) {
+    if (value !== undefined && value.length === 0) {
+      throw new Error(`Session ${field} must not be empty when provided.`);
+    }
+  }
+  if (
+    options.port !== undefined
+    && (
+      !Number.isSafeInteger(options.port)
+      || options.port < 0
+      || options.port > 65_535
+    )
+  ) {
+    throw new Error('Session port must be an integer from 0 through 65535.');
+  }
+  const validation = options.default_validation;
+  if (validation) {
+    if (validation.technique.length === 0) {
+      throw new Error('Session default_validation.technique must not be empty.');
+    }
+    for (const [field, value] of [
+      ['target_ip', validation.target_ip],
+      ['target_url', validation.target_url],
+      ['target_node', validation.target_node],
+      ['agent_id', validation.agent_id],
+    ] as const) {
+      if (value !== undefined && value.length === 0) {
+        throw new Error(`Session default_validation.${field} must not be empty when provided.`);
+      }
+    }
+  }
+}
+
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private adapters: Map<SessionKind, SessionAdapterFactory> = new Map();
@@ -218,6 +267,7 @@ export class SessionManager {
 
   async create(options: SessionCreateOptions): Promise<{ metadata: SessionMetadata; initial: SessionReadResult }> {
     this.assertPersistenceWritable();
+    validateSessionCreateOptions(options);
     const adapter = this.adapters.get(options.kind);
     if (!adapter) {
       throw new Error(`No adapter registered for session kind: ${options.kind}`);
@@ -479,6 +529,7 @@ export class SessionManager {
     this.assertPersistenceWritable();
     session.handle.write(data);
     session.metadata.last_activity_at = new Date().toISOString();
+    this.emitSessionEvent('session_updated', session);
     return { session_id: sessionId, end_pos: session.buffer.endPos };
   }
 
@@ -541,6 +592,7 @@ export class SessionManager {
     this.assertPersistenceWritable();
     session.handle.write(command + '\n');
     session.metadata.last_activity_at = new Date().toISOString();
+    this.emitSessionEvent('session_updated', session);
 
     // Wait for output to settle.
     // Phase 1: wait for at least one byte of post-command output (or timeout).
@@ -743,6 +795,25 @@ export class SessionManager {
       return all.filter(m => m.state === 'pending' || m.state === 'connected');
     }
     return all;
+  }
+
+  /**
+   * Drop runtime-only session metadata after an authoritative state rollback.
+   * Live handles must be closed explicitly before rollback; closed entries are
+   * safe to discard because the engine has already restored the durable
+   * descriptor set selected by the operator.
+   */
+  reconcileAfterStateRollback(): void {
+    const active = Array.from(this.sessions.values())
+      .filter(session =>
+        session.metadata.state === 'pending'
+        || session.metadata.state === 'connected');
+    if (active.length > 0) {
+      throw new Error(
+        `Cannot reconcile session runtime after rollback while ${active.length} session(s) are live.`,
+      );
+    }
+    this.sessions.clear();
   }
 
   getSession(sessionId: string): SessionMetadata | null {

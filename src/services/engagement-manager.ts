@@ -269,16 +269,83 @@ function isSafeEngagementId(id: unknown): id is string {
 
 export class EngagementManager {
   readonly engagementsDir: string;
+  private readOnly: boolean;
+  private readonly writableProbe?: () => boolean;
 
   constructor(
     private readonly activeConfigPath: string,
     private readonly writeConfig: DurableConfigWriter = writeJsonAtomicDurable,
+    options: { readOnly?: boolean; isWritable?: () => boolean } = {},
   ) {
     this.engagementsDir = join(dirname(activeConfigPath), 'engagements');
+    this.readOnly = options.readOnly === true;
+    this.writableProbe = options.isWritable;
+    if (this.readOnly) return;
     if (!existsSync(this.engagementsDir)) {
       mkdirSync(this.engagementsDir, { recursive: true });
     }
     this.mirrorActiveIfNeeded();
+  }
+
+  isReadOnly(): boolean {
+    if (!this.writableProbe) return this.readOnly;
+    try {
+      return this.readOnly || !this.writableProbe();
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Re-open engagement storage after in-process recovery/config reconciliation.
+   * Initialization is idempotent so both MCP and dashboard owners can enable
+   * their independently constructed managers safely.
+   */
+  enableWrites(): void {
+    if (!this.readOnly) return;
+    if (this.writableProbe) {
+      let writable = false;
+      try {
+        writable = this.writableProbe();
+      } catch {
+        writable = false;
+      }
+      if (!writable) {
+        throw new EngagementManagerError(
+          'ENGAGEMENT_PERSISTENCE_FAILED',
+          'Engagement storage is read-only while durable recovery is incomplete.',
+        );
+      }
+    }
+    if (!existsSync(this.engagementsDir)) {
+      mkdirSync(this.engagementsDir, { recursive: true });
+    }
+    this.readOnly = false;
+    this.mirrorActiveIfNeeded();
+  }
+
+  private assertWritable(): void {
+    if (this.writableProbe) {
+      let writable = false;
+      try {
+        writable = this.writableProbe();
+      } catch {
+        writable = false;
+      }
+      if (!writable) {
+        throw new EngagementManagerError(
+          'ENGAGEMENT_PERSISTENCE_FAILED',
+          'Engagement storage is read-only while durable recovery is incomplete.',
+        );
+      }
+      if (this.readOnly) this.enableWrites();
+    }
+    if (this.readOnly) {
+      throw new EngagementManagerError(
+        'ENGAGEMENT_PERSISTENCE_FAILED',
+        'Engagement storage is read-only while durable recovery is incomplete.',
+      );
+    }
   }
 
   /** Copy the active engagement config into engagements/ on first run. */
@@ -309,11 +376,11 @@ export class EngagementManager {
     const activeId = this.getActiveId();
     const seen = new Set<string>();
 
-    if (!existsSync(this.engagementsDir)) return results;
-
-    const files = readdirSync(this.engagementsDir)
-      .filter(f => f.endsWith('.json'))
-      .sort();
+    const files = existsSync(this.engagementsDir)
+      ? readdirSync(this.engagementsDir)
+          .filter(f => f.endsWith('.json'))
+          .sort()
+      : [];
 
     for (const file of files) {
       const filePath = join(this.engagementsDir, file);
@@ -343,6 +410,7 @@ export class EngagementManager {
   }
 
   createEngagement(input: CreateEngagementInput): EngagementSummary {
+    this.assertWritable();
     // Build + validate via the shared builder (single source of truth for
     // id/nonce/profile/template logic); this manager owns only persistence.
     let parsedConfig: EngagementConfig;
@@ -368,6 +436,7 @@ export class EngagementManager {
    *     from-template path which builds via mergeTemplateWithConfig (no minting),
    *   - never silently overwrite an existing engagement on an id collision. */
   persistConfig(config: EngagementConfig): EngagementSummary {
+    this.assertWritable();
     if (!isSafeEngagementId(config.id)) {
       throw new EngagementManagerError(
         'ENGAGEMENT_VALIDATION_FAILED',
@@ -426,6 +495,7 @@ export class EngagementManager {
   }
 
   updateEngagement(id: string, partial: Record<string, unknown>): EngagementConfig {
+    this.assertWritable();
     if (!isSafeEngagementId(id)) {
       throw new EngagementManagerError(
         'ENGAGEMENT_VALIDATION_FAILED',

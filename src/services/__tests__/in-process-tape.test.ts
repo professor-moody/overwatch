@@ -118,6 +118,19 @@ describe('InProcessTapeController', () => {
     expect(recent[1].details?.started_by).toBe('config');
   });
 
+  it('rolls back a newly created tape when the start audit event fails', async () => {
+    const path = join(tmpDir, 'failed-start.jsonl');
+    vi.spyOn(engine, 'logActionEvent').mockImplementationOnce(() => {
+      throw new Error('audit append failed');
+    });
+    const c = new InProcessTapeController(engine, { file: path });
+
+    expect(() => c.enable()).toThrow('audit append failed');
+    expect(c.getStatus()).toMatchObject({ enabled: false, frame_count: 0 });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(existsSync(path)).toBe(false);
+  });
+
   it('clears active metadata even when the writer fails to close', async () => {
     const c = new InProcessTapeController(engine, { defaultDir: tmpDir });
     c.enable();

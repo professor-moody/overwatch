@@ -143,13 +143,13 @@ describe('StatePersistence', () => {
 
     it('round-trips agents', () => {
       const { ctx, persistence } = buildPersistence();
-      ctx.agents.set('agent-1', {
+      ctx.agents.set('task-1', {
         id: 'task-1',
         agent_id: 'agent-1',
-        description: 'test task',
+        assigned_at: now,
         status: 'running',
-        created_at: now,
-      } as any);
+        subgraph_node_ids: [],
+      });
 
       persistence.persist();
       persistence.flushNow();
@@ -157,8 +157,8 @@ describe('StatePersistence', () => {
       const { ctx: ctx2, persistence: persistence2 } = buildPersistence(ctx.stateFilePath);
       persistence2.loadState();
 
-      expect(ctx2.agents.has('agent-1')).toBe(true);
-      expect(ctx2.agents.get('agent-1')?.status).toBe('running');
+      expect(ctx2.agents.has('task-1')).toBe(true);
+      expect(ctx2.agents.get('task-1')?.status).toBe('running');
     });
 
     it('excludes builtin rules from persisted state', () => {
@@ -424,6 +424,139 @@ describe('StatePersistence', () => {
     it('returns false when no valid snapshots exist', () => {
       const { persistence } = buildPersistence();
       expect(persistence.recoverFromSnapshot(BUILTIN_RULES)).toBe(false);
+    });
+
+    it('re-discovers and re-ranks every base after acquiring the migration lease', () => {
+      const targetState = join(tempDir, 'state-rerank.json');
+      const oldSource = join(tempDir, 'old-source.json');
+      const newSource = join(tempDir, 'new-source.json');
+
+      const oldWriter = buildPersistence(oldSource);
+      oldWriter.graph.addNode('old-node', {
+        id: 'old-node',
+        type: 'host',
+        label: 'old',
+        discovered_at: now,
+        confidence: 1,
+      } as NodeProperties);
+      oldWriter.persistence.persistImmediate();
+      const oldLegacy = JSON.parse(readFileSync(oldSource, 'utf8')) as Record<string, unknown>;
+      delete oldLegacy.state_version;
+      delete oldLegacy.journal_version;
+      delete oldLegacy.walCompactionAuthority;
+
+      const newWriter = buildPersistence(newSource);
+      newWriter.graph.addNode('new-node', {
+        id: 'new-node',
+        type: 'host',
+        label: 'new',
+        discovered_at: now,
+        confidence: 1,
+      } as NodeProperties);
+      newWriter.persistence.persistImmediate();
+      const newLegacy = JSON.parse(readFileSync(newSource, 'utf8')) as Record<string, unknown>;
+      delete newLegacy.state_version;
+      delete newLegacy.journal_version;
+      delete newLegacy.walCompactionAuthority;
+      writeFileSync(targetState, JSON.stringify(newLegacy));
+
+      const snapshotDirectory = join(tempDir, '.snapshots');
+      mkdirSync(snapshotDirectory, { recursive: true });
+      const snapshotPath = join(
+        snapshotDirectory,
+        'state-rerank.snap-2026-07-16T00-00-00-000Z-1.json',
+      );
+      writeFileSync(snapshotPath, JSON.stringify(oldLegacy));
+
+      const restored = buildPersistence(targetState);
+      let inventories = 0;
+      (restored.persistence as unknown as {
+        collectRestoreCandidates: () => Array<{
+          source: 'state' | 'snapshot';
+          path: string;
+        }>;
+      }).collectRestoreCandidates = () => {
+        inventories++;
+        return inventories === 1
+          ? [{ source: 'snapshot', path: snapshotPath }]
+          : [
+              { source: 'state', path: targetState },
+              { source: 'snapshot', path: snapshotPath },
+            ];
+      };
+
+      expect(restored.persistence.restoreBaseAndReplay()).toMatchObject({
+        status: 'restored',
+        source: 'state',
+      });
+      expect(inventories).toBe(2);
+      expect(restored.graph.hasNode('new-node')).toBe(true);
+      expect(restored.graph.hasNode('old-node')).toBe(false);
+    });
+
+    it('finishes a rollback that commits after the initial check but before the migration lease', () => {
+      const targetState = join(tempDir, 'state-race.json');
+      const rollbackSource = join(tempDir, 'rollback-source.json');
+
+      const targetWriter = buildPersistence(targetState);
+      targetWriter.graph.addNode('legacy-head', {
+        id: 'legacy-head',
+        type: 'host',
+        label: 'legacy head',
+        discovered_at: now,
+        confidence: 1,
+      } as NodeProperties);
+      targetWriter.persistence.persistImmediate();
+      const legacyHead = JSON.parse(readFileSync(targetState, 'utf8')) as Record<string, unknown>;
+      delete legacyHead.state_version;
+      delete legacyHead.journal_version;
+      delete legacyHead.walCompactionAuthority;
+      writeFileSync(targetState, JSON.stringify(legacyHead));
+
+      const rollbackWriter = buildPersistence(rollbackSource);
+      rollbackWriter.graph.addNode('rollback-authority', {
+        id: 'rollback-authority',
+        type: 'host',
+        label: 'rollback authority',
+        discovered_at: now,
+        confidence: 1,
+      } as NodeProperties);
+      rollbackWriter.persistence.persistImmediate();
+      const snapshotDirectory = join(tempDir, '.snapshots');
+      mkdirSync(snapshotDirectory, { recursive: true });
+      const rollbackSnapshot = join(
+        snapshotDirectory,
+        'state-race.snap-2026-07-16T00-00-00-000Z-1.json',
+      );
+      writeFileSync(rollbackSnapshot, readFileSync(rollbackSource));
+
+      const racer = buildPersistence(targetState);
+      const recovering = buildPersistence(targetState);
+      const internal = recovering.persistence as unknown as {
+        validateFullStateDetached: (data: unknown, rules: InferenceRule[]) => void;
+      };
+      const validate = internal.validateFullStateDetached.bind(recovering.persistence);
+      let rollbackCommitted = false;
+      internal.validateFullStateDetached = (data, rules) => {
+        validate(data, rules);
+        if (rollbackCommitted) return;
+        rollbackCommitted = true;
+        expect(racer.persistence.rollbackToSnapshot(
+          rollbackSnapshot,
+          BUILTIN_RULES,
+          { deferAuthorityRelease: true },
+        )).toBe(true);
+        expect(existsSync(`${targetState}.rollback-intent.json`)).toBe(true);
+      };
+
+      expect(recovering.persistence.restoreBaseAndReplay()).toMatchObject({
+        status: 'restored',
+        source: 'snapshot',
+      });
+      expect(rollbackCommitted).toBe(true);
+      expect(recovering.graph.hasNode('rollback-authority')).toBe(true);
+      expect(recovering.graph.hasNode('legacy-head')).toBe(false);
+      expect(existsSync(`${targetState}.rollback-intent.json`)).toBe(false);
     });
   });
 

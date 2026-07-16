@@ -1306,6 +1306,18 @@ export interface ConfigRecoveryStatus {
   conflicted_intent?: ConfigIntentConflict;
 }
 
+export interface StateMigrationStatus {
+  status: 'not_checked' | 'current' | 'backup_created' | 'migrated' | 'blocked';
+  supported_state_version: number;
+  supported_journal_version: number;
+  observed_state_version?: number;
+  observed_journal_version?: number;
+  migration_required: boolean;
+  backup_path?: string;
+  backup_manifest_sha256?: string;
+  reason?: string;
+}
+
 export interface PersistenceRecoveryStatus {
   outcome: 'clean' | 'recovered' | 'incomplete' | 'reinitialized';
   source: 'fresh' | 'state' | 'snapshot' | 'config';
@@ -1331,6 +1343,8 @@ export interface PersistenceRecoveryStatus {
   last_persistence_error?: string;
   journal: {
     enabled: boolean;
+    /** Primitive JSONL is version 1; PR6 introduces transaction journal v2. */
+    format_version?: number;
     /** Active WAL path when journaling is enabled for this process. */
     path?: string;
     read: number;
@@ -1341,6 +1355,8 @@ export interface PersistenceRecoveryStatus {
     malformed: boolean;
     preserved: boolean;
   };
+  /** State-envelope migration/forward-compatibility status for this boot. */
+  state_migration?: StateMigrationStatus;
   /** File/runtime/state configuration convergence for the active engagement. */
   config_recovery?: ConfigRecoveryStatus;
 }

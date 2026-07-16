@@ -130,10 +130,11 @@ underlying WAL/state failure, so selecting file/state authority never appears
 to repair an unrelated journal problem.
 
 Open **Settings → Recovery** for the full outcome, contiguous/on-disk
-checkpoints, file/runtime/state revisions and hashes, write-intent state, and
-operator-facing reason. For a config-only divergence, **Use file** and **Use
-state** submit the exact current hashes behind the abbreviated values (hover a
-value to inspect its full digest). The controls require
+checkpoints, observed/supported state and journal format versions, migration
+backup path/checksum, file/runtime/state revisions and hashes, write-intent
+state, and operator-facing reason. For a config-only divergence, **Use file**
+and **Use state** submit the exact current hashes behind the abbreviated values
+(hover a value to inspect its full digest). The controls require
 confirmation and refresh status after success, conflict, or failure. They are
 not offered for an incomplete known write or a simultaneous persistence
 failure.

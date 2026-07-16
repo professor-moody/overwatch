@@ -20,7 +20,7 @@ The bundle includes:
 - **state file** — full graph, activity log, and config (the source of truth)
 - **evidence/** — all captured evidence files and the manifest
 - **reports/** — every rendered report in the archive
-- **bundle-manifest.json** — index of included files, tape paths, and metadata
+- **bundle-manifest.json** — index of included files, state/journal format versions, tape paths, and metadata
 
 Optionally includes .snapshots/ (periodic state snapshots; can add significant size).
 
@@ -77,6 +77,8 @@ Returns the absolute path to the created archive and its size.`,
             size_bytes: sizeBytes,
             size_mb: parseFloat((sizeBytes / 1024 / 1024).toFixed(2)),
             engagement_id: manifest.engagement_id,
+            state_version: manifest.state_version,
+            journal_version: manifest.journal_version,
             sections: manifest.sections.map(s => s.path),
             tape_paths_referenced: manifest.tape_paths,
             created_at: manifest.created_at,

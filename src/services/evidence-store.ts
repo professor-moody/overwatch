@@ -69,13 +69,29 @@ export class EvidenceStore {
   private dir: string;
   private manifest: EvidenceRecord[] = [];
   private manifestPath: string;
+  private readOnly: boolean;
 
-  constructor(stateFilePath: string) {
+  constructor(stateFilePath: string, options: { readOnly?: boolean } = {}) {
     const stateDir = dirname(stateFilePath);
     this.dir = join(stateDir, 'evidence');
     this.manifestPath = join(this.dir, 'manifest.json');
-    this.ensureDir();
+    this.readOnly = options.readOnly === true;
+    if (!this.readOnly) this.ensureDir();
     this.loadManifest();
+  }
+
+  /** Complete deferred manifest recovery only after state + config are writable. */
+  enableWrites(): void {
+    if (!this.readOnly) return;
+    this.ensureDir();
+    this.readOnly = false;
+    this.loadManifest();
+  }
+
+  private assertWritable(): void {
+    if (this.readOnly) {
+      throw new Error('Evidence storage is read-only while engagement recovery is incomplete.');
+    }
   }
 
   private ensureDir(): void {
@@ -90,6 +106,13 @@ export class EvidenceStore {
       this.manifest = JSON.parse(readFileSync(this.manifestPath, 'utf-8'));
       return;
     } catch (err) {
+      if (this.readOnly) {
+        console.error(
+          `[evidence-store] manifest.json at ${this.manifestPath} is unreadable during degraded recovery; preserving it byte-for-byte.`,
+        );
+        this.manifest = [];
+        return;
+      }
       // F1-15: silent reset → loud recovery. Preserve the corrupted manifest
       // for forensic investigation, log a warning, and rebuild a best-effort
       // manifest by scanning the evidence directory so existing findings that
@@ -167,6 +190,7 @@ export class EvidenceStore {
   }
 
   private saveManifest(): void {
+    this.assertWritable();
     // Atomic write: serialize to a temp file, fsync via writeFileSync, then
     // rename over the manifest. rename(2) is atomic on POSIX, so a concurrent
     // reader (or a crash mid-write) never observes a torn manifest. Within this
@@ -196,6 +220,7 @@ export class EvidenceStore {
     content?: string;
     raw_output?: string;
   }): string {
+    this.assertWritable();
     const contentHash = computeContentHash(opts.content, opts.raw_output);
     // Dedup: if we've already stored this content (regardless of which
     // action/finding referenced it), reuse the existing evidence_id and
@@ -288,6 +313,7 @@ export class EvidenceStore {
     /** First write/finalize error if any. */
     error: () => Error | null;
   } {
+    this.assertWritable();
     const evidenceId = uuidv4();
     const timestamp = new Date().toISOString();
     const kind = opts.kind ?? 'content';

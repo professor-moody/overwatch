@@ -112,6 +112,14 @@ import {
 import type { ObjectiveManagerHost } from './objective-manager.js';
 import { queryGraphImpl } from './graph-query.js';
 import { CredentialCoverageTracker } from './credential-coverage.js';
+import type { OperatorOp } from './command-interpreter.js';
+import type {
+  PersistedCommandOutcomeV1,
+  PersistedCommandPlanV1,
+  PersistedPlaybookRunV1,
+  PersistedRuntimeRunV1,
+  PersistedSessionDescriptorV1,
+} from './persisted-state.js';
 import { engagementConfigSchema, inferProfile } from '../types.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
@@ -122,6 +130,8 @@ import type {
   PersistenceRecoveryStatus,
   ConfigRecoveryStatus,
   ConfigIntentConflict,
+  SessionMetadata,
+  SessionDefaultValidation,
 } from '../types.js';
 
 /** Public read surfaces must not leak mutable references into durable engine
@@ -177,7 +187,7 @@ export class GraphEngine {
   private campaignPlanner: CampaignPlanner;
   private healthReportCache: HealthReport | null = null;
   private frontierCache: { passed: FrontierItem[]; all: FrontierItem[]; campaigns: import('../types.js').Campaign[]; hidden: import('../types.js').FrontierHiddenSummary } | null = null;
-  private evidenceStore: EvidenceStore;
+  private evidenceStore!: EvidenceStore;
   private actionOutputBuffer = new ActionOutputBuffer();
   /** Shared skill methodology index (attached at app construction); null in bare/test contexts. */
   private skillIndex: SkillIndex | null = null;
@@ -185,12 +195,23 @@ export class GraphEngine {
   private startupReconciliationDeferred = false;
   private recoveryMaintenanceInProgress = false;
   private deferredStartupRecoveryError?: string;
+  private coordinationStoreUnsubscribers: Array<() => void> = [];
+  private rollbackCoordinator?: {
+    beforeRollback(): void;
+    afterRollback(): void;
+  };
 
   constructor(config: EngagementConfig, stateFilePath?: string, configFilePath?: string) {
     config = engagementConfigSchema.parse(config);
     const graph = createGraph();
     const filePath = stateFilePath || `./state-${config.id}.json`;
-    this.ctx = new EngineContext(graph, config, filePath, configFilePath !== undefined);
+    this.ctx = new EngineContext(
+      graph,
+      config,
+      filePath,
+      configFilePath !== undefined,
+      configFilePath,
+    );
     this.ctx.inferenceRules = [...BUILTIN_RULES];
     this.persistence = new StatePersistence(
       this.ctx, BUILTIN_RULES,
@@ -199,6 +220,8 @@ export class GraphEngine {
     this.configService = new EngagementConfigService({
       getRuntimeConfig: () => this.ctx.config,
       nowIso: () => this.ctx.nowIso(),
+      assertWriteAllowed: () => this.persistence.assertMigrationWriteAllowed(),
+      withWriteGuard: operation => this.persistence.withMigrationWriteGuard(operation),
       applyRuntimeConfig: (next, context) => this.applyRuntimeConfig(next, context),
       persistRuntimeState: () => this.persistence.persistImmediate(),
       recordConfigEvent: ({ description, result, details }) => {
@@ -232,8 +255,6 @@ export class GraphEngine {
       this.hopsToNearestObjective.bind(this),
     );
     this.campaignPlanner = new CampaignPlanner(this.ctx);
-    this.evidenceStore = new EvidenceStore(filePath);
-
     // One recovery state machine owns both primary and snapshot fallback.  A
     // nonempty WAL without a complete replay never falls through to config
     // seeding: the engine stays available for inspection in read-only mode.
@@ -279,9 +300,7 @@ export class GraphEngine {
       }
     }
 
-    // The campaign planner built its reverse indexes before restoration replaced
-    // ctx.campaigns. Reindexing is read-only and is safe even in degraded mode.
-    this.campaignPlanner.reindex();
+    this.applyRestoredRuntimeProjections();
 
     if (restore.rollback_pending && !persistenceDegraded) {
       try {
@@ -301,6 +320,7 @@ export class GraphEngine {
       persistence_writable: !persistenceDegraded && this.persistence.isWritable(),
       durable_config: this.persistence.getDurableConfig(),
     });
+    persistenceDegraded ||= !this.persistence.isWritable();
     if (restore.rollback_pending && !configRecovery.resolution_required && !persistenceDegraded) {
       try {
         this.persistence.completePendingRollbackAuthority();
@@ -311,10 +331,16 @@ export class GraphEngine {
         );
       }
     }
+    this.evidenceStore = new EvidenceStore(filePath, {
+      readOnly: persistenceDegraded
+        || configRecovery.resolution_required
+        || !this.persistence.isWritable(),
+    });
     this.startupReconciliationDeferred = !persistenceDegraded && configRecovery.resolution_required;
     // Every guarded primitive now observes both WAL/state health and config
     // convergence. Reconciliation temporarily bypasses only the config half.
     this.ctx.persistenceWriteGuard = () => this.assertPersistenceWritable();
+    this.installCoordinationStorePersistence();
 
     if (!persistenceDegraded && !configRecovery.resolution_required) {
       if (restore.status === 'restored') {
@@ -331,6 +357,7 @@ export class GraphEngine {
       // Reconcile runtime-dependent state on startup only when the resulting
       // mutations can be durably checkpointed.
       this.reconcileSessionEdgesOnStartup();
+      this.reconcileSessionDescriptorsOnStartup();
       this.agentMgr.reconcileOnStartup();
       this.reconcilePendingApprovalsOnStartup();
       // Do not rotate a corrupt primary into the snapshot set when config was
@@ -392,6 +419,16 @@ export class GraphEngine {
 
   private seedFromConfig(): void {
     _seedFromConfig(this.configHost);
+  }
+
+  private installCoordinationStorePersistence(): void {
+    const guard = () => this.assertPersistenceWritable();
+    this.ctx.proposedPlanStore.setMutationGuard(guard);
+    this.ctx.agentQueryStore.setMutationGuard(guard);
+    this.coordinationStoreUnsubscribers.push(
+      this.ctx.proposedPlanStore.onChange(() => this.persist()),
+      this.ctx.agentQueryStore.onChange(() => this.persist()),
+    );
   }
 
   // =============================================
@@ -2219,6 +2256,29 @@ export class GraphEngine {
     _reconcileSessionEdgesOnStartup(this.sessionHost);
   }
 
+  private reconcileSessionDescriptorsOnStartup(): void {
+    const interruptedAt = this.ctx.nowIso();
+    let changed = false;
+    this.ctx.sessionDescriptors = this.ctx.sessionDescriptors.map(descriptor => {
+      if (descriptor.lifecycle !== 'pending' && descriptor.lifecycle !== 'connected') {
+        return descriptor;
+      }
+      changed = true;
+      return {
+        ...descriptor,
+        lifecycle: 'error',
+        closed_at: interruptedAt,
+        resume_intent: {
+          ...descriptor.resume_intent,
+          policy: descriptor.resume_intent.requested ? 'manual' : 'none',
+          prior_state: descriptor.lifecycle,
+          recorded_at: interruptedAt,
+        },
+      };
+    });
+    if (changed) this.persist();
+  }
+
   // =============================================
   // Objective Tracking (delegated to ObjectiveManager)
   // =============================================
@@ -3923,6 +3983,7 @@ export class GraphEngine {
         result = this.configService.commitPreparedResolution(prepared);
       }
       this.completeDeferredStartupReconciliation();
+      this.evidenceStore.enableWrites();
       return result;
     } catch (error) {
       if (!this.configService.isBlocked() && this.startupReconciliationDeferred) {
@@ -3939,6 +4000,7 @@ export class GraphEngine {
     if (!this.startupReconciliationDeferred) return;
     this.syncObjectiveNodes();
     this.reconcileSessionEdgesOnStartup();
+    this.reconcileSessionDescriptorsOnStartup();
     this.agentMgr.reconcileOnStartup();
     this.reconcilePendingApprovalsOnStartup();
     this.persistence.persistImmediate();
@@ -3971,6 +4033,12 @@ export class GraphEngine {
    * Call during graceful shutdown or in tests to avoid leaked state.
    */
   dispose(): void {
+    for (const unsubscribe of this.coordinationStoreUnsubscribers.splice(0)) {
+      unsubscribe();
+    }
+    this.ctx.proposedPlanStore.setMutationGuard(undefined);
+    this.ctx.agentQueryStore.setMutationGuard(undefined);
+    this.rollbackCoordinator = undefined;
     this.persistence.dispose();
     // Cancel approval timers + settle any outstanding approval promises so a
     // blocked tool call can't hang past daemon shutdown.
@@ -4069,6 +4137,202 @@ export class GraphEngine {
   /** 3D: agent→operator questions awaiting an answer. */
   getAgentQueryStore(): import('./agent-query-store.js').AgentQueryStore {
     return this.ctx.agentQueryStore;
+  }
+
+  private pruneCommandCoordination(now?: number): void {
+    const effectiveNow = now ?? Date.parse(this.ctx.nowIso());
+    const expiredPlans = [...this.ctx.commandPlans.entries()]
+      .filter(([, plan]) => plan.expires_at <= effectiveNow)
+      .map(([id]) => id);
+    const expiredOutcomes = [...this.ctx.commandOutcomes.entries()]
+      .filter(([, outcome]) => outcome.expires_at <= effectiveNow)
+      .map(([id]) => id);
+    if (expiredPlans.length === 0 && expiredOutcomes.length === 0) return;
+    this.assertPersistenceWritable();
+    for (const id of expiredPlans) this.ctx.commandPlans.delete(id);
+    for (const id of expiredOutcomes) this.ctx.commandOutcomes.delete(id);
+    this.persist();
+  }
+
+  createCommandPlan(input: {
+    ops: OperatorOp[];
+    command: string;
+    now?: number;
+    ttlMs?: number;
+  }): string {
+    this.assertPersistenceWritable();
+    const now = input.now ?? Date.parse(this.ctx.nowIso());
+    this.pruneCommandCoordination(now);
+    const planId = uuidv4();
+    this.ctx.commandPlans.set(planId, {
+      ops: detached(input.ops),
+      command: input.command,
+      created_at: now,
+      expires_at: now + (input.ttlMs ?? 10 * 60_000),
+    });
+    this.persist();
+    return planId;
+  }
+
+  getCommandPlan(
+    planId: string,
+    now?: number,
+  ): Omit<PersistedCommandPlanV1, 'plan_id'> | undefined {
+    const effectiveNow = now ?? Date.parse(this.ctx.nowIso());
+    if (this.isPersistenceWritable()) this.pruneCommandCoordination(effectiveNow);
+    const plan = this.ctx.commandPlans.get(planId);
+    return plan && plan.expires_at > effectiveNow ? detached(plan) : undefined;
+  }
+
+  deleteCommandPlan(planId: string): boolean {
+    this.assertPersistenceWritable();
+    const deleted = this.ctx.commandPlans.delete(planId);
+    if (deleted) this.persist();
+    return deleted;
+  }
+
+  recordCommandOutcome(
+    planId: string,
+    results: unknown[],
+    now?: number,
+    ttlMs: number = 10 * 60_000,
+  ): void {
+    this.assertPersistenceWritable();
+    const effectiveNow = now ?? Date.parse(this.ctx.nowIso());
+    this.pruneCommandCoordination(effectiveNow);
+    this.ctx.commandOutcomes.set(planId, {
+      at: effectiveNow,
+      expires_at: effectiveNow + ttlMs,
+      results: detached(results),
+    });
+    this.persist();
+  }
+
+  getCommandOutcome(
+    planId: string,
+    now?: number,
+  ): Omit<PersistedCommandOutcomeV1, 'plan_id'> | undefined {
+    const effectiveNow = now ?? Date.parse(this.ctx.nowIso());
+    if (this.isPersistenceWritable()) this.pruneCommandCoordination(effectiveNow);
+    const outcome = this.ctx.commandOutcomes.get(planId);
+    return outcome && outcome.expires_at > effectiveNow ? detached(outcome) : undefined;
+  }
+
+  getSessionDescriptors(): PersistedSessionDescriptorV1[] {
+    return detached(this.ctx.sessionDescriptors);
+  }
+
+  recordSessionDescriptor(metadata: SessionMetadata): PersistedSessionDescriptorV1 {
+    this.assertPersistenceWritable();
+    if (metadata.id.length === 0) throw new Error('Session id must not be empty.');
+    if (metadata.transport.length === 0) throw new Error('Session transport must not be empty.');
+    if (
+      metadata.port !== undefined
+      && (
+        !Number.isSafeInteger(metadata.port)
+        || metadata.port < 0
+        || metadata.port > 65_535
+      )
+    ) {
+      throw new Error('Session port must be an integer from 0 through 65535.');
+    }
+    const nonEmpty = (value: string | undefined): string | undefined =>
+      value !== undefined && value.length > 0 ? value : undefined;
+    let defaultValidation: SessionDefaultValidation | undefined;
+    if (metadata.default_validation) {
+      if (metadata.default_validation.technique.length === 0) {
+        throw new Error('Session default_validation.technique must not be empty.');
+      }
+      defaultValidation = {
+        ...detached(metadata.default_validation),
+        target_ip: nonEmpty(metadata.default_validation.target_ip),
+        target_url: nonEmpty(metadata.default_validation.target_url),
+        target_node: nonEmpty(metadata.default_validation.target_node),
+        agent_id: nonEmpty(metadata.default_validation.agent_id),
+      };
+    }
+    const recordedAt = this.ctx.nowIso();
+    const prior = this.ctx.sessionDescriptors.find(entry => entry.session_id === metadata.id);
+    const ownerReference = nonEmpty(metadata.claimed_by) ?? nonEmpty(metadata.agent_id);
+    const exactTask = ownerReference
+      ? this.ctx.agents.get(ownerReference)
+      : undefined;
+    const labelMatches = ownerReference && !exactTask
+      ? [...this.ctx.agents.values()].filter(task => task.agent_id === ownerReference)
+      : [];
+    const ownerTask = exactTask ?? (labelMatches.length === 1 ? labelMatches[0] : undefined);
+    const resumableListener = metadata.kind === 'socket'
+      && metadata.mode === 'listen'
+      && metadata.accept_mode === 'rearm'
+      && (metadata.state === 'pending' || metadata.state === 'connected');
+    const descriptor: PersistedSessionDescriptorV1 = {
+      session_id: metadata.id,
+      kind: metadata.kind,
+      transport: metadata.transport,
+      lifecycle: metadata.state,
+      mode: metadata.mode,
+      bind_host: nonEmpty(metadata.bind_host),
+      advertise_host: nonEmpty(metadata.advertise_host),
+      accept_mode: metadata.accept_mode,
+      reachability_warnings: metadata.reachability_warnings,
+      title: metadata.title,
+      host: nonEmpty(metadata.host),
+      user: nonEmpty(metadata.user),
+      port: metadata.port,
+      owner_task_id: ownerTask?.id,
+      target_node: nonEmpty(metadata.target_node),
+      principal_node: nonEmpty(metadata.principal_node),
+      credential_node: nonEmpty(metadata.credential_node),
+      action_id: nonEmpty(metadata.action_id),
+      frontier_item_id: nonEmpty(metadata.frontier_item_id),
+      started_at: metadata.started_at,
+      last_activity_at: metadata.last_activity_at,
+      closed_at: metadata.closed_at,
+      capabilities: detached(metadata.capabilities),
+      notes: metadata.notes,
+      default_validation: defaultValidation,
+      resume_intent: resumableListener
+        ? {
+            policy: 'manual',
+            requested: true,
+            prior_state: metadata.state === 'pending' ? 'pending' : 'connected',
+            recorded_at: recordedAt,
+          }
+        : prior?.resume_intent.requested && metadata.state !== 'closed'
+          ? detached(prior.resume_intent)
+          : {
+              policy: 'none',
+              requested: false,
+              recorded_at: recordedAt,
+            },
+    };
+    const index = this.ctx.sessionDescriptors.findIndex(
+      entry => entry.session_id === descriptor.session_id,
+    );
+    if (index >= 0) this.ctx.sessionDescriptors[index] = descriptor;
+    else this.ctx.sessionDescriptors.push(descriptor);
+    this.persist();
+    return detached(descriptor);
+  }
+
+  setRuntimeRuns(runs: PersistedRuntimeRunV1[]): void {
+    this.assertPersistenceWritable();
+    this.ctx.runtimeRuns = detached(runs);
+    this.persist();
+  }
+
+  getRuntimeRuns(): PersistedRuntimeRunV1[] {
+    return detached(this.ctx.runtimeRuns);
+  }
+
+  setPlaybookRuns(runs: PersistedPlaybookRunV1[]): void {
+    this.assertPersistenceWritable();
+    this.ctx.playbookRuns = new Map(runs.map(run => [run.run_id, detached(run)]));
+    this.persist();
+  }
+
+  getPlaybookRuns(): PersistedPlaybookRunV1[] {
+    return detached([...this.ctx.playbookRuns.values()]);
   }
 
   recordApprovalRequest(action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>): DurableApprovalRecord {
@@ -4194,6 +4458,7 @@ export class GraphEngine {
 
   rollbackToSnapshot(snapshotName: string): boolean {
     this.assertPersistenceWritable();
+    this.rollbackCoordinator?.beforeRollback();
     try {
       const restored = this.persistence.rollbackToSnapshot(
         snapshotName,
@@ -4201,7 +4466,9 @@ export class GraphEngine {
         { deferAuthorityRelease: true },
       );
       if (!restored) return false;
+      this.applyRestoredRuntimeProjections();
       this.configService.adoptRestoredRuntimeConfig('snapshot.rollback');
+      this.rollbackCoordinator?.afterRollback();
       this.persistence.completePendingRollbackAuthority();
       return true;
     } finally {
@@ -4209,6 +4476,26 @@ export class GraphEngine {
       // memory before durable cleanup failed and the write gate closed.
       this.invalidateAllCaches();
     }
+  }
+
+  setRollbackCoordinator(
+    coordinator: {
+      beforeRollback(): void;
+      afterRollback(): void;
+    } | undefined,
+  ): void {
+    this.rollbackCoordinator = coordinator;
+  }
+
+  /** Rebuild live helpers whose internal indexes/weights are not stored in ctx. */
+  private applyRestoredRuntimeProjections(): void {
+    this.frontierComputer.resetWeightsToDefaults();
+    if (this.ctx.frontierWeights) {
+      this.frontierComputer.setFanOutEstimates(this.ctx.frontierWeights.fan_out);
+      this.frontierComputer.setNoiseEstimates(this.ctx.frontierWeights.noise);
+    }
+    this.ctx.frontierWeights = this.getFrontierWeights();
+    this.campaignPlanner.reindex();
   }
 
   // =============================================
@@ -4421,13 +4708,17 @@ export class GraphEngine {
     this.assertPersistenceWritable();
     if (weights.fan_out) this.frontierComputer.setFanOutEstimates(weights.fan_out);
     if (weights.noise) this.frontierComputer.setNoiseEstimates(weights.noise);
+    this.ctx.frontierWeights = this.getFrontierWeights();
     this.invalidateFrontierCache();
+    this.persist();
   }
 
   resetFrontierWeights(): void {
     this.assertPersistenceWritable();
     this.frontierComputer.resetWeightsToDefaults();
+    this.ctx.frontierWeights = this.getFrontierWeights();
     this.invalidateFrontierCache();
+    this.persist();
   }
 
   logActionEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry {
@@ -4473,9 +4764,57 @@ export class GraphEngine {
     return this.reportArchive;
   }
 
+  private applyTrackedProcesses(
+    processes: import('./process-tracker.js').TrackedProcess[],
+  ): void {
+    this.ctx.trackedProcesses = detached(processes);
+    const derivedRunIds = new Set(processes.map(process => process.id));
+    const priorRuns = new Map(this.ctx.runtimeRuns.map(run => [run.run_id, run]));
+    const nonTrackedRuns = this.ctx.runtimeRuns.filter(run => !derivedRunIds.has(run.run_id));
+    const trackedRuns: PersistedRuntimeRunV1[] = processes.map(proc => {
+      const prior = priorRuns.get(proc.id);
+      const lifecycle = proc.status === 'running'
+        ? 'running' as const
+        : proc.status === 'completed'
+          ? 'completed' as const
+          : proc.status === 'failed'
+            ? 'failed' as const
+            : 'unknown' as const;
+      return {
+        ...detached(prior ?? {}),
+        run_id: proc.id,
+        kind: prior?.kind
+          ?? (proc.id.startsWith('headless-') ? 'headless_agent' : 'tracked_process'),
+        task_id: prior?.task_id
+          ?? (proc.id.startsWith('headless-') ? proc.id.slice('headless-'.length) : undefined),
+        agent_id: proc.agent_id ?? prior?.agent_id,
+        pid: proc.pid,
+        command_fingerprint: createHash('sha256').update(proc.command).digest('hex'),
+        started_at: proc.started_at,
+        completed_at: proc.completed_at,
+        lifecycle,
+        evidence_state: prior?.evidence_state ?? 'none',
+        ...(proc.status === 'unknown'
+          ? { recovery_warning: prior?.recovery_warning ?? 'Process liveness could not be verified after restart.' }
+          : prior?.recovery_warning
+            ? { recovery_warning: prior.recovery_warning }
+            : {}),
+      };
+    });
+    this.ctx.runtimeRuns = [...nonTrackedRuns, ...trackedRuns];
+  }
+
   setTrackedProcesses(processes: import('./process-tracker.js').TrackedProcess[]): void {
     this.assertPersistenceWritable();
-    this.ctx.trackedProcesses = processes;
+    this.applyTrackedProcesses(processes);
+    this.persist();
+  }
+
+  reconcileTrackedProcessesOnStartup(
+    processes: import('./process-tracker.js').TrackedProcess[],
+  ): void {
+    this.applyTrackedProcesses(processes);
+    if (this.isPersistenceWritable()) this.persist();
   }
 
   exportGraph(options?: { includeSuperseded?: boolean; includeCold?: boolean; sourceTrust?: boolean }): ExportedGraph {

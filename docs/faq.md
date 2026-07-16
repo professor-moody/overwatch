@@ -26,14 +26,19 @@ Use the [behavior-eval harness](prompt-eval.md), not your judgment. A determinis
 
 ### How do I reset an engagement?
 
-Delete the state file and restart:
+Stop the daemon, preserve the complete engagement directory, and restart with a
+new explicit state path:
 
 ```bash
-rm state-<engagement-id>.json
-# Restart the MCP server
+cp -a /path/to/engagement /path/to/engagement-before-reset
+export OVERWATCH_STATE_FILE=/path/to/engagement/state-<engagement-id>-fresh-$(date +%Y%m%d%H%M%S).json
+# Restart Overwatch with the same validated engagement.json
 ```
 
-The server will seed a fresh graph from `engagement.json`.
+Do not reset by deleting only `state-<id>.json`: a retained WAL, snapshot,
+rollback intent, or migration intent deliberately prevents silent reseeding.
+Using a new path creates a fresh graph while preserving the old state, evidence,
+reports, and rollback authority.
 
 ### How do I resume a previous engagement?
 
@@ -59,14 +64,20 @@ See [Development — Adding a New Parser](development.md#adding-a-new-parser).
 
 ### What if the state file gets corrupted?
 
-The atomic write-rename mechanism prevents corruption during normal operation. If corruption occurs (e.g., disk full):
+Do not delete or rename the state, WAL, snapshots, config intents, or migration
+intents. Startup evaluates the primary plus retained `.snapshots/` bases and
+replays the WAL without discarding an unreadable or unsupported tail.
 
-1. Delete the corrupted `state-<id>.json`
-2. Check for snapshot backups (`state-<id>.json.bak.*`)
-3. Rename the most recent valid snapshot to `state-<id>.json`
-4. Restart the server
+1. Stop target execution and run `overwatch recovery` if the service starts.
+2. Run `overwatch state migrate --check --state-file <path> --config-file <path>`
+   against the stopped/copy engagement.
+3. Copy the complete engagement directory before attempting manual repair.
+4. Preserve any `.quarantine-*`, `.migration-backups/`, rollback intent, and
+   config-intent artifacts for diagnosis.
 
-If no valid snapshots exist, delete the state file and restart — the server creates a fresh graph from `engagement.json`. You'll lose discovered data but can re-ingest from tool output.
+If no valid base exists, Overwatch remains read-only instead of silently
+creating an empty engagement over durable bytes. Restore a verified backup or
+repair the copied bundle; do not reseed in place.
 
 ### How do I add custom inference rules at runtime?
 

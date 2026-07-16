@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { createOverwatchApp, registerAllTools, shutdownOverwatchApp, ToolRegistrar, type OverwatchApp } from '../app.js';
@@ -9,6 +9,7 @@ import { GraphEngine } from '../services/graph-engine.js';
 import type { EngagementConfig } from '../types.js';
 import { registerEngagementTools } from '../tools/engagement.js';
 import { withErrorBoundary } from '../tools/error-boundary.js';
+import { verifyStateMigrationBackup } from '../services/state-migration.js';
 
 function recoveryConfig(): EngagementConfig {
   return {
@@ -39,7 +40,9 @@ describe('app bootstrap', () => {
         configPath,
         stateFilePath,
         skillDir: resolve('./skills'),
-        dashboardPort: 0,
+        // Construct the dashboard-owned EngagementManager too; degraded
+        // startup must keep that secondary surface read-only.
+        dashboardPort: 8384,
       });
       const recovery = app.engine.getConfigRecoveryStatus();
       expect(recovery).toMatchObject({
@@ -90,6 +93,69 @@ describe('app bootstrap', () => {
     }
   });
 
+  it.each(['legacy', 'future'] as const)(
+    'does not publish a bootstrap config ahead of an explicit %s durable state',
+    async format => {
+      const dir = mkdtempSync(join(tmpdir(), `overwatch-app-bootstrap-${format}-`));
+      const configPath = join(dir, 'engagement.json');
+      const stateFilePath = join(dir, 'state-app-bootstrap-recovery.json');
+      const config = recoveryConfig();
+      writeFileSync(configPath, JSON.stringify(config));
+      const seed = new GraphEngine(config, stateFilePath, configPath);
+      seed.persistImmediate();
+      seed.dispose();
+
+      const state = JSON.parse(readFileSync(stateFilePath, 'utf8')) as Record<string, any>;
+      if (format === 'legacy') {
+        delete state.state_version;
+        delete state.journal_version;
+        delete state.walCompactionAuthority;
+        delete state.config.config_revision;
+        delete state.config.config_hash;
+      } else {
+        state.state_version = 2;
+      }
+      writeFileSync(stateFilePath, JSON.stringify(state));
+      unlinkSync(configPath);
+      const stateBefore = readFileSync(stateFilePath);
+      const previous = process.env.OVERWATCH_BOOTSTRAP;
+      process.env.OVERWATCH_BOOTSTRAP = '1';
+      let app: OverwatchApp | undefined;
+      try {
+        app = createOverwatchApp({
+          configPath,
+          stateFilePath,
+          skillDir: resolve('./skills'),
+          dashboardPort: 0,
+        });
+        expect(existsSync(configPath)).toBe(false);
+        if (format === 'future') {
+          expect(app.engine.isPersistenceWritable()).toBe(false);
+          expect(readFileSync(stateFilePath)).toEqual(stateBefore);
+        } else {
+          const recovery = app.engine.getPersistenceRecoveryStatus();
+          expect(JSON.parse(readFileSync(stateFilePath, 'utf8'))).toMatchObject({
+            state_version: 1,
+            journal_version: 1,
+          });
+          const backup = verifyStateMigrationBackup(
+            join(recovery.state_migration!.backup_path!, 'manifest.json'),
+          );
+          expect(backup.manifest.files).toContainEqual({
+            role: 'config',
+            original_path: configPath,
+            present: false,
+          });
+        }
+      } finally {
+        if (app) await shutdownOverwatchApp(app);
+        if (previous === undefined) delete process.env.OVERWATCH_BOOTSTRAP;
+        else process.env.OVERWATCH_BOOTSTRAP = previous;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('does not let an out-of-band config id change select a fresh state path', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-id-divergence-'));
     const configPath = join(dir, 'engagement.json');
@@ -112,6 +178,107 @@ describe('app bootstrap', () => {
         resolution_required: true,
       });
       expect(existsSync(join(dir, 'state-out-of-band-id.json'))).toBe(false);
+    } finally {
+      if (app) await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not repair evidence artifacts before config divergence is reconciled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-evidence-divergence-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-app-bootstrap-recovery.json');
+    const config = recoveryConfig();
+    writeFileSync(configPath, JSON.stringify(config));
+    const seed = new GraphEngine(config, stateFilePath, configPath);
+    seed.persistImmediate();
+    seed.dispose();
+
+    const external = { ...config, name: 'External config edit' };
+    writeFileSync(configPath, JSON.stringify(external));
+    const evidenceDir = join(dir, 'evidence');
+    mkdirSync(evidenceDir, { recursive: true });
+    const manifestPath = join(evidenceDir, 'manifest.json');
+    const corruptBytes = Buffer.from('{ corrupt evidence manifest');
+    writeFileSync(manifestPath, corruptBytes);
+    const directoryBefore = readdirSync(evidenceDir).sort();
+
+    let app: OverwatchApp | undefined;
+    try {
+      app = createOverwatchApp({
+        configPath,
+        stateFilePath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      });
+      expect(app.engine.getConfigRecoveryStatus()).toMatchObject({
+        status: 'diverged',
+        resolution_required: true,
+      });
+      expect(app.engine.isPersistenceWritable()).toBe(false);
+      expect(() => app!.engine.getEvidenceStore().store({
+        evidence_type: 'log',
+        content: 'must not land',
+      })).toThrow(/read-only/i);
+      expect(readFileSync(manifestPath)).toEqual(corruptBytes);
+      expect(readdirSync(evidenceDir).sort()).toEqual(directoryBefore);
+    } finally {
+      if (app) await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles process ownership after rolling back to a snapshot with older config', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-rollback-runtime-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-app-bootstrap-recovery.json');
+    const config = recoveryConfig();
+    writeFileSync(configPath, JSON.stringify(config));
+    let app: OverwatchApp | undefined;
+    try {
+      app = createOverwatchApp({
+        configPath,
+        stateFilePath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      });
+      const internals = (app.engine as unknown as {
+        ctx: { lastSnapshotTime: number };
+      }).ctx;
+      internals.lastSnapshotTime = Date.now();
+      app.processTracker.restore([{
+        id: 'process-before',
+        pid: 424241,
+        command: 'before',
+        description: 'before rollback',
+        started_at: '2026-07-16T00:00:00.000Z',
+        status: 'unknown',
+      }]);
+      app.engine.flushNow();
+
+      internals.lastSnapshotTime = 0;
+      app.engine.persistImmediate();
+      const snapshot = app.engine.listSnapshots().at(-1);
+      expect(snapshot).toBeDefined();
+
+      app.processTracker.restore([{
+        id: 'process-after',
+        pid: 424242,
+        command: 'after',
+        description: 'after snapshot',
+        started_at: '2026-07-16T00:01:00.000Z',
+        status: 'unknown',
+      }]);
+      app.engine.flushNow();
+      app.engine.updateConfig({ name: 'Config after snapshot' });
+
+      expect(app.engine.rollbackToSnapshot(snapshot!)).toBe(true);
+      expect(app.engine.isPersistenceWritable()).toBe(true);
+      expect(app.engine.getConfig().name).toBe(config.name);
+      expect(app.processTracker.serialize()).toEqual([
+        expect.objectContaining({ id: 'process-before' }),
+      ]);
+      expect(existsSync(`${stateFilePath}.rollback-intent.json`)).toBe(false);
     } finally {
       if (app) await shutdownOverwatchApp(app);
       rmSync(dir, { recursive: true, force: true });
@@ -194,7 +361,7 @@ describe('app bootstrap', () => {
         configPath,
         stateFilePath,
         skillDir: resolve('./skills'),
-        dashboardPort: 0,
+        dashboardPort: 8384,
       });
       expect(app.engine.getPersistenceRecoveryStatus()).toMatchObject({
         source: 'snapshot',
@@ -203,6 +370,60 @@ describe('app bootstrap', () => {
       });
     } finally {
       if (app) await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('opens a future state read-only without repairing config or evidence artifacts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-future-state-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-app-bootstrap-recovery.json');
+    const config = recoveryConfig();
+    writeFileSync(configPath, JSON.stringify(config));
+    const seed = new GraphEngine(config, stateFilePath, configPath);
+    seed.persistImmediate();
+    seed.dispose();
+
+    const future = JSON.parse(readFileSync(stateFilePath, 'utf8')) as Record<string, unknown>;
+    future.state_version = 2;
+    const futureBytes = Buffer.from(JSON.stringify(future));
+    writeFileSync(stateFilePath, futureBytes);
+    const configBytes = readFileSync(configPath);
+    const casArtifact = `${configPath}.overwatch-cas-999-deadbeef.previous`;
+    writeFileSync(casArtifact, configBytes);
+    const intentPath = `${configPath}.write-intent.json`;
+    writeFileSync(intentPath, '{ malformed intent');
+    const evidenceDir = join(dir, 'evidence');
+    mkdirSync(evidenceDir, { recursive: true });
+    const evidenceManifest = join(evidenceDir, 'manifest.json');
+    const evidenceBytes = Buffer.from('{ malformed evidence');
+    writeFileSync(evidenceManifest, evidenceBytes);
+    const directoryBefore = readdirSync(dir).sort();
+
+    let app: OverwatchApp | undefined;
+    try {
+      app = createOverwatchApp({
+        configPath,
+        stateFilePath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 8384,
+      });
+      expect(app.engine.getPersistenceRecoveryStatus()).toMatchObject({
+        complete: false,
+        writable: false,
+        state_migration: {
+          status: 'blocked',
+          observed_state_version: 2,
+        },
+      });
+    } finally {
+      if (app) await shutdownOverwatchApp(app);
+      expect(readFileSync(stateFilePath)).toEqual(futureBytes);
+      expect(readFileSync(configPath)).toEqual(configBytes);
+      expect(readFileSync(casArtifact)).toEqual(configBytes);
+      expect(readFileSync(intentPath, 'utf8')).toBe('{ malformed intent');
+      expect(readFileSync(evidenceManifest)).toEqual(evidenceBytes);
+      expect(readdirSync(dir).sort()).toEqual(directoryBefore);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -860,6 +1081,47 @@ describe('app bootstrap', () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it('continues runtime cleanup when pre-shutdown session persistence fails', async () => {
+    const sessionShutdown = vi.fn().mockResolvedValue(undefined);
+    const dashboardStop = vi.fn().mockResolvedValue(undefined);
+    const tapeDisable = vi.fn().mockResolvedValue(undefined);
+    const dispose = vi.fn();
+    const app = {
+      taskExecution: { shutdown: vi.fn().mockResolvedValue(undefined) },
+      httpTransports: {},
+      sessionManager: {
+        list: vi.fn(() => [{
+          id: 'session-1',
+          state: 'connected',
+        }]),
+        shutdown: sessionShutdown,
+      },
+      dashboard: { stop: dashboardStop },
+      tape: { disable: tapeDisable },
+      processTracker: {
+        serialize: vi.fn(() => []),
+        setMutationGuard: vi.fn(),
+      },
+      engine: {
+        isPersistenceWritable: () => true,
+        recordSessionDescriptor: vi.fn(() => {
+          throw new Error('descriptor persistence failed');
+        }),
+        setTrackedProcesses: vi.fn(),
+        persist: vi.fn(),
+        flushNow: vi.fn(),
+        setRollbackCoordinator: vi.fn(),
+        dispose,
+      },
+    } as unknown as OverwatchApp;
+
+    await expect(shutdownOverwatchApp(app)).rejects.toThrow('descriptor persistence failed');
+    expect(sessionShutdown).toHaveBeenCalledOnce();
+    expect(dashboardStop).toHaveBeenCalledOnce();
+    expect(tapeDisable).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
   it('closes a real tape without an audit mutation during degraded shutdown', async () => {
     const tapeDir = mkdtempSync(join(tmpdir(), 'overwatch-degraded-shutdown-tape-'));
     let writable = true;
@@ -867,10 +1129,14 @@ describe('app bootstrap', () => {
     const dispose = vi.fn();
     const engine = {
       isPersistenceWritable: () => writable,
+      assertPersistenceWritable: () => {
+        if (!writable) throw new Error('Durable mutations are disabled.');
+      },
       logActionEvent,
       setTrackedProcesses: vi.fn(),
       persist: vi.fn(),
       flushNow: vi.fn(),
+      setRollbackCoordinator: vi.fn(),
       dispose,
     };
     const tape = new InProcessTapeController(engine as any, { defaultDir: tapeDir });
@@ -886,7 +1152,10 @@ describe('app bootstrap', () => {
         sessionManager: { shutdown: vi.fn().mockResolvedValue(undefined) },
         dashboard: null,
         tape,
-        processTracker: { serialize: vi.fn(() => []) },
+        processTracker: {
+          serialize: vi.fn(() => []),
+          setMutationGuard: vi.fn(),
+        },
         engine,
       } as unknown as OverwatchApp;
 

@@ -70,6 +70,18 @@ describe('Session Adapters', () => {
       await expect(adapter.spawn({ mode: 'connect', port: 4444 })).rejects.toThrow('Socket adapter connect mode requires a host');
     });
 
+    it('accepts port zero for an ephemeral listen socket', async () => {
+      const adapter = new SocketAdapter();
+      const handle = await adapter.spawn({
+        mode: 'listen',
+        bind_host: '127.0.0.1',
+        port: 0,
+        sessionId: 'ephemeral-listener',
+      });
+      expect(handle.capabilities.tty_quality).toBe('dumb');
+      expect(() => handle.close()).not.toThrow();
+    });
+
     it('rejects before opening a transport when the persistence signal is already aborted', async () => {
       const adapter = new SocketAdapter();
       const controller = new AbortController();

@@ -19,25 +19,54 @@ const MAX_COMPLETED = 50;
 
 export class ProcessTracker {
   private processes: Map<string, TrackedProcess> = new Map();
+  private listeners = new Set<() => void>();
+  private mutationGuard: (() => void) | undefined;
+
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Install the same pre-mutation durability gate used by the engine-owned
+   * coordination stores. The guard runs before any in-memory process state is
+   * changed, so a degraded engagement cannot retain a mutation that its caller
+   * was told had failed.
+   */
+  setMutationGuard(guard: (() => void) | undefined): void {
+    this.mutationGuard = guard;
+  }
+
+  private notifyChange(): void {
+    let firstError: unknown;
+    for (const listener of this.listeners) {
+      try { listener(); } catch (error) { firstError ??= error; }
+    }
+    if (firstError !== undefined) throw firstError;
+  }
 
   register(proc: Omit<TrackedProcess, 'status' | 'started_at'>): TrackedProcess {
+    this.mutationGuard?.();
     const tracked: TrackedProcess = {
       ...proc,
       started_at: new Date().toISOString(),
       status: 'running',
     };
     this.processes.set(tracked.id, tracked);
+    this.notifyChange();
     return tracked;
   }
 
   update(id: string, status: TrackedProcess['status']): boolean {
     const proc = this.processes.get(id);
     if (!proc) return false;
+    this.mutationGuard?.();
     proc.status = status;
     if (status === 'completed' || status === 'failed') {
       proc.completed_at = new Date().toISOString();
       this.pruneCompleted();
     }
+    this.notifyChange();
     return true;
   }
 
@@ -74,17 +103,18 @@ export class ProcessTracker {
    * call `update(id, 'completed' | 'failed')` explicitly.
    */
   refreshStatuses(): boolean {
-    let anyTransitioned = false;
-    for (const proc of this.processes.values()) {
-      if (proc.status !== 'running') continue;
-      if (!this.isPidAlive(proc.pid)) {
-        proc.status = 'unknown';
-        proc.completed_at = new Date().toISOString();
-        anyTransitioned = true;
-      }
+    const transitioned = Array.from(this.processes.values())
+      .filter(proc => proc.status === 'running' && !this.isPidAlive(proc.pid));
+    if (transitioned.length === 0) return false;
+
+    this.mutationGuard?.();
+    for (const proc of transitioned) {
+      proc.status = 'unknown';
+      proc.completed_at = new Date().toISOString();
     }
-    if (anyTransitioned) this.pruneCompleted();
-    return anyTransitioned;
+    this.pruneCompleted();
+    this.notifyChange();
+    return true;
   }
 
   private isPidAlive(pid: number): boolean {
@@ -114,11 +144,29 @@ export class ProcessTracker {
     return this.listAll();
   }
 
+  /**
+   * Replace the live tracker contents from an authoritative durable projection.
+   * Rollback/recovery coordinators use this to prevent stale runtime metadata
+   * from being written back over the restored state.
+   */
+  restore(data: TrackedProcess[], options: { notify?: boolean } = {}): void {
+    this.mutationGuard?.();
+    this.replaceWithoutNotification(data);
+    if (options.notify !== false) this.notifyChange();
+  }
+
+  /** Explicit empty-or-replace alias for lifecycle coordinators. */
+  reset(data: TrackedProcess[] = [], options: { notify?: boolean } = {}): void {
+    this.restore(data, options);
+  }
+
   static deserialize(data: TrackedProcess[]): ProcessTracker {
     const tracker = new ProcessTracker();
-    for (const proc of data) {
-      tracker.processes.set(proc.id, { ...proc });
-    }
+    tracker.replaceWithoutNotification(data);
     return tracker;
+  }
+
+  private replaceWithoutNotification(data: TrackedProcess[]): void {
+    this.processes = new Map(data.map(proc => [proc.id, { ...proc }]));
   }
 }

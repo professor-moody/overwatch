@@ -5,9 +5,11 @@
 // ============================================================
 
 import { spawn } from 'child_process';
-import { existsSync, statSync, mkdirSync, writeFileSync, unlinkSync } from 'fs';
+import { existsSync, statSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import type { GraphEngine } from './graph-engine.js';
+import { parseJsonBytes } from './durable-json.js';
+import { detectJournalVersion, detectStateVersion } from './persisted-state.js';
 
 export interface BundleOptions {
   /** Include .snapshots/ directory (can be large). Default false. */
@@ -20,6 +22,8 @@ export interface BundleManifest {
   engagement_id: string;
   created_at: string;
   state_file: string;
+  state_version: number;
+  journal_version: number;
   sections: Array<{ path: string; size_bytes: number; description: string }>;
   tape_paths: string[];
 }
@@ -151,6 +155,9 @@ export function prepareBundle(
 
   const { entries } = gatherBundleEntries(stateFilePath, opts);
   const tapePaths = opts.includeTapes !== false ? extractTapePaths(engine) : [];
+  const persistedState = parseJsonBytes(readFileSync(stateFilePath));
+  const stateVersion = detectStateVersion(persistedState);
+  const journalVersion = detectJournalVersion(persistedState, stateVersion);
 
   // Build sections metadata
   const sections: BundleManifest['sections'] = entries.map(e => {
@@ -173,6 +180,8 @@ export function prepareBundle(
     engagement_id: cfg.id,
     created_at: now,
     state_file: basename(stateFilePath),
+    state_version: stateVersion,
+    journal_version: journalVersion,
     sections,
     tape_paths: tapePaths.filter(p => existsSync(p)),
   };

@@ -31,6 +31,9 @@ export interface ConfigApplyContext {
 export interface EngagementConfigServiceHost {
   getRuntimeConfig(): EngagementConfig;
   nowIso(): string;
+  /** Cross-process lease shared by active-config, state, snapshot, and WAL writers. */
+  assertWriteAllowed?(): void;
+  withWriteGuard?<T>(operation: () => T): T;
   applyRuntimeConfig(config: EngagementConfig, context: ConfigApplyContext): void;
   persistRuntimeState(): void;
   recordConfigEvent(input: {
@@ -649,8 +652,16 @@ export class EngagementConfigService {
   }): ConfigRecoveryStatus {
     if (!this.configPath) return this.getStatus();
 
-    recoverInterruptedAtomicJsonWrite(this.configPath);
-    if (this.intentPath) recoverInterruptedAtomicJsonWrite(this.intentPath);
+    // Config CAS recovery changes pathnames and therefore must not run ahead of
+    // state/WAL recovery or a V0 migration backup. A degraded persistence
+    // owner exposes the artifacts read-only and retries them on a later clean
+    // startup.
+    if (input.persistence_writable) {
+      this.withWriteGuard(() => {
+        recoverInterruptedAtomicJsonWrite(this.configPath!);
+        if (this.intentPath) recoverInterruptedAtomicJsonWrite(this.intentPath);
+      });
+    }
     const recoveredByJournalReplay = this.status.status === 'recovered';
     const file = this.observeFile();
     const runtime = this.host.getRuntimeConfig();
@@ -1657,20 +1668,22 @@ export class EngagementConfigService {
 
   private removeIntent(expectedChecksum?: string, expectedRawSha256?: string): void {
     if (!this.intentPath || !existsSync(this.intentPath)) return;
-    removeFileDurableIf(this.intentPath, capturedPath => {
-      const raw = readFileSync(capturedPath);
-      if (
-        expectedRawSha256
-        && createHash('sha256').update(raw).digest('hex') !== expectedRawSha256
-      ) {
-        throw new Error('Active config intent changed before its audited removal.');
-      }
-      if (expectedChecksum && this.readIntent(capturedPath).intent_checksum !== expectedChecksum) {
-        throw new Error('A different configuration write replaced the intent before completion.');
-      }
-      if (!expectedChecksum && !expectedRawSha256) {
-        throw new Error('Refusing to remove a configuration intent without its expected identity.');
-      }
+    this.withWriteGuard(() => {
+      removeFileDurableIf(this.intentPath!, capturedPath => {
+        const raw = readFileSync(capturedPath);
+        if (
+          expectedRawSha256
+          && createHash('sha256').update(raw).digest('hex') !== expectedRawSha256
+        ) {
+          throw new Error('Active config intent changed before its audited removal.');
+        }
+        if (expectedChecksum && this.readIntent(capturedPath).intent_checksum !== expectedChecksum) {
+          throw new Error('A different configuration write replaced the intent before completion.');
+        }
+        if (!expectedChecksum && !expectedRawSha256) {
+          throw new Error('Refusing to remove a configuration intent without its expected identity.');
+        }
+      });
     });
   }
 
@@ -1695,7 +1708,17 @@ export class EngagementConfigService {
   }
 
   private writeJsonAtomic(path: string, value: unknown, assertCurrent?: (capturedPath?: string) => void): void {
-    writeJsonAtomicDurable(path, value, assertCurrent);
+    this.withWriteGuard(() => writeJsonAtomicDurable(path, value, assertCurrent));
+  }
+
+  private assertWriteAllowed(): void {
+    this.host.assertWriteAllowed?.();
+  }
+
+  private withWriteGuard<T>(operation: () => T): T {
+    if (this.host.withWriteGuard) return this.host.withWriteGuard(operation);
+    this.assertWriteAllowed();
+    return operation();
   }
 
   private block(

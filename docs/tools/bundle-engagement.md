@@ -6,7 +6,7 @@ Create a portable engagement archive.
 
 ## Description
 
-Builds a `.tar.gz` bundle for the current engagement. The archive includes the current state file, evidence blobs, generated reports, `bundle-manifest.json`, and the mutation journal when one is present. Registered JSON-RPC tapes are referenced in the manifest but are not copied into the bundle.
+Builds a `.tar.gz` bundle for the current engagement. The archive includes the current state file, evidence blobs, generated reports, `bundle-manifest.json`, and the mutation journal when one is present. The manifest records `state_version` and `journal_version` so a recipient can choose a compatible binary before opening it. Registered JSON-RPC tapes are referenced in the manifest but are not copied into the bundle.
 
 The dashboard `/api/bundle` endpoint uses the same bundle preparation path, so CLI and dashboard downloads have matching contents.
 

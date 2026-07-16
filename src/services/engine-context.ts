@@ -28,6 +28,14 @@ import {
 } from './mutation-journal.js';
 import { ProposedPlanStore } from './proposed-plan-store.js';
 import { AgentQueryStore } from './agent-query-store.js';
+import type {
+  PersistedArtifactReferencesV1,
+  PersistedCommandOutcomeV1,
+  PersistedCommandPlanV1,
+  PersistedPlaybookRunV1,
+  PersistedRuntimeRunV1,
+  PersistedSessionDescriptorV1,
+} from './persisted-state.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -159,6 +167,7 @@ export class EngineContext {
   // executes 'stop', and the agent observes the rest via agent_heartbeat.
   agentDirectives: Map<string, AgentDirective[]>;
   stateFilePath: string;
+  configFilePath?: string;
   updateCallbacks: GraphUpdateCallback[];
   lastSnapshotTime: number;
   pathGraphCache: Map<string, OverwatchGraph>;  // cached undirected projections keyed by optimize mode
@@ -168,13 +177,22 @@ export class EngineContext {
   coldStore: ColdStore;
   opsecTracker: OpsecTracker;
   pendingActionQueue: PendingActionQueue;
-  // 3A.2: planner-proposed plans awaiting operator confirmation. In-memory only
-  // (a plan can be re-proposed), shared between the propose_plan tool and the
-  // dashboard confirm path.
+  // 3A.2: planner-proposed plans awaiting operator confirmation. Persisted with
+  // absolute expiry and shared by the tool and dashboard confirm path.
   proposedPlanStore: ProposedPlanStore;
-  // 3D: agent→operator questions awaiting an answer. In-memory; the ask_operator
-  // tool writes, the dashboard answers, the heartbeat path drains answers back.
+  // 3D: agent→operator questions awaiting an answer. Persisted with the
+  // original expiry; heartbeat redelivery remains at-least-once.
   agentQueryStore: AgentQueryStore;
+  /** Grammar previews + duplicate-confirm outcomes share durable ownership with
+   * planner proposals instead of disappearing with DashboardServer. */
+  commandPlans: Map<string, Omit<PersistedCommandPlanV1, 'plan_id'>>;
+  commandOutcomes: Map<string, Omit<PersistedCommandOutcomeV1, 'plan_id'>>;
+  /** Runtime-neutral descriptors only; handles, buffers, env and secrets stay
+   * in SessionManager/TaskExecutionService and are never serialized. */
+  sessionDescriptors: PersistedSessionDescriptorV1[];
+  runtimeRuns: PersistedRuntimeRunV1[];
+  playbookRuns: Map<string, PersistedPlaybookRunV1>;
+  artifactReferences: PersistedArtifactReferencesV1;
   approvalRequests: Map<string, DurableApprovalRecord>;
   recentFindingHashes: Map<string, number>;  // SHA-256 hash → timestamp (ms) for dedup
   dedupCount: number;                        // total deduplicated findings for retrospective
@@ -202,6 +220,10 @@ export class EngineContext {
   // takes a lease so other agents see "in progress" and skip it. Reaped
   // by the same watchdog that handles heartbeat timeouts.
   frontierLeases: FrontierLeases;
+  frontierWeights?: {
+    fan_out: Record<string, number>;
+    noise: Record<string, number>;
+  };
   // P4.1: most recently observed active-phase id, used to detect phase
   // transitions and emit `phase_entered` / `phase_exited` events.
   // Persisted with the snapshot so transitions aren't re-emitted across
@@ -222,7 +244,13 @@ export class EngineContext {
    *  + inferred-edge-confirmation log) into the already-restored activity log. */
   suppressMutationEvents = false;
 
-  constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string, forceMutationJournal = false) {
+  constructor(
+    graph: OverwatchGraph,
+    config: EngagementConfig,
+    stateFilePath: string,
+    forceMutationJournal = false,
+    configFilePath?: string,
+  ) {
     this.graph = graph;
     this.config = config;
     this.inferenceRules = [];
@@ -231,6 +259,7 @@ export class EngineContext {
     this.campaigns = new Map();
     this.agentDirectives = new Map();
     this.stateFilePath = stateFilePath;
+    this.configFilePath = configFilePath;
     this.updateCallbacks = [];
     this.lastSnapshotTime = 0;
     this.pathGraphCache = new Map();
@@ -242,6 +271,16 @@ export class EngineContext {
     this.pendingActionQueue = new PendingActionQueue(this);
     this.proposedPlanStore = new ProposedPlanStore();
     this.agentQueryStore = new AgentQueryStore();
+    this.commandPlans = new Map();
+    this.commandOutcomes = new Map();
+    this.sessionDescriptors = [];
+    this.runtimeRuns = [];
+    this.playbookRuns = new Map();
+    this.artifactReferences = {
+      tapes: [],
+      bundles: [],
+      cookie_jars: [],
+    };
     this.approvalRequests = new Map();
     this.recentFindingHashes = new Map();
     this.dedupCount = 0;

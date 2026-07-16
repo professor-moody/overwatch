@@ -225,6 +225,15 @@ describe('DashboardServer', () => {
       expect(listing).toContain(basename(TEST_STATE_FILE));
       expect(listing).toContain(basename(journalName));
       expect(listing).toContain('bundle-manifest.json');
+      const manifest = JSON.parse(execFileSync(
+        'tar',
+        ['xOzf', archivePath, 'bundle-manifest.json'],
+        { encoding: 'utf-8' },
+      )) as Record<string, unknown>;
+      expect(manifest).toMatchObject({
+        state_version: 1,
+        journal_version: 1,
+      });
       expect(existsSync(join(testStateDir, 'bundle-manifest.json'))).toBe(false);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

@@ -34,7 +34,7 @@ ${bold('Options:')}
   --token <token>    Bearer token for a remote, non-loopback server ($OVERWATCH_DASHBOARD_TOKEN)
   --help             Show this help (or 'overwatch <command> --help')
 
-${dim('The engagement must be running (npm start -- --http, or the demo daemon).')}`);
+${dim('Live commands require the engagement daemon; `state migrate --check` inspects local files offline.')}`);
 }
 
 async function main(): Promise<void> {
@@ -67,6 +67,7 @@ async function main(): Promise<void> {
   try {
     const result = await command.run({ client, args });
     console.log(json ? JSON.stringify(result.data) : result.text);
+    if (result.exitCode !== undefined) process.exitCode = result.exitCode;
   } catch (err) {
     if (err instanceof ApiError) {
       console.error(err.message);

@@ -30,6 +30,7 @@ import {
   type NodeProperties,
   type EdgeProperties,
   type PersistenceRecoveryStatus,
+  type StateMigrationStatus,
 } from '../types.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
 import { OpsecTracker } from './opsec-tracker.js';
@@ -49,6 +50,32 @@ import {
   edgeIdentityMatches,
   preferredEdgeKey,
 } from './edge-identity.js';
+import {
+  CURRENT_JOURNAL_VERSION,
+  CURRENT_STATE_VERSION,
+  LEGACY_STATE_VERSION,
+  PersistedJournalVersionError,
+  PersistedStateVersionError,
+  detectJournalVersion,
+  detectStateVersion,
+  validatePersistedStateV1,
+  type PersistedStateV1,
+  type SupportedStateVersion,
+} from './persisted-state.js';
+import { buildArtifactReferences, mergeArtifactReferences } from './state-artifacts.js';
+import {
+  acquireStateMigrationLease,
+  activateStateMigration,
+  assertStateMigrationWriteAllowed,
+  assertStateMigrationSourcesUnchanged,
+  completeStateMigration,
+  hasStateMigrationIntent,
+  prepareStateMigrationBackup,
+  stateMigrationLockDirectory,
+  type MigrationBackupResult,
+  type StateMigrationLeaseRelease,
+  withStateMigrationWriteGuard,
+} from './state-migration.js';
 
 export const MAX_SNAPSHOTS = 5;
 const WAL_COMPACTION_AUTHORITY_SEMANTICS = 'full_state_sha256_json_v1' as const;
@@ -134,7 +161,10 @@ interface RestoreCandidate {
 
 interface ValidatedRestoreCandidate extends RestoreCandidate {
   data: unknown;
+  rawSha256: string;
   checkpoint: number;
+  stateVersion: SupportedStateVersion;
+  journalVersion: typeof CURRENT_JOURNAL_VERSION;
   /** Lower values are newer. The primary outranks an equal-checkpoint
    * snapshot; snapshots inherit listSnapshots()'s filename chronology. */
   newnessRank: number;
@@ -145,12 +175,16 @@ interface RestoredBase {
   path: string;
   data: unknown;
   checkpoint: number;
+  stateVersion: SupportedStateVersion;
+  journalVersion: typeof CURRENT_JOURNAL_VERSION;
   replay?: MutationReplayResult;
 }
 
 interface RestoredCheckpoint {
   checkpoint: number;
   trusted: boolean;
+  stateVersion: SupportedStateVersion;
+  journalVersion: typeof CURRENT_JOURNAL_VERSION;
   /** Only current-writer, checksum-bound full-state snapshots may authorize
    * deletion of WAL bytes. Legacy bases remain valid for recovery but are not
    * compaction authorities. */
@@ -163,6 +197,7 @@ interface IntegrityRejectedBase {
   error: string;
   checkpoint?: number;
   newnessRank: number;
+  stateVersion?: SupportedStateVersion;
 }
 
 interface RollbackIntentV1 {
@@ -252,6 +287,14 @@ export class StatePersistence {
   };
   private shutdownHandlers: (() => void)[] = [];
   private recoveryStatus: PersistenceRecoveryStatus;
+  private stateMigrationStatus: StateMigrationStatus = {
+    status: 'not_checked',
+    supported_state_version: CURRENT_STATE_VERSION,
+    supported_journal_version: CURRENT_JOURNAL_VERSION,
+    migration_required: false,
+  };
+  private migrationBackup: MigrationBackupResult | undefined;
+  private releaseMigrationLease: StateMigrationLeaseRelease | undefined;
   /** Present only while an explicit rollback is being installed. Persisting
    * this marker in the replacement primary makes that primary authoritative on
    * restart before destructive snapshot/WAL cleanup resumes. */
@@ -292,6 +335,7 @@ export class StatePersistence {
       consecutive_persistence_failures: 0,
       journal: {
         enabled: journal !== null,
+        format_version: CURRENT_JOURNAL_VERSION,
         ...(journal ? { path: journal.getPath() } : {}),
         read: 0,
         attempted: 0,
@@ -309,6 +353,13 @@ export class StatePersistence {
   getRecoveryStatus(): PersistenceRecoveryStatus {
     const journal = this.ctx.mutationJournal;
     const journalBlockedReason = journal?.getAppendBlockedReason();
+    let migrationBlockedReason: string | undefined;
+    try {
+      this.assertMigrationWriteAllowed();
+    } catch (error) {
+      migrationBlockedReason = error instanceof Error ? error.message : String(error);
+    }
+    const writeBlockedReason = journalBlockedReason ?? migrationBlockedReason;
     let physicalHighest: number | undefined;
     let journalHasData = false;
     try {
@@ -332,9 +383,10 @@ export class StatePersistence {
     }
     return {
       ...this.recoveryStatus,
-      ...(journalBlockedReason && !this.recoveryStatus.reason ? { reason: journalBlockedReason } : {}),
-      outcome: journalBlockedReason ? 'incomplete' : this.recoveryStatus.outcome,
-      complete: journalBlockedReason ? false : this.recoveryStatus.complete,
+      state_migration: JSON.parse(JSON.stringify(this.stateMigrationStatus)) as StateMigrationStatus,
+      ...(writeBlockedReason && !this.recoveryStatus.reason ? { reason: writeBlockedReason } : {}),
+      outcome: writeBlockedReason ? 'incomplete' : this.recoveryStatus.outcome,
+      complete: writeBlockedReason ? false : this.recoveryStatus.complete,
       writable: this.isWritable(),
       highest_allocated_seq: journal?.getHighestAllocatedSeq() ?? this.recoveryStatus.highest_allocated_seq,
       // Compaction legitimately removes replayed records from the active WAL.
@@ -348,6 +400,7 @@ export class StatePersistence {
       ...(this.lastPersistenceError ? { last_persistence_error: this.lastPersistenceError } : {}),
       journal: {
         ...this.recoveryStatus.journal,
+        format_version: CURRENT_JOURNAL_VERSION,
         // Legacy engagements can acquire a journal in-process immediately
         // before their first composite mutation. Do not keep reporting the
         // constructor-time, disabled journal metadata after that transition.
@@ -367,6 +420,7 @@ export class StatePersistence {
    * use this before their first composite mutation.
    */
   enableMutationJournal(journal: MutationJournal): void {
+    journal.setMigrationOwnerToken(this.releaseMigrationLease?.token);
     this.ctx.mutationJournal = journal;
     this.recoveryStatus = {
       ...this.recoveryStatus,
@@ -385,18 +439,50 @@ export class StatePersistence {
   }
 
   isWritable(): boolean {
-    return this.recoveryReadOnlyReason === undefined
-      && this.ctx.mutationJournal?.getAppendBlockedReason() === undefined
-      && !this.persistenceFailureGateTripped
-      && this.consecutivePersistenceFailures < 3;
+    if (
+      this.recoveryReadOnlyReason !== undefined
+      || this.ctx.mutationJournal?.getAppendBlockedReason() !== undefined
+      || this.persistenceFailureGateTripped
+      || this.consecutivePersistenceFailures >= 3
+    ) {
+      return false;
+    }
+    try {
+      this.assertMigrationWriteAllowed();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   assertWritable(): void {
     if (this.isWritable()) return;
+    let migrationReason: string | undefined;
+    try {
+      this.assertMigrationWriteAllowed();
+    } catch (error) {
+      migrationReason = error instanceof Error ? error.message : String(error);
+    }
     const reason = this.recoveryReadOnlyReason
       ?? this.ctx.mutationJournal?.getAppendBlockedReason()
+      ?? migrationReason
       ?? `state persistence failed ${this.consecutivePersistenceFailures} consecutive times`;
     throw new Error(`Durable mutations are disabled while persistence is degraded: ${reason}`);
+  }
+
+  assertMigrationWriteAllowed(): void {
+    assertStateMigrationWriteAllowed(
+      this.ctx.stateFilePath,
+      this.releaseMigrationLease?.token,
+    );
+  }
+
+  withMigrationWriteGuard<T>(operation: () => T): T {
+    return withStateMigrationWriteGuard(
+      this.ctx.stateFilePath,
+      this.releaseMigrationLease?.token,
+      operation,
+    );
   }
 
   private describeJournalAccessFailure(error: unknown): string {
@@ -832,20 +918,40 @@ export class StatePersistence {
     }
     this.shutdownHandlers = [];
     this.ctx.persistenceWriteGuard = undefined;
+    this.releaseHeldMigrationLease();
+  }
+
+  private releaseHeldMigrationLease(): void {
+    const release = this.releaseMigrationLease;
+    if (!release) return;
+    release();
+    this.ctx.mutationJournal?.setMigrationOwnerToken(undefined);
+    this.releaseMigrationLease = undefined;
+  }
+
+  private acquireMigrationLease(): void {
+    if (this.releaseMigrationLease) return;
+    const release = acquireStateMigrationLease(this.ctx.stateFilePath);
+    this.releaseMigrationLease = release;
+    this.ctx.mutationJournal?.setMigrationOwnerToken(release.token);
   }
 
   // --- Core durable write logic ---
 
-  private writeStateToDisk(options: {
-    journalCheckpointSeq?: number;
-    rotateExisting?: boolean;
-    allowIntegrityReplacement?: boolean;
-  } = {}): void {
-    const journalCheckpointSeq = options.journalCheckpointSeq
-      ?? this.ctx.mutationJournal?.getAppliedThroughSeq()
-      ?? 0;
-    const serializeStart = Date.now();
-    const data = {
+  private serializePersistedState(
+    journalCheckpointSeq: number,
+  ): PersistedStateV1 {
+    const artifactReferences = mergeArtifactReferences(
+      this.ctx.artifactReferences,
+      buildArtifactReferences(
+        this.ctx.stateFilePath,
+        this.ctx.activityLog,
+      ),
+    );
+    this.ctx.artifactReferences = JSON.parse(JSON.stringify(artifactReferences));
+    return {
+      state_version: CURRENT_STATE_VERSION,
+      journal_version: CURRENT_JOURNAL_VERSION,
       config: this.ctx.config,
       graph: this.ctx.graph.export(),
       activityLog: this.ctx.activityLog,
@@ -853,36 +959,84 @@ export class StatePersistence {
       campaigns: Array.from(this.ctx.campaigns.entries()),
       agentDirectives: Array.from(this.ctx.agentDirectives.entries()),
       approvalRequests: Array.from(this.ctx.approvalRequests.entries()),
-      inferenceRules: this.ctx.inferenceRules.filter(r => !this.builtinRuleIds.has(r.id)),
+      inferenceRules: this.ctx.inferenceRules.filter(rule => !this.builtinRuleIds.has(rule.id)),
       trackedProcesses: this.ctx.trackedProcesses,
+      runtimeRuns: this.ctx.runtimeRuns,
+      playbookRuns: Array.from(this.ctx.playbookRuns.entries()),
+      sessionDescriptors: this.ctx.sessionDescriptors,
+      proposedPlans: this.ctx.proposedPlanStore.serialize(),
+      agentQueries: this.ctx.agentQueryStore.serialize(),
+      commandPlans: Array.from(this.ctx.commandPlans.entries()),
+      commandOutcomes: Array.from(this.ctx.commandOutcomes.entries()),
       coldStore: this.ctx.coldStore.export(),
       opsecTracker: this.ctx.opsecTracker.serialize(),
       frontierLinkage: this.ctx.frontierLinkage.serialize(),
-      // P0.2: chain checkpoints persist with state so verifiers can resume
-      // from a known-good point after restart instead of replaying genesis.
-      chainCheckpoints: this.ctx.chainCheckpoints,
-      // P1.2: deterministic sequence counter. Must survive restart; otherwise
-      // post-restart actions would collide with pre-restart ones because the
-      // counter would reset to 1.
-      deterministicSeq: this.ctx.deterministicSeq,
-      // P1.4: frontier leases. Survive restart so a still-running agent
-      // doesn't lose its claim across an engine restart.
       frontierLeases: this.ctx.frontierLeases.serialize(),
-      // P4.1: last-known active phase, so we don't re-emit phase_entered
-      // on every restart when the phase hasn't actually changed.
+      frontierWeights: this.ctx.frontierWeights ?? { fan_out: {}, noise: {} },
+      artifactReferences,
+      chainCheckpoints: this.ctx.chainCheckpoints,
+      chainEventsSinceCheckpoint: this.ctx.chainEventsSinceCheckpoint,
+      deterministicSeq: this.ctx.deterministicSeq,
+      recentFindingHashes: Array.from(this.ctx.recentFindingHashes.entries()),
+      dedupCount: this.ctx.dedupCount,
       lastKnownPhaseId: this.ctx.lastKnownPhaseId,
-      // P2.1: journal sequence checkpoint. The snapshot is durable AS OF
-      // the journal entry numbered `journalSnapshotSeq`; on next load,
-      // replay journal entries with `seq > journalSnapshotSeq` to catch
-      // any post-snapshot mutations that hadn't been re-snapshotted yet.
       journalSnapshotSeq: journalCheckpointSeq,
-      // PR1: distinguish a contiguous successfully-applied checkpoint from the
-      // legacy value, which older writers could derive from allocation alone.
-      // Recovery may only skip retained WAL prefix records when this marker is
-      // present and recognized.
       journalCheckpointSemantics: JOURNAL_CHECKPOINT_SEMANTICS,
       ...(this.rollbackIntent ? { rollbackIntent: this.rollbackIntent } : {}),
     };
+  }
+
+  private finishStateFormatWrite(): void {
+    if (this.migrationBackup) {
+      if (!this.releaseMigrationLease) {
+        throw new Error('state migration lease is missing at the V1 publication boundary');
+      }
+      completeStateMigration(this.ctx.stateFilePath, this.releaseMigrationLease.token);
+      this.stateMigrationStatus = {
+        status: 'migrated',
+        supported_state_version: CURRENT_STATE_VERSION,
+        supported_journal_version: CURRENT_JOURNAL_VERSION,
+        observed_state_version: LEGACY_STATE_VERSION,
+        observed_journal_version: CURRENT_JOURNAL_VERSION,
+        migration_required: false,
+        backup_path: this.migrationBackup.directory,
+        backup_manifest_sha256: this.migrationBackup.manifest_sha256,
+      };
+      this.migrationBackup = undefined;
+      this.releaseHeldMigrationLease();
+      return;
+    }
+    if (this.stateMigrationStatus.status === 'not_checked') {
+      this.stateMigrationStatus = {
+        status: 'current',
+        supported_state_version: CURRENT_STATE_VERSION,
+        supported_journal_version: CURRENT_JOURNAL_VERSION,
+        observed_state_version: CURRENT_STATE_VERSION,
+        observed_journal_version: CURRENT_JOURNAL_VERSION,
+        migration_required: false,
+      };
+    }
+  }
+
+  private writeStateToDisk(options: {
+    journalCheckpointSeq?: number;
+    rotateExisting?: boolean;
+    allowIntegrityReplacement?: boolean;
+  } = {}): void {
+    this.withMigrationWriteGuard(() => this.writeStateToDiskUnlocked(options));
+  }
+
+  private writeStateToDiskUnlocked(options: {
+    journalCheckpointSeq?: number;
+    rotateExisting?: boolean;
+    allowIntegrityReplacement?: boolean;
+  }): void {
+    this.assertMigrationWriteAllowed();
+    const journalCheckpointSeq = options.journalCheckpointSeq
+      ?? this.ctx.mutationJournal?.getAppliedThroughSeq()
+      ?? 0;
+    const serializeStart = Date.now();
+    const data = this.serializePersistedState(journalCheckpointSeq);
     // A base may be perfectly usable for recovery while still being too old or
     // too weakly described to authorize deletion of WAL history. Bind every
     // state emitted by this writer to its exact JSON payload; snapshot rotation
@@ -958,6 +1112,7 @@ export class StatePersistence {
     // preceding WAL compaction. Prune only after the new primary rename and
     // its directory entry are durable.
     if (options.rotateExisting !== false) this.pruneSnapshotsBestEffort();
+    this.finishStateFormatWrite();
 
     const writeEnd = Date.now();
     this.metrics.totalWriteMs += (writeEnd - writeStart);
@@ -1091,6 +1246,15 @@ export class StatePersistence {
         const data = parseJsonBytes(bytes);
         this.validateStateBase(data);
       } catch (error) {
+        if (
+          (error instanceof PersistedStateVersionError
+            || error instanceof PersistedJournalVersionError)
+          && error.kind === 'unsupported'
+        ) {
+          throw new Error(
+            `state replacement found an unsupported retained format at ${candidate.path}: ${error.message}`,
+          );
+        }
         if (!(error instanceof StateIntegrityError)) continue;
         const blocksReplacement = error.checkpoint === undefined
           || error.checkpoint > this.ctx.journalSnapshotSeq
@@ -1124,6 +1288,15 @@ export class StatePersistence {
       this.validateFullStateDetached(data, this.builtinRules);
       return true;
     } catch (error) {
+      if (
+        (error instanceof PersistedStateVersionError
+          || error instanceof PersistedJournalVersionError)
+        && error.kind === 'unsupported'
+      ) {
+        throw new Error(
+          `state replacement found an unsupported durable primary format: ${error.message}`,
+        );
+      }
       if (!(error instanceof StateIntegrityError)) return false;
       throw this.latchJournalRecoveryFailure({
         reason: `state replacement found a recognized integrity mismatch at ${this.ctx.stateFilePath}: ${error.message}`,
@@ -1246,7 +1419,15 @@ export class StatePersistence {
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw new Error(`Rollback snapshot must be a regular retained file: ${snapshotName}`);
     }
-    return this._rollbackFrom(snapPath, builtinRules, options.deferAuthorityRelease === true);
+    return withStateMigrationWriteGuard(
+      this.ctx.stateFilePath,
+      this.releaseMigrationLease?.token,
+      () => this._rollbackFrom(
+        snapPath,
+        builtinRules,
+        options.deferAuthorityRelease === true,
+      ),
+    );
   }
 
   private _rollbackFrom(
@@ -1287,6 +1468,9 @@ export class StatePersistence {
       // complete restore fail. Such a target must never become a restart loop.
       this._restoreFromData(data, builtinRules);
       this.ensureJournalForRestoredConfig();
+      if (validated.stateVersion === LEGACY_STATE_VERSION) {
+        this.beginLegacyMigration();
+      }
 
       // The sidecar is the rollback commit point. It survives corruption of the
       // replacement primary and still names a checksummed, retained full-state
@@ -1364,6 +1548,16 @@ export class StatePersistence {
       if (!existsSync(this.rollbackAuthorityPath())) {
         this.rollbackIntent = undefined;
         this.ctx.mutationJournal = baselineJournal;
+        if (validated.stateVersion === LEGACY_STATE_VERSION) {
+          try {
+            completeStateMigration(
+              this.ctx.stateFilePath,
+              this.releaseMigrationLease?.token,
+            );
+          } catch { /* retain backup for audit */ }
+          this.migrationBackup = undefined;
+          try { this.releaseHeldMigrationLease(); } catch { /* rollback error remains primary */ }
+        }
         try {
           this.restoreRejectedCandidateBaseline(baseline, builtinRules);
         } catch (restoreError) {
@@ -1399,32 +1593,38 @@ export class StatePersistence {
   /** Release a rollback authority only after the external config file and the
    * marked durable state share the rollback target revision/hash. */
   completePendingRollbackAuthority(): void {
-    const intent = this.rollbackIntent;
-    if (!intent) return;
-    try {
-      this.rollbackIntent = undefined;
-      this.writeStateToDisk({
-        journalCheckpointSeq: intent.checkpoint,
-        rotateExisting: false,
-        allowIntegrityReplacement: true,
-      });
-      this.removeRollbackAuthority();
-      this.ctx.mutationJournal?.unblockAppends();
-      this.finishSuccessfulWrite();
-      this.recoveryReadOnlyReason = undefined;
-      this.recoveryStatus = this.buildRecoveryStatus({
-        outcome: 'recovered',
-        source: 'snapshot',
-        complete: true,
-        writable: true,
-        checkpoint: intent.checkpoint,
-        preserved: false,
-      });
-    } catch (error) {
-      this.rollbackIntent = intent;
-      this.latchRollbackFailure(error, intent.checkpoint, 'snapshot');
-      throw error;
-    }
+    withStateMigrationWriteGuard(
+      this.ctx.stateFilePath,
+      this.releaseMigrationLease?.token,
+      () => {
+        const intent = this.rollbackIntent;
+        if (!intent) return;
+        try {
+          this.rollbackIntent = undefined;
+          this.writeStateToDisk({
+            journalCheckpointSeq: intent.checkpoint,
+            rotateExisting: false,
+            allowIntegrityReplacement: true,
+          });
+          this.removeRollbackAuthority();
+          this.ctx.mutationJournal?.unblockAppends();
+          this.finishSuccessfulWrite();
+          this.recoveryReadOnlyReason = undefined;
+          this.recoveryStatus = this.buildRecoveryStatus({
+            outcome: 'recovered',
+            source: 'snapshot',
+            complete: true,
+            writable: true,
+            checkpoint: intent.checkpoint,
+            preserved: false,
+          });
+        } catch (error) {
+          this.rollbackIntent = intent;
+          this.latchRollbackFailure(error, intent.checkpoint, 'snapshot');
+          throw error;
+        }
+      },
+    );
   }
 
   /** A legacy checkpoint can be promoted to the current trusted marker only
@@ -1551,6 +1751,15 @@ export class StatePersistence {
         const data = parseJsonBytes(raw);
         candidateCheckpoint = this.validateStateBase(data).checkpoint;
       } catch (error) {
+        if (
+          (error instanceof PersistedStateVersionError
+            || error instanceof PersistedJournalVersionError)
+          && error.kind === 'unsupported'
+        ) {
+          throw new Error(
+            `cannot complete rollback while retained snapshot ${snapshot} uses an unsupported format: ${error.message}`,
+          );
+        }
         if (error instanceof StateIntegrityError) {
           if (error.checkpoint === undefined) {
             throw new Error(
@@ -1577,6 +1786,8 @@ export class StatePersistence {
    *  of those changes before another candidate or config seeding is attempted. */
   private captureRestoreBaseline(): unknown {
     const data = {
+      state_version: CURRENT_STATE_VERSION,
+      journal_version: CURRENT_JOURNAL_VERSION,
       config: this.ctx.config,
       graph: this.ctx.graph.export(),
       activityLog: this.ctx.activityLog,
@@ -1586,11 +1797,23 @@ export class StatePersistence {
       approvalRequests: Array.from(this.ctx.approvalRequests.entries()),
       inferenceRules: this.ctx.inferenceRules.filter(rule => !this.builtinRuleIds.has(rule.id)),
       trackedProcesses: this.ctx.trackedProcesses,
+      runtimeRuns: this.ctx.runtimeRuns,
+      playbookRuns: Array.from(this.ctx.playbookRuns.entries()),
+      sessionDescriptors: this.ctx.sessionDescriptors,
+      proposedPlans: this.ctx.proposedPlanStore.serialize(),
+      agentQueries: this.ctx.agentQueryStore.serialize(),
+      commandPlans: Array.from(this.ctx.commandPlans.entries()),
+      commandOutcomes: Array.from(this.ctx.commandOutcomes.entries()),
       coldStore: this.ctx.coldStore.export(),
       opsecTracker: this.ctx.opsecTracker.serialize(),
       frontierLinkage: this.ctx.frontierLinkage.serialize(),
+      frontierWeights: this.ctx.frontierWeights ?? { fan_out: {}, noise: {} },
+      artifactReferences: this.ctx.artifactReferences,
       chainCheckpoints: this.ctx.chainCheckpoints,
+      chainEventsSinceCheckpoint: this.ctx.chainEventsSinceCheckpoint,
       deterministicSeq: this.ctx.deterministicSeq,
+      recentFindingHashes: Array.from(this.ctx.recentFindingHashes.entries()),
+      dedupCount: this.ctx.dedupCount,
       frontierLeases: this.ctx.frontierLeases.serialize(),
       lastKnownPhaseId: this.ctx.lastKnownPhaseId,
       journalSnapshotSeq: this.ctx.journalSnapshotSeq,
@@ -1633,18 +1856,54 @@ export class StatePersistence {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _restoreFromData(data: any, builtinRules: InferenceRule[]): RestoredCheckpoint {
+    const stateVersion = detectStateVersion(data);
+    const journalVersion = detectJournalVersion(data, stateVersion);
+    if (stateVersion === CURRENT_STATE_VERSION) {
+      validatePersistedStateV1(data);
+    }
     this.ctx.graph.clear();
     this.ctx.config = data.config;
     this.ctx.graph.import(data.graph);
     this.normalizeLoadedNodeProvenance();
     this.migrateDefaultCredentialFlags();
     this.ctx.invalidatePathGraph();
-    this.ctx.activityLog = (data.activityLog || []).map((entry: unknown) => normalizeActivityLogEntry(entry as Partial<ActivityLogEntry> & { description: string }));
+    this.ctx.activityLog = stateVersion === CURRENT_STATE_VERSION
+      ? JSON.parse(JSON.stringify(data.activityLog)) as ActivityLogEntry[]
+      : (data.activityLog || []).map((entry: unknown) =>
+          normalizeActivityLogEntry(entry as Partial<ActivityLogEntry> & { description: string }));
     this.ctx.agents = new Map(data.agents || []);
     this.ctx.campaigns = new Map(data.campaigns || []);
     this.ctx.agentDirectives = new Map(data.agentDirectives || []);
     this.ctx.approvalRequests = new Map(data.approvalRequests || []);
     this.ctx.trackedProcesses = data.trackedProcesses || [];
+    this.ctx.runtimeRuns = Array.isArray(data.runtimeRuns)
+      ? JSON.parse(JSON.stringify(data.runtimeRuns))
+      : [];
+    this.ctx.playbookRuns = new Map(data.playbookRuns || []);
+    this.ctx.sessionDescriptors = Array.isArray(data.sessionDescriptors)
+      ? JSON.parse(JSON.stringify(data.sessionDescriptors))
+      : [];
+    this.ctx.proposedPlanStore.restore(data.proposedPlans);
+    this.ctx.agentQueryStore.restore(data.agentQueries);
+    const restoreNow = Date.now();
+    this.ctx.commandPlans = new Map(
+      (data.commandPlans || []).filter((entry: unknown) =>
+        Array.isArray(entry)
+        && entry.length === 2
+        && entry[1]
+        && typeof entry[1] === 'object'
+        && typeof (entry[1] as { expires_at?: unknown }).expires_at === 'number'
+        && (entry[1] as { expires_at: number }).expires_at > restoreNow),
+    );
+    this.ctx.commandOutcomes = new Map(
+      (data.commandOutcomes || []).filter((entry: unknown) =>
+        Array.isArray(entry)
+        && entry.length === 2
+        && entry[1]
+        && typeof entry[1] === 'object'
+        && typeof (entry[1] as { expires_at?: unknown }).expires_at === 'number'
+        && (entry[1] as { expires_at: number }).expires_at > restoreNow),
+    );
     this.ctx.inferenceRules = [...builtinRules];
     if (data.inferenceRules) {
       for (const rule of data.inferenceRules) {
@@ -1656,11 +1915,21 @@ export class StatePersistence {
       ? OpsecTracker.deserialize(data.opsecTracker, this.ctx)
       : new OpsecTracker(this.ctx);
     this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
+    this.ctx.frontierWeights = data.frontierWeights
+      ? JSON.parse(JSON.stringify(data.frontierWeights))
+      : undefined;
+    this.ctx.artifactReferences = data.artifactReferences
+      ? JSON.parse(JSON.stringify(data.artifactReferences))
+      : { tapes: [], bundles: [], cookie_jars: [] };
     this.ctx.rebuildActionFrontierMap();
     this.ctx.rebuildChainTail();
     this.ctx.chainCheckpoints = Array.isArray(data.chainCheckpoints) ? data.chainCheckpoints : [];
-    this.ctx.chainEventsSinceCheckpoint = 0;
+    this.ctx.chainEventsSinceCheckpoint = typeof data.chainEventsSinceCheckpoint === 'number'
+      ? data.chainEventsSinceCheckpoint
+      : 0;
     this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
+    this.ctx.recentFindingHashes = new Map(data.recentFindingHashes || []);
+    this.ctx.dedupCount = typeof data.dedupCount === 'number' ? data.dedupCount : 0;
     this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
     this.ctx.lastKnownPhaseId = typeof data.lastKnownPhaseId === 'string' ? data.lastKnownPhaseId : undefined;
     const checkpoint = typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0;
@@ -1668,6 +1937,8 @@ export class StatePersistence {
     return {
       checkpoint,
       trusted: data.journalCheckpointSemantics === JOURNAL_CHECKPOINT_SEMANTICS,
+      stateVersion,
+      journalVersion,
     };
   }
 
@@ -1678,30 +1949,129 @@ export class StatePersistence {
    * the post-snapshot journal.
    */
   restoreBaseAndReplay(mutators?: ReplayMutators): RestoreResult {
+    let adoptedExistingLease = false;
+    if (existsSync(stateMigrationLockDirectory(this.ctx.stateFilePath))) {
+      try {
+        this.acquireMigrationLease();
+        adoptedExistingLease = true;
+      } catch (error) {
+        return this.enterExternalMigrationLeaseFailure(error);
+      }
+    }
     const pendingRollback = this.resumePendingRollback(mutators?.prepareRecoveryCommit !== undefined);
-    if (pendingRollback) return pendingRollback;
+    if (pendingRollback) {
+      return this.finishAdoptedLeaseRecovery(pendingRollback, adoptedExistingLease);
+    }
 
+    let candidates: RestoreCandidate[];
+    try {
+      candidates = this.collectRestoreCandidates();
+    } catch (error) {
+      return this.enterBaseAccessFailure(
+        'snapshot',
+        join(dirname(this.ctx.stateFilePath), '.snapshots'),
+        error,
+      );
+    }
+    return this.finishAdoptedLeaseRecovery(
+      this.restoreCandidates(candidates, this.builtinRules, mutators),
+      adoptedExistingLease,
+    );
+  }
+
+  private collectRestoreCandidates(): RestoreCandidate[] {
     const candidates: RestoreCandidate[] = [];
     if (existsSync(this.ctx.stateFilePath)) {
       candidates.push({ source: 'state', path: this.ctx.stateFilePath });
     }
     const stateDir = dirname(this.ctx.stateFilePath);
-    let snapshots: string[];
-    try {
-      snapshots = this.listSnapshotsStrict();
-    } catch (error) {
-      return this.enterBaseAccessFailure('snapshot', join(stateDir, '.snapshots'), error);
-    }
-    for (const snapshot of snapshots.reverse()) {
+    for (const snapshot of this.listSnapshotsStrict().reverse()) {
       candidates.push({ source: 'snapshot', path: join(stateDir, snapshot) });
     }
-    return this.restoreCandidates(candidates, this.builtinRules, mutators);
+    return candidates;
+  }
+
+  private finishAdoptedLeaseRecovery(
+    result: RestoreResult,
+    adoptedExistingLease: boolean,
+  ): RestoreResult {
+    if (
+      adoptedExistingLease
+      && this.releaseMigrationLease
+      && !this.migrationBackup
+    ) {
+      try {
+        this.releaseHeldMigrationLease();
+      } catch (error) {
+        return this.enterExternalMigrationLeaseFailure(error);
+      }
+    }
+    return result;
+  }
+
+  private enterExternalMigrationLeaseFailure(error: unknown): RestoreResult {
+    const reason = `state recovery is blocked by another or unverifiable migration owner: ${error instanceof Error ? error.message : String(error)}`;
+    this.recoveryReadOnlyReason = reason;
+    this.ctx.mutationJournal?.blockAppends(reason);
+    this.stateMigrationStatus = {
+      status: 'blocked',
+      supported_state_version: CURRENT_STATE_VERSION,
+      supported_journal_version: CURRENT_JOURNAL_VERSION,
+      migration_required: false,
+      reason,
+    };
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source: existsSync(this.ctx.stateFilePath) ? 'state' : 'fresh',
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: 0,
+      preserved: true,
+    });
+    return {
+      status: 'degraded',
+      source: this.recoveryStatus.source,
+      reason,
+    };
   }
 
   /** A checksummed sidecar is the durable authority for an explicit rollback.
    * While it exists, the retained selected snapshot is canonical and rebuilds
    * the replaceable marked primary regardless of that primary's contents. */
   private resumePendingRollback(deferAuthorityRelease: boolean): RestoreResult | undefined {
+    if (!this.hasPendingRollbackHint()) return undefined;
+    try {
+      return withStateMigrationWriteGuard(
+        this.ctx.stateFilePath,
+        this.releaseMigrationLease?.token,
+        () => this.resumePendingRollbackGuarded(deferAuthorityRelease),
+      );
+    } catch (error) {
+      return this.enterExternalMigrationLeaseFailure(error);
+    }
+  }
+
+  private hasPendingRollbackHint(): boolean {
+    if (existsSync(this.rollbackAuthorityPath())) return true;
+    if (!existsSync(this.ctx.stateFilePath)) return false;
+    try {
+      const primary = parseJsonBytes(this.readPersistedBytes(this.ctx.stateFilePath));
+      return Boolean(
+        primary
+        && typeof primary === 'object'
+        && !Array.isArray(primary)
+        && Object.prototype.hasOwnProperty.call(primary, 'rollbackIntent'),
+      );
+    } catch {
+      // Ordinary candidate recovery owns malformed/unreadable-primary handling.
+      return false;
+    }
+  }
+
+  private resumePendingRollbackGuarded(
+    deferAuthorityRelease: boolean,
+  ): RestoreResult | undefined {
     const authorityPath = this.rollbackAuthorityPath();
     const hasAuthoritySidecar = existsSync(authorityPath);
     let intent: RollbackIntentV1 | undefined;
@@ -1772,6 +2142,16 @@ export class StatePersistence {
         throw new Error('selected rollback snapshot checkpoint does not match the durable intent');
       }
       this.assertLegacyRollbackCheckpointUnambiguous(selected);
+      if (selected.stateVersion === LEGACY_STATE_VERSION) {
+        try {
+          this.beginLegacyMigration();
+        } catch (error) {
+          return this.enterMigrationFailure(
+            recoverySource,
+            `pending rollback selected legacy state, but its migration backup failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
 
       // The intent binds the selected snapshot bytes, never arbitrary contents
       // of the replaceable marked primary. This remains true for marker-only
@@ -1864,9 +2244,18 @@ export class StatePersistence {
     candidates: RestoreCandidate[],
     builtinRules: InferenceRule[],
     mutators?: ReplayMutators,
+    rankedUnderMigrationLease = false,
   ): RestoreResult {
     const rejected: Array<{ path: string; error: string }> = [];
     const integrityRejected: IntegrityRejectedBase[] = [];
+    const invalidVersioned: Array<{
+      candidate: RestoreCandidate;
+      error: unknown;
+      checkpoint?: number;
+      newnessRank: number;
+      observedStateVersion?: number;
+      observedJournalVersion?: number;
+    }> = [];
     const baseline = this.captureRestoreBaseline();
 
     // Parse and validate every base before choosing one. Filename order alone
@@ -1875,6 +2264,7 @@ export class StatePersistence {
     const validated: ValidatedRestoreCandidate[] = [];
     for (const [newnessRank, candidate] of candidates.entries()) {
       let raw: Buffer;
+      let parsedData: unknown;
       try {
         raw = this.readPersistedBytes(candidate.path);
       } catch (error) {
@@ -1885,10 +2275,64 @@ export class StatePersistence {
       }
       try {
         const data = parseJsonBytes(raw);
-        const { checkpoint } = this.validateStateBase(data);
+        parsedData = data;
+        const {
+          checkpoint,
+          stateVersion,
+          journalVersion,
+        } = this.validateStateBase(data);
         this.validateFullStateDetached(data, builtinRules);
-        validated.push({ ...candidate, data, checkpoint, newnessRank });
+        validated.push({
+          ...candidate,
+          data,
+          rawSha256: createHash('sha256').update(raw).digest('hex'),
+          checkpoint,
+          stateVersion,
+          journalVersion,
+          newnessRank,
+        });
       } catch (error) {
+        if (
+          (error instanceof PersistedStateVersionError
+            || error instanceof PersistedJournalVersionError)
+          && error.kind === 'unsupported'
+        ) {
+          return this.enterUnsupportedFormatFailure(candidate, error);
+        }
+        const parsedRecord = parsedData
+          && typeof parsedData === 'object'
+          && !Array.isArray(parsedData)
+          ? parsedData as Record<string, unknown>
+          : undefined;
+        const hasExplicitStateDiscriminator = parsedRecord !== undefined
+          && Object.prototype.hasOwnProperty.call(parsedRecord, 'state_version');
+        const hasExplicitJournalDiscriminator = parsedRecord !== undefined
+          && Object.prototype.hasOwnProperty.call(parsedRecord, 'journal_version');
+        const invalidExplicitDiscriminator = (
+          error instanceof PersistedStateVersionError
+          || error instanceof PersistedJournalVersionError
+        ) && error.kind === 'invalid'
+          && (hasExplicitStateDiscriminator || hasExplicitJournalDiscriminator);
+        if (
+          parsedRecord?.state_version === CURRENT_STATE_VERSION
+          || invalidExplicitDiscriminator
+        ) {
+          invalidVersioned.push({
+            candidate,
+            error,
+            newnessRank,
+            ...(typeof parsedRecord?.state_version === 'number'
+              ? { observedStateVersion: parsedRecord.state_version }
+              : {}),
+            ...(typeof parsedRecord?.journal_version === 'number'
+              ? { observedJournalVersion: parsedRecord.journal_version }
+              : {}),
+            ...(Number.isSafeInteger(parsedRecord?.journalSnapshotSeq)
+              && (parsedRecord!.journalSnapshotSeq as number) >= 0
+              ? { checkpoint: parsedRecord!.journalSnapshotSeq as number }
+              : {}),
+          });
+        }
         if (error instanceof StateIntegrityError) {
           integrityRejected.push({
             source: candidate.source,
@@ -1896,6 +2340,13 @@ export class StatePersistence {
             error: error.message,
             checkpoint: error.checkpoint,
             newnessRank,
+            ...(parsedRecord
+              ? {
+                  stateVersion: parsedRecord.state_version === CURRENT_STATE_VERSION
+                    ? CURRENT_STATE_VERSION
+                    : LEGACY_STATE_VERSION,
+                }
+              : {}),
           });
         }
         rejected.push({
@@ -1929,6 +2380,26 @@ export class StatePersistence {
     if (blockingIntegrity.length > 0) {
       return this.enterStateIntegrityFailure(blockingIntegrity);
     }
+    const blockingInvalidVersioned = invalidVersioned
+      .filter(candidate => !bestValid
+        || candidate.newnessRank < bestValid.newnessRank
+        || (
+          candidate.checkpoint !== undefined
+          && (
+            candidate.checkpoint > bestValid.checkpoint
+            || (
+              candidate.checkpoint === bestValid.checkpoint
+              && candidate.newnessRank < bestValid.newnessRank
+            )
+          )
+        ))
+      .sort((left, right) =>
+        (right.checkpoint ?? -1) - (left.checkpoint ?? -1)
+        || left.newnessRank - right.newnessRank,
+      );
+    if (blockingInvalidVersioned.length > 0) {
+      return this.enterInvalidVersionedStateFailure(blockingInvalidVersioned[0]);
+    }
 
     for (const candidate of validated) {
       let restoredCheckpoint: RestoredCheckpoint;
@@ -1944,11 +2415,62 @@ export class StatePersistence {
         continue;
       }
 
+      if (restoredCheckpoint.stateVersion === LEGACY_STATE_VERSION) {
+        try {
+          this.acquireMigrationLease();
+          // A rollback may have committed its sidecar/marked primary after the
+          // startup-level check but before this legacy candidate acquired the
+          // migration lease. The lease now excludes every compliant writer, so
+          // recheck and finish that rollback before reranking or backing up a
+          // superseded recovery head.
+          const pendingRollback = this.resumePendingRollback(
+            mutators?.prepareRecoveryCommit !== undefined,
+          );
+          if (pendingRollback) {
+            if (!this.migrationBackup && this.releaseMigrationLease) {
+              this.releaseHeldMigrationLease();
+            }
+            return pendingRollback;
+          }
+          if (!rankedUnderMigrationLease) {
+            // Candidate discovery and ranking before the lease is advisory
+            // only. Another compliant process may have installed a newer
+            // primary or snapshot while this process was waiting. Restore the
+            // in-memory baseline, then repeat the complete scan while the
+            // migration lease excludes every ordinary writer.
+            const refreshedCandidates = this.collectRestoreCandidates();
+            this.restoreRejectedCandidateBaseline(baseline, builtinRules);
+            this.durableConfig = JSON.parse(JSON.stringify(this.ctx.config)) as EngagementConfig;
+            const reranked = this.restoreCandidates(
+              refreshedCandidates,
+              builtinRules,
+              mutators,
+              true,
+            );
+            if (!this.migrationBackup && this.releaseMigrationLease) {
+              this.releaseHeldMigrationLease();
+            }
+            return reranked;
+          }
+          // Backup exact config/state/WAL/snapshot bytes before replay can
+          // authorize any V1 publication. Replay itself remains read-only.
+          this.beginLegacyMigration();
+        } catch (error) {
+          return this.enterMigrationFailure(
+            candidate.source,
+            `state migration backup could not be prepared: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+
       this.ensureJournalForRestoredConfig();
       const journal = this.ctx.mutationJournal;
       let replay: MutationReplayResult | undefined;
       if (journal) {
         if (this.journalAccessError !== undefined) {
+          if (restoredCheckpoint.stateVersion === LEGACY_STATE_VERSION) {
+            this.releaseHeldMigrationLease();
+          }
           return this.enterJournalAccessFailure(this.journalAccessError, candidate.source);
         }
         journal.unblockAppends();
@@ -1963,6 +2485,9 @@ export class StatePersistence {
           );
         } catch (error) {
           mutators?.abortRecoveryReplay?.();
+          if (restoredCheckpoint.stateVersion === LEGACY_STATE_VERSION) {
+            this.releaseHeldMigrationLease();
+          }
           return this.enterJournalAccessFailure(error, candidate.source);
         }
         if (replay.applied > 0) {
@@ -1976,6 +2501,8 @@ export class StatePersistence {
         path: candidate.path,
         data: candidate.data,
         checkpoint: restoredCheckpoint.checkpoint,
+        stateVersion: restoredCheckpoint.stateVersion,
+        journalVersion: restoredCheckpoint.journalVersion,
         ...(replay ? { replay } : {}),
       };
 
@@ -1984,12 +2511,44 @@ export class StatePersistence {
       // that older base cannot prove it contains newer base-only legacy state.
       if (replay && !replay.complete) {
         mutators?.abortRecoveryReplay?.();
+        if (restored.stateVersion === LEGACY_STATE_VERSION) {
+          this.stateMigrationStatus = {
+            status: 'blocked',
+            supported_state_version: CURRENT_STATE_VERSION,
+            supported_journal_version: CURRENT_JOURNAL_VERSION,
+            observed_state_version: LEGACY_STATE_VERSION,
+            observed_journal_version: CURRENT_JOURNAL_VERSION,
+            migration_required: true,
+            ...(this.migrationBackup
+              ? {
+                  backup_path: this.migrationBackup.directory,
+                  backup_manifest_sha256: this.migrationBackup.manifest_sha256,
+                }
+              : {}),
+            reason: this.describeIncompleteReplay(replay),
+          };
+          this.releaseHeldMigrationLease();
+        }
         return this.enterIncompleteRecovery(restored, this.describeIncompleteReplay(replay));
+      }
+
+      if (restored.stateVersion !== LEGACY_STATE_VERSION) {
+        const migrationCompletion = this.finishInterruptedMigrationIfPresent(candidate.source);
+        if (migrationCompletion) return migrationCompletion;
+        this.stateMigrationStatus = {
+          status: 'current',
+          supported_state_version: CURRENT_STATE_VERSION,
+          supported_journal_version: CURRENT_JOURNAL_VERSION,
+          observed_state_version: CURRENT_STATE_VERSION,
+          observed_journal_version: CURRENT_JOURNAL_VERSION,
+          migration_required: false,
+        };
       }
 
       return this.finishRestoredBase(restored, mutators);
     }
 
+    if (invalidVersioned.length > 0) return this.enterInvalidVersionedStateFailure(invalidVersioned[0]);
     try {
       if (this.ctx.mutationJournal?.hasData()) {
         return this.enterNoBaseRecovery(rejected);
@@ -2000,7 +2559,205 @@ export class StatePersistence {
         existsSync(this.ctx.stateFilePath) ? 'state' : 'fresh',
       );
     }
+    if (candidates.length > 0) {
+      return this.enterNoValidBaseRecovery(rejected, candidates[0]!.source);
+    }
     return { status: 'seed_required', source: 'fresh' };
+  }
+
+  private enterInvalidVersionedStateFailure(input: {
+    candidate: RestoreCandidate;
+    error: unknown;
+    checkpoint?: number;
+    observedStateVersion?: number;
+    observedJournalVersion?: number;
+  }): RestoreResult {
+    const errorMessage = input.error instanceof Error ? input.error.message : String(input.error);
+    const reason = `persisted versioned recovery head at ${input.candidate.path} is invalid and cannot be replaced automatically: ${errorMessage}`;
+    this.recoveryReadOnlyReason = reason;
+    this.ctx.mutationJournal?.blockAppends(reason);
+    this.stateMigrationStatus = {
+      status: 'blocked',
+      supported_state_version: CURRENT_STATE_VERSION,
+      supported_journal_version: CURRENT_JOURNAL_VERSION,
+      ...(input.observedStateVersion !== undefined
+        ? { observed_state_version: input.observedStateVersion }
+        : {}),
+      ...(input.observedJournalVersion !== undefined
+        ? { observed_journal_version: input.observedJournalVersion }
+        : {}),
+      migration_required: false,
+      reason,
+    };
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source: input.candidate.source,
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: input.checkpoint ?? 0,
+      preserved: true,
+    });
+    return {
+      status: 'degraded',
+      source: input.candidate.source,
+      reason,
+    };
+  }
+
+  private finishInterruptedMigrationIfPresent(
+    source: 'state' | 'snapshot',
+  ): RestoreResult | undefined {
+    if (!hasStateMigrationIntent(this.ctx.stateFilePath)) return undefined;
+    try {
+      this.acquireMigrationLease();
+      const backup = completeStateMigration(
+        this.ctx.stateFilePath,
+        this.releaseMigrationLease?.token,
+      );
+      this.stateMigrationStatus = {
+        status: 'migrated',
+        supported_state_version: CURRENT_STATE_VERSION,
+        supported_journal_version: CURRENT_JOURNAL_VERSION,
+        observed_state_version: LEGACY_STATE_VERSION,
+        observed_journal_version: CURRENT_JOURNAL_VERSION,
+        migration_required: false,
+        ...(backup
+          ? {
+              backup_path: backup.directory,
+              backup_manifest_sha256: backup.manifest_sha256,
+            }
+          : {}),
+      };
+      this.releaseHeldMigrationLease();
+      return undefined;
+    } catch (error) {
+      return this.enterMigrationFailure(
+        source,
+        `completed V1 state has an invalid or unretirable migration intent: ${error instanceof Error ? error.message : String(error)}`,
+        CURRENT_STATE_VERSION,
+        false,
+      );
+    }
+  }
+
+  private beginLegacyMigration(): void {
+    this.acquireMigrationLease();
+    this.migrationBackup = prepareStateMigrationBackup({
+      stateFilePath: this.ctx.stateFilePath,
+      configFilePath: this.ctx.configFilePath,
+    });
+    this.stateMigrationStatus = {
+      status: 'backup_created',
+      supported_state_version: CURRENT_STATE_VERSION,
+      supported_journal_version: CURRENT_JOURNAL_VERSION,
+      observed_state_version: LEGACY_STATE_VERSION,
+      observed_journal_version: CURRENT_JOURNAL_VERSION,
+      migration_required: true,
+      backup_path: this.migrationBackup.directory,
+      backup_manifest_sha256: this.migrationBackup.manifest_sha256,
+    };
+  }
+
+  private enterMigrationFailure(
+    source: 'state' | 'snapshot',
+    reason: string,
+    observedStateVersion: typeof LEGACY_STATE_VERSION | typeof CURRENT_STATE_VERSION = LEGACY_STATE_VERSION,
+    migrationRequired = observedStateVersion === LEGACY_STATE_VERSION,
+  ): RestoreResult {
+    this.recoveryReadOnlyReason = reason;
+    this.ctx.mutationJournal?.blockAppends(reason);
+    let journalPreserved = false;
+    try { journalPreserved = this.ctx.mutationJournal?.hasData() ?? false; } catch { journalPreserved = true; }
+    this.stateMigrationStatus = {
+      status: 'blocked',
+      supported_state_version: CURRENT_STATE_VERSION,
+      supported_journal_version: CURRENT_JOURNAL_VERSION,
+      observed_state_version: observedStateVersion,
+      observed_journal_version: CURRENT_JOURNAL_VERSION,
+      migration_required: migrationRequired,
+      ...(this.migrationBackup
+        ? {
+            backup_path: this.migrationBackup.directory,
+            backup_manifest_sha256: this.migrationBackup.manifest_sha256,
+          }
+        : {}),
+      reason,
+    };
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source,
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: 0,
+      preserved: journalPreserved,
+    });
+    try {
+      this.releaseHeldMigrationLease();
+    } catch (releaseError) {
+      this.stateMigrationStatus.reason =
+        `${reason}; migration lease release failed: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`;
+      this.recoveryStatus.reason = this.stateMigrationStatus.reason;
+    }
+    return {
+      status: 'degraded',
+      source,
+      reason: this.recoveryStatus.reason ?? reason,
+    };
+  }
+
+  private enterUnsupportedFormatFailure(
+    candidate: RestoreCandidate,
+    error: PersistedStateVersionError | PersistedJournalVersionError,
+  ): RestoreResult {
+    const format = error instanceof PersistedStateVersionError ? 'state' : 'journal';
+    const reason = `persisted ${format} format at ${candidate.path} is newer than this binary: ${error.message}`;
+    this.recoveryReadOnlyReason = reason;
+    this.ctx.mutationJournal?.blockAppends(reason);
+    let journalPreserved = false;
+    try { journalPreserved = this.ctx.mutationJournal?.hasData() ?? false; } catch { journalPreserved = true; }
+    this.stateMigrationStatus = {
+      status: 'blocked',
+      supported_state_version: CURRENT_STATE_VERSION,
+      supported_journal_version: CURRENT_JOURNAL_VERSION,
+      ...(error instanceof PersistedJournalVersionError
+        ? { observed_state_version: CURRENT_STATE_VERSION }
+        : {}),
+      ...(error instanceof PersistedStateVersionError
+        && typeof error.observedVersion === 'number'
+        ? { observed_state_version: error.observedVersion }
+        : {}),
+      ...(error instanceof PersistedJournalVersionError
+        && typeof error.observedVersion === 'number'
+        ? { observed_journal_version: error.observedVersion }
+        : {}),
+      migration_required: false,
+      reason,
+    };
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source: candidate.source,
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: 0,
+      preserved: journalPreserved,
+    });
+    this.ctx.logEvent({
+      description: 'Persistence recovery blocked by an unsupported state format',
+      event_type: 'system',
+      category: 'system',
+      outcome: 'failure',
+      result_classification: 'failure',
+      details: {
+        reason,
+        path: candidate.path,
+        observed_version: error.observedVersion,
+        format,
+      },
+    });
+    return { status: 'degraded', source: candidate.source, reason };
   }
 
   private describeIncompleteReplay(replay: MutationReplayResult): string {
@@ -2034,6 +2791,8 @@ export class StatePersistence {
   private validateStateBase(data: unknown): RestoredCheckpoint {
     if (!data || typeof data !== 'object') throw new Error('persisted state is not an object');
     const record = data as Record<string, unknown>;
+    const stateVersion = detectStateVersion(record);
+    const journalVersion = detectJournalVersion(record, stateVersion);
     const compactionAuthority = this.walCompactionAuthorityStatus(record);
     if (compactionAuthority === 'invalid') {
       throw new StateIntegrityError(
@@ -2042,6 +2801,9 @@ export class StatePersistence {
           ? record.journalSnapshotSeq as number
           : undefined,
       );
+    }
+    if (stateVersion === CURRENT_STATE_VERSION) {
+      validatePersistedStateV1(record);
     }
     if (!record.config || typeof record.config !== 'object') throw new Error('persisted state is missing config');
     const configValidation = engagementConfigSchema.safeParse(record.config);
@@ -2067,6 +2829,8 @@ export class StatePersistence {
       checkpoint,
       trusted: record.journalCheckpointSemantics === JOURNAL_CHECKPOINT_SEMANTICS,
       compactionTrusted: compactionAuthority === 'valid',
+      stateVersion,
+      journalVersion,
     };
   }
 
@@ -2131,8 +2895,14 @@ export class StatePersistence {
       'approvalRequests',
       'inferenceRules',
       'trackedProcesses',
+      'runtimeRuns',
+      'playbookRuns',
+      'sessionDescriptors',
+      'commandPlans',
+      'commandOutcomes',
       'coldStore',
       'chainCheckpoints',
+      'recentFindingHashes',
     ] as const;
     for (const field of arrayFields) {
       if (Object.prototype.hasOwnProperty.call(record, field) && !Array.isArray(record[field])) {
@@ -2140,7 +2910,15 @@ export class StatePersistence {
       }
     }
 
-    const objectFields = ['opsecTracker', 'frontierLinkage', 'frontierLeases'] as const;
+    const objectFields = [
+      'opsecTracker',
+      'frontierLinkage',
+      'frontierLeases',
+      'frontierWeights',
+      'artifactReferences',
+      'proposedPlans',
+      'agentQueries',
+    ] as const;
     for (const field of objectFields) {
       const value = record[field];
       if (
@@ -2165,6 +2943,14 @@ export class StatePersistence {
       && (!Number.isSafeInteger(record.deterministicSeq) || (record.deterministicSeq as number) < 0)
     ) {
       throw new Error('persisted deterministicSeq must be a non-negative safe integer');
+    }
+    for (const field of ['chainEventsSinceCheckpoint', 'dedupCount'] as const) {
+      if (
+        record[field] !== undefined
+        && (!Number.isSafeInteger(record[field]) || (record[field] as number) < 0)
+      ) {
+        throw new Error(`persisted ${field} must be a non-negative safe integer`);
+      }
     }
     if (record.lastKnownPhaseId !== undefined && typeof record.lastKnownPhaseId !== 'string') {
       throw new Error('persisted lastKnownPhaseId must be a string when present');
@@ -2296,8 +3082,10 @@ export class StatePersistence {
   private finishRestoredBase(restored: RestoredBase, mutators?: ReplayMutators): RestoreResult {
     const replay = restored.replay;
     const checkpoint = replay?.highest_contiguous_applied_seq ?? restored.checkpoint;
+    const migratingLegacyState = restored.stateVersion === LEGACY_STATE_VERSION;
     const recovered = restored.source === 'snapshot'
-      || checkpoint !== restored.checkpoint;
+      || checkpoint !== restored.checkpoint
+      || migratingLegacyState;
 
     if (replay && (replay.read > 0 || replay.read_issue !== undefined)) {
       this.ctx.logEvent({
@@ -2317,10 +3105,39 @@ export class StatePersistence {
       });
     }
 
+    if (migratingLegacyState) {
+      try {
+        if (!this.migrationBackup) {
+          throw new Error('legacy migration backup authority is missing');
+        }
+        assertStateMigrationSourcesUnchanged({
+          backup: this.migrationBackup,
+          stateFilePath: this.ctx.stateFilePath,
+          configFilePath: this.ctx.configFilePath,
+        });
+        activateStateMigration(
+          this.ctx.stateFilePath,
+          this.migrationBackup,
+          this.releaseMigrationLease?.token,
+        );
+      } catch (error) {
+        mutators?.abortRecoveryReplay?.();
+        return this.enterMigrationFailure(
+          restored.source,
+          `legacy replay completed, but migration publication was not authorized: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
     // A retained, already-applied WAL prefix is a recovery anchor, not a reason
-    // to rewrite state on every restart. Write only when replay changed durable
-    // truth, advanced the checkpoint, or selected a snapshot as the new primary.
-    if (restored.source === 'snapshot' || checkpoint !== restored.checkpoint) {
+    // to rewrite state on every restart. V0 is the exception: once its complete
+    // replay and byte-exact backup are proven, publish V1 even at the same
+    // checkpoint.
+    if (
+      migratingLegacyState
+      || restored.source === 'snapshot'
+      || checkpoint !== restored.checkpoint
+    ) {
       try {
         mutators?.prepareRecoveryCommit?.();
         this.writeStateToDisk({
@@ -2397,6 +3214,43 @@ export class StatePersistence {
     return { status: 'degraded', source: restored.source, reason };
   }
 
+  private enterNoValidBaseRecovery(
+    rejected: Array<{ path: string; error: string }>,
+    source: 'state' | 'snapshot',
+  ): RestoreResult {
+    const reason = 'persisted state artifacts exist, but no valid full-state recovery base remains';
+    this.recoveryReadOnlyReason = reason;
+    this.ctx.mutationJournal?.blockAppends(reason);
+    this.stateMigrationStatus = {
+      status: 'blocked',
+      supported_state_version: CURRENT_STATE_VERSION,
+      supported_journal_version: CURRENT_JOURNAL_VERSION,
+      migration_required: false,
+      reason,
+    };
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source,
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: 0,
+      preserved: true,
+    });
+    this.ctx.logEvent({
+      description: 'State recovery blocked: no valid persisted base; service entered degraded read-only mode',
+      event_type: 'system',
+      category: 'system',
+      outcome: 'failure',
+      result_classification: 'failure',
+      details: {
+        reason,
+        rejected_bases: rejected,
+      },
+    });
+    return { status: 'degraded', source, reason };
+  }
+
   private enterNoBaseRecovery(rejected: Array<{ path: string; error: string }>): RestoreResult {
     const reason = 'a nonempty WAL exists without a valid full-state base';
     const journal = this.ctx.mutationJournal!;
@@ -2438,6 +3292,17 @@ export class StatePersistence {
     let journalPreserved = false;
     try { journalPreserved = this.ctx.mutationJournal?.hasData() ?? false; } catch { journalPreserved = true; }
     const quarantine = journalPreserved ? this.quarantineJournal() : {};
+    this.stateMigrationStatus = {
+      status: 'blocked',
+      supported_state_version: CURRENT_STATE_VERSION,
+      supported_journal_version: CURRENT_JOURNAL_VERSION,
+      ...(first.stateVersion !== undefined
+        ? { observed_state_version: first.stateVersion }
+        : {}),
+      observed_journal_version: CURRENT_JOURNAL_VERSION,
+      migration_required: first.stateVersion === LEGACY_STATE_VERSION,
+      reason,
+    };
     this.recoveryStatus = this.buildRecoveryStatus({
       outcome: 'incomplete',
       source: first.source,
@@ -2645,6 +3510,7 @@ export class StatePersistence {
       ...(this.lastPersistenceError ? { last_persistence_error: this.lastPersistenceError } : {}),
       journal: {
         enabled: journal !== null,
+        format_version: CURRENT_JOURNAL_VERSION,
         ...(journal ? { path: journal.getPath() } : {}),
         read: replay?.read ?? 0,
         attempted: replay?.attempted ?? 0,

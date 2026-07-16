@@ -15,7 +15,13 @@
 //   wire stream.
 // ============================================================
 
-import { createWriteStream, mkdirSync, type WriteStream } from 'fs';
+import {
+  createWriteStream,
+  mkdirSync,
+  openSync,
+  unlinkSync,
+  type WriteStream,
+} from 'fs';
 import { dirname } from 'path';
 
 export type TapeDirection = 'client_to_server' | 'server_to_client';
@@ -92,10 +98,24 @@ export class TapeWriter {
   private closed = false;
   private writeCount = 0;
   private streamError?: Error;
+  private readonly createdFile: boolean;
 
   constructor(public readonly path: string) {
     mkdirSync(dirname(path), { recursive: true });
-    this.stream = createWriteStream(path, { flags: 'a' });
+    let createdFile = false;
+    let fd: number;
+    try {
+      fd = openSync(path, 'ax', 0o600);
+      createdFile = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      fd = openSync(path, 'a', 0o600);
+    }
+    this.createdFile = createdFile;
+    // Supplying the synchronously opened descriptor prevents a failed startup
+    // from unlinking the file only for createWriteStream's deferred open to
+    // recreate it afterward.
+    this.stream = createWriteStream(path, { fd, autoClose: true });
     // A WriteStream with no 'error' listener throws its 'error' event as an
     // UNCAUGHT exception, crashing the proxy process. Handle it: record the
     // failure and mark the writer closed so further writes become no-ops
@@ -125,6 +145,31 @@ export class TapeWriter {
     if (this.closed) return;
     this.closed = true;
     await new Promise<void>((resolve) => this.stream.end(resolve));
+  }
+
+  /**
+   * Abort a startup that failed before the tape session was committed to the
+   * activity log. Existing append targets are preserved; a file created solely
+   * by this failed attempt is removed once the stream closes.
+   */
+  abortAndRemoveCreatedFile(): void {
+    if (!this.closed) {
+      this.closed = true;
+      this.stream.destroy();
+    }
+    if (!this.createdFile) return;
+    const remove = (): void => {
+      try {
+        unlinkSync(this.path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          // Cleanup is best effort; the controller still drops the unusable
+          // writer so no frames can land without an audit record.
+        }
+      }
+    };
+    remove();
+    this.stream.once('close', remove);
   }
 }
 

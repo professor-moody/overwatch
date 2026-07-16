@@ -87,4 +87,43 @@ describe('ProposedPlanStore', () => {
     const open = store.getOpen(2000);
     expect(open.map(p => p.plan_id)).toEqual([b.plan_id, a.plan_id]);
   });
+
+  it('round-trips the original absolute expiry without extending it on restart', () => {
+    const store = new ProposedPlanStore(60_000);
+    const plan = store.add({ command: 'x', ops, summary: 's', now: 1_000 });
+    const restored = ProposedPlanStore.deserialize(store.serialize(), 60_000, 30_000);
+
+    expect(restored.get(plan.plan_id)?.expires_at).toBe(61_000);
+    expect(restored.getOpen(60_999).map(p => p.plan_id)).toEqual([plan.plan_id]);
+    expect(restored.getOpen(61_000)).toEqual([]);
+    expect(restored.describeResolution(plan.plan_id, 61_000)).toBe('expired');
+  });
+
+  it('restores terminal tombstones and keeps existing listeners attached', () => {
+    const source = new ProposedPlanStore();
+    const confirmed = source.add({ command: 'x', ops, summary: 's', now: 1_000 });
+    source.resolve(confirmed.plan_id, 'confirmed', 1_001);
+
+    const store = new ProposedPlanStore();
+    let calls = 0;
+    store.onChange(() => { calls++; });
+    store.restore(source.serialize(), 2_000);
+
+    expect(calls).toBe(0);
+    expect(store.describeResolution(confirmed.plan_id, 2_000)).toBe('confirmed');
+    store.add({ command: 'y', ops, summary: 't', now: 2_001 });
+    expect(calls).toBe(1);
+  });
+
+  it('blocks durable mutations while degraded but leaves filtered reads available', () => {
+    const store = new ProposedPlanStore(60_000);
+    const plan = store.add({ command: 'x', ops, summary: 's', now: 1_000 });
+    store.setMutationGuard(() => { throw new Error('read-only'); });
+
+    expect(() => store.add({ command: 'y', ops, summary: 't', now: 2_000 })).toThrow('read-only');
+    expect(() => store.resolve(plan.plan_id, 'confirmed', 2_000)).toThrow('read-only');
+    expect(() => store.prune(61_000)).toThrow('read-only');
+    expect(store.getOpen(61_000)).toEqual([]);
+    expect(store.get(plan.plan_id)).toBeDefined();
+  });
 });

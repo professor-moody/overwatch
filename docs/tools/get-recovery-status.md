@@ -1,6 +1,7 @@
 # get_recovery_status
 
-Inspect persistence recovery and active-configuration convergence.
+Inspect persistence recovery, state-format migration, and
+active-configuration convergence.
 
 **Read-only:** Yes
 
@@ -9,6 +10,7 @@ Inspect persistence recovery and active-configuration convergence.
 - At startup when Overwatch reports degraded or read-only operation
 - Before choosing file or durable-state authority for a config divergence
 - After a WAL/snapshot recovery, persistence write failure, or config write interruption
+- When startup reports a legacy migration backup or an unsupported newer format
 - To capture the exact hashes required by `resolve_config_divergence`
 
 The tool remains available while durable mutations are disabled.
@@ -34,7 +36,8 @@ configuration status:
 | `highest_on_disk_seq` | Highest sequence observed in the journal |
 | `highest_contiguous_applied_seq` | Highest sequence applied without a gap or failure |
 | `consecutive_persistence_failures` | Current durable-write failure streak |
-| `journal` | Read/attempted/applied/skipped/failed counts plus malformed/preserved flags |
+| `journal` | Format version, path, read/attempted/applied/skipped/failed counts, and malformed/preserved flags |
+| `state_migration` | Supported/observed state and journal versions, migration status, backup path/checksum, and blocker |
 | `config_recovery` | File/runtime/state revisions, hashes, intent state, and allowed resolutions |
 
 `config_recovery.status` is one of `unmanaged`, `in_sync`, `recovered`,
@@ -61,6 +64,14 @@ An abridged divergence response:
     "highest_allocated_seq": 14,
     "highest_on_disk_seq": 14,
     "highest_contiguous_applied_seq": 14,
+    "state_migration": {
+      "status": "current",
+      "supported_state_version": 1,
+      "supported_journal_version": 1,
+      "observed_state_version": 1,
+      "observed_journal_version": 1,
+      "migration_required": false
+    },
     "config_recovery": {
       "status": "diverged",
       "resolution_required": true,
