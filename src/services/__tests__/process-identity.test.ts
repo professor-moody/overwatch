@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { spawn } from 'child_process';
 import {
+  readProcessOwnershipToken,
   signalVerifiedRuntimeProcess,
   verifyRuntimeProcessIdentity,
   type ProcessIdentityObserver,
@@ -24,6 +26,35 @@ function observer(input: {
 }
 
 describe('runtime process identity', () => {
+  it('reads an ownership token from the command line when it is not in the environment', async () => {
+    const token = '77777777-7777-4777-8777-777777777777';
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        'setInterval(() => {}, 1000)',
+        '--',
+        `--overwatch-runtime-token=${token}`,
+      ],
+      {
+        env: Object.fromEntries(
+          Object.entries(process.env).filter(([key]) => key !== 'OVERWATCH_RUNTIME_TOKEN'),
+        ),
+        stdio: 'ignore',
+      },
+    );
+    await new Promise<void>((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+    try {
+      expect(readProcessOwnershipToken(child.pid!)).toBe(token);
+    } finally {
+      try { child.kill('SIGKILL'); } catch {}
+      await new Promise<void>(resolve => child.once('close', () => resolve()));
+    }
+  });
+
   it('verifies the same physical process', () => {
     expect(verifyRuntimeProcessIdentity(
       { pid: 123, process_group_id: 123, process_start_identity: 'start-a' },

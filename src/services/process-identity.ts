@@ -85,7 +85,8 @@ export function readProcessOwnershipToken(pid: number): string | undefined {
   };
   if (process.platform === 'linux') {
     try {
-      return extract(readFileSync(`/proc/${pid}/environ`, 'utf8').replace(/\0/g, ' '));
+      const token = extract(readFileSync(`/proc/${pid}/environ`, 'utf8').replace(/\0/g, ' '));
+      if (token) return token;
     } catch {
       // Fall through to command-line inspection.
     }
