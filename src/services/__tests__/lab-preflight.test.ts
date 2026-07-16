@@ -364,8 +364,12 @@ describe('lab preflight', () => {
         reason: 'sequence gap',
         base_checkpoint: 2,
         highest_allocated_seq: 6,
+        highest_allocated_logical_seq: 6,
+        highest_allocated_frame_seq: 18,
         highest_on_disk_seq: 6,
+        highest_physical_frame_seq: 18,
         highest_contiguous_applied_seq: 4,
+        highest_contiguous_applied_logical_seq: 4,
         consecutive_persistence_failures: 0,
         journal: {
           enabled: true,
@@ -397,7 +401,9 @@ describe('lab preflight', () => {
       outcome: 'incomplete',
       writable: false,
       highest_contiguous_applied_seq: 4,
+      highest_contiguous_applied_logical_seq: 4,
       highest_on_disk_seq: 6,
+      highest_physical_frame_seq: 18,
     });
     expect(inline.status).toBe('blocked');
     expect(inline.top_issues[0]).toContain('sequence gap');

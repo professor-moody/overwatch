@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerLoggingTools } from '../logging.js';
@@ -9,8 +11,10 @@ import { registerParseOutputTools } from '../parse-output.js';
 import { registerAgentTools } from '../agents.js';
 import type { EngagementConfig } from '../../types.js';
 
-const TEST_STATE_FILE = './state-test-activity-log.json';
-const TEST_NMAP_FILE = './test-nmap.xml';
+let testDir: string;
+let testStateFile: string;
+let testNmapFile: string;
+const engines = new Set<GraphEngine>();
 
 function makeConfig(): EngagementConfig {
   return {
@@ -28,12 +32,15 @@ function makeConfig(): EngagementConfig {
 }
 
 function cleanup(): void {
-  try {
-    if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-  } catch {}
-  try {
-    if (existsSync(TEST_NMAP_FILE)) unlinkSync(TEST_NMAP_FILE);
-  } catch {}
+  for (const opened of engines) opened.dispose();
+  engines.clear();
+  if (testDir) rmSync(testDir, { recursive: true, force: true });
+}
+
+function openEngine(): GraphEngine {
+  const opened = new GraphEngine(makeConfig(), testStateFile);
+  engines.add(opened);
+  return opened;
 }
 
 describe('structured activity logging tools', () => {
@@ -42,8 +49,10 @@ describe('structured activity logging tools', () => {
   let toolConfigs: Record<string, any>;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-activity-logging-'));
+    testStateFile = join(testDir, 'state.json');
+    testNmapFile = join(testDir, 'nmap.xml');
+    engine = openEngine();
     handlers = {};
     toolConfigs = {};
 
@@ -61,9 +70,7 @@ describe('structured activity logging tools', () => {
     registerAgentTools(fakeServer, engine);
   });
 
-  afterEach(() => {
-    cleanup();
-  });
+  afterEach(cleanup);
 
   it('log_action_event generates event_id and action_id for planned actions', async () => {
     const result = await handlers.log_action_event({
@@ -78,7 +85,9 @@ describe('structured activity logging tools', () => {
     expect(payload.action_id).toBeDefined();
 
     engine.flushNow();
-    const reloaded = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.dispose();
+    engines.delete(engine);
+    const reloaded = openEngine();
     const history = reloaded.getFullHistory();
     const entry = history.find(candidate => candidate.action_id === payload.action_id);
     expect(entry?.event_type).toBe('action_planned');
@@ -321,14 +330,14 @@ describe('structured activity logging tools', () => {
 
   it('parse_output supports file_path for large artifacts', async () => {
     writeFileSync(
-      TEST_NMAP_FILE,
+      testNmapFile,
       '<nmaprun><host><status state="up"/><address addr="10.10.10.2" addrtype="ipv4"/><ports><port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds"/></port></ports></host></nmaprun>',
       'utf8',
     );
 
     const result = await handlers.parse_output({
       tool_name: 'nmap',
-      file_path: TEST_NMAP_FILE,
+      file_path: testNmapFile,
       ingest: true,
     });
 
@@ -358,12 +367,12 @@ describe('structured activity logging tools', () => {
   });
 
   it('parse_output rejects calls that provide both output and file_path', async () => {
-    writeFileSync(TEST_NMAP_FILE, '<nmaprun></nmaprun>', 'utf8');
+    writeFileSync(testNmapFile, '<nmaprun></nmaprun>', 'utf8');
 
     const result = await handlers.parse_output({
       tool_name: 'nmap',
       output: '<nmaprun></nmaprun>',
-      file_path: TEST_NMAP_FILE,
+      file_path: testNmapFile,
       ingest: true,
     });
 

@@ -28,6 +28,12 @@ export interface ConfigApplyContext {
   semantic_change: boolean;
 }
 
+export interface ConfigCommitEvent {
+  description: string;
+  result: 'success' | 'failure';
+  details: Record<string, unknown>;
+}
+
 export interface EngagementConfigServiceHost {
   getRuntimeConfig(): EngagementConfig;
   nowIso(): string;
@@ -35,12 +41,16 @@ export interface EngagementConfigServiceHost {
   assertWriteAllowed?(): void;
   withWriteGuard?<T>(operation: () => T): T;
   applyRuntimeConfig(config: EngagementConfig, context: ConfigApplyContext): void;
+  /** Optional canonical transaction boundary for runtime config, derived graph
+   * effects, and the associated audit event. Legacy/unit hosts fall back to the
+   * three primitive callbacks below. */
+  commitRuntimeConfig?(
+    config: EngagementConfig,
+    context: ConfigApplyContext,
+    event?: ConfigCommitEvent,
+  ): void;
   persistRuntimeState(): void;
-  recordConfigEvent(input: {
-    description: string;
-    result: 'success' | 'failure';
-    details: Record<string, unknown>;
-  }): void;
+  recordConfigEvent(input: ConfigCommitEvent): void;
 }
 
 interface ConfigFileObservation {
@@ -627,6 +637,8 @@ export class EngagementConfigService {
   private durableConfig: EngagementConfig;
   private pendingJournalReplay?: PendingJournalReplayConfig;
   private journalMutationInProgress = false;
+  /** Expected synchronous file/runtime/state convergence inside commitDesired. */
+  private writeThroughCommitInProgress = false;
   private intentConflict?: ConfigIntentConflict;
 
   constructor(
@@ -868,13 +880,30 @@ export class EngagementConfigService {
 
   isBlocked(): boolean {
     this.refreshManagedFileStatus();
-    return !this.resolving && !this.journalMutationInProgress && this.status.resolution_required;
+    return !this.resolving
+      && !this.journalMutationInProgress
+      && !this.writeThroughCommitInProgress
+      && this.status.resolution_required;
   }
 
   assertWritable(): void {
     this.refreshManagedFileStatus();
     if (!this.isBlocked()) return;
     throw new Error(`Configuration recovery is read-only: ${this.status.reason ?? 'explicit reconciliation is required'}`);
+  }
+
+  private commitRuntime(
+    config: EngagementConfig,
+    context: ConfigApplyContext,
+    event?: ConfigCommitEvent,
+  ): void {
+    if (this.host.commitRuntimeConfig) {
+      this.host.commitRuntimeConfig(config, context, event);
+    } else {
+      this.host.applyRuntimeConfig(config, context);
+      if (event) this.host.recordConfigEvent(event);
+    }
+    this.host.persistRuntimeState();
   }
 
   commit(nextConfig: EngagementConfig, source: string): EngagementConfig {
@@ -885,8 +914,7 @@ export class EngagementConfigService {
     const nextRevision = Math.max(current.config_revision ?? 0, 0) + 1;
     const next = withConfigMetadata(nextConfig, nextRevision);
     if (!this.configPath) {
-      this.host.applyRuntimeConfig(next, { source, recovery: false, semantic_change: true });
-      this.host.persistRuntimeState();
+      this.commitRuntime(next, { source, recovery: false, semantic_change: true });
       return this.host.getRuntimeConfig();
     }
 
@@ -916,21 +944,23 @@ export class EngagementConfigService {
       return this.commitDesired(target, source, true, observedFileHash);
     }
 
-    this.host.applyRuntimeConfig(target, {
-      source,
-      recovery: true,
-      semantic_change: false,
-    });
-    this.host.recordConfigEvent({
-      description: 'Configuration synchronized after snapshot rollback',
-      result: 'success',
-      details: {
+    this.commitRuntime(
+      target,
+      {
         source,
-        config_revision: target.config_revision,
-        config_hash: target.config_hash,
+        recovery: true,
+        semantic_change: false,
       },
-    });
-    this.host.persistRuntimeState();
+      {
+        description: 'Configuration synchronized after snapshot rollback',
+        result: 'success',
+        details: {
+          source,
+          config_revision: target.config_revision,
+          config_hash: target.config_hash,
+        },
+      },
+    );
     this.durableConfig = cloneConfig(target);
     this.status = { status: 'unmanaged', resolution_required: false, intent_present: false };
     return cloneConfig(target);
@@ -1321,37 +1351,40 @@ export class EngagementConfigService {
         : {}),
     });
 
+    this.writeThroughCommitInProgress = true;
     try {
       this.writeIntent(intent);
       this.writeConfig(next, expectedFileHash);
-      this.host.applyRuntimeConfig(next, {
-        source,
-        recovery,
-        semantic_change: !configsSemanticallyEqual(stateBefore, next),
-      });
-      this.host.recordConfigEvent({
-        description: recovery
-          ? source.includes('rollback')
-            ? 'Configuration synchronized after snapshot rollback'
-            : `Configuration divergence resolved with ${source.endsWith('use_file') ? 'file' : 'state'} authority`
-          : 'Engagement configuration updated',
-        result: 'success',
-        details: {
+      this.commitRuntime(
+        next,
+        {
           source,
-          previous_revision: stateBefore.config_revision ?? null,
-          config_revision: next.config_revision,
-          config_hash: next.config_hash,
-          expected_file_hash: expectedFileHash ?? null,
-          previous_state_hash: intent.from_state_hash,
-          target_hash: intent.to_hash,
-          intent_checksum: intent.intent_checksum,
           recovery,
-          ...(intent.superseded_intent_conflict
-            ? { superseded_config_intent: intent.superseded_intent_conflict }
-            : {}),
+          semantic_change: !configsSemanticallyEqual(stateBefore, next),
         },
-      });
-      this.host.persistRuntimeState();
+        {
+          description: recovery
+            ? source.includes('rollback')
+              ? 'Configuration synchronized after snapshot rollback'
+              : `Configuration divergence resolved with ${source.endsWith('use_file') ? 'file' : 'state'} authority`
+            : 'Engagement configuration updated',
+          result: 'success',
+          details: {
+            source,
+            previous_revision: stateBefore.config_revision ?? null,
+            config_revision: next.config_revision,
+            config_hash: next.config_hash,
+            expected_file_hash: expectedFileHash ?? null,
+            previous_state_hash: intent.from_state_hash,
+            target_hash: intent.to_hash,
+            intent_checksum: intent.intent_checksum,
+            recovery,
+            ...(intent.superseded_intent_conflict
+              ? { superseded_config_intent: intent.superseded_intent_conflict }
+              : {}),
+          },
+        },
+      );
       this.assertTargetConverged(next);
       this.durableConfig = cloneConfig(next);
       this.removeIntent(intent.intent_checksum);
@@ -1367,6 +1400,8 @@ export class EngagementConfigService {
         reason: `Configuration write did not complete durably: ${error instanceof Error ? error.message : String(error)}`,
       };
       throw error;
+    } finally {
+      this.writeThroughCommitInProgress = false;
     }
   }
 
@@ -1386,28 +1421,30 @@ export class EngagementConfigService {
     if (fileHash !== intent.to_hash) this.writeConfig(intent.config, fileHash);
     const stateNeedsCompletion = stateHash !== intent.to_hash;
     if (stateNeedsCompletion) {
-      this.host.applyRuntimeConfig(intent.config, {
-        source: `${intent.source}_recovery`,
-        recovery: true,
-        semantic_change: !configsSemanticallyEqual(state, intent.config),
-      });
-      this.host.recordConfigEvent({
-        description: 'Completed interrupted configuration write',
-        result: 'success',
-        details: {
-          source: intent.source,
-          config_revision: intent.to_revision,
-          config_hash: intent.to_hash,
-          expected_file_hash: intent.from_file_hash,
-          previous_state_hash: intent.from_state_hash,
-          target_hash: intent.to_hash,
-          intent_checksum: intent.intent_checksum,
-          ...(intent.superseded_intent_conflict
-            ? { superseded_config_intent: intent.superseded_intent_conflict }
-            : {}),
+      this.commitRuntime(
+        intent.config,
+        {
+          source: `${intent.source}_recovery`,
+          recovery: true,
+          semantic_change: !configsSemanticallyEqual(state, intent.config),
         },
-      });
-      this.host.persistRuntimeState();
+        {
+          description: 'Completed interrupted configuration write',
+          result: 'success',
+          details: {
+            source: intent.source,
+            config_revision: intent.to_revision,
+            config_hash: intent.to_hash,
+            expected_file_hash: intent.from_file_hash,
+            previous_state_hash: intent.from_state_hash,
+            target_hash: intent.to_hash,
+            intent_checksum: intent.intent_checksum,
+            ...(intent.superseded_intent_conflict
+              ? { superseded_config_intent: intent.superseded_intent_conflict }
+              : {}),
+          },
+        },
+      );
     }
     this.assertTargetConverged(intent.config);
     this.durableConfig = cloneConfig(intent.config);

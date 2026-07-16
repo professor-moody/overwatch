@@ -69,6 +69,13 @@ const WRITER_LOCK_WAIT_MS = 5_000;
 const WRITER_CONTENDER_PATTERN =
   /^(\d+)-([uv])-([0-9a-f]{16})-([0-9a-f]{32})\.json$/;
 
+/** Process-local recursion depth for the exact state writer mutex. Retained
+ * journal owners use this to prove they are the sole outer holder before
+ * transferring ownership to another same-process journal instance. */
+export function getStateWriterLockDepth(stateFilePath: string): number {
+  return heldWriterLocks.get(resolve(stateFilePath)) ?? 0;
+}
+
 function processIdentityHash(identity: string): string {
   return createHash('sha256').update(identity).digest('hex').slice(0, 16);
 }
@@ -453,12 +460,31 @@ export function withStateMigrationWriteGuard<T>(
   ownerToken: string | undefined,
   operation: () => T,
 ): T {
-  const release = acquireStateWriterMutex(stateFilePath);
+  const release = acquireStateMigrationWriteGuard(stateFilePath, ownerToken);
   try {
-    assertStateMigrationWriteAllowed(stateFilePath, ownerToken);
     return operation();
   } finally {
     release();
+  }
+}
+
+/**
+ * Acquire the crash-reclaiming writer mutex until the returned release
+ * callback is invoked. Long-lived single-writer components can retain this
+ * guard across a burst of fsync-backed appends instead of recreating durable
+ * contender files for every record.
+ */
+export function acquireStateMigrationWriteGuard(
+  stateFilePath: string,
+  ownerToken?: string,
+): () => void {
+  const release = acquireStateWriterMutex(stateFilePath);
+  try {
+    assertStateMigrationWriteAllowed(stateFilePath, ownerToken);
+    return release;
+  } catch (error) {
+    release();
+    throw error;
   }
 }
 

@@ -12,8 +12,10 @@
 // ============================================================
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, rmSync, unlinkSync } from 'fs';
-import { GraphEngine } from '../services/graph-engine.js';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { GraphEngine as BaseGraphEngine } from '../services/graph-engine.js';
 import { runInstrumentedProcess } from '../tools/_process-runner.js';
 import type { EngagementConfig } from '../types.js';
 
@@ -21,12 +23,22 @@ import type { EngagementConfig } from '../types.js';
 // cleanup of the next (the shared-file ENOENT flake under parallel runs).
 let testIdx = 0;
 let TEST_ID = 'test-target-guard-0';
-let TEST_STATE_FILE = './state-test-target-guard-0.json';
+let TEST_STATE_FILE = '';
+let testDir = '';
+const engines = new Set<BaseGraphEngine>();
+
+class GraphEngine extends BaseGraphEngine {
+  constructor(config: EngagementConfig, stateFilePath?: string, configFilePath?: string) {
+    super(config, stateFilePath, configFilePath);
+    engines.add(this);
+  }
+}
 
 function freshPaths(): void {
   testIdx += 1;
   TEST_ID = `test-target-guard-${testIdx}`;
-  TEST_STATE_FILE = `./state-test-target-guard-${testIdx}.json`;
+  testDir = mkdtempSync(join(tmpdir(), `overwatch-target-guard-${testIdx}-`));
+  TEST_STATE_FILE = join(testDir, 'state.json');
 }
 
 function makeConfig(): EngagementConfig {
@@ -41,14 +53,19 @@ function makeConfig(): EngagementConfig {
 }
 
 function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { if (existsSync(`${TEST_STATE_FILE}.tmp`)) unlinkSync(`${TEST_STATE_FILE}.tmp`); } catch {}
-  try { rmSync(`./evidence-${TEST_ID}`, { recursive: true, force: true }); } catch {}
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  if (testDir) rmSync(testDir, { recursive: true, force: true });
+  testDir = '';
+  TEST_STATE_FILE = '';
 }
 
 describe('Scope guard — implicit target extraction', () => {
-  beforeEach(() => { freshPaths(); cleanup(); });
-  afterEach(() => { cleanup(); });
+  beforeEach(() => {
+    cleanup();
+    freshPaths();
+  });
+  afterEach(cleanup);
 
   it('scope-blocks an out-of-scope URL in argv even under a non-target-facing technique', async () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);

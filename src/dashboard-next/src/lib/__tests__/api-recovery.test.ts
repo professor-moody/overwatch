@@ -26,8 +26,12 @@ const recovery = {
   reason: 'configuration differs',
   base_checkpoint: 2,
   highest_allocated_seq: 2,
+  highest_allocated_logical_seq: 2,
+  highest_allocated_frame_seq: 8,
   highest_on_disk_seq: 2,
+  highest_physical_frame_seq: 8,
   highest_contiguous_applied_seq: 2,
+  highest_contiguous_applied_logical_seq: 2,
   consecutive_persistence_failures: 0,
   journal: {
     enabled: true,
@@ -52,6 +56,8 @@ describe('recovery API adapter', () => {
 
     await expect(getRecovery()).resolves.toMatchObject({
       writable: false,
+      highest_allocated_frame_seq: 8,
+      highest_physical_frame_seq: 8,
       config_recovery: { status: 'diverged' },
     });
     expect(fetchMock).toHaveBeenCalledWith('/api/recovery', expect.objectContaining({

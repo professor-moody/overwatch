@@ -5,10 +5,26 @@
 // this store holds the full-fidelity payloads.
 // ============================================================
 
-import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync, type WriteStream } from 'fs';
+import {
+  closeSync,
+  createWriteStream,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  type WriteStream,
+} from 'fs';
 import { join, dirname, basename } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash, type Hash } from 'crypto';
+import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
+import { withStateMigrationWriteGuard } from './state-migration-lock.js';
 
 // Defense-in-depth: reject evidence IDs with path traversal components
 function sanitizeEvidenceId(id: string): string {
@@ -20,6 +36,12 @@ function sanitizeEvidenceId(id: string): string {
 
 export interface EvidenceRecord {
   evidence_id: string;
+  /**
+   * Immutable on-disk blob basename. New records use their content hash so
+   * cooperating writers converge on one physical blob while evidence_id stays
+   * backward-compatible. Older manifests omit this and remain UUID-addressed.
+   */
+  blob_key?: string;
   /**
    * P1.1: sha256(content + '\\0' + raw_output) hex digest. Stable across
    * runs of the same input. Two writes producing identical bytes share
@@ -47,12 +69,55 @@ export interface EvidenceRecord {
    * confirmed durable. */
   capture_error?: string;
   /**
-   * F1-15: set when the record was reconstructed from on-disk blob files
-   * after the manifest was found corrupted. Recovered records lack the
-   * original (action_id, finding_id) attribution and content_hash; consumers
-   * should treat them as best-effort rather than authoritative.
+   * F1-15: set when the record was reconstructed after the aggregate manifest
+   * was missing or corrupt. Descriptor-backed records retain attribution;
+   * descriptor-less blob scans remain best-effort.
    */
   recovered?: boolean;
+}
+
+interface EvidenceRecoveryDescriptorV1 {
+  descriptor_version: 1;
+  record: EvidenceRecord;
+  blobs: {
+    content: boolean;
+    raw: boolean;
+  };
+}
+
+interface EvidenceRecoveryDescriptorV2 {
+  descriptor_version: 2;
+  records: EvidenceRecord[];
+  blobs: EvidenceRecoveryDescriptorV1['blobs'];
+}
+
+interface RecoveredEvidenceDescriptor {
+  record: EvidenceRecord;
+  blobs: EvidenceRecoveryDescriptorV1['blobs'];
+}
+
+function descriptorRecord(record: EvidenceRecord): EvidenceRecord {
+  const { recovered: _recovered, ...durable } = record;
+  return durable;
+}
+
+function recoveryRecordSignature(record: EvidenceRecord): string {
+  const durable = descriptorRecord(record);
+  return JSON.stringify({
+    evidence_id: durable.evidence_id,
+    blob_key: durable.blob_key,
+    content_hash: durable.content_hash,
+    action_id: durable.action_id,
+    finding_id: durable.finding_id,
+    agent_id: durable.agent_id,
+    task_id: durable.task_id,
+    timestamp: durable.timestamp,
+    evidence_type: durable.evidence_type,
+    filename: durable.filename,
+    content_length: durable.content_length,
+    raw_output_length: durable.raw_output_length,
+    capture_error: durable.capture_error,
+  });
 }
 
 function computeContentHash(content?: string, raw_output?: string): string {
@@ -70,12 +135,21 @@ export class EvidenceStore {
   private manifest: EvidenceRecord[] = [];
   private manifestPath: string;
   private readOnly: boolean;
+  private syncDirectory: (directory: string) => void;
 
-  constructor(stateFilePath: string, options: { readOnly?: boolean } = {}) {
+  constructor(
+    stateFilePath: string,
+    options: {
+      readOnly?: boolean;
+      /** Injectable durability boundary for deterministic filesystem tests. */
+      syncDirectory?: (directory: string) => void;
+    } = {},
+  ) {
     const stateDir = dirname(stateFilePath);
     this.dir = join(stateDir, 'evidence');
     this.manifestPath = join(this.dir, 'manifest.json');
     this.readOnly = options.readOnly === true;
+    this.syncDirectory = options.syncDirectory ?? fsyncDirectory;
     if (!this.readOnly) this.ensureDir();
     this.loadManifest();
   }
@@ -95,23 +169,90 @@ export class EvidenceStore {
   }
 
   private ensureDir(): void {
-    if (!existsSync(this.dir)) {
-      mkdirSync(this.dir, { recursive: true });
+    // Always delegate to mkdirDurable, even when the directory is visible.
+    // A prior recursive mkdir may have created the path and then failed while
+    // fsyncing an ancestor; mkdirDurable remembers that pending sync work and
+    // retries it on the next construction.
+    mkdirDurable(this.dir, this.syncDirectory);
+  }
+
+  private durableBlobWrite(path: string, content: string | Buffer): void {
+    const tmpPath = `${path}.tmp-${process.pid}-${uuidv4()}`;
+    let fd: number | undefined;
+    try {
+      fd = openSync(tmpPath, 'wx');
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      renameSync(tmpPath, path);
+      this.syncDirectory(dirname(path));
+    } catch (error) {
+      if (fd !== undefined) {
+        try { closeSync(fd); } catch { /* preserve original failure */ }
+      }
+      if (existsSync(tmpPath)) {
+        try { unlinkSync(tmpPath); } catch { /* preserve original failure */ }
+      }
+      throw error;
     }
   }
 
+  private withManifestWriteLock<T>(operation: () => T): T {
+    // The state writer guard is a generic, crash-reclaiming cooperating-process
+    // mutex keyed by an arbitrary pathname. Keying it by manifest.json keeps
+    // evidence writers independent from the engagement state/WAL lock.
+    return withStateMigrationWriteGuard(
+      this.manifestPath,
+      undefined,
+      operation,
+    );
+  }
+
   private loadManifest(): void {
-    if (!existsSync(this.manifestPath)) return;
-    try {
-      this.manifest = JSON.parse(readFileSync(this.manifestPath, 'utf-8'));
+    if (this.readOnly) {
+      this.loadManifestUnlocked(false);
       return;
+    }
+    this.withManifestWriteLock(() => {
+      const recovered = this.loadManifestUnlocked(true);
+      if (recovered) this.saveManifestUnlocked();
+    });
+  }
+
+  /**
+   * Reload the authoritative manifest while the caller holds the cooperating
+   * writer lock. Returns true when recovery descriptors or blob scanning
+   * changed the in-memory manifest and it needs to be published.
+   */
+  private loadManifestUnlocked(recoverCorrupt: boolean): boolean {
+    if (!existsSync(this.manifestPath)) {
+      const descriptors = this.readRecoveryDescriptors();
+      // A blob without a descriptor may be an interrupted write whose public
+      // evidence_id was never committed or returned. Preserve the prior retry
+      // behavior in that case; only durable UUID descriptors authorize
+      // reconstructing a deleted aggregate manifest.
+      if (descriptors.length === 0) {
+        this.manifest = [];
+        return false;
+      }
+      this.manifest = this.rebuildManifestFromBlobs(descriptors);
+      return this.manifest.length > 0;
+    }
+    let parsedManifest: EvidenceRecord[];
+    try {
+      const parsed = JSON.parse(readFileSync(this.manifestPath, 'utf-8'));
+      if (!Array.isArray(parsed)) {
+        throw new Error('manifest root must be an array');
+      }
+      parsedManifest = parsed as EvidenceRecord[];
     } catch (err) {
-      if (this.readOnly) {
+      if (!recoverCorrupt) {
         console.error(
           `[evidence-store] manifest.json at ${this.manifestPath} is unreadable during degraded recovery; preserving it byte-for-byte.`,
         );
         this.manifest = [];
-        return;
+        return false;
       }
       // F1-15: silent reset → loud recovery. Preserve the corrupted manifest
       // for forensic investigation, log a warning, and rebuild a best-effort
@@ -121,6 +262,7 @@ export class EvidenceStore {
       const preservedPath = `${this.manifestPath}.corrupt-${timestamp}.json`;
       try {
         renameSync(this.manifestPath, preservedPath);
+        this.syncDirectory(this.dir);
       } catch {
         // If rename fails (permission, missing), continue — the rebuild is
         // still worth attempting and the warning will surface the failure.
@@ -131,32 +273,187 @@ export class EvidenceStore {
         `Preserved as ${preservedPath}. Rebuilding from on-disk blobs; rebuilt records will be marked recovered=true.`
       );
       this.manifest = this.rebuildManifestFromBlobs();
-      try {
-        this.saveManifest();
-      } catch {
-        // Non-fatal — the in-memory manifest still serves this process.
-      }
+      return true;
     }
+    this.manifest = parsedManifest;
+    // Descriptor publication failures are durability failures, not evidence
+    // that the already-parsed manifest itself is corrupt. Keep this outside the
+    // parse/recovery catch so a failed fsync never renames a valid manifest.
+    if (recoverCorrupt) this.backfillRecoveryDescriptors();
+    return this.mergeRecoveryDescriptors();
   }
 
   /**
-   * F1-15: scan `this.dir` for `<uuid>.content` and `<uuid>.raw` blob files
-   * and synthesize a minimal EvidenceRecord per uuid. Used when the on-disk
-   * manifest is unreadable. Records lack the original attribution and
-   * content_hash; flagged `recovered: true` so downstream code can warn.
+   * Read immutable per-UUID recovery descriptors. New evidence publishes its
+   * content-addressed blobs first, then this descriptor, and only then the
+   * aggregate manifest. The descriptor therefore preserves the public UUID ->
+   * blob mapping when manifest.json is missing, corrupt, or an older valid
+   * version survived a writer crash before the final manifest rename.
    */
-  private rebuildManifestFromBlobs(): EvidenceRecord[] {
+  private readRecoveryDescriptors(): RecoveredEvidenceDescriptor[] {
     let entries: string[];
     try {
       entries = readdirSync(this.dir);
     } catch {
       return [];
     }
+    const descriptors: RecoveredEvidenceDescriptor[] = [];
+    for (const name of entries) {
+      const match = name.match(/^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.record\.json$/i);
+      if (!match) continue;
+      try {
+        const parsed = JSON.parse(
+          readFileSync(join(this.dir, name), 'utf8'),
+        ) as Partial<EvidenceRecoveryDescriptorV1> | Partial<EvidenceRecoveryDescriptorV2>;
+        const records = parsed.descriptor_version === 1
+          ? parsed.record ? [parsed.record] : []
+          : parsed.descriptor_version === 2 && Array.isArray(parsed.records)
+            ? parsed.records
+            : [];
+        if (
+          records.length === 0
+          || typeof parsed.blobs?.content !== 'boolean'
+          || typeof parsed.blobs?.raw !== 'boolean'
+        ) {
+          continue;
+        }
+        const validRecords = records.every(record =>
+          record
+          && record.evidence_id === match[1]
+          && typeof record.timestamp === 'string'
+          && ['screenshot', 'log', 'file', 'command_output'].includes(record.evidence_type)
+          && typeof record.content_length === 'number'
+          && typeof record.raw_output_length === 'number'
+          && typeof record.blob_key === 'string'
+          && /^[0-9a-f]{64}$/i.test(record.blob_key)
+          && typeof record.content_hash === 'string'
+          && record.content_hash === record.blob_key
+          && record.blob_key === records[0]!.blob_key);
+        if (!validRecords) continue;
+        const record = records[0]!;
+        const contentAvailable = !parsed.blobs.content
+          || existsSync(this.blobPath(record, 'content'));
+        const rawAvailable = !parsed.blobs.raw
+          || existsSync(this.blobPath(record, 'raw'));
+        if (!contentAvailable || !rawAvailable) continue;
+        const blobs = {
+          content: parsed.blobs.content,
+          raw: parsed.blobs.raw,
+        };
+        for (const recoveredRecord of records) {
+          descriptors.push({ record: recoveredRecord, blobs });
+        }
+      } catch {
+        // A damaged descriptor is not authoritative. Blob scanning below still
+        // recovers the content under its hash/legacy UUID where possible.
+      }
+    }
+    return descriptors;
+  }
+
+  private mergeRecoveryDescriptors(): boolean {
+    let changed = false;
+    const existing = new Set(this.manifest.map(recoveryRecordSignature));
+    for (const descriptor of this.readRecoveryDescriptors()) {
+      const signature = recoveryRecordSignature(descriptor.record);
+      if (existing.has(signature)) continue;
+      this.manifest.push({
+        ...descriptor.record,
+        recovered: true,
+      });
+      existing.add(signature);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * Upgrade current hash-keyed manifests written before recovery descriptors
+   * existed. The valid manifest is authoritative here, so publish one canonical
+   * descriptor per public UUID while the manifest writer lock is held.
+   */
+  private backfillRecoveryDescriptors(): void {
+    const described = new Map<string, RecoveredEvidenceDescriptor[]>();
+    for (const descriptor of this.readRecoveryDescriptors()) {
+      const rows = described.get(descriptor.record.evidence_id) ?? [];
+      rows.push(descriptor);
+      described.set(descriptor.record.evidence_id, rows);
+    }
+    const byEvidenceId = new Map<string, EvidenceRecord[]>();
+    for (const record of this.manifest) {
+      const rows = byEvidenceId.get(record.evidence_id) ?? [];
+      rows.push(record);
+      byEvidenceId.set(record.evidence_id, rows);
+    }
+    for (const [evidenceId, records] of byEvidenceId) {
+      const record = records[0]!;
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(evidenceId)
+        || typeof record.blob_key !== 'string'
+        || !/^[0-9a-f]{64}$/i.test(record.blob_key)
+        || record.content_hash !== record.blob_key
+      ) {
+        // Legacy UUID-keyed blobs already retain their public ID in the
+        // filename and remain recoverable through directory scanning.
+        continue;
+      }
+      const describedSignatures = new Set(
+        (described.get(evidenceId) ?? []).map(descriptor =>
+          recoveryRecordSignature(descriptor.record)),
+      );
+      if (records.every(candidate =>
+        describedSignatures.has(recoveryRecordSignature(candidate)))) continue;
+      const content = existsSync(this.blobPath(record, 'content'));
+      const raw = existsSync(this.blobPath(record, 'raw'));
+      if (
+        (record.content_length > 0 && !content)
+        || (record.raw_output_length > 0 && !raw)
+      ) {
+        continue;
+      }
+      const descriptorRecords = [
+        ...(described.get(evidenceId) ?? []).map(descriptor => descriptor.record),
+        ...records.filter(candidate =>
+          !describedSignatures.has(recoveryRecordSignature(candidate))),
+      ];
+      this.publishRecoveryDescriptor(descriptorRecords, { content, raw });
+      described.set(evidenceId, descriptorRecords.map(candidate => ({
+        record: candidate,
+        blobs: { content, raw },
+      })));
+    }
+  }
+
+  /**
+   * F1-15: rebuild from per-UUID descriptors first, then scan legacy UUID-keyed
+   * and descriptor-less content-addressed blobs. Descriptor-backed records keep
+   * their original public evidence_id and attribution. Blob-only records are
+   * necessarily best-effort and use their on-disk key as evidence_id.
+   */
+  private rebuildManifestFromBlobs(
+    recoveredDescriptors?: RecoveredEvidenceDescriptor[],
+  ): EvidenceRecord[] {
+    let entries: string[];
+    try {
+      entries = readdirSync(this.dir);
+    } catch {
+      return [];
+    }
+    const descriptors = recoveredDescriptors ?? this.readRecoveryDescriptors();
+    const rebuilt: EvidenceRecord[] = descriptors.map(descriptor => ({
+      ...descriptor.record,
+      recovered: true,
+    }));
+    const describedBlobKeys = new Set(
+      descriptors.map(descriptor =>
+        descriptor.record.blob_key ?? descriptor.record.evidence_id),
+    );
     const byId = new Map<string, { contentSize: number; rawSize: number; mtimeMs: number; type: 'content' | 'raw' | 'both' }>();
     for (const name of entries) {
-      const match = name.match(/^([0-9a-f-]{36})\.(content|raw)$/i);
+      const match = name.match(/^([0-9a-f-]{36}|[0-9a-f]{64})\.(content|raw)$/i);
       if (!match) continue;
       const [, evidenceId, ext] = match;
+      if (describedBlobKeys.has(evidenceId)) continue;
       let size = 0;
       let mtimeMs = 0;
       try {
@@ -175,10 +472,12 @@ export class EvidenceStore {
       existing.mtimeMs = Math.max(existing.mtimeMs, mtimeMs);
       byId.set(evidenceId, existing);
     }
-    const rebuilt: EvidenceRecord[] = [];
     for (const [evidenceId, info] of byId) {
       rebuilt.push({
         evidence_id: evidenceId,
+        ...(evidenceId.length === 64
+          ? { content_hash: evidenceId, blob_key: evidenceId }
+          : {}),
         timestamp: new Date(info.mtimeMs).toISOString(),
         evidence_type: 'command_output',
         content_length: info.contentSize,
@@ -189,16 +488,49 @@ export class EvidenceStore {
     return rebuilt;
   }
 
-  private saveManifest(): void {
+  private publishRecoveryDescriptor(
+    records: EvidenceRecord | EvidenceRecord[],
+    blobs: EvidenceRecoveryDescriptorV1['blobs'],
+  ): void {
+    const durableRecords = (Array.isArray(records) ? records : [records])
+      .map(descriptorRecord);
+    if (durableRecords.length === 0) {
+      throw new Error('Evidence recovery descriptor requires at least one record.');
+    }
+    const evidenceId = sanitizeEvidenceId(durableRecords[0]!.evidence_id);
+    if (durableRecords.some(record =>
+      record.evidence_id !== evidenceId
+      || record.blob_key !== durableRecords[0]!.blob_key
+      || record.content_hash !== durableRecords[0]!.content_hash
+    )) {
+      throw new Error('Evidence recovery descriptor records must share one evidence ID and blob.');
+    }
+    this.durableBlobWrite(
+      join(this.dir, `${evidenceId}.record.json`),
+      JSON.stringify({
+        descriptor_version: 2,
+        records: durableRecords,
+        blobs,
+      } satisfies EvidenceRecoveryDescriptorV2, null, 2),
+    );
+  }
+
+  private blobPath(record: EvidenceRecord, ext: 'content' | 'raw'): string {
+    const key = sanitizeEvidenceId(record.blob_key ?? record.evidence_id);
+    return join(this.dir, `${key}.${ext}`);
+  }
+
+  private saveManifestUnlocked(): void {
     this.assertWritable();
     // Atomic write: serialize to a temp file, fsync via writeFileSync, then
     // rename over the manifest. rename(2) is atomic on POSIX, so a concurrent
-    // reader (or a crash mid-write) never observes a torn manifest. Within this
-    // single-engine process all saveManifest() calls are already serialized by
-    // the event loop (no awaits), so the temp path only needs to be unique.
-    const tmpPath = `${this.manifestPath}.tmp-${process.pid}`;
-    writeFileSync(tmpPath, JSON.stringify(this.manifest, null, 2));
-    renameSync(tmpPath, this.manifestPath);
+    // reader (or a crash mid-write) never observes a torn manifest. The caller
+    // holds the cooperating-process manifest mutex, while the unique temp path
+    // protects the atomic publish boundary itself.
+    this.durableBlobWrite(
+      this.manifestPath,
+      JSON.stringify(this.manifest, null, 2),
+    );
   }
 
   /**
@@ -206,9 +538,9 @@ export class EvidenceStore {
    * Content is written to individual files to avoid bloating state.
    *
    * P1.1: if a prior record exists with the same `content_hash`, return
-   * its evidence_id instead of writing duplicate bytes. Files on disk stay
-   * UUID-keyed (path stability for any old reference); the manifest carries
-   * the content_hash so lookups by either key resolve correctly.
+   * its evidence_id instead of writing duplicate bytes. Existing UUID-keyed
+   * files remain readable; new immutable blobs use the content hash as their
+   * on-disk key while the manifest preserves the public evidence_id.
    */
   store(opts: {
     action_id?: string;
@@ -222,65 +554,105 @@ export class EvidenceStore {
   }): string {
     this.assertWritable();
     const contentHash = computeContentHash(opts.content, opts.raw_output);
-    // Dedup: if we've already stored this content (regardless of which
-    // action/finding referenced it), reuse the existing evidence_id and
-    // append a thin attribution-only record so list() still surfaces the
-    // new (action_id, finding_id) pair without re-writing the bytes.
-    const existing = this.manifest.find(r => r.content_hash === contentHash);
-    if (existing) {
-      // Reuse the existing evidence_id; record an attribution if this is
-      // a different (action_id, finding_id) tuple from the original.
-      const sameAttribution =
-        existing.action_id === opts.action_id && existing.finding_id === opts.finding_id;
-      if (!sameAttribution) {
-        const aliasRecord: EvidenceRecord = {
-          evidence_id: existing.evidence_id, // shared key — file is the same
-          content_hash: contentHash,
-          action_id: opts.action_id,
-          finding_id: opts.finding_id,
-          agent_id: opts.agent_id,
-          task_id: opts.task_id,
-          timestamp: new Date().toISOString(),
-          evidence_type: opts.evidence_type,
-          filename: opts.filename,
-          content_length: existing.content_length,
-          raw_output_length: existing.raw_output_length,
-        };
-        this.manifest.push(aliasRecord);
-        this.saveManifest();
+    return this.withManifestWriteLock(() => {
+      // Every writer reloads after acquiring the cross-process mutex. A store
+      // constructed before another process committed can therefore merge its
+      // attribution instead of replacing the newer manifest with stale state.
+      const recovered = this.loadManifestUnlocked(true);
+      if (recovered) this.saveManifestUnlocked();
+
+      const existing = this.manifest.find(record =>
+        record.content_hash === contentHash
+        && (record.content_length === 0 || existsSync(this.blobPath(record, 'content')))
+        && (record.raw_output_length === 0 || existsSync(this.blobPath(record, 'raw'))));
+      if (existing) {
+        const sameAttribution = this.manifest.some(record =>
+          record.evidence_id === existing.evidence_id
+          && record.action_id === opts.action_id
+          && record.finding_id === opts.finding_id
+          && record.agent_id === opts.agent_id
+          && record.task_id === opts.task_id);
+        if (!sameAttribution) {
+          const attribution: EvidenceRecord = {
+            evidence_id: existing.evidence_id,
+            ...(existing.blob_key ? { blob_key: existing.blob_key } : {}),
+            content_hash: contentHash,
+            action_id: opts.action_id,
+            finding_id: opts.finding_id,
+            agent_id: opts.agent_id,
+            task_id: opts.task_id,
+            timestamp: new Date().toISOString(),
+            evidence_type: opts.evidence_type,
+            filename: opts.filename,
+            content_length: existing.content_length,
+            raw_output_length: existing.raw_output_length,
+          };
+          const before = this.manifest;
+          this.manifest = [
+            ...this.manifest,
+            attribution,
+          ];
+          try {
+            this.publishRecoveryDescriptor(
+              this.manifest.filter(record =>
+                record.evidence_id === existing.evidence_id),
+              {
+                content: existing.content_length > 0,
+                raw: existing.raw_output_length > 0,
+              },
+            );
+            this.saveManifestUnlocked();
+          } catch (error) {
+            this.manifest = before;
+            throw error;
+          }
+        }
+        return existing.evidence_id;
       }
-      return existing.evidence_id;
-    }
 
-    const evidenceId = uuidv4();
-    const timestamp = new Date().toISOString();
+      const evidenceId = uuidv4();
+      const timestamp = new Date().toISOString();
+      const blobKey = contentHash;
 
-    if (opts.content) {
-      const contentPath = join(this.dir, `${evidenceId}.content`);
-      writeFileSync(contentPath, opts.content);
-    }
-    if (opts.raw_output) {
-      const rawPath = join(this.dir, `${evidenceId}.raw`);
-      writeFileSync(rawPath, opts.raw_output);
-    }
+      // Publish and fsync immutable content-addressed blobs before the manifest
+      // is allowed to reference them. A failed manifest write can leave an
+      // orphan, but never a dangling evidence reference.
+      if (opts.content !== undefined) {
+        this.durableBlobWrite(join(this.dir, `${blobKey}.content`), opts.content);
+      }
+      if (opts.raw_output !== undefined) {
+        this.durableBlobWrite(join(this.dir, `${blobKey}.raw`), opts.raw_output);
+      }
 
-    const record: EvidenceRecord = {
-      evidence_id: evidenceId,
-      content_hash: contentHash,
-      action_id: opts.action_id,
-      finding_id: opts.finding_id,
-      agent_id: opts.agent_id,
-      task_id: opts.task_id,
-      timestamp,
-      evidence_type: opts.evidence_type,
-      filename: opts.filename,
-      content_length: opts.content?.length ?? 0,
-      raw_output_length: opts.raw_output?.length ?? 0,
-    };
-    this.manifest.push(record);
-    this.saveManifest();
+      const record: EvidenceRecord = {
+        evidence_id: evidenceId,
+        blob_key: blobKey,
+        content_hash: contentHash,
+        action_id: opts.action_id,
+        finding_id: opts.finding_id,
+        agent_id: opts.agent_id,
+        task_id: opts.task_id,
+        timestamp,
+        evidence_type: opts.evidence_type,
+        filename: opts.filename,
+        content_length: opts.content?.length ?? 0,
+        raw_output_length: opts.raw_output?.length ?? 0,
+      };
+      this.publishRecoveryDescriptor(record, {
+        content: opts.content !== undefined,
+        raw: opts.raw_output !== undefined,
+      });
+      const before = this.manifest;
+      this.manifest = [...this.manifest, record];
+      try {
+        this.saveManifestUnlocked();
+      } catch (error) {
+        this.manifest = before;
+        throw error;
+      }
 
-    return evidenceId;
+      return evidenceId;
+    });
   }
 
   /**
@@ -302,7 +674,7 @@ export class EvidenceStore {
     task_id?: string;
     evidence_type: 'screenshot' | 'log' | 'file' | 'command_output';
     filename?: string;
-    /** 'content' writes to <id>.content; 'raw_output' writes to <id>.raw. */
+    /** Selects the content-addressed `.content` or `.raw` blob namespace. */
     kind?: 'content' | 'raw_output';
   }): {
     evidence_id: string;
@@ -318,8 +690,12 @@ export class EvidenceStore {
     const timestamp = new Date().toISOString();
     const kind = opts.kind ?? 'content';
     const ext = kind === 'raw_output' ? 'raw' : 'content';
-    const path = join(this.dir, `${evidenceId}.${ext}`);
+    const tmpPath = join(
+      this.dir,
+      `.stream-${evidenceId}.${ext}.tmp-${process.pid}-${uuidv4()}`,
+    );
     let stream: WriteStream | null = null;
+    let streamFd: number | undefined;
     // Writes that have been issued vs. confirmed durable. We update the
     // public `bytes` count only on the write callback so a manifest record
     // never claims more bytes than actually landed on disk.
@@ -338,7 +714,11 @@ export class EvidenceStore {
 
     const ensureStream = (): WriteStream => {
       if (!stream) {
-        stream = createWriteStream(path, { flags: 'w' });
+        streamFd = openSync(tmpPath, 'wx');
+        stream = createWriteStream(tmpPath, {
+          fd: streamFd,
+          autoClose: false,
+        });
         stream.on('error', (err: Error) => {
           if (!writeError) writeError = err;
         });
@@ -349,7 +729,14 @@ export class EvidenceStore {
     const writeChunk = (buf: Buffer): Promise<void> => {
       return new Promise<void>((resolve) => {
         if (writeError) { resolve(); return; }
-        const s = ensureStream();
+        let s: WriteStream;
+        try {
+          s = ensureStream();
+        } catch (error) {
+          writeError = error instanceof Error ? error : new Error(String(error));
+          resolve();
+          return;
+        }
         let settled = false;
         const done = () => { if (!settled) { settled = true; resolve(); } };
         const ok = s.write(buf, (err?: Error | null) => {
@@ -400,7 +787,28 @@ export class EvidenceStore {
               resolve();
             });
           });
+          try {
+            if (streamFd === undefined) {
+              throw new Error('stream evidence descriptor closed before fsync');
+            }
+            fsyncSync(streamFd);
+            closeSync(streamFd);
+            streamFd = undefined;
+          } catch (error) {
+            if (!writeError) {
+              writeError = error instanceof Error ? error : new Error(String(error));
+            }
+            if (streamFd !== undefined) {
+              try { closeSync(streamFd); } catch { /* preserve writeError */ }
+              streamFd = undefined;
+            }
+            if (existsSync(tmpPath)) {
+              try { unlinkSync(tmpPath); } catch { /* preserve writeError */ }
+            }
+            throw writeError;
+          }
         }
+        if (writeError && !stream) throw writeError;
         // Always record the manifest entry, but if writes failed mark the
         // record so consumers can detect partial / corrupt evidence.
         // P1.1: stamp the streamed content_hash. For partial/erroring
@@ -409,6 +817,7 @@ export class EvidenceStore {
         const contentHash = hasher.digest('hex');
         const record: EvidenceRecord & { capture_error?: string } = {
           evidence_id: evidenceId,
+          blob_key: contentHash,
           content_hash: contentHash,
           action_id: opts.action_id,
           finding_id: opts.finding_id,
@@ -421,8 +830,37 @@ export class EvidenceStore {
           raw_output_length: kind === 'raw_output' ? bytesDurable : 0,
         };
         if (writeError) record.capture_error = writeError.message;
-        this.manifest.push(record);
-        this.saveManifest();
+        this.withManifestWriteLock(() => {
+          const recovered = this.loadManifestUnlocked(true);
+          if (recovered) this.saveManifestUnlocked();
+
+          if (stream) {
+            const contentAddressedPath = join(this.dir, `${contentHash}.${ext}`);
+            if (existsSync(contentAddressedPath)) {
+              // Another writer already published the same immutable bytes.
+              // Keep its blob and discard this stream's private staging file.
+              unlinkSync(tmpPath);
+            } else {
+              renameSync(tmpPath, contentAddressedPath);
+            }
+            this.syncDirectory(this.dir);
+          }
+
+          this.publishRecoveryDescriptor(record, {
+            content: kind === 'content' && stream !== null,
+            raw: kind === 'raw_output' && stream !== null,
+          });
+          const before = this.manifest;
+          this.manifest = [...this.manifest, record];
+          try {
+            // Blob publication happens above; the manifest is the final
+            // reference boundary and can never point at an unpublished file.
+            this.saveManifestUnlocked();
+          } catch (error) {
+            this.manifest = before;
+            throw error;
+          }
+        });
         if (writeError) throw writeError;
       },
       bytesWritten: () => bytesDurable,
@@ -436,21 +874,26 @@ export class EvidenceStore {
    * null if neither matches.
    */
   resolveKey(idOrHash: string): string | null {
-    // First try direct evidence_id match (cheap walk).
-    if (this.manifest.some(r => r.evidence_id === idOrHash)) return idOrHash;
-    // Fallback: content_hash → evidence_id. Multiple manifest rows may
-    // alias the same evidence_id; the file lives once on disk so any
-    // matching row tells us the right key.
-    const byHash = this.manifest.find(r => r.content_hash === idOrHash);
-    return byHash ? byHash.evidence_id : null;
+    return this.resolveRecord(idOrHash)?.evidence_id ?? null;
+  }
+
+  private resolveRecord(idOrHash: string): EvidenceRecord | undefined {
+    return this.manifest.find(record =>
+      record.evidence_id === idOrHash || record.content_hash === idOrHash);
+  }
+
+  private resolveBlobPath(
+    idOrHash: string,
+    ext: 'content' | 'raw',
+  ): string | null {
+    const record = this.resolveRecord(idOrHash);
+    return record ? this.blobPath(record, ext) : null;
   }
 
   /** Retrieve full evidence content by ID or content_hash. */
   getContent(idOrHash: string): string | null {
-    const resolved = this.resolveKey(idOrHash);
-    if (!resolved) return null;
-    const safe = sanitizeEvidenceId(resolved);
-    const path = join(this.dir, `${safe}.content`);
+    const path = this.resolveBlobPath(idOrHash, 'content');
+    if (!path) return null;
     if (!existsSync(path)) return null;
     return readFileSync(path, 'utf-8');
   }
@@ -461,10 +904,8 @@ export class EvidenceStore {
    * the text `getContent`/`getRawOutput` readers would corrupt the bytes.
    */
   getContentBuffer(idOrHash: string): Buffer | null {
-    const resolved = this.resolveKey(idOrHash);
-    if (!resolved) return null;
-    const safe = sanitizeEvidenceId(resolved);
-    const path = join(this.dir, `${safe}.content`);
+    const path = this.resolveBlobPath(idOrHash, 'content');
+    if (!path) return null;
     if (!existsSync(path)) return null;
     return readFileSync(path);
   }
@@ -479,10 +920,8 @@ export class EvidenceStore {
    * that explicitly want the full blob (e.g. report generation).
    */
   getRawOutput(idOrHash: string, opts?: { max_bytes?: number }): string | null {
-    const resolved = this.resolveKey(idOrHash);
-    if (!resolved) return null;
-    const safe = sanitizeEvidenceId(resolved);
-    const path = join(this.dir, `${safe}.raw`);
+    const path = this.resolveBlobPath(idOrHash, 'raw');
+    if (!path) return null;
     if (!existsSync(path)) return null;
     if (typeof opts?.max_bytes === 'number') {
       try {
@@ -501,10 +940,8 @@ export class EvidenceStore {
    * file is missing or not resolvable, returns null.
    */
   getRawOutputHead(idOrHash: string, max_bytes: number): { text: string; total_bytes: number; truncated: boolean } | null {
-    const resolved = this.resolveKey(idOrHash);
-    if (!resolved) return null;
-    const safe = sanitizeEvidenceId(resolved);
-    const path = join(this.dir, `${safe}.raw`);
+    const path = this.resolveBlobPath(idOrHash, 'raw');
+    if (!path) return null;
     if (!existsSync(path)) return null;
 
     const total = statSync(path).size;
@@ -543,10 +980,8 @@ export class EvidenceStore {
     offset: number,
     max_bytes: number,
   ): { text: string; total_bytes: number; offset: number; bytes_read: number; eof: boolean } | null {
-    const resolved = this.resolveKey(idOrHash);
-    if (!resolved) return null;
-    const safe = sanitizeEvidenceId(resolved);
-    const path = join(this.dir, `${safe}.raw`);
+    const path = this.resolveBlobPath(idOrHash, 'raw');
+    if (!path) return null;
     if (!existsSync(path)) return null;
 
     const total = statSync(path).size;
@@ -576,7 +1011,7 @@ export class EvidenceStore {
 
   /** Get the manifest record for a specific evidence ID or content_hash. */
   getRecord(idOrHash: string): EvidenceRecord | undefined {
-    return this.manifest.find(r => r.evidence_id === idOrHash || r.content_hash === idOrHash);
+    return this.resolveRecord(idOrHash);
   }
 
   /** List all evidence records, optionally filtered by action_id or finding_id. */

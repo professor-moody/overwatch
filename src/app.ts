@@ -703,8 +703,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   sessionManager.registerAdapter(new LocalPtyAdapter());
   sessionManager.registerAdapter(new SshAdapter());
   sessionManager.registerAdapter(new SocketAdapter());
-  const sessionDescriptorUnsubscribe = sessionManager.onEvent(event => {
-    if (!engine.isPersistenceWritable()) return;
+  const sessionDescriptorUnsubscribe = sessionManager.onDurableEvent(event => {
     engine.recordSessionDescriptor(event.session);
   });
 
@@ -740,10 +739,10 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   );
   engine.setRollbackCoordinator({
     beforeRollback: () => {
-      const liveSessions = sessionManager.list(true);
-      if (liveSessions.length > 0) {
+      const unresolvedSessions = sessionManager.listUnresolvedRuntimeOwnership();
+      if (unresolvedSessions.length > 0) {
         throw new Error(
-          `Close ${liveSessions.length} live session(s) before rolling back durable state.`,
+          `Close or resolve ${unresolvedSessions.length} runtime-owned session(s) before rolling back durable state.`,
         );
       }
       const liveProcesses = processTracker.listActive();
@@ -1074,8 +1073,10 @@ export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
     }
     // Preserve the pre-shutdown descriptors (including listener resume intent)
     // while SessionManager tears down runtime handles and closes graph edges.
-    await cleanup(() => app.sessionDescriptorUnsubscribe?.());
+    // Keep the mandatory descriptor owner installed until runtime teardown is
+    // complete so any corrective lifecycle update cannot bypass durability.
     await cleanup(() => app.sessionManager.shutdown());
+    await cleanup(() => app.sessionDescriptorUnsubscribe?.());
     if (app.dashboard) await cleanup(() => app.dashboard!.stop());
     await cleanup(() => app.tape.disable({ audit: app.engine.isPersistenceWritable() }));
 

@@ -21,12 +21,15 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import {
   CURRENT_JOURNAL_VERSION,
   CURRENT_STATE_VERSION,
+  LEGACY_JOURNAL_VERSION,
   LEGACY_STATE_VERSION,
   PersistedJournalVersionError,
   PersistedStateVersionError,
   detectJournalVersion,
   detectStateVersion,
   validatePersistedStateV1,
+  type SupportedJournalVersion,
+  type SupportedStateVersion,
 } from './persisted-state.js';
 import { MutationJournal } from './mutation-journal.js';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
@@ -76,9 +79,9 @@ export interface MigrationBackupEntryV1 {
 export interface MigrationBackupManifestV1 {
   manifest_version: 1;
   created_at: string;
-  source_state_version: typeof LEGACY_STATE_VERSION;
+  source_state_version: SupportedStateVersion;
   target_state_version: typeof CURRENT_STATE_VERSION;
-  source_journal_version: typeof CURRENT_JOURNAL_VERSION;
+  source_journal_version: SupportedJournalVersion;
   target_journal_version: typeof CURRENT_JOURNAL_VERSION;
   state_file: string;
   config_file?: string;
@@ -132,7 +135,7 @@ interface InspectedBase {
   source: 'state' | 'snapshot';
   rank: number;
   stateVersion: 0 | 1;
-  journalVersion: 1;
+  journalVersion: SupportedJournalVersion;
   checkpoint: number;
   trustedCheckpoint: boolean;
   record: Record<string, unknown>;
@@ -385,9 +388,15 @@ export function verifyStateMigrationBackup(
   const manifest = parseJsonBytes(manifestBytes) as MigrationBackupManifestV1;
   if (
     manifest.manifest_version !== 1
-    || manifest.source_state_version !== LEGACY_STATE_VERSION
+    || (
+      manifest.source_state_version !== LEGACY_STATE_VERSION
+      && manifest.source_state_version !== CURRENT_STATE_VERSION
+    )
     || manifest.target_state_version !== CURRENT_STATE_VERSION
-    || manifest.source_journal_version !== CURRENT_JOURNAL_VERSION
+    || (
+      manifest.source_journal_version !== LEGACY_JOURNAL_VERSION
+      && manifest.source_journal_version !== CURRENT_JOURNAL_VERSION
+    )
     || manifest.target_journal_version !== CURRENT_JOURNAL_VERSION
     || typeof manifest.state_file !== 'string'
     || !Array.isArray(manifest.files)
@@ -447,6 +456,8 @@ export function createStateMigrationBackup(input: {
   snapshotPaths?: string[];
   now?: Date;
   id?: string;
+  sourceStateVersion?: SupportedStateVersion;
+  sourceJournalVersion?: SupportedJournalVersion;
 }): MigrationBackupResult {
   const stateFilePath = resolve(input.stateFilePath);
   const configFilePath = input.configFilePath ? resolve(input.configFilePath) : undefined;
@@ -459,12 +470,14 @@ export function createStateMigrationBackup(input: {
   );
 
   const createdAt = (input.now ?? new Date()).toISOString();
+  const sourceStateVersion = input.sourceStateVersion ?? LEGACY_STATE_VERSION;
+  const sourceJournalVersion = input.sourceJournalVersion ?? LEGACY_JOURNAL_VERSION;
   const stamp = createdAt.replace(/[:.]/g, '-');
   const root = join(dirname(stateFilePath), '.migration-backups');
   mkdirDurable(root);
   const finalDirectory = join(
     root,
-    `${basename(stateFilePath, '.json')}-${stamp}-v0-to-v1-${input.id ?? randomUUID()}`,
+    `${basename(stateFilePath, '.json')}-${stamp}-v${sourceStateVersion}-j${sourceJournalVersion}-to-v${CURRENT_STATE_VERSION}-j${CURRENT_JOURNAL_VERSION}-${input.id ?? randomUUID()}`,
   );
   const stagingDirectory = `${finalDirectory}.staging`;
   mkdirSync(stagingDirectory);
@@ -475,7 +488,7 @@ export function createStateMigrationBackup(input: {
 
   const files: MigrationBackupEntryV1[] = [];
   let hasRecoveryBase = false;
-  let hasLegacyBase = false;
+  let hasMatchingBase = false;
   for (const [index, artifact] of artifacts.entries()) {
     const captured = readArtifactEntry(artifact);
     const { bytes, ...manifestEntry } = captured;
@@ -486,8 +499,14 @@ export function createStateMigrationBackup(input: {
     if (captured.role === 'state' || captured.role === 'snapshot') {
       hasRecoveryBase = true;
       try {
-        if (detectStateVersion(parseJsonBytes(bytes)) === LEGACY_STATE_VERSION) {
-          hasLegacyBase = true;
+        const parsed = parseJsonBytes(bytes);
+        const stateVersion = detectStateVersion(parsed);
+        const journalVersion = detectJournalVersion(parsed, stateVersion);
+        if (
+          stateVersion === sourceStateVersion
+          && journalVersion === sourceJournalVersion
+        ) {
+          hasMatchingBase = true;
         }
       } catch (error) {
         if (
@@ -510,8 +529,10 @@ export function createStateMigrationBackup(input: {
   if (!hasRecoveryBase) {
     throw new Error('migration backup requires a primary state or retained snapshot');
   }
-  if (!hasLegacyBase) {
-    throw new Error('migration backup requires a validated legacy V0 recovery base');
+  if (!hasMatchingBase) {
+    throw new Error(
+      `migration backup requires a validated V${sourceStateVersion}/journal-v${sourceJournalVersion} recovery base`,
+    );
   }
 
   for (const entry of files) assertSourceStillMatches(entry);
@@ -523,9 +544,9 @@ export function createStateMigrationBackup(input: {
   const manifest: MigrationBackupManifestV1 = {
     manifest_version: 1,
     created_at: createdAt,
-    source_state_version: LEGACY_STATE_VERSION,
+    source_state_version: sourceStateVersion,
     target_state_version: CURRENT_STATE_VERSION,
-    source_journal_version: CURRENT_JOURNAL_VERSION,
+    source_journal_version: sourceJournalVersion,
     target_journal_version: CURRENT_JOURNAL_VERSION,
     state_file: stateFilePath,
     ...(configFilePath ? { config_file: configFilePath } : {}),
@@ -545,6 +566,24 @@ export function createStateMigrationBackup(input: {
   fsyncDirectory(root);
 
   return verifyStateMigrationBackup(join(finalDirectory, 'manifest.json'));
+}
+
+/** Create a checksummed rollback bundle before a current V1 state begins
+ * emitting journal-v2 transactions. The state-file replacement itself is
+ * atomic, so this format-only upgrade does not require the V0 migration intent
+ * protocol. */
+export function createJournalUpgradeBackup(input: {
+  stateFilePath: string;
+  configFilePath?: string;
+  snapshotPaths?: string[];
+  now?: Date;
+  id?: string;
+}): MigrationBackupResult {
+  return createStateMigrationBackup({
+    ...input,
+    sourceStateVersion: CURRENT_STATE_VERSION,
+    sourceJournalVersion: LEGACY_JOURNAL_VERSION,
+  });
 }
 
 function backupMatchesCurrentSources(
@@ -832,7 +871,9 @@ function inspectBase(
     stateVersion,
     journalVersion,
     checkpoint,
-    trustedCheckpoint: record.journalCheckpointSemantics === 'contiguous_applied_v1',
+    trustedCheckpoint: journalVersion === LEGACY_JOURNAL_VERSION
+      ? record.journalCheckpointSemantics === 'contiguous_applied_v1'
+      : record.journalCheckpointSemantics === 'contiguous_committed_transactions_v2',
     record,
     config,
   };
@@ -1008,7 +1049,10 @@ export function inspectStateMigration(input: {
       ...(observedJournalVersion !== undefined ? { observed_journal_version: observedJournalVersion } : {}),
       migration_required:
         !invalidVersionedBlocked
-        && observedStateVersion === LEGACY_STATE_VERSION,
+        && (
+          observedStateVersion === LEGACY_STATE_VERSION
+          || observedJournalVersion === LEGACY_JOURNAL_VERSION
+        ),
       ready: false,
       blockers,
       warnings,
@@ -1124,7 +1168,9 @@ export function inspectStateMigration(input: {
     }
   }
 
-  const migrationRequired = selected.stateVersion === LEGACY_STATE_VERSION;
+  const migrationRequired =
+    selected.stateVersion === LEGACY_STATE_VERSION
+    || selected.journalVersion === LEGACY_JOURNAL_VERSION;
   return {
     ...base,
     selected_base: selected.path,

@@ -1,18 +1,32 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { unlinkSync, existsSync } from 'fs';
-import { GraphEngine } from '../graph-engine.js';
+import { GraphEngine as BaseGraphEngine } from '../graph-engine.js';
 import { isCredentialUsableForAuth, isCredentialStaleOrExpired } from '../credential-utils.js';
 import { buildCredentialChains } from '../retrospective.js';
 import { validateEdgeEndpoints } from '../graph-schema.js';
 import type { NodeProperties, EngagementConfig, ExportedGraph } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-cred-lifecycle.json';
+const engines = new Set<BaseGraphEngine>();
+
+class GraphEngine extends BaseGraphEngine {
+  constructor(config: EngagementConfig, stateFilePath?: string, configFilePath?: string) {
+    super(config, stateFilePath, configFilePath);
+    engines.add(this);
+  }
+}
 
 function cleanup() {
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  cleanupTestPersistence(TEST_STATE_FILE);
   try {
     if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
   } catch {}
 }
+
+afterEach(cleanup);
 
 function makeConfig(): EngagementConfig {
   return {

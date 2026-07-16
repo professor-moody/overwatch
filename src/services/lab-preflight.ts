@@ -465,9 +465,11 @@ function applyPersistenceRecovery(
   if (!recovery) return check;
 
   const assessment = assessPersistenceRecovery(recovery);
+  const appliedLogical = recovery.highest_contiguous_applied_logical_seq
+    ?? recovery.highest_contiguous_applied_seq;
   const recoveryMessage = assessment.status === 'pass'
     ? recovery.outcome === 'recovered'
-      ? `Recovery completed through sequence ${recovery.highest_contiguous_applied_seq}.`
+      ? `Recovery completed through sequence ${appliedLogical}.`
       : undefined
     : assessment.message;
   const status = check.status === 'fail' || assessment.status === 'fail'
@@ -492,7 +494,9 @@ export function assessPersistenceRecovery(recovery: PersistenceRecoveryStatus): 
 } {
   const reason = recovery.reason || recovery.last_persistence_error;
   const reasonSuffix = reason ? `: ${reason}` : '';
-  const sequenceIncomplete = recovery.highest_contiguous_applied_seq < recovery.highest_on_disk_seq;
+  const appliedLogical = recovery.highest_contiguous_applied_logical_seq
+    ?? recovery.highest_contiguous_applied_seq;
+  const sequenceIncomplete = appliedLogical < recovery.highest_on_disk_seq;
   const recoveryBlocked = recovery.outcome === 'incomplete'
     || recovery.outcome === 'reinitialized'
     || !recovery.complete

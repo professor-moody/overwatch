@@ -6,6 +6,7 @@ import { GraphEngine } from '../../services/graph-engine.js';
 import { registerAwsPlaybookTool } from '../aws-playbook.js';
 import { registerGithubPlaybookTool } from '../github-playbook.js';
 import type { EngagementConfig } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-playbook-injection.json';
 
@@ -16,7 +17,10 @@ function makeConfig(): EngagementConfig {
     objectives: [], opsec: { name: 'pentest', max_noise: 1 },
   };
 }
-function cleanup(): void { try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch { /* ignore */ } }
+function cleanup(): void {
+  cleanupTestPersistence(TEST_STATE_FILE);
+  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch { /* ignore */ }
+}
 
 describe('playbook command-injection fencing (e2e)', () => {
   let engine: GraphEngine;
@@ -34,7 +38,10 @@ describe('playbook command-injection fencing (e2e)', () => {
     registerAwsPlaybookTool(server, engine);
     registerGithubPlaybookTool(server, engine);
   });
-  afterEach(() => cleanup());
+  afterEach(() => {
+    engine.dispose();
+    cleanup();
+  });
 
   it('aws: a malicious parsed principal + operator region cannot inject an aws CLI global flag', async () => {
     engine.addNode({

@@ -346,7 +346,7 @@ export class DashboardServer {
       this.clients.add(ws);
       // Send full state on connect
       const state = this.buildFrontendState();
-      const graph = this.engine.exportGraph();
+      const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
       const historyCount = this.engine.getFullHistory().length;
       ws.send(JSON.stringify({
         type: 'full_state',
@@ -494,19 +494,46 @@ export class DashboardServer {
   }
 
   private flushPendingUpdate(): void {
-    const detail = this.accumulator.drain();
+    let detail = this.accumulator.drain();
     this.debounceTimer = null;
     if (!detail || this.clients.size === 0) return;
 
-    // Build incremental delta: only the nodes/edges that changed
-    const changedNodeIds = new Set([...(detail.new_nodes || []), ...(detail.updated_nodes || [])]);
-    const changedEdgeIds = new Set([...(detail.new_edges || []), ...(detail.updated_edges || []), ...(detail.inferred_edges || [])]);
-
-    // getState() first — materializes community_id on nodes before exportGraph() reads them
+    // Build state first so graph metrics and the explicitly projected browser
+    // communities describe the same topology generation.
     const state = this.buildFrontendState();
     const historyCount = this.engine.getFullHistory().length;
 
-    const fullGraph = this.engine.exportGraph();
+    const fullGraph = this.engine.exportGraph({ includeDerivedCommunities: true });
+
+    // Some state projections perform a deterministic first-use initialization
+    // (for example generating campaign records from the frontier). Those
+    // writes synchronously call onGraphUpdate while this flush is building its
+    // authoritative state. Fold them into this same generation: the state
+    // above already contains them, and leaving the nested callback queued
+    // would emit a redundant second graph_update.
+    const nestedDetail = this.accumulator.drain();
+    if (nestedDetail) {
+      if (this.debounceTimer) clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+      const keys: Array<keyof GraphUpdateDetail> = [
+        'new_nodes',
+        'new_edges',
+        'updated_nodes',
+        'updated_edges',
+        'inferred_edges',
+        'removed_nodes',
+        'removed_edges',
+      ];
+      detail = { ...detail };
+      for (const key of keys) {
+        const merged = [...new Set([...(detail[key] || []), ...(nestedDetail[key] || [])])];
+        if (merged.length > 0) detail[key] = merged;
+      }
+    }
+
+    // Build incremental delta: only the nodes/edges that changed.
+    const changedNodeIds = new Set([...(detail.new_nodes || []), ...(detail.updated_nodes || [])]);
+    const changedEdgeIds = new Set([...(detail.new_edges || []), ...(detail.updated_edges || []), ...(detail.inferred_edges || [])]);
     const deltaNodes = fullGraph.nodes.filter(n => changedNodeIds.has(n.id));
     const deltaEdges = fullGraph.edges.filter(e => e.id !== undefined && changedEdgeIds.has(e.id));
 
@@ -2540,7 +2567,7 @@ export class DashboardServer {
 
   private serveState(res: ServerResponse): void {
     const state = this.buildFrontendState();
-    const graph = this.engine.exportGraph();
+    const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
     const historyCount = this.engine.getFullHistory().length;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ state, graph, history_count: historyCount }));
@@ -2643,7 +2670,7 @@ export class DashboardServer {
   }
 
   private serveGraph(res: ServerResponse): void {
-    const graph = this.engine.exportGraph();
+    const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(graph));
   }
@@ -4881,7 +4908,7 @@ export class DashboardServer {
       const result = this.engine.correctGraph(reason, operations, `console-${Date.now()}`);
       // Broadcast full state update to all WS clients
       const state = this.buildFrontendState();
-      const graph = this.engine.exportGraph();
+      const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
       this.broadcast({
         type: 'full_state',
         timestamp: new Date().toISOString(),

@@ -1,10 +1,63 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { spawn, type ChildProcess } from 'child_process';
+import { createHash } from 'crypto';
+import { once } from 'events';
+import { join, resolve } from 'path';
+import { pathToFileURL } from 'url';
 import { EvidenceStore } from '../evidence-store.js';
 
 const TEST_STATE = '/tmp/overwatch-ev-test/state.json';
 const EVIDENCE_DIR = '/tmp/overwatch-ev-test/evidence';
+const evidenceStoreModuleUrl = pathToFileURL(
+  resolve('src/services/evidence-store.ts'),
+).href;
+
+function spawnTypeScript(script: string, args: string[]): ChildProcess {
+  return spawn(
+    process.execPath,
+    ['--import', 'tsx', '--input-type=module', '-e', script, ...args],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+    },
+  );
+}
+
+async function waitForReady(child: ChildProcess): Promise<void> {
+  await new Promise<void>((resolveReady, reject) => {
+    let stdout = '';
+    const timeout = setTimeout(() => {
+      reject(new Error(`evidence writer did not become ready; stdout=${stdout}`));
+    }, 5_000);
+    child.once('error', error => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.stdout!.on('data', chunk => {
+      stdout += String(chunk);
+      if (!stdout.includes('ready\n')) return;
+      clearTimeout(timeout);
+      resolveReady();
+    });
+  });
+}
+
+async function waitForExit(
+  child: ChildProcess,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
+  let stderr = '';
+  child.stderr?.on('data', chunk => { stderr += String(chunk); });
+  if (child.exitCode === null && child.signalCode === null) {
+    const [code, signal] = await once(child, 'exit') as [number | null, NodeJS.Signals | null];
+    return { code, signal, stderr };
+  }
+  return {
+    code: child.exitCode,
+    signal: child.signalCode as NodeJS.Signals | null,
+    stderr,
+  };
+}
 
 afterEach(() => {
   if (existsSync('/tmp/overwatch-ev-test')) {
@@ -16,6 +69,34 @@ describe('EvidenceStore', () => {
   it('creates evidence directory on construction', () => {
     new EvidenceStore(TEST_STATE);
     expect(existsSync(EVIDENCE_DIR)).toBe(true);
+  });
+
+  it('retries pending directory fsync work after recursive creation became visible', () => {
+    let calls = 0;
+    const syncDirectory = vi.fn(() => {
+      calls++;
+      if (calls === 1) throw new Error('synthetic evidence directory fsync failure');
+    });
+
+    expect(() => new EvidenceStore(TEST_STATE, { syncDirectory }))
+      .toThrow('synthetic evidence directory fsync failure');
+    expect(existsSync(EVIDENCE_DIR)).toBe(true);
+
+    expect(() => new EvidenceStore(TEST_STATE, { syncDirectory })).not.toThrow();
+    expect(syncDirectory.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('fsyncs the evidence directory after publishing blob, recovery descriptor, and manifest renames', () => {
+    const syncDirectory = vi.fn();
+    const store = new EvidenceStore(TEST_STATE, { syncDirectory });
+    syncDirectory.mockClear();
+
+    store.store({ evidence_type: 'command_output', content: 'durable evidence' });
+
+    expect(syncDirectory).toHaveBeenCalledTimes(3);
+    expect(syncDirectory).toHaveBeenNthCalledWith(1, EVIDENCE_DIR);
+    expect(syncDirectory).toHaveBeenNthCalledWith(2, EVIDENCE_DIR);
+    expect(syncDirectory).toHaveBeenNthCalledWith(3, EVIDENCE_DIR);
   });
 
   it('stores and retrieves evidence content', () => {
@@ -118,6 +199,147 @@ describe('EvidenceStore', () => {
     expect(store2.getRecord(id)!.finding_id).toBe('f-1');
     expect(store2.getContent(id)).toBe('base64data...');
   });
+
+  it('merges stale cooperating writers instead of losing a newer manifest row', () => {
+    const first = new EvidenceStore(TEST_STATE);
+    const second = new EvidenceStore(TEST_STATE);
+
+    const firstId = first.store({
+      evidence_type: 'command_output',
+      content: 'first writer',
+      action_id: 'act-first',
+    });
+    const secondId = second.store({
+      evidence_type: 'command_output',
+      content: 'second writer',
+      action_id: 'act-second',
+    });
+
+    const reopened = new EvidenceStore(TEST_STATE);
+    expect(reopened.list().map(record => record.action_id).sort()).toEqual([
+      'act-first',
+      'act-second',
+    ]);
+    expect(reopened.getContent(firstId)).toBe('first writer');
+    expect(reopened.getContent(secondId)).toBe('second writer');
+  });
+
+  it('serializes two stale child-process writers and preserves both references', async () => {
+    const readyA = '/tmp/overwatch-ev-test/ready-a';
+    const readyB = '/tmp/overwatch-ev-test/ready-b';
+    const go = '/tmp/overwatch-ev-test/go';
+    const script = `
+      import { existsSync, writeFileSync } from 'fs';
+      import { EvidenceStore } from ${JSON.stringify(evidenceStoreModuleUrl)};
+      const [statePath, readyPath, goPath, content, actionId] = process.argv.slice(1);
+      const wait = new Int32Array(new SharedArrayBuffer(4));
+      const store = new EvidenceStore(statePath);
+      writeFileSync(readyPath, String(process.pid));
+      process.stdout.write('ready\\n');
+      while (!existsSync(goPath)) Atomics.wait(wait, 0, 0, 10);
+      store.store({ evidence_type: 'command_output', content, action_id: actionId });
+    `;
+    const first = spawnTypeScript(script, [
+      TEST_STATE,
+      readyA,
+      go,
+      'child writer A',
+      'act-child-a',
+    ]);
+    const second = spawnTypeScript(script, [
+      TEST_STATE,
+      readyB,
+      go,
+      'child writer B',
+      'act-child-b',
+    ]);
+
+    try {
+      await Promise.all([waitForReady(first), waitForReady(second)]);
+      expect(existsSync(readyA)).toBe(true);
+      expect(existsSync(readyB)).toBe(true);
+      writeFileSync(go, 'go');
+      const [firstExit, secondExit] = await Promise.all([
+        waitForExit(first),
+        waitForExit(second),
+      ]);
+      expect(firstExit.code, firstExit.stderr).toBe(0);
+      expect(secondExit.code, secondExit.stderr).toBe(0);
+
+      const reopened = new EvidenceStore(TEST_STATE);
+      const records = reopened.list();
+      expect(records.map(record => record.action_id).sort()).toEqual([
+        'act-child-a',
+        'act-child-b',
+      ]);
+      for (const record of records) {
+        expect(record.blob_key).toBe(record.content_hash);
+        expect(existsSync(join(EVIDENCE_DIR, `${record.blob_key}.content`))).toBe(true);
+      }
+    } finally {
+      if (first.exitCode === null && first.signalCode === null) {
+        first.kill('SIGKILL');
+        await waitForExit(first);
+      }
+      if (second.exitCode === null && second.signalCode === null) {
+        second.kill('SIGKILL');
+        await waitForExit(second);
+      }
+    }
+  }, 15_000);
+
+  it('recovers an orphaned content-addressed blob after a writer dies before manifest commit', async () => {
+    const content = 'blob landed before reference';
+    const contentHash = createHash('sha256')
+      .update(content)
+      .update('\0')
+      .digest('hex');
+    const script = `
+      import { EvidenceStore } from ${JSON.stringify(evidenceStoreModuleUrl)};
+      const [statePath, content] = process.argv.slice(1);
+      let armed = false;
+      const store = new EvidenceStore(statePath, {
+        syncDirectory: () => {
+          if (armed) process.kill(process.pid, 'SIGKILL');
+        },
+      });
+      process.stdout.write('ready\\n');
+      armed = true;
+      store.store({ evidence_type: 'command_output', content, action_id: 'act-crashed' });
+    `;
+    const child = spawnTypeScript(script, [TEST_STATE, content]);
+
+    try {
+      await waitForReady(child);
+      const crashed = await waitForExit(child);
+      expect(crashed.signal).toBe('SIGKILL');
+      expect(existsSync(join(EVIDENCE_DIR, `${contentHash}.content`))).toBe(true);
+      expect(existsSync(join(EVIDENCE_DIR, 'manifest.json'))).toBe(false);
+
+      const recovered = new EvidenceStore(TEST_STATE);
+      const id = recovered.store({
+        evidence_type: 'command_output',
+        content,
+        action_id: 'act-retry',
+      });
+      expect(recovered.getContent(id)).toBe(content);
+      expect(recovered.getRecord(id)).toMatchObject({
+        blob_key: contentHash,
+        content_hash: contentHash,
+        action_id: 'act-retry',
+      });
+      const manifest = JSON.parse(
+        readFileSync(join(EVIDENCE_DIR, 'manifest.json'), 'utf8'),
+      ) as Array<{ blob_key?: string }>;
+      expect(manifest).toHaveLength(1);
+      expect(manifest[0].blob_key).toBe(contentHash);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+        await waitForExit(child);
+      }
+    }
+  }, 10_000);
 
   it('lists evidence filtered by action_id', () => {
     const store = new EvidenceStore(TEST_STATE);
@@ -245,6 +467,29 @@ describe('EvidenceStore', () => {
       });
       const record = store.getRecord(id)!;
       expect(record.content_hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(record.blob_key).toBe(record.content_hash);
+      expect(existsSync(join(EVIDENCE_DIR, `${record.content_hash}.content`))).toBe(true);
+      expect(existsSync(join(EVIDENCE_DIR, `${id}.content`))).toBe(false);
+    });
+
+    it('continues reading legacy UUID-keyed blobs without a blob_key field', () => {
+      const evidenceId = '11111111-1111-4111-8111-111111111111';
+      mkdirSync(EVIDENCE_DIR, { recursive: true });
+      writeFileSync(join(EVIDENCE_DIR, `${evidenceId}.content`), 'legacy bytes');
+      writeFileSync(join(EVIDENCE_DIR, 'manifest.json'), JSON.stringify([{
+        evidence_id: evidenceId,
+        content_hash: 'a'.repeat(64),
+        timestamp: '2026-01-01T00:00:00.000Z',
+        evidence_type: 'command_output',
+        content_length: 12,
+        raw_output_length: 0,
+      }]));
+
+      const store = new EvidenceStore(TEST_STATE);
+
+      expect(store.getContent(evidenceId)).toBe('legacy bytes');
+      expect(store.getContent('a'.repeat(64))).toBe('legacy bytes');
+      expect(store.getRecord(evidenceId)?.blob_key).toBeUndefined();
     });
 
     it('two stores of identical content dedup to the same evidence_id', () => {
@@ -264,6 +509,32 @@ describe('EvidenceStore', () => {
       const matching = all.filter(r => r.evidence_id === id1);
       expect(matching.length).toBe(2);
       expect(matching.map(r => r.action_id).sort()).toEqual(['act-A', 'act-B']);
+    });
+
+    it('recovers every deduplicated attribution when the manifest is lost', () => {
+      const first = new EvidenceStore(TEST_STATE);
+      const id = first.store({
+        evidence_type: 'command_output',
+        content: 'shared attribution bytes',
+        action_id: 'act-A',
+        finding_id: 'finding-A',
+      });
+      expect(first.store({
+        evidence_type: 'command_output',
+        content: 'shared attribution bytes',
+        action_id: 'act-B',
+        finding_id: 'finding-B',
+      })).toBe(id);
+      rmSync(join(EVIDENCE_DIR, 'manifest.json'), { force: true });
+
+      const recovered = new EvidenceStore(TEST_STATE);
+      expect(recovered.list()
+        .filter(record => record.evidence_id === id)
+        .map(record => [record.action_id, record.finding_id])
+        .sort()).toEqual([
+        ['act-A', 'finding-A'],
+        ['act-B', 'finding-B'],
+      ]);
     });
 
     it('different content produces different content_hash and different evidence_id', () => {
@@ -288,6 +559,75 @@ describe('EvidenceStore', () => {
 
     // F1-15: manifest corruption recovery
     describe('manifest corruption recovery', () => {
+      it.each(['corrupt', 'delete'] as const)(
+        'preserves the public UUID when the aggregate manifest is %s',
+        (mode) => {
+          const first = new EvidenceStore(TEST_STATE);
+          const id = first.store({
+            evidence_type: 'command_output',
+            content: 'stable public evidence',
+            raw_output: 'full stable output',
+            action_id: 'act-stable',
+            finding_id: 'finding-stable',
+          });
+          expect(id).toMatch(/^[0-9a-f-]{36}$/i);
+
+          const manifestPath = join(EVIDENCE_DIR, 'manifest.json');
+          if (mode === 'corrupt') writeFileSync(manifestPath, '{broken');
+          else rmSync(manifestPath, { force: true });
+
+          const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+          try {
+            const recovered = new EvidenceStore(TEST_STATE);
+            expect(recovered.getContent(id)).toBe('stable public evidence');
+            expect(recovered.getRawOutput(id)).toBe('full stable output');
+            expect(recovered.getRecord(id)).toMatchObject({
+              evidence_id: id,
+              action_id: 'act-stable',
+              finding_id: 'finding-stable',
+              recovered: true,
+            });
+            const rewritten = JSON.parse(
+              readFileSync(manifestPath, 'utf8'),
+            ) as Array<{ evidence_id: string }>;
+            expect(rewritten.some(record => record.evidence_id === id)).toBe(true);
+          } finally {
+            warn.mockRestore();
+          }
+        },
+      );
+
+      it('backfills a descriptor for a current hash-keyed manifest before corruption', () => {
+        const first = new EvidenceStore(TEST_STATE);
+        const id = first.store({
+          evidence_type: 'command_output',
+          content: 'pre-descriptor evidence',
+          action_id: 'act-before-upgrade',
+        });
+        const descriptorPath = join(EVIDENCE_DIR, `${id}.record.json`);
+        rmSync(descriptorPath, { force: true });
+        expect(existsSync(descriptorPath)).toBe(false);
+
+        // Opening the still-valid current manifest performs the one-time
+        // descriptor backfill for records written by older binaries.
+        new EvidenceStore(TEST_STATE);
+        expect(existsSync(descriptorPath)).toBe(true);
+
+        writeFileSync(join(EVIDENCE_DIR, 'manifest.json'), '{broken after upgrade');
+        const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const recovered = new EvidenceStore(TEST_STATE);
+          expect(recovered.getContent(id)).toBe('pre-descriptor evidence');
+          expect(recovered.getRecord(id)).toMatchObject({
+            evidence_id: id,
+            action_id: 'act-before-upgrade',
+            recovered: true,
+          });
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
       it('preserves the corrupt manifest, logs a warning, and rebuilds from on-disk blobs', () => {
         // First instantiation: store two evidence items so blob files exist on disk.
         {
@@ -312,7 +652,8 @@ describe('EvidenceStore', () => {
           const warnArgs = warn.mock.calls.flat().join(' ');
           expect(warnArgs).toContain('manifest.json');
           expect(warnArgs).toContain('Rebuilding');
-          // Manifest rebuilt with one record per uuid (the .content and .raw belong to distinct uuids here).
+          // Manifest rebuilt from per-UUID descriptors (with blob scanning as
+          // a fallback for legacy or interrupted writes).
           const list = store.list();
           expect(list.length).toBeGreaterThan(0);
           expect(list.every(r => r.recovered === true)).toBe(true);
@@ -353,9 +694,11 @@ describe('EvidenceStore', () => {
       await sink.end();
       const record = store.getRecord(sink.evidence_id)!;
       expect(record.content_hash).toMatch(/^[0-9a-f]{64}$/);
-      const { createHash } = await import('crypto');
       const expected = createHash('sha256').update('stream me').digest('hex');
       expect(record.content_hash).toBe(expected);
+      expect(record.blob_key).toBe(expected);
+      expect(existsSync(join(EVIDENCE_DIR, `${expected}.content`))).toBe(true);
+      expect(existsSync(join(EVIDENCE_DIR, `${sink.evidence_id}.content`))).toBe(false);
     });
   });
 });

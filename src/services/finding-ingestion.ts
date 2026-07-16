@@ -40,9 +40,16 @@ export interface FindingIngestionHost {
   invalidateFrontierCache(): void;
 }
 
+export interface FindingIngestionOptions {
+  /** Finding transaction drafts defer revisioned config/objective writes until
+   * the graph/cold/activity transaction has committed. */
+  evaluateObjectives?: boolean;
+}
+
 export function ingestFindingImpl(
   host: FindingIngestionHost,
   finding: Finding,
+  options: FindingIngestionOptions = {},
 ): { new_nodes: string[]; new_edges: string[]; updated_nodes: string[]; updated_edges: string[]; inferred_edges: string[] } {
   const newNodes: string[] = [];
   const newEdges: string[] = [];
@@ -313,8 +320,10 @@ export function ingestFindingImpl(
     host.degradeExpiredCredentialEdges(nodeId);
   }
 
-  // Check objectives
-  host.evaluateObjectives();
+  // Objective completion owns revisioned config/file write-through. Finding
+  // operation drafts deliberately run that boundary only after their graph,
+  // cold-store, activity, fingerprint, and campaign transaction commits.
+  if (options.evaluateObjectives !== false) host.evaluateObjectives();
 
   const allIngestedNodeIds = [...new Set([
     ...(finding.target_node_ids || []).map(nodeId => idRemap.get(nodeId) ?? nodeId),

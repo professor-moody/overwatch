@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerLogThoughtTool } from '../log-thought.js';
 import type { EngagementConfig } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-log-thought.json';
 
@@ -19,6 +20,7 @@ function makeConfig(): EngagementConfig {
 }
 
 function cleanup(): void {
+  cleanupTestPersistence(TEST_STATE_FILE);
   try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
 }
 
@@ -42,7 +44,10 @@ describe('log_thought tool', () => {
     registerLogThoughtTool(fakeServer, engine);
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => {
+    engine.dispose();
+    cleanup();
+  });
 
   it('records a thought with default kind=note', async () => {
     const result = await handlers.log_thought({ thought: 'considering nmap sweep first' });

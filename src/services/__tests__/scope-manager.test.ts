@@ -37,6 +37,10 @@ function addHost(graph: OverwatchGraph, id: string, ip: string, extra: Partial<N
 }
 
 function makeHost(graph: OverwatchGraph, ctx: EngineContext): ScopeManagerHost {
+  // This suite exercises the pure scope-manager unit directly. GraphEngine
+  // integration tests cover WAL ownership; detach the journal here so fixed
+  // fixture paths cannot become stale cross-test writers.
+  ctx.mutationJournal = null;
   let persistCalled = false;
   let frontierInvalidated = false;
   let healthInvalidated = false;

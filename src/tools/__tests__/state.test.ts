@@ -196,7 +196,7 @@ describe('state tools', () => {
   describe('get_state recent_activity filtering & snapshot dedup', () => {
     it('hides reasoning and includes system events by default', async () => {
       // Seed: one thought, one system, one frontier event
-      await handlers.log_thought({ kind: 'note', content: 'just thinking out loud' });
+      await handlers.log_thought({ kind: 'note', thought: 'just thinking out loud' });
       engine.logActionEvent({
         description: 'system bookkeeping',
         event_type: 'system',
@@ -223,7 +223,7 @@ describe('state tools', () => {
     });
 
     it('include_reasoning=true surfaces thoughts; include_system=false hides system', async () => {
-      await handlers.log_thought({ kind: 'plan', content: 'pivot via SMB' });
+      await handlers.log_thought({ kind: 'plan', thought: 'pivot via SMB' });
       engine.logActionEvent({
         description: 'system bookkeeping',
         event_type: 'system',

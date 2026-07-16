@@ -101,7 +101,22 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
         // Hash a stable view that excludes `recent_activity`. The snapshot itself
         // appends a system event to the activity log, which would otherwise force
         // every back-to-back call to look "different" and defeat dedup.
-        const { recent_activity: _ra, ...stateForHash } = state as any;
+        // Persistence sequence/frame counters necessarily advance when the
+        // first snapshot breadcrumb is journaled. They do not change the
+        // operational briefing and must not defeat back-to-back dedup.
+        const {
+          recent_activity: _ra,
+          persistence_recovery: _persistenceRecovery,
+          frontier: rawFrontier,
+          ...stableState
+        } = state as any;
+        const stateForHash = {
+          ...stableState,
+          frontier: (rawFrontier as Array<Record<string, unknown>>).map(item => {
+            const { staleness_seconds: _staleness, ...stableItem } = item;
+            return stableItem;
+          }),
+        };
         const hash = createHash('sha256').update(JSON.stringify(stateForHash)).digest('hex');
         const now = Date.now();
         const prev = lastSnapshotByEngine.get(engine);

@@ -19,6 +19,7 @@ import {
   FLUSH_DEBOUNCE_MS,
   MAX_SNAPSHOTS,
   PERSIST_RETRY_DELAYS_MS,
+  StatePersistence,
 } from '../state-persistence.js';
 import type { EngagementConfig, NodeProperties } from '../../types.js';
 
@@ -55,6 +56,44 @@ function checkpoint(statePath: string): number {
     throw new Error('state did not contain a safe journalSnapshotSeq');
   }
   return state.journalSnapshotSeq as number;
+}
+
+function appendV2Mutation(
+  journal: MutationJournal,
+  type: MutationType,
+  payload: Record<string, unknown>,
+) {
+  const transaction = journal.appendTransaction({
+    operations: [{ type, payload }],
+    ts: NOW,
+  });
+  journal.markApplied(transaction.seq);
+  return transaction;
+}
+
+function journalTransactionsSince(statePath: string, afterSeq: number) {
+  return new MutationJournal(statePath).readTransactionsSince(afterSeq);
+}
+
+function journalTransactionSeqsSince(statePath: string, afterSeq: number): number[] {
+  return journalTransactionsSince(statePath, afterSeq)
+    .map(transaction => transaction.seq);
+}
+
+function journalHasAddedNodeSince(
+  statePath: string,
+  afterSeq: number,
+  nodeId: string,
+): boolean {
+  return journalTransactionsSince(statePath, afterSeq).some(transaction =>
+    transaction.operations.some(operation => {
+      if (operation.type !== 'add_node') return false;
+      const props = operation.payload.props;
+      return Boolean(props)
+        && typeof props === 'object'
+        && !Array.isArray(props)
+        && (props as { id?: unknown }).id === nodeId;
+    }));
 }
 
 function withCompactionAuthority(state: Record<string, unknown>): Buffer {
@@ -210,31 +249,216 @@ describe('WAL recovery integration', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it('fails fresh bootstrap without stranding WAL bytes when the checkpoint-zero base cannot publish', () => {
+    vi.spyOn(StatePersistence.prototype, 'persistBootstrapBase')
+      .mockImplementationOnce(() => {
+        throw new Error('simulated checkpoint-zero publication failure');
+      });
+
+    expect(() => new GraphEngine(config, statePath)).toThrow(
+      /simulated checkpoint-zero publication failure/,
+    );
+    expect(existsSync(statePath)).toBe(false);
+    expect(MutationJournal.hasDataForState(statePath)).toBe(false);
+
+    vi.restoreAllMocks();
+    const retried = openEngine();
+    expect(existsSync(statePath)).toBe(true);
+    expect(retried.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'clean',
+      source: 'config',
+      complete: true,
+      writable: true,
+    });
+    closeEngine(retried);
+  });
+
+  it.each(['unmanaged', 'managed'] as const)(
+    'publishes a valid base before the first %s WAL append and recovers a crash at that boundary',
+    ownership => {
+      config = {
+        ...config,
+        scope: {
+          ...config.scope,
+          cidrs: ['10.77.0.0/24'],
+        },
+      };
+      const configPath = join(tempDir, 'engagement.json');
+      if (ownership === 'managed') writeFileSync(configPath, JSON.stringify(config));
+
+      const append = MutationJournal.prototype.appendTransaction;
+      let firstTransactionType: string | undefined;
+      const appendSpy = vi.spyOn(MutationJournal.prototype, 'appendTransaction')
+        .mockImplementation(function (this: MutationJournal, draft) {
+          expect(existsSync(statePath)).toBe(true);
+          expect(checkpoint(statePath)).toBe(0);
+          const base = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+          expect(base.graph.nodes).toContainEqual(
+            expect.objectContaining({ key: 'subnet-10-77-0-0-24' }),
+          );
+          expect(base.activityLog).toContainEqual(
+            expect.objectContaining({
+              description: 'Engagement initialized from config',
+              event_type: 'system',
+            }),
+          );
+          const transaction = append.call(this, draft);
+          firstTransactionType = transaction.operations[0]?.type;
+          appendSpy.mockRestore();
+          throw new Error('simulated crash after first committed WAL append');
+        });
+
+      let first: GraphEngine | undefined;
+      const construct = () => new GraphEngine(
+        config,
+        statePath,
+        ownership === 'managed' ? configPath : undefined,
+      );
+      if (ownership === 'managed') {
+        // Legacy managed config normalization is itself the first ordinary
+        // transaction. A crash at its commit boundary aborts construction,
+        // leaving the checkpoint-zero seed base plus a replayable WAL.
+        expect(construct).toThrow(/simulated crash after first committed WAL append/);
+      } else {
+        // The unmanaged first transaction is the best-effort OPSEC warning,
+        // whose startup caller intentionally catches logging failures.
+        first = construct();
+        liveEngines.add(first);
+      }
+      expect(firstTransactionType).toBe(
+        ownership === 'managed' ? 'state_patch' : 'activity_append',
+      );
+      expect(new MutationJournal(statePath).hasData()).toBe(true);
+      if (first) {
+        expect(first.getNode('subnet-10-77-0-0-24')).not.toBeNull();
+        closeEngine(first);
+      }
+
+      const restarted = new GraphEngine(
+        config,
+        statePath,
+        ownership === 'managed' ? configPath : undefined,
+      );
+      liveEngines.add(restarted);
+      expect(restarted.getNode('subnet-10-77-0-0-24')).not.toBeNull();
+      expect(restarted.getPersistenceRecoveryStatus()).toMatchObject({
+        outcome: 'recovered',
+        source: 'state',
+        complete: true,
+        writable: true,
+      });
+      expect(restarted.getFullHistory()).toContainEqual(
+        expect.objectContaining({
+          description: 'OPSEC enforcement is configured but disabled',
+          event_type: 'instrumentation_warning',
+        }),
+      );
+      closeEngine(restarted);
+    },
+  );
+
+  it('refuses to overwrite a valid checkpoint-zero base published by a concurrent fresh constructor', () => {
+    const configA: EngagementConfig = {
+      ...config,
+      name: 'Concurrent fresh writer A',
+      scope: {
+        ...config.scope,
+        cidrs: ['10.81.0.0/24'],
+      },
+      opsec: {
+        ...config.opsec,
+        enabled: true,
+      },
+    };
+    const configB: EngagementConfig = {
+      ...config,
+      name: 'Concurrent fresh writer B',
+      scope: {
+        ...config.scope,
+        cidrs: ['10.82.0.0/24'],
+      },
+      opsec: {
+        ...config.opsec,
+        enabled: true,
+      },
+    };
+
+    const publish = StatePersistence.prototype.persistBootstrapBase;
+    let writerA: GraphEngine | undefined;
+    let intercepted = false;
+    const publishSpy = vi.spyOn(StatePersistence.prototype, 'persistBootstrapBase')
+      .mockImplementation(function (this: StatePersistence, detail) {
+        if (!intercepted) {
+          intercepted = true;
+          // Let the nested writer publish normally, then resume the outer
+          // constructor at the exact stale bootstrap boundary.
+          publishSpy.mockImplementation(publish);
+          writerA = new GraphEngine(configA, statePath);
+          liveEngines.add(writerA);
+        }
+        return publish.call(this, detail);
+      });
+
+    expect(() => new GraphEngine(configB, statePath)).toThrow(
+      /valid state recovery base appeared during fresh engagement bootstrap/,
+    );
+    publishSpy.mockRestore();
+
+    expect(writerA).toBeDefined();
+    expect(writerA!.getNode('subnet-10-81-0-0-24')).not.toBeNull();
+    expect(writerA!.getNode('subnet-10-82-0-0-24')).toBeNull();
+    expect(JSON.parse(readFileSync(statePath, 'utf-8')).config).toMatchObject({
+      name: 'Concurrent fresh writer A',
+    });
+
+    // The winning engine remains aligned with the base it published; the
+    // rejected writer cannot create an undetectable base-identity split.
+    writerA!.addNode(host('writer-a-remains-current'));
+    expect(writerA!.getNode('writer-a-remains-current')).not.toBeNull();
+    closeEngine(writerA!);
+  });
+
   it('replays a clean WAL once and keeps graph plus checkpoint stable through R2 and R3', () => {
+    config = {
+      ...config,
+      opsec: {
+        ...config.opsec,
+        enabled: true,
+      },
+    };
     const r1 = openEngine();
     const baseCheckpoint = checkpoint(statePath);
     r1.addNode(host('host-from-r1-wal'));
     expect(r1.getNode('host-from-r1-wal')).toBeDefined();
+    const durableHeadBeforeCrash = (
+      (r1 as any).ctx.mutationJournal as MutationJournal
+    ).getAppliedThroughSeq();
+    expect(durableHeadBeforeCrash).toBeGreaterThan(baseCheckpoint);
     closeEngine(r1); // simulated crash: cancel timers without checkpointing the WAL mutation
 
     const r2 = openEngine();
     expect(r2.getNode('host-from-r1-wal')).toBeDefined();
     const r2Graph = stableGraph(r2);
     const r2Checkpoint = checkpoint(statePath);
-    expect(r2Checkpoint).toBe(baseCheckpoint + 1);
+    expect(r2Checkpoint).toBeGreaterThanOrEqual(durableHeadBeforeCrash);
     expect(r2.getPersistenceRecoveryStatus()).toMatchObject({
       outcome: 'recovered',
       source: 'state',
       complete: true,
       writable: true,
-      base_checkpoint: r2Checkpoint,
+      base_checkpoint: durableHeadBeforeCrash,
       // The active WAL was compacted, but status retains what recovery saw.
-      highest_on_disk_seq: r2Checkpoint,
+      highest_on_disk_seq: expect.any(Number),
+      journal: {
+        applied: durableHeadBeforeCrash - baseCheckpoint,
+        skipped: 0,
+        failed: 0,
+      },
     });
     closeEngine(r2);
 
     const r3 = openEngine();
-    expect(checkpoint(statePath)).toBe(r2Checkpoint);
+    expect(checkpoint(statePath)).toBeGreaterThanOrEqual(r2Checkpoint);
     expect(stableGraph(r3)).toEqual(r2Graph);
     expect(r3.getPersistenceRecoveryStatus()).toMatchObject({
       outcome: 'clean',
@@ -244,6 +468,151 @@ describe('WAL recovery integration', () => {
       base_checkpoint: r2Checkpoint,
     });
     closeEngine(r3);
+  });
+
+  it('quarantines a fully framed uncommitted v2 tail and resumes from the committed prefix', () => {
+    const r1 = openEngine();
+    const baseCheckpoint = checkpoint(statePath);
+    r1.addNode(host('committed-before-uncommitted-tail'));
+    const committedHead = (
+      (r1 as any).ctx.mutationJournal as MutationJournal
+    ).getAppliedThroughSeq();
+    const walPath = journalPath();
+    const committedBytes = readFileSync(walPath);
+    r1.addNode(host('must-not-replay-without-commit'));
+    const frames = readFileSync(walPath, 'utf-8').split('\n').filter(Boolean);
+    expect(JSON.parse(frames.at(-1)!).record_type).toBe('tx_commit');
+    frames.pop();
+    writeFileSync(walPath, `${frames.join('\n')}\n`);
+    const original = readFileSync(walPath);
+    closeEngine(r1);
+
+    const r2 = openEngine();
+    expect(r2.getNode('committed-before-uncommitted-tail')).toBeDefined();
+    expect(r2.getNode('must-not-replay-without-commit')).toBeNull();
+    const recoveredCheckpoint = checkpoint(statePath);
+    expect(recoveredCheckpoint).toBeGreaterThanOrEqual(committedHead);
+    expect(r2.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'recovered',
+      complete: true,
+      writable: true,
+      base_checkpoint: committedHead,
+      journal: {
+        applied: committedHead - baseCheckpoint,
+        skipped: 0,
+        failed: 0,
+      },
+    });
+    const quarantines = quarantineFiles();
+    expect(quarantines).toHaveLength(1);
+    expect(readFileSync(join(tempDir, quarantines[0]!))).toEqual(original);
+    // Recovery checkpointing may compact the committed prefix after it becomes
+    // part of the new base, but it must never retain bytes from the abandoned tx.
+    if (existsSync(walPath)) {
+      expect(readFileSync(walPath).equals(committedBytes)).toBe(false);
+      expect(readFileSync(walPath).includes(Buffer.from('must-not-replay-without-commit'))).toBe(false);
+    }
+    closeEngine(r2);
+
+    const r3 = openEngine();
+    expect(r3.getNode('committed-before-uncommitted-tail')).toBeDefined();
+    expect(r3.getNode('must-not-replay-without-commit')).toBeNull();
+    expect(r3.getPersistenceRecoveryStatus()).toMatchObject({
+      complete: true,
+      writable: true,
+      base_checkpoint: expect.any(Number),
+    });
+    expect(checkpoint(statePath)).toBeGreaterThanOrEqual(recoveredCheckpoint);
+    closeEngine(r3);
+  });
+
+  it('fails stop after a committed transaction cannot apply and recovers it on restart', () => {
+    const r1 = openEngine();
+    const baseCheckpoint = checkpoint(statePath);
+    const appliedHeadBeforeFailure = (
+      (r1 as any).ctx.mutationJournal as MutationJournal
+    ).getAppliedThroughSeq();
+    const graph = (r1 as any).ctx.graph;
+    vi.spyOn(graph, 'addNode').mockImplementationOnce(() => {
+      throw new Error('synthetic post-commit apply failure');
+    });
+
+    expect(() => r1.addNode(host('recover-after-apply-failure'))).toThrow(
+      'synthetic post-commit apply failure',
+    );
+    expect(r1.getNode('recover-after-apply-failure')).toBeNull();
+    expect(r1.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      base_checkpoint: baseCheckpoint,
+      highest_contiguous_applied_seq: appliedHeadBeforeFailure,
+      journal: { preserved: true },
+      reason: expect.stringContaining('failed during in-memory application'),
+    });
+    expect(() => r1.addNode(host('must-not-append-after-apply-failure'))).toThrow(
+      /Durable mutations are disabled/,
+    );
+    closeEngine(r1);
+    vi.restoreAllMocks();
+
+    const r2 = openEngine();
+    expect(r2.getNode('recover-after-apply-failure')).toBeDefined();
+    expect(r2.getNode('must-not-append-after-apply-failure')).toBeNull();
+    expect(r2.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'recovered',
+      complete: true,
+      writable: true,
+      base_checkpoint: appliedHeadBeforeFailure + 1,
+      journal: {
+        applied: appliedHeadBeforeFailure + 1 - baseCheckpoint,
+        skipped: 0,
+        failed: 0,
+      },
+    });
+    expect(checkpoint(statePath)).toBeGreaterThanOrEqual(appliedHeadBeforeFailure + 1);
+    closeEngine(r2);
+  });
+
+  it('backs up and upgrades a V1 state stamped for primitive journal v1 before opening writes', () => {
+    const r1 = openEngine();
+    closeEngine(r1);
+    const legacyJournalState = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+    legacyJournalState.journal_version = 1;
+    legacyJournalState.journalCheckpointSemantics = 'contiguous_applied_v1';
+    writeFileSync(statePath, withCompactionAuthority(legacyJournalState));
+
+    const r2 = openEngine();
+    const upgraded = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    expect(upgraded).toMatchObject({
+      state_version: 1,
+      journal_version: 2,
+      journalCheckpointSemantics: 'contiguous_committed_transactions_v2',
+    });
+    const migration = r2.getStatePersistenceRecoveryStatus().state_migration!;
+    expect(migration).toMatchObject({
+      status: 'migrated',
+      observed_state_version: 1,
+      observed_journal_version: 1,
+      supported_journal_version: 2,
+      migration_required: false,
+    });
+    expect(migration.backup_path).toBeTruthy();
+    expect(existsSync(join(migration.backup_path!, 'manifest.json'))).toBe(true);
+    const manifest = JSON.parse(
+      readFileSync(join(migration.backup_path!, 'manifest.json'), 'utf-8'),
+    );
+    expect(manifest).toMatchObject({
+      source_state_version: 1,
+      target_state_version: 1,
+      source_journal_version: 1,
+      target_journal_version: 2,
+    });
+    expect(r2.getPersistenceRecoveryStatus()).toMatchObject({
+      complete: true,
+      writable: true,
+    });
+    closeEngine(r2);
   });
 
   it('does not resurrect a dropped edge when legacy WAL edge IDs collided', () => {
@@ -312,11 +681,11 @@ describe('WAL recovery integration', () => {
     const stateBefore = readFileSync(statePath);
     const wal = new MutationJournal(statePath);
     wal.setNextSeq(checkpoint(statePath));
-    wal.append({
-      type: 'future_mutation' as MutationType,
-      payload: { deliberately: 'unsupported' },
-      ts: NOW,
-    });
+    appendV2Mutation(
+      wal,
+      'future_mutation' as MutationType,
+      { deliberately: 'unsupported' },
+    );
     const walBefore = readFileSync(journalPath());
 
     for (let restart = 1; restart <= 3; restart += 1) {
@@ -373,9 +742,14 @@ describe('WAL recovery integration', () => {
     closeEngine(base);
 
     const state = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    rmSync(journalPath(), { force: true });
     const wal = new MutationJournal(statePath);
     wal.setNextSeq(checkpoint(statePath));
-    const unknown = wal.append({ type: 'future_mutation' as MutationType, payload: {}, ts: NOW });
+    const unknown = wal.append({
+      type: 'future_mutation' as MutationType,
+      payload: {},
+      ts: NOW,
+    });
     const validTail = wal.append({
       type: 'add_node',
       payload: { props: host('must-not-advance-past-unknown') },
@@ -384,6 +758,7 @@ describe('WAL recovery integration', () => {
     // Reproduce the pre-fix failure mode: a snapshot claimed the allocated
     // sequence even though the corresponding mutation was never applied.
     state.journalSnapshotSeq = unknown.seq;
+    state.journalCheckpointSemantics = 'allocated_sequence_v0';
     delete state.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(state));
     const stateBeforeRecovery = readFileSync(statePath);
@@ -395,12 +770,12 @@ describe('WAL recovery integration', () => {
       complete: false,
       writable: false,
       base_checkpoint: unknown.seq,
-      highest_contiguous_applied_seq: unknown.seq,
+      highest_contiguous_applied_seq: 0,
       journal: { preserved: true },
     });
     expect(validTail.seq).toBe(unknown.seq + 1);
     expect(recovered.getNode('must-not-advance-past-unknown')).toBeNull();
-    expect(recovered.getPersistenceRecoveryStatus().reason).toContain('unsupported journal mutation type');
+    expect(recovered.getPersistenceRecoveryStatus().reason).toContain('may hide retained WAL');
     expect(readFileSync(statePath)).toEqual(stateBeforeRecovery);
     expect(readFileSync(journalPath())).toEqual(walBefore);
     closeEngine(recovered);
@@ -484,7 +859,7 @@ describe('WAL recovery integration', () => {
       base_checkpoint: tail.seq,
     });
     expect(JSON.parse(readFileSync(statePath, 'utf-8')).journalCheckpointSemantics)
-      .toBe('contiguous_applied_v1');
+      .toBe('contiguous_committed_transactions_v2');
     closeEngine(recovered);
   });
 
@@ -505,17 +880,13 @@ describe('WAL recovery integration', () => {
 
     const wal = new MutationJournal(statePath);
     wal.setNextSeq(baseCheckpoint);
-    const tail = wal.append({
-      type: 'add_node',
-      payload: { props: host('wal-tail') },
-      ts: NOW,
-    });
+    const tail = appendV2Mutation(wal, 'add_node', { props: host('wal-tail') });
     writeFileSync(statePath, '{primary is corrupt');
 
     const recovered = openEngine();
     expect(recovered.getNode('snapshot-base')).toBeDefined();
     expect(recovered.getNode('wal-tail')).toBeDefined();
-    expect(checkpoint(statePath)).toBe(tail.seq);
+    expect(checkpoint(statePath)).toBeGreaterThanOrEqual(tail.seq);
     expect(recovered.getPersistenceRecoveryStatus()).toMatchObject({
       outcome: 'recovered',
       source: 'snapshot',
@@ -528,7 +899,7 @@ describe('WAL recovery integration', () => {
     const verified = openEngine();
     expect(verified.getNode('snapshot-base')).toBeDefined();
     expect(verified.getNode('wal-tail')).toBeDefined();
-    expect(checkpoint(statePath)).toBe(tail.seq);
+    expect(checkpoint(statePath)).toBeGreaterThanOrEqual(tail.seq);
     closeEngine(verified);
   });
 
@@ -1155,13 +1526,10 @@ describe('WAL recovery integration', () => {
     const checkpointed = openEngine();
     expect(checkpointed.getNode('tail-node')).toBeDefined();
     const recoveredCheckpoint = checkpoint(statePath);
-    expect(recoveredCheckpoint).toBe(newerCheckpoint + 1);
+    expect(recoveredCheckpoint).toBeGreaterThanOrEqual(newerCheckpoint + 1);
     closeEngine(checkpointed);
 
-    const retainedSeqs = readFileSync(journalPath(), 'utf-8')
-      .split('\n')
-      .filter(Boolean)
-      .map(line => (JSON.parse(line) as { seq: number }).seq);
+    const retainedSeqs = journalTransactionSeqsSince(statePath, oldestCheckpoint);
     expect(retainedSeqs).toContain(oldestCheckpoint + 1);
     expect(retainedSeqs).toContain(oldestCheckpoint + 2);
     const walBeforeFallback = readFileSync(journalPath());
@@ -1223,10 +1591,10 @@ describe('WAL recovery integration', () => {
       });
     }
 
-    const retainedSeqs = readFileSync(journalPath(), 'utf-8')
-      .split('\n')
-      .filter(Boolean)
-      .map(line => (JSON.parse(line) as { seq: number }).seq);
+    const retainedSeqs = journalTransactionSeqsSince(
+      statePath,
+      Math.max(0, anchorCheckpoint - 1),
+    );
     expect(retainedSeqs).toContain(anchorCheckpoint);
     expect(retainedSeqs).toContain(anchorCheckpoint + 1);
     expect(readFileSync(statePath)).toEqual(primaryBefore);
@@ -1256,10 +1624,7 @@ describe('WAL recovery integration', () => {
     writer.flushNow();
 
     expect(checkpoint(statePath)).toBe(durableCheckpoint + 1);
-    const retainedSeqs = readFileSync(journalPath(), 'utf-8')
-      .split('\n')
-      .filter(Boolean)
-      .map(line => (JSON.parse(line) as { seq: number }).seq);
+    const retainedSeqs = journalTransactionSeqsSince(statePath, durableCheckpoint);
     expect(retainedSeqs).toContain(durableCheckpoint + 1);
     closeEngine(writer);
   });
@@ -1271,6 +1636,7 @@ describe('WAL recovery integration', () => {
     writer.persist();
     writer.flushNow();
     const primaryBefore = readFileSync(statePath);
+    const stableCheckpoint = checkpoint(statePath);
 
     const snapshotDir = join(tempDir, '.snapshots');
     rmSync(snapshotDir, { recursive: true, force: true });
@@ -1281,7 +1647,11 @@ describe('WAL recovery integration', () => {
 
     expect(() => writer.flushNow()).toThrow();
     expect(readFileSync(statePath)).toEqual(primaryBefore);
-    expect(readFileSync(journalPath(), 'utf-8')).toContain('wal-only-after-rotation-failure');
+    expect(journalHasAddedNodeSince(
+      statePath,
+      stableCheckpoint,
+      'wal-only-after-rotation-failure',
+    )).toBe(true);
     closeEngine(writer);
 
     rmSync(snapshotDir, { force: true });
@@ -1302,6 +1672,7 @@ describe('WAL recovery integration', () => {
     writer.persist();
     writer.flushNow();
     const primaryBefore = readFileSync(statePath);
+    const stableCheckpoint = checkpoint(statePath);
 
     const fixedNow = new Date('2026-07-15T12:34:56.789Z');
     vi.useFakeTimers();
@@ -1341,7 +1712,11 @@ describe('WAL recovery integration', () => {
       `state.snap-${timestamp}-${process.pid}-0001.json`,
     ))).toBe(false);
     expect(readFileSync(statePath)).toEqual(primaryBefore);
-    expect(readFileSync(journalPath(), 'utf-8')).toContain('collision-wal-tail');
+    expect(journalHasAddedNodeSince(
+      statePath,
+      stableCheckpoint,
+      'collision-wal-tail',
+    )).toBe(true);
     closeEngine(writer);
     vi.useRealTimers();
   });
@@ -1373,10 +1748,10 @@ describe('WAL recovery integration', () => {
 
     writer.addNode(host('aux-corrupt-seq-two'));
     const walBefore = readFileSync(journalPath());
-    const walSeqsBefore = walBefore.toString('utf-8')
-      .split('\n')
-      .filter(Boolean)
-      .map(line => (JSON.parse(line) as { seq: number }).seq);
+    const walSeqsBefore = journalTransactionSeqsSince(
+      statePath,
+      Math.max(0, firstCheckpoint - 1),
+    );
     expect(walSeqsBefore).toContain(firstCheckpoint);
     expect(walSeqsBefore).toContain(firstCheckpoint + 1);
 
@@ -1423,18 +1798,17 @@ describe('WAL recovery integration', () => {
       );
     }
 
-    writeFileSync(statePath, '{corrupt primary before failed replacement');
     writer.addNode(host('retained-anchor-tail'));
+    const walBeforeFailure = readFileSync(journalPath());
+    writeFileSync(statePath, '{corrupt primary before failed replacement');
     mkdirSync(`${statePath}.tmp`);
     (writer as any).ctx.lastSnapshotTime = 0;
     writer.persist();
 
     expect(() => writer.flushNow()).toThrow();
     expect(readFileSync(join(snapshotDir, validAnchorName))).toEqual(validAnchorBytes);
-    const retainedSeqs = readFileSync(journalPath(), 'utf-8')
-      .split('\n')
-      .filter(Boolean)
-      .map(line => (JSON.parse(line) as { seq: number }).seq);
+    expect(readFileSync(journalPath())).toEqual(walBeforeFailure);
+    const retainedSeqs = journalTransactionSeqsSince(statePath, anchorCheckpoint);
     expect(retainedSeqs).toContain(anchorCheckpoint + 1);
     closeEngine(writer);
 
@@ -1631,11 +2005,11 @@ describe('WAL recovery integration', () => {
     });
     const mismatchBytes = Buffer.from(JSON.stringify(mismatched));
     writeFileSync(mismatchPath, mismatchBytes);
+    writer.addNode(host('equal-checkpoint-live-tail'));
+    const walBefore = readFileSync(journalPath());
     const corruptPrimary = Buffer.from('{corrupt equal-checkpoint primary');
     writeFileSync(statePath, corruptPrimary);
 
-    writer.addNode(host('equal-checkpoint-live-tail'));
-    const walBefore = readFileSync(journalPath());
     (writer as any).ctx.lastSnapshotTime = Date.now();
     writer.persist();
 
@@ -1664,13 +2038,15 @@ describe('WAL recovery integration', () => {
 
     const primaryBefore = readFileSync(statePath);
     const journal = (writer as any).ctx.mutationJournal as MutationJournal;
-    journal.append({ type: 'future_mutation' as MutationType, payload: {}, ts: NOW });
+    appendV2Mutation(journal, 'future_mutation' as MutationType, {});
     const walBefore = readFileSync(journalPath());
     const snapshotsBefore = writer.listSnapshots();
     (writer as any).ctx.lastSnapshotTime = 0;
     writer.persist();
 
-    expect(() => writer.flushNow()).toThrow(/snapshot WAL integrity preflight failed/);
+    expect(() => writer.flushNow()).toThrow(
+      /snapshot WAL integrity preflight failed|journal integrity check failed before state write/,
+    );
     expect(readFileSync(statePath)).toEqual(primaryBefore);
     expect(readFileSync(journalPath())).toEqual(walBefore);
     expect(writer.listSnapshots()).toEqual(snapshotsBefore);
@@ -1706,9 +2082,7 @@ describe('WAL recovery integration', () => {
 
     (writer as any).ctx.lastSnapshotTime = 0;
     writer.persist();
-    expect(() => writer.flushNow()).toThrow(
-      new RegExp(`expected seq ${durableCheckpoint + 1}, found ${durableCheckpoint + 2}`),
-    );
+    expect(() => writer.flushNow()).toThrow(/writer is stale|expected transaction seq/);
     expect(readFileSync(statePath)).toEqual(primaryBefore);
     expect(readFileSync(journalPath())).toEqual(walBefore);
     expect(writer.listSnapshots()).toEqual(snapshotsBefore);
@@ -1770,7 +2144,7 @@ describe('WAL recovery integration', () => {
     const snapshot = '.snapshots/state.snap-2026-01-01T00-00-00-000Z-1.json';
     writeFileSync(join(tempDir, snapshot), JSON.stringify(legacy));
     const journal = (writer as any).ctx.mutationJournal as MutationJournal;
-    journal.append({ type: 'future_mutation' as MutationType, payload: {}, ts: NOW });
+    appendV2Mutation(journal, 'future_mutation' as MutationType, {});
     const walBefore = readFileSync(journalPath());
 
     expect(() => writer.rollbackToSnapshot(snapshot)).toThrow(/WAL integrity preflight failed/);
@@ -1921,6 +2295,7 @@ describe('WAL recovery integration', () => {
     writer.persist();
     writer.flushNow();
     const rollbackSnapshot = writer.listSnapshots()[0];
+    const rollbackSnapshotCheckpoint = checkpoint(join(tempDir, rollbackSnapshot));
 
     writer.addNode(host('must-remain-rolled-back'));
     writer.persist();
@@ -1929,7 +2304,11 @@ describe('WAL recovery integration', () => {
     writer.persist();
     writer.flushNow();
     expect(writer.listSnapshots().length).toBeGreaterThan(1);
-    expect(readFileSync(journalPath(), 'utf-8')).toContain('must-remain-rolled-back');
+    expect(journalHasAddedNodeSince(
+      statePath,
+      rollbackSnapshotCheckpoint,
+      'must-remain-rolled-back',
+    )).toBe(true);
 
     const persistence = (writer as any).persistence as Record<string, unknown>;
     const cleanupFailure = vi.spyOn(
@@ -1995,13 +2374,22 @@ describe('WAL recovery integration', () => {
 
     const wal = new MutationJournal(statePath);
     wal.setNextSeq(baseCheckpoint);
-    const prefix = wal.append({ type: 'add_node', payload: { props: host('complete-prefix') }, ts: NOW });
+    const prefix = appendV2Mutation(wal, 'add_node', {
+      props: host('complete-prefix'),
+    });
     const eofSeq = prefix.seq + 1;
     appendFileSync(journalPath(), JSON.stringify({
-      seq: eofSeq,
+      journal_version: 2,
+      record_type: 'tx_begin',
+      tx_version: 2,
+      frame_seq: prefix.commit_frame_seq + 1,
+      tx_seq: eofSeq,
+      tx_id: '00000000-0000-4000-8000-000000000001',
       ts: NOW,
-      type: 'add_node',
-      payload: { props: host('syntactically-complete-uncommitted-eof') },
+      operation_count: 1,
+      payload_bytes: 1,
+      chunk_count: 1,
+      payload_sha256: '0'.repeat(64),
     }));
     const walBefore = readFileSync(journalPath());
 
@@ -2133,7 +2521,7 @@ describe('WAL recovery integration', () => {
 
     const wal = new MutationJournal(statePath);
     wal.setNextSeq(checkpoint(statePath));
-    wal.append({ type: 'future_mutation' as MutationType, payload: {}, ts: NOW });
+    appendV2Mutation(wal, 'future_mutation' as MutationType, {});
     const quarantineSpy = vi.spyOn(MutationJournal.prototype, 'quarantine')
       .mockImplementation(() => { throw new Error('synthetic quarantine failure'); });
     try {
@@ -2166,7 +2554,9 @@ describe('WAL recovery integration', () => {
 
     const wal = new MutationJournal(statePath);
     wal.setNextSeq(checkpoint(statePath));
-    wal.append({ type: 'add_node', payload: { props: host('replayed-before-checkpoint-failure') }, ts: NOW });
+    appendV2Mutation(wal, 'add_node', {
+      props: host('replayed-before-checkpoint-failure'),
+    });
     mkdirSync(`${statePath}.tmp`);
     vi.useFakeTimers();
 

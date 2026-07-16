@@ -24,7 +24,11 @@ import { join } from 'path';
 import type { GraphEngine } from './graph-engine.js';
 import type { ProcessTracker } from './process-tracker.js';
 import type { AgentTask } from '../types.js';
-import { HeadlessProcessRegistry } from './headless-process-registry.js';
+import {
+  HeadlessProcessRegistry,
+  killProcessTree,
+} from './headless-process-registry.js';
+import { DEFAULT_HEARTBEAT_TTL_SECONDS } from './agent-manager.js';
 
 export interface HeadlessEndpoint {
   /** Full MCP URL, e.g. http://127.0.0.1:3000/mcp */
@@ -50,6 +54,10 @@ export interface HeadlessMcpRunnerOptions {
   spawnFn?: SpawnFn;
   /** Injectable clock for deterministic timestamps in tests. */
   now?: () => string;
+  /** Fault-injection checkpoint for launch-unwind tests. */
+  onLaunchCheckpoint?: (
+    stage: 'spawned' | 'ttl_registered' | 'process_registered',
+  ) => void;
 }
 
 /**
@@ -104,6 +112,7 @@ export class HeadlessMcpRunner {
       extraArgs: options.extraArgs,
       spawnFn: options.spawnFn,
       now: options.now,
+      onLaunchCheckpoint: options.onLaunchCheckpoint,
     };
   }
 
@@ -145,6 +154,8 @@ export class HeadlessMcpRunner {
     // registry/TTL registration (which could themselves throw and skip handler
     // attachment).
     const log = this.openLog(task.id);
+    let ownershipPublished = false;
+    let launchAborted = false;
     // Keep a capped in-memory tail of the run alongside the on-disk log so a
     // cut-off agent's trace can be salvaged on exit without depending on the
     // WriteStream having flushed (the file read would race the flush, and the
@@ -164,6 +175,14 @@ export class HeadlessMcpRunner {
     child.stderr?.on('data', (c: Buffer) => { capture(c); this.registry.noteOutput(task.id, Date.now()); try { log?.write(c); } catch { /* ignore */ } });
 
     child.on('error', (err) => {
+      if (launchAborted || !ownershipPublished) {
+        // Setup/unwind owns this pre-publication child. Never project its late
+        // async spawn error as a durable run/action lifecycle event.
+        try { log?.end(); } catch { /* ignore */ }
+        this.registry.unregister(task.id);
+        this.cleanupConfig(configPath);
+        return;
+      }
       if (!this.mutationAllowed()) {
         // Runtime freeze owns the signal.  Clean ephemeral resources, but leave
         // task/process truth untouched for restart reconciliation.
@@ -193,6 +212,7 @@ export class HeadlessMcpRunner {
     // flipped it before the child died — both are "cut off without a transcript".
     // A `completed` task reported its own work, so it is not salvaged.
     child.on('close', () => {
+      if (launchAborted || !ownershipPublished) return;
       if (!this.mutationAllowed()) return;
       const current = this.engine.getTask(task.id);
       if (current && (current.status === 'running' || current.status === 'interrupted')) {
@@ -204,6 +224,7 @@ export class HeadlessMcpRunner {
       try { log?.end(); } catch { /* ignore */ }
       this.registry.unregister(task.id);
       this.cleanupConfig(configPath);
+      if (launchAborted || !ownershipPublished) return;
       if (!this.mutationAllowed()) return;
       const ok = code === 0;
       this.processTracker.update(`headless-${task.id}`, ok ? 'completed' : 'failed');
@@ -240,48 +261,139 @@ export class HeadlessMcpRunner {
       // its TTL. Mark failed synchronously + bail. The async 'error' handler above
       // also fires for ENOENT; finalize() is idempotent (it no-ops once the task is
       // terminal), so the double-signal is harmless.
+      launchAborted = true;
       try { log?.end(); } catch { /* ignore */ }
       this.cleanupConfig(configPath);
       this.engine.updateAgentStatus(task.id, 'failed', 'headless spawn produced no pid');
       return null;
     }
 
-    this.registry.register(task.id, child, configPath, this.now());
-    // Cold-start grace: spawning claude + MCP bootstrap + the first tool call can
-    // take longer than the default 120s heartbeat TTL, which would let the watchdog
-    // reap a healthy agent before its first heartbeat. Give a launched agent with NO
-    // explicit TTL a generous startup grace; its heartbeats keep it fresh and the
-    // 30-min wall-clock timeout remains the backstop for a truly wedged one. Only the
-    // task that carries its OWN configured TTL is exempt — the persistent orchestrator
-    // (600s + supervisor refresh); clobbering that down to the grace would tighten its
-    // reap window. Keying on the configured TTL (not `orchestrator === true`) means an
-    // eval-path orchestrator with no configured TTL still gets the cold-start grace
-    // instead of being left at the tight 120s default.
-    if (task.heartbeat_ttl_seconds === undefined) {
-      this.engine.setAgentHeartbeatTtl(task.id, HEADLESS_STARTUP_TTL_SECONDS);
+    let startupTtlAttempted = false;
+    try {
+      this.opts.onLaunchCheckpoint?.('spawned');
+      this.registry.register(task.id, child, configPath, this.now());
+      // Cold-start grace: spawning claude + MCP bootstrap + the first tool call can
+      // take longer than the default 120s heartbeat TTL, which would let the watchdog
+      // reap a healthy agent before its first heartbeat. Give a launched agent with NO
+      // explicit TTL a generous startup grace; its heartbeats keep it fresh and the
+      // 30-min wall-clock timeout remains the backstop for a truly wedged one. Only the
+      // task that carries its OWN configured TTL is exempt — the persistent orchestrator
+      // (600s + supervisor refresh); clobbering that down to the grace would tighten its
+      // reap window. Keying on the configured TTL (not `orchestrator === true`) means an
+      // eval-path orchestrator with no configured TTL still gets the cold-start grace
+      // instead of being left at the tight 120s default.
+      if (task.heartbeat_ttl_seconds === undefined) {
+        startupTtlAttempted = true;
+        if (!this.engine.setAgentHeartbeatTtl(task.id, HEADLESS_STARTUP_TTL_SECONDS)) {
+          throw new Error(`headless task ${task.id} disappeared before TTL registration`);
+        }
+        this.opts.onLaunchCheckpoint?.('ttl_registered');
+      }
+      this.processTracker.register({
+        id: `headless-${task.id}`,
+        pid: child.pid,
+        command: `${binary} -p (headless ${task.orchestrator ? 'primary' : 'sub-agent'} ${task.agent_id})`,
+        description: `Headless sub-agent for task ${task.id}`,
+        agent_id: task.agent_id,
+      });
+      this.opts.onLaunchCheckpoint?.('process_registered');
+
+      this.engine.logActionEvent({
+        description: `Headless sub-agent launched for task ${task.id}`,
+        event_type: 'instrumentation_warning',
+        category: 'system',
+        result_classification: 'neutral',
+        agent_id: task.agent_id,
+        linked_agent_task_id: task.id,
+        details: { reason: 'headless_launched', pid: child.pid, backend: 'headless_mcp' },
+      });
+      ownershipPublished = true;
+      return child;
+    } catch (error) {
+      launchAborted = true;
+      this.unwindFailedLaunch({
+        task,
+        child,
+        configPath,
+        log,
+        restoreHeartbeatTtl: startupTtlAttempted
+          ? task.heartbeat_ttl_seconds ?? DEFAULT_HEARTBEAT_TTL_SECONDS
+          : undefined,
+      });
+      if (this.mutationAllowed()) {
+        try {
+          this.engine.updateAgentStatus(
+            task.id,
+            'failed',
+            `headless ownership setup failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        } catch {
+          // A durability failure may have closed the write gate. The killed
+          // process and any surviving durable reservation are reconciled on
+          // restart; never mutate memory-only lifecycle truth here.
+        }
+      }
+      return null;
     }
-    this.processTracker.register({
-      id: `headless-${task.id}`,
-      pid: child.pid,
-      command: `${binary} -p (headless ${task.orchestrator ? 'primary' : 'sub-agent'} ${task.agent_id})`,
-      description: `Headless sub-agent for task ${task.id}`,
-      agent_id: task.agent_id,
-    });
-
-    this.engine.logActionEvent({
-      description: `Headless sub-agent launched for task ${task.id}`,
-      event_type: 'instrumentation_warning',
-      category: 'system',
-      result_classification: 'neutral',
-      agent_id: task.agent_id,
-      linked_agent_task_id: task.id,
-      details: { reason: 'headless_launched', pid: child.pid, backend: 'headless_mcp' },
-    });
-
-    return child;
   }
 
   // ---- helpers ----
+
+  private unwindFailedLaunch(input: {
+    task: AgentTask;
+    child: ChildProcess;
+    configPath: string;
+    log: WriteStream | null;
+    restoreHeartbeatTtl?: number;
+  }): void {
+    const processId = `headless-${input.task.id}`;
+
+    // The PID/process group belongs to the child object we just spawned, so its
+    // identity is still verified even though durable ownership publication
+    // failed. The launch API is synchronous; immediate TERM→KILL is the
+    // strongest fail-closed cleanup available without returning a live,
+    // unowned child to the caller.
+    killProcessTree(input.child, 'SIGTERM');
+    if (input.child.exitCode == null && input.child.signalCode == null) {
+      killProcessTree(input.child, 'SIGKILL');
+    }
+
+    this.registry.unregister(input.task.id);
+    this.cleanupConfig(input.configPath);
+    try { input.log?.end(); } catch { /* best-effort log cleanup */ }
+
+    // ProcessTracker mutations are themselves rollback-safe. If durability has
+    // already failed closed, leave any surviving row intact for honest restart
+    // reconciliation rather than pretending a memory-only removal succeeded.
+    try {
+      if (this.processTracker.get(processId)) this.processTracker.remove(processId);
+    } catch {
+      // Restart reconciliation will verify the now-killed PID and mark the
+      // durable reservation unknown instead of falsely completed.
+    }
+    if (!this.processTracker.get(processId)) {
+      try {
+        const currentRuns = this.engine.getRuntimeRuns();
+        if (currentRuns.some(run => run.run_id === processId)) {
+          this.engine.setRuntimeRuns(
+            currentRuns.filter(run => run.run_id !== processId),
+          );
+        }
+      } catch {
+        // Keep any durable row when its removal cannot be journaled; recovery
+        // must see and reconcile it instead of accepting a memory-only delete.
+      }
+    }
+
+    if (input.restoreHeartbeatTtl !== undefined) {
+      try {
+        this.engine.setAgentHeartbeatTtl(input.task.id, input.restoreHeartbeatTtl);
+      } catch {
+        // As above, never manufacture an in-memory-only rollback after the
+        // persistence gate closes. The task is terminal/reconciled on restart.
+      }
+    }
+  }
 
   private buildArgs(task: AgentTask, configPath: string): string[] {
     // An explicit archetype wins; else fall back to the legacy role; else default.

@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
+import { MutationJournal } from '../../services/mutation-journal.js';
 import { registerOperatorInfraTools, mockServiceId, registerMockServiceCore } from '../operator-infra.js';
 import type { EngagementConfig } from '../../types.js';
 
@@ -134,6 +135,26 @@ describe('register_mock_service', () => {
       target_node: 'host-attacker',
     });
     expect(r.runs_on_edge.added).toBe(true);
+  });
+
+  it('does not commit a partial mock-service command when final audit construction fails', () => {
+    engine.flushNow();
+    const base = JSON.parse(readFileSync(testStateFile, 'utf8')).journalSnapshotSeq as number;
+    vi.spyOn(engine, 'logActionEvent').mockImplementationOnce(() => {
+      throw new Error('synthetic final mock-service failure');
+    });
+    const id = mockServiceId('http_capture', '127.0.0.1', 8080, undefined);
+
+    expect(() => registerMockServiceCore(engine, {
+      purpose: 'http_capture',
+      protocol: 'http',
+      bind_host: '127.0.0.1',
+      bind_port: 8080,
+      action_id: 'action-mock-service-failure',
+    })).toThrow('synthetic final mock-service failure');
+
+    expect(engine.getNode(id)).toBeNull();
+    expect(new MutationJournal(testStateFile).readTransactionsSince(base)).toEqual([]);
   });
 });
 

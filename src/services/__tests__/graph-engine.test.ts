@@ -2594,7 +2594,9 @@ describe('GraphEngine', () => {
 
       const engine3 = trackedEngine(makeConfig(), stateFile);
       expect(engine3.getTrackedProcesses()).toHaveLength(1);
-      expect(engine3.getTrackedProcesses()[0].id).toBe('proc-recover-a');
+      // The snapshot supplies the last valid full-state base and journal v2
+      // replays the newer committed process-state transaction from engine2.
+      expect(engine3.getTrackedProcesses()[0].id).toBe('proc-recover-b');
     });
   });
 
@@ -2846,9 +2848,21 @@ describe('GraphEngine', () => {
 
     it('caps activity log history at 5000 entries', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const ctx = (engine as any).ctx;
+      const activityTransactionRunner = ctx.activityTransactionRunner;
+      ctx.activityTransactionRunner = undefined;
+      try {
+        for (let i = 0; i < 5000; i++) {
+          ctx.logEvent({ description: `activity-${i}` });
+        }
+      } finally {
+        ctx.activityTransactionRunner = activityTransactionRunner;
+      }
+      engine.persist();
+      engine.flushNow();
 
-      for (let i = 0; i < 5005; i++) {
-        (engine as any).log(`activity-${i}`);
+      for (let i = 5000; i < 5005; i++) {
+        engine.logActionEvent({ description: `activity-${i}` });
       }
 
       const history = engine.getFullHistory();
@@ -2859,9 +2873,21 @@ describe('GraphEngine', () => {
 
     it('persists only the bounded activity log history', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const ctx = (engine as any).ctx;
+      const activityTransactionRunner = ctx.activityTransactionRunner;
+      ctx.activityTransactionRunner = undefined;
+      try {
+        for (let i = 0; i < 5000; i++) {
+          ctx.logEvent({ description: `persisted-activity-${i}` });
+        }
+      } finally {
+        ctx.activityTransactionRunner = activityTransactionRunner;
+      }
+      engine.persist();
+      engine.flushNow();
 
-      for (let i = 0; i < 5005; i++) {
-        (engine as any).log(`persisted-activity-${i}`);
+      for (let i = 5000; i < 5005; i++) {
+        engine.logActionEvent({ description: `persisted-activity-${i}` });
       }
       engine.persist();
       engine.flushNow();

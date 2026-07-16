@@ -6,7 +6,8 @@ import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import { ProcessTracker } from '../process-tracker.js';
 import { TaskExecutionService } from '../task-execution-service.js';
-import { allowedToolsFor } from '../headless-mcp-runner.js';
+import { HeadlessMcpRunner, allowedToolsFor } from '../headless-mcp-runner.js';
+import { HeadlessProcessRegistry } from '../headless-process-registry.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 
 function makeConfig(): EngagementConfig {
@@ -832,6 +833,111 @@ describe('Headless runner mechanics (injected spawn)', () => {
     // The fix attaches the handler BEFORE the pidless bail-out, so this is handled.
     expect(() => children[0].emit('error', new Error('spawn claude ENOENT'))).not.toThrow();
   });
+
+  it.each([
+    'spawned',
+    'ttl_registered',
+    'process_registered',
+  ] as const)(
+    'fails closed and leaves restart truth clean when ownership setup fails after %s',
+    (failureStage) => {
+      const taskId = `h-unwind-${failureStage}`;
+      expect(engine.registerAgent(headlessTask({ id: taskId })).ok).toBe(true);
+
+      const registry = new HeadlessProcessRegistry();
+      const tracker = new ProcessTracker();
+      tracker.setMutationGuard(() => engine.assertPersistenceWritable());
+      const unsubscribe = tracker.onChange(() => {
+        engine.setTrackedProcesses(tracker.serialize());
+      });
+      const child = new FakeChild(4_100_000_000 + nextPid++);
+      const groupSignals: NodeJS.Signals[] = [];
+      const processKill = process.platform === 'win32'
+        ? undefined
+        : vi.spyOn(process, 'kill').mockImplementation((pid, signal = 0) => {
+            if (pid === -child.pid && typeof signal === 'string') {
+              groupSignals.push(signal as NodeJS.Signals);
+            }
+            return true;
+          });
+      let configPath = '';
+      const runner = new HeadlessMcpRunner(engine, registry, tracker, {
+        logDir,
+        spawnFn: (_command, args) => {
+          configPath = args[args.indexOf('--mcp-config') + 1];
+          return child as any;
+        },
+        onLaunchCheckpoint: stage => {
+          if (stage === failureStage) throw new Error(`injected ${stage} failure`);
+        },
+      });
+
+      try {
+        const launched = runner.launch(
+          engine.getTask(taskId)!,
+          { url: 'http://127.0.0.1:9/mcp', token: 'test-secret' },
+        );
+
+        expect(launched).toBeNull();
+        if (process.platform === 'win32') {
+          expect(child.signals).toContain('SIGTERM');
+          expect(child.signals).toContain('SIGKILL');
+        } else {
+          expect(groupSignals).toContain('SIGTERM');
+          expect(groupSignals).toContain('SIGKILL');
+        }
+        expect(registry.has(taskId)).toBe(false);
+        expect(tracker.get(`headless-${taskId}`)).toBeNull();
+        expect(engine.getTrackedProcesses()).not.toContainEqual(
+          expect.objectContaining({ id: `headless-${taskId}` }),
+        );
+        expect(engine.getRuntimeRuns()).not.toContainEqual(
+          expect.objectContaining({ run_id: `headless-${taskId}` }),
+        );
+        expect(engine.getTask(taskId)?.status).toBe('failed');
+        expect(
+          engine.getTask(taskId)?.heartbeat_ttl_seconds
+          ?? 120,
+        ).toBe(120);
+        expect(configPath).not.toBe('');
+        expect(existsSync(configPath)).toBe(false);
+
+        const reasons = () => engine.getFullHistory()
+          .map(entry => (entry.details as { reason?: string } | undefined)?.reason);
+        expect(reasons()).not.toContain('headless_launched');
+        expect(reasons()).not.toContain('headless_exited');
+        const historyLength = engine.getFullHistory().length;
+
+        // Late callbacks from the killed, never-owned child are ephemeral-only:
+        // no false process completion, exit action, or task transition.
+        child.simulateExit(null, 'SIGKILL');
+        child.simulateClose(null, 'SIGKILL');
+        expect(engine.getFullHistory()).toHaveLength(historyLength);
+
+        engine.flushNow();
+        unsubscribe();
+        const previous = engine;
+        previous.dispose();
+        engines.delete(previous);
+        engine = createEngine(makeConfig());
+
+        expect(engine.getTask(taskId)?.status).toBe('failed');
+        expect(engine.getTrackedProcesses()).not.toContainEqual(
+          expect.objectContaining({ id: `headless-${taskId}` }),
+        );
+        expect(engine.getRuntimeRuns()).not.toContainEqual(
+          expect.objectContaining({ run_id: `headless-${taskId}` }),
+        );
+        expect(
+          engine.getTask(taskId)?.heartbeat_ttl_seconds
+          ?? 120,
+        ).toBe(120);
+      } finally {
+        processKill?.mockRestore();
+        unsubscribe();
+      }
+    },
+  );
 
   it('executes a stop directive: engine records, service kills the live process + interrupts', async () => {
     svc = makeService();

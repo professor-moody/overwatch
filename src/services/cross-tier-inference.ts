@@ -52,7 +52,7 @@ import { isCredentialMfaBlocked, isCredentialStaleOrExpired, isCredentialUsableF
 
 export interface CrossTierInferenceHost {
   ctx: EngineContext;
-  addNode?(props: NodeProperties): string;
+  addNode(props: NodeProperties): string;
   addEdge(source: string, target: string, props: EdgeProperties): { id: string; isNew: boolean };
   log(message: string, agentId?: string, extra?: Partial<ActivityLogEntry>): void;
 }
@@ -64,8 +64,7 @@ function updateNode(
   patch: Partial<NodeProperties>,
 ): void {
   const next = { ...current, ...patch, id, type: current.type } as NodeProperties;
-  if (host.addNode) host.addNode(next);
-  else host.ctx.graph.replaceNodeAttributes(id, next);
+  host.addNode(next);
 }
 
 function nodesByType(ctx: EngineContext, type: string): Array<{ id: string; attrs: NodeProperties }> {

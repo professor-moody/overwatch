@@ -596,6 +596,7 @@ describe('revisioned active config write-through', () => {
     };
     ctx.coldAdd(cold);
     first.persistImmediate();
+    const baseSeq = ctx.journalSnapshotSeq;
 
     // Exercise the public planner so the durable record contains the real
     // frozen inference delta, then simulate process death after append/fsync
@@ -613,20 +614,16 @@ describe('revisioned active config write-through', () => {
       first.applyScopeUpdatedMutation = originalApply;
     }
 
-    const walPath = ctx.mutationJournal!.getPath();
-    const records = readFileSync(walPath, 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .map(line => JSON.parse(line) as {
-        type: string;
-        payload: ScopeUpdatedMutationPayloadV1;
-      });
-    const scopeRecord = [...records].reverse().find(record => record.type === 'scope_updated');
-    expect(scopeRecord).toBeDefined();
-    expect(scopeRecord!.payload.inferred_edges).toHaveLength(1);
-    expect(scopeRecord!.payload.inference_events).toHaveLength(1);
-    const operationId = scopeRecord!.payload.operation_id;
-    const inferredEdgeId = scopeRecord!.payload.inferred_edges[0].edge_id;
+    const scopeOperation = ctx.mutationJournal!
+      .readTransactionsSince(baseSeq)
+      .flatMap(transaction => transaction.operations)
+      .find(operation => operation.type === 'scope_updated');
+    expect(scopeOperation).toBeDefined();
+    const scopePayload = scopeOperation!.payload as unknown as ScopeUpdatedMutationPayloadV1;
+    expect(scopePayload.inferred_edges).toHaveLength(1);
+    expect(scopePayload.inference_events).toHaveLength(1);
+    const operationId = scopePayload.operation_id;
+    const inferredEdgeId = scopePayload.inferred_edges[0].edge_id;
     first.dispose();
 
     for (let restart = 2; restart <= 3; restart++) {
@@ -684,17 +681,17 @@ describe('revisioned active config write-through', () => {
     const journal = ctx.mutationJournal!;
     const walPath = journal.getPath();
     const walBefore = existsSync(walPath) ? readFileSync(walPath) : undefined;
-    const originalAppend = journal.append;
-    journal.append = (() => {
+    const originalAppendTransaction = journal.appendTransaction;
+    journal.appendTransaction = (() => {
       throw new Error('synthetic scope WAL fsync failure');
-    }) as typeof journal.append;
+    }) as typeof journal.appendTransaction;
     try {
       expect(() => first.updateScope({
         add_cidrs: ['10.22.0.0/24'],
         reason: 'must not apply without a durable scope record',
       })).toThrow('synthetic scope WAL fsync failure');
     } finally {
-      journal.append = originalAppend;
+      journal.appendTransaction = originalAppendTransaction;
     }
 
     expect(first.getConfig()).toEqual(configBefore);
@@ -915,13 +912,13 @@ describe('revisioned active config write-through', () => {
       inference_events: [],
       affected_node_count: 1,
     };
-    ctx.journalMutation('scope_updated', payload as unknown as Record<string, unknown>);
-
     // The same id now belongs to a distinct cold-store generation. Persist a
-    // base that cannot satisfy the frozen operation without destroying it.
+    // base that cannot satisfy the frozen operation without destroying it,
+    // then append the operation so it remains newer than that base.
     const replacement = { ...cold, label: 'replacement generation', provenance: 'replacement-generation' };
     ctx.coldStore.import([replacement]);
     first.persistImmediate();
+    ctx.journalMutation('scope_updated', payload as unknown as Record<string, unknown>);
     const walPath = ctx.mutationJournal!.getPath();
     const walBefore = readFileSync(walPath);
     first.dispose();
@@ -981,14 +978,13 @@ describe('revisioned active config write-through', () => {
         props: expectedEdge,
       }],
     };
-    ctx.journalMutation('drop_node', payload as unknown as Record<string, unknown>);
-
     ctx.graph.replaceNodeAttributes('host-drop-generation', {
       ...expectedNode,
       label: 'replacement generation',
       hostname: 'replacement.example.test',
     });
     first.persistImmediate();
+    ctx.journalMutation('drop_node', payload as unknown as Record<string, unknown>);
     const walPath = ctx.mutationJournal!.getPath();
     const walBefore = readFileSync(walPath);
     first.dispose();
@@ -1145,6 +1141,7 @@ describe('revisioned active config write-through', () => {
       tested: true,
     });
     first.persistImmediate();
+    const baseSeq = internals(first).journalSnapshotSeq;
 
     const result = first.correctGraph('repair the host relation and label', [
       {
@@ -1168,7 +1165,10 @@ describe('revisioned active config write-through', () => {
       replaced_edges: [{ old_edge_id: expect.any(String), new_edge_id: expect.any(String) }],
       patched_nodes: ['host-source'],
     });
-    expect(readFileSync(internals(first).mutationJournal!.getPath(), 'utf8')).toContain('graph_corrected');
+    expect(internals(first).mutationJournal!
+      .readTransactionsSince(baseSeq)
+      .flatMap(transaction => transaction.operations)
+      .some(operation => operation.type === 'graph_corrected')).toBe(true);
     first.dispose();
 
     let operationId: string | undefined;
@@ -1277,6 +1277,7 @@ describe('revisioned active config write-through', () => {
       tested: true,
     });
     first.persistImmediate();
+    const baseSeq = internals(first).journalSnapshotSeq;
 
     const result = first.ingestFinding({
       id: 'finding-bob',
@@ -1295,7 +1296,10 @@ describe('revisioned active config write-through', () => {
     });
     expect(result.updated_nodes).toContain('user-example-bob');
     expect(first.getNode('bh-user-bob')).toBeNull();
-    expect(readFileSync(internals(first).mutationJournal!.getPath(), 'utf8')).toContain('identity_rewrite');
+    expect(internals(first).mutationJournal!
+      .readTransactionsSince(baseSeq)
+      .flatMap(transaction => transaction.operations)
+      .some(operation => operation.type === 'identity_rewrite')).toBe(true);
     first.dispose();
 
     const recovered = start();

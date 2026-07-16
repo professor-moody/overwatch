@@ -78,6 +78,9 @@ export class ProposedPlanStore {
   private tombstones = new Map<string, 'confirmed' | 'denied' | 'expired'>();
   private listeners = new Set<() => void>();
   private mutationGuard: (() => void) | undefined;
+  private mutationRunner:
+    | (<T>(reason: string, mutation: () => T) => T)
+    | undefined;
 
   constructor(private ttlMs: number = DEFAULT_TTL_MS) {}
 
@@ -100,6 +103,19 @@ export class ProposedPlanStore {
     this.mutationGuard = guard;
   }
 
+  setMutationRunner(
+    runner: (<T>(reason: string, mutation: () => T) => T) | undefined,
+  ): void {
+    this.mutationRunner = runner;
+  }
+
+  private runMutation<T>(reason: string, mutation: () => T): T {
+    this.mutationGuard?.();
+    return this.mutationRunner
+      ? this.mutationRunner(reason, mutation)
+      : mutation();
+  }
+
   private notifyChange(): void {
     let firstError: unknown;
     for (const listener of this.listeners) {
@@ -110,25 +126,26 @@ export class ProposedPlanStore {
 
   /** Record a freshly-proposed plan. Returns the stored record (with its plan_id). */
   add(args: AddProposedPlanArgs): ProposedPlan {
-    this.mutationGuard?.();
-    const now = args.now ?? Date.now();
-    this.pruneInternal(now, false);
-    const plan: ProposedPlan = {
-      plan_id: randomUUID(),
-      command: args.command,
-      ops: args.ops,
-      summary: args.summary,
-      rationale: args.rationale,
-      source_task_id: args.source_task_id,
-      source_agent_id: args.source_agent_id,
-      scope_preview: args.scope_preview,
-      created_at: now,
-      expires_at: now + this.ttlMs,
-      status: 'open',
-    };
-    this.plans.set(plan.plan_id, plan);
-    this.notifyChange();
-    return plan;
+    return this.runMutation('add proposed plan', () => {
+      const now = args.now ?? Date.now();
+      this.pruneInternal(now, false);
+      const plan: ProposedPlan = {
+        plan_id: randomUUID(),
+        command: args.command,
+        ops: args.ops,
+        summary: args.summary,
+        rationale: args.rationale,
+        source_task_id: args.source_task_id,
+        source_agent_id: args.source_agent_id,
+        scope_preview: args.scope_preview,
+        created_at: now,
+        expires_at: now + this.ttlMs,
+        status: 'open',
+      };
+      this.plans.set(plan.plan_id, plan);
+      this.notifyChange();
+      return plan;
+    });
   }
 
   /** Look up a plan by id (does not expire on read — confirm-path checks status). */
@@ -152,14 +169,15 @@ export class ProposedPlanStore {
    * top of handleCommand) instead of relying on a GET /api/plans poll to sweep.
    */
   resolve(plan_id: string, status: 'confirmed' | 'denied', now: number = Date.now()): ProposedPlan | null {
-    this.mutationGuard?.();
-    this.pruneInternal(now, false);
-    const plan = this.plans.get(plan_id);
-    if (!plan || plan.status !== 'open') return null;
-    plan.status = status;
-    this.tombstone(plan_id, status);
-    this.notifyChange();
-    return plan;
+    return this.runMutation(`resolve proposed plan as ${status}`, () => {
+      this.pruneInternal(now, false);
+      const plan = this.plans.get(plan_id);
+      if (!plan || plan.status !== 'open') return null;
+      plan.status = status;
+      this.tombstone(plan_id, status);
+      this.notifyChange();
+      return plan;
+    });
   }
 
   /**
@@ -178,7 +196,7 @@ export class ProposedPlanStore {
 
   /** Sweep plans older than the TTL, tombstoning still-open ones as expired before dropping. */
   prune(now: number = Date.now()): void {
-    this.pruneInternal(now, true);
+    this.runMutation('prune proposed plans', () => this.pruneInternal(now, false));
   }
 
   private pruneInternal(now: number, guard: boolean, notify = true): void {

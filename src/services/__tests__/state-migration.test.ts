@@ -19,6 +19,7 @@ import { MutationJournal } from '../mutation-journal.js';
 import {
   CURRENT_JOURNAL_VERSION,
   CURRENT_STATE_VERSION,
+  LEGACY_JOURNAL_VERSION,
   LEGACY_STATE_VERSION,
   detectJournalVersion,
   detectStateVersion,
@@ -72,10 +73,12 @@ function downgradePrimaryToV0(
   const state = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>;
   delete state.state_version;
   delete state.journal_version;
+  delete state.journalCheckpointSemantics;
   delete state.walCompactionAuthority;
   state.config = stripConfigMetadata(state.config as EngagementConfig);
   const bytes = Buffer.from(JSON.stringify(state));
   writeFileSync(statePath, bytes);
+  rmSync(MutationJournal.pathForState(statePath), { force: true });
   let configBytes: Buffer | undefined;
   if (configPath) {
     const legacyConfig = stripConfigMetadata(
@@ -157,9 +160,13 @@ describe('PersistedStateV1 and migration', () => {
     expect(() => detectStateVersion({ state_version: 0 })).toThrow(/positive safe integer/);
     expect(() => detectStateVersion({ state_version: 2 })).toThrow(/unsupported/);
     expect(detectJournalVersion({ config: {}, graph: {} }, LEGACY_STATE_VERSION))
-      .toBe(CURRENT_JOURNAL_VERSION);
-    expect(() => detectJournalVersion(
+      .toBe(LEGACY_JOURNAL_VERSION);
+    expect(detectJournalVersion(
       { state_version: 1, journal_version: 2 },
+      CURRENT_STATE_VERSION,
+    )).toBe(CURRENT_JOURNAL_VERSION);
+    expect(() => detectJournalVersion(
+      { state_version: 1, journal_version: 3 },
       CURRENT_STATE_VERSION,
     )).toThrow(/unsupported/);
   });
@@ -240,7 +247,7 @@ describe('PersistedStateV1 and migration', () => {
     expect(validatePersistedStateV1(state).state_version).toBe(1);
     expect(state).toMatchObject({
       state_version: 1,
-      journal_version: 1,
+      journal_version: CURRENT_JOURNAL_VERSION,
       chainEventsSinceCheckpoint: 7,
       dedupCount: 3,
       frontierWeights: {
@@ -599,7 +606,7 @@ describe('PersistedStateV1 and migration', () => {
     );
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({
       state_version: 1,
-      journal_version: 1,
+      journal_version: CURRENT_JOURNAL_VERSION,
       config: { config_revision: 1 },
     });
     expect(JSON.parse(readFileSync(configPath, 'utf8'))).toMatchObject({
@@ -637,9 +644,39 @@ describe('PersistedStateV1 and migration', () => {
     });
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({
       state_version: 1,
-      journal_version: 1,
+      journal_version: CURRENT_JOURNAL_VERSION,
     });
     expect(readFileSync(configPath)).toEqual(externalBytes);
+    expect(existsSync(`${statePath}.migration-intent.json`)).toBe(false);
+  });
+
+  it('retains migration backup metadata when restart retires a post-publication intent', () => {
+    const initial = open(config(), false);
+    initial.persistImmediate();
+    close(initial);
+    const legacy = downgradePrimaryToV0(statePath);
+    const release = acquireStateMigrationLease(statePath);
+    const backup = prepareStateMigrationBackup({ stateFilePath: statePath });
+    activateStateMigration(statePath, backup, release.token);
+    release();
+
+    const published = JSON.parse(legacy.stateBytes.toString()) as Record<string, unknown>;
+    published.state_version = CURRENT_STATE_VERSION;
+    published.journal_version = CURRENT_JOURNAL_VERSION;
+    published.journalCheckpointSemantics = 'contiguous_committed_transactions_v2';
+    writeFileSync(statePath, refreshCompactionAuthority(published));
+
+    const resumed = open(config(), false);
+    expect(resumed.getPersistenceRecoveryStatus().state_migration).toMatchObject({
+      status: 'migrated',
+      observed_state_version: LEGACY_STATE_VERSION,
+      observed_journal_version: LEGACY_JOURNAL_VERSION,
+      supported_state_version: CURRENT_STATE_VERSION,
+      supported_journal_version: CURRENT_JOURNAL_VERSION,
+      migration_required: false,
+      backup_path: backup.directory,
+      backup_manifest_sha256: backup.manifest_sha256,
+    });
     expect(existsSync(`${statePath}.migration-intent.json`)).toBe(false);
   });
 
@@ -663,9 +700,13 @@ describe('PersistedStateV1 and migration', () => {
       state_migration: {
         status: 'blocked',
         observed_state_version: 0,
+        observed_journal_version: LEGACY_JOURNAL_VERSION,
         migration_required: true,
         backup_path: expect.any(String),
         backup_manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      journal: {
+        format_version: LEGACY_JOURNAL_VERSION,
       },
     });
     expect(readFileSync(statePath)).toEqual(legacy.stateBytes);
@@ -678,7 +719,7 @@ describe('PersistedStateV1 and migration', () => {
 
   it.each([
     { field: 'state_version', value: 2 },
-    { field: 'journal_version', value: 2 },
+    { field: 'journal_version', value: 3 },
   ])('keeps future $field bytes unchanged across repeated restarts', ({ field, value }) => {
     writeFileSync(configPath, `${JSON.stringify(config(), null, 2)}\n`);
     const initial = open(config());
@@ -709,12 +750,12 @@ describe('PersistedStateV1 and migration', () => {
       expect(migration).toMatchObject({
         status: 'blocked',
         supported_state_version: 1,
-        supported_journal_version: 1,
+        supported_journal_version: CURRENT_JOURNAL_VERSION,
       });
       if (field === 'state_version') {
         expect(migration?.observed_state_version).toBe(2);
       } else {
-        expect(migration?.observed_journal_version).toBe(2);
+        expect(migration?.observed_journal_version).toBe(3);
       }
       close(degraded);
       expect(readFileSync(statePath)).toEqual(futureBytes);
@@ -727,7 +768,7 @@ describe('PersistedStateV1 and migration', () => {
   it('does not create recovery sidecars or lock directories while inspecting a future state', () => {
     const futureBytes = Buffer.from(JSON.stringify({
       state_version: 2,
-      journal_version: 1,
+      journal_version: CURRENT_JOURNAL_VERSION,
       config: config(),
       graph: { attributes: {}, nodes: [], edges: [] },
     }));

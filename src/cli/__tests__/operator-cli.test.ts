@@ -146,13 +146,19 @@ describe('read commands', () => {
     const payload = { recovery: {
       outcome: 'clean', source: 'state', complete: true, writable: true,
       base_checkpoint: 2, highest_allocated_seq: 2, highest_on_disk_seq: 2,
-      highest_contiguous_applied_seq: 2, consecutive_persistence_failures: 0,
+      highest_allocated_logical_seq: 2, highest_allocated_frame_seq: 8,
+      highest_physical_frame_seq: 8,
+      highest_contiguous_applied_seq: 2,
+      highest_contiguous_applied_logical_seq: 2,
+      consecutive_persistence_failures: 0,
       journal: { enabled: true, read: 0, attempted: 0, applied: 0, skipped: 0, failed: 0, malformed: false, preserved: false },
     } };
     const client = fakeClient({ '/api/recovery': payload });
     const result = await READ_COMMANDS.recovery.run({ client, args: [] });
     expect(result.data).toEqual(payload);
     expect(result.text).toContain('Recovery');
+    expect(result.text).toContain('physical frames allocated / on-disk');
+    expect(result.text).toContain('8/8');
   });
 
   it('frontier filters by --type and caps with --max', async () => {
@@ -419,8 +425,12 @@ describe('renderers', () => {
           reason: 'sequence gap',
           base_checkpoint: 2,
           highest_allocated_seq: 6,
+          highest_allocated_logical_seq: 6,
+          highest_allocated_frame_seq: 18,
           highest_on_disk_seq: 6,
+          highest_physical_frame_seq: 18,
           highest_contiguous_applied_seq: 4,
+          highest_contiguous_applied_logical_seq: 4,
           consecutive_persistence_failures: 0,
           journal: {
             enabled: true,
@@ -438,6 +448,7 @@ describe('renderers', () => {
 
     expect(out).toContain('recovery');
     expect(out).toContain('incomplete from state');
+    expect(out).toContain('frames 18/18');
     expect(out).toContain('seq 4/6');
     expect(out).toContain('read-only');
     expect(out).toContain('sequence gap');

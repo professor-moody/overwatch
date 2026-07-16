@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, readdirSync, unlinkSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../graph-engine.js';
 import { registerAgentTools, dispatchCampaignAgents } from '../../tools/agents.js';
 import { registerFindingTools } from '../../tools/findings.js';
 import type { EngagementConfig } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-campaign-fixes.json';
+const engines = new Set<GraphEngine>();
 
 function makeConfig(): EngagementConfig {
   return {
@@ -20,17 +21,15 @@ function makeConfig(): EngagementConfig {
 }
 
 function cleanup() {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  for (const sibling of ['state-test-campaign-fixes.journal.jsonl']) {
-    try { if (existsSync(sibling)) unlinkSync(sibling); } catch {}
-  }
-  try {
-    for (const snapshot of readdirSync('./.snapshots')) {
-      if (snapshot.startsWith('state-test-campaign-fixes.')) {
-        try { unlinkSync(`./.snapshots/${snapshot}`); } catch {}
-      }
-    }
-  } catch {}
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  cleanupTestPersistence(TEST_STATE_FILE);
+}
+
+function openEngine(): GraphEngine {
+  const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+  engines.add(engine);
+  return engine;
 }
 
 function parse(result: any): any {
@@ -39,7 +38,7 @@ function parse(result: any): any {
 
 function buildEngineWithCampaign(itemIds: string[]): { engine: GraphEngine; campaignId: string } {
   cleanup();
-  const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+  const engine = openEngine();
   const c = engine.createCampaign({
     name: 'test-campaign',
     strategy: 'enumeration',
@@ -55,22 +54,22 @@ describe('Campaign fixes — P1: persistence of CRUD/lifecycle', () => {
 
   it('createCampaign survives engine restart', () => {
     cleanup();
-    const e1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const e1 = openEngine();
     const c = e1.createCampaign({ name: 'persist-me', strategy: 'enumeration', item_ids: ['fi-1'], abort_conditions: [] });
     expect(c).toBeTruthy();
     e1.flushNow();
 
-    const e2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const e2 = openEngine();
     expect(e2.listCampaigns().some((x) => x.id === c.id)).toBe(true);
   });
 
   it('findCampaignForItem resolves by item id after a restart (reverse index rebuilt on load)', () => {
     cleanup();
-    const e1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const e1 = openEngine();
     const c = e1.createCampaign({ name: 'reindex-me', strategy: 'enumeration', item_ids: ['fi-reindex'], abort_conditions: [] });
     e1.flushNow();
 
-    const e2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const e2 = openEngine();
     // The reverse index was built in the planner's constructor from the still-empty
     // campaigns map, then loadState replaced the map — so before the reindex-on-load
     // fix this returned null and the campaign was regenerated as a duplicate.
@@ -79,28 +78,28 @@ describe('Campaign fixes — P1: persistence of CRUD/lifecycle', () => {
 
   it('pause / resume / abort persist across reloads', () => {
     cleanup();
-    const e1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const e1 = openEngine();
     const c = e1.createCampaign({ name: 't', strategy: 'enumeration', item_ids: ['fi-1', 'fi-2'], abort_conditions: [] });
     e1.activateCampaign(c.id);
     e1.pauseCampaign(c.id);
     e1.flushNow();
 
-    const e2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const e2 = openEngine();
     expect(e2.getCampaign(c.id)?.status).toBe('paused');
 
     e2.abortCampaign(c.id);
     e2.flushNow();
-    const e3 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const e3 = openEngine();
     expect(e3.getCampaign(c.id)?.status).toBe('aborted');
   });
 
   it('deleteCampaign persists across reload', () => {
     cleanup();
-    const e1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const e1 = openEngine();
     const c = e1.createCampaign({ name: 't', strategy: 'enumeration', item_ids: ['fi-1'], abort_conditions: [] });
     e1.deleteCampaign(c.id);
     e1.flushNow();
-    const e2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const e2 = openEngine();
     expect(e2.getCampaign(c.id)).toBeNull();
   });
 });
@@ -302,7 +301,7 @@ describe('Campaign fixes — P2: report_finding links finding to campaign', () =
 
   beforeEach(() => {
     cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine = openEngine();
     const c = engine.createCampaign({
       name: 't', strategy: 'enumeration', item_ids: ['frontier-node-host-10-0-0-1'], abort_conditions: [],
     });
@@ -360,7 +359,7 @@ describe('Campaign fixes — P3: submit_agent_transcript accepts task_id and fal
 
   beforeEach(() => {
     cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine = openEngine();
     handlers = {};
     const fakeServer = {
       registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {

@@ -188,6 +188,52 @@ describe('SessionManager', () => {
       expect(result.initial.session_id).toBe(result.metadata.id);
     });
 
+    it('durably reserves a pending descriptor before spawning the runtime handle', async () => {
+      const durableStates: string[] = [];
+      let spawnObservedReservation = false;
+      manager.onDurableEvent(event => {
+        durableStates.push(event.session.state);
+      });
+      manager.registerAdapter({
+        kind: 'local_pty',
+        async spawn() {
+          spawnObservedReservation = durableStates[0] === 'pending';
+          return mockAdapter.handle;
+        },
+      });
+
+      const result = await manager.create({
+        kind: 'local_pty',
+        title: 'reserved shell',
+        initial_wait_ms: 0,
+      });
+
+      expect(spawnObservedReservation).toBe(true);
+      expect(durableStates).toEqual(['pending', 'connected']);
+      expect(result.metadata.state).toBe('connected');
+    });
+
+    it('does not spawn when the durable descriptor reservation fails', async () => {
+      let spawned = false;
+      manager.onDurableEvent(() => {
+        throw new Error('synthetic descriptor journal failure');
+      });
+      manager.registerAdapter({
+        kind: 'local_pty',
+        async spawn() {
+          spawned = true;
+          return mockAdapter.handle;
+        },
+      });
+
+      await expect(manager.create({
+        kind: 'local_pty',
+        title: 'must not spawn',
+        initial_wait_ms: 0,
+      })).rejects.toThrow('synthetic descriptor journal failure');
+      expect(spawned).toBe(false);
+    });
+
     it('throws for unregistered adapter kind', async () => {
       await expect(manager.create({
         kind: 'ssh',
@@ -260,6 +306,23 @@ describe('SessionManager', () => {
 
       expect(() => manager.write(metadata.id, 'hello', 'agent-2', true))
         .not.toThrow();
+    });
+
+    it('does not write target bytes when the descriptor update cannot commit', async () => {
+      let durableEvents = 0;
+      manager.onDurableEvent(() => {
+        durableEvents++;
+        if (durableEvents === 3) throw new Error('synthetic descriptor update failure');
+      });
+      const { metadata } = await manager.create({
+        kind: 'local_pty',
+        title: 'fail-closed write',
+        initial_wait_ms: 0,
+      });
+
+      expect(() => manager.write(metadata.id, 'must-not-send'))
+        .toThrow('synthetic descriptor update failure');
+      expect(mockAdapter.written).toEqual([]);
     });
   });
 
@@ -337,6 +400,70 @@ describe('SessionManager', () => {
       expect(() => manager.write(metadata.id, 'hello'))
         .toThrow('not connected');
     });
+
+    it('keeps the runtime open when durable close cannot commit', async () => {
+      let durableEvents = 0;
+      manager.onDurableEvent(() => {
+        durableEvents++;
+        if (durableEvents === 3) throw new Error('synthetic descriptor close failure');
+      });
+      const { metadata } = await manager.create({
+        kind: 'local_pty',
+        title: 'fail-closed close',
+        initial_wait_ms: 0,
+      });
+
+      expect(() => manager.close(metadata.id))
+        .toThrow('synthetic descriptor close failure');
+      expect(mockAdapter.wasClosed()).toBe(false);
+      expect(manager.getSession(metadata.id)?.state).toBe('connected');
+    });
+
+    it('retains retryable handle ownership and records an error when runtime close throws', async () => {
+      const durableStates: Array<{ state: string; notes?: string }> = [];
+      manager.onDurableEvent(event => {
+        durableStates.push({
+          state: event.session.state,
+          notes: event.session.notes,
+        });
+      });
+      const closeHandle = vi.spyOn(mockAdapter.handle, 'close')
+        .mockImplementationOnce(() => {
+          throw new Error('synthetic adapter close failure');
+        })
+        .mockImplementation(() => undefined);
+      const { metadata } = await manager.create({
+        kind: 'local_pty',
+        title: 'retryable close',
+        initial_wait_ms: 0,
+      });
+
+      expect(() => manager.close(metadata.id))
+        .toThrow('runtime close failed: synthetic adapter close failure');
+      expect(closeHandle).toHaveBeenCalledTimes(1);
+      expect(manager.getSession(metadata.id)).toMatchObject({
+        state: 'error',
+        closed_at: undefined,
+        notes: expect.stringContaining('Runtime close failed: synthetic adapter close failure'),
+      });
+      expect(durableStates.at(-1)).toMatchObject({
+        state: 'error',
+        notes: expect.stringContaining('Runtime close failed: synthetic adapter close failure'),
+      });
+      expect(
+        (manager as unknown as {
+          sessions: Map<string, { handle: AdapterHandle | null }>;
+        }).sessions.get(metadata.id)?.handle,
+      ).toBe(mockAdapter.handle);
+
+      expect(manager.close(metadata.id).metadata.state).toBe('closed');
+      expect(closeHandle).toHaveBeenCalledTimes(2);
+      expect(
+        (manager as unknown as {
+          sessions: Map<string, { handle: AdapterHandle | null }>;
+        }).sessions.get(metadata.id)?.handle,
+      ).toBeNull();
+    });
   });
 
   describe('update', () => {
@@ -370,6 +497,23 @@ describe('SessionManager', () => {
       expect(updated.title).toBe('new title');
       expect(updated.notes).toBe('upgraded shell');
     });
+
+    it('rolls back metadata when the descriptor update cannot commit', async () => {
+      let durableEvents = 0;
+      manager.onDurableEvent(() => {
+        durableEvents++;
+        if (durableEvents === 3) throw new Error('synthetic metadata update failure');
+      });
+      const { metadata } = await manager.create({
+        kind: 'local_pty',
+        title: 'original title',
+        initial_wait_ms: 0,
+      });
+
+      expect(() => manager.update(metadata.id, { title: 'must not stick' }))
+        .toThrow('synthetic metadata update failure');
+      expect(manager.getSession(metadata.id)?.title).toBe('original title');
+    });
   });
 
   describe('resize', () => {
@@ -388,6 +532,23 @@ describe('SessionManager', () => {
   });
 
   describe('sendCommand (experimental)', () => {
+    it('does not send a command when the descriptor update cannot commit', async () => {
+      let durableEvents = 0;
+      manager.onDurableEvent(() => {
+        durableEvents++;
+        if (durableEvents === 3) throw new Error('synthetic command descriptor failure');
+      });
+      const { metadata } = await manager.create({
+        kind: 'local_pty',
+        title: 'fail-closed command',
+        initial_wait_ms: 0,
+      });
+
+      await expect(manager.sendCommand(metadata.id, 'must-not-run'))
+        .rejects.toThrow('synthetic command descriptor failure');
+      expect(mockAdapter.written).toEqual([]);
+    });
+
     it('sends command and captures output', async () => {
       const { metadata } = await manager.create({ kind: 'local_pty', title: 'test', initial_wait_ms: 0 });
 
@@ -533,6 +694,55 @@ describe('SessionManager', () => {
 
       expect(handleClosed).toBe(true);
       await engineManager.shutdown();
+    });
+
+    it('retains a failed cleanup handle and retries it during shutdown', async () => {
+      const handle = createMockAdapter().handle;
+      const closeHandle = vi.spyOn(handle, 'close')
+        .mockImplementationOnce(() => {
+          throw new Error('synthetic create cleanup failure');
+        })
+        .mockImplementation(() => undefined);
+      const failingAdapter: SessionAdapterFactory = {
+        kind: 'ssh' as any,
+        async spawn() {
+          return handle;
+        },
+      };
+      const fakeEngine = {
+        logActionEvent() {},
+        ingestSessionResult() { throw new Error('Injected engine failure'); },
+      };
+      const engineManager = new SessionManager(fakeEngine as any);
+      engineManager.registerAdapter(failingAdapter);
+
+      await expect(engineManager.create({
+        kind: 'ssh' as any,
+        title: 'cleanup-retry',
+        host: 'nonexistent.invalid',
+        target_node: 'host-target',
+        initial_wait_ms: 0,
+      })).rejects.toThrow('failed to open and runtime cleanup failed');
+
+      const [failed] = engineManager.list();
+      expect(failed).toMatchObject({
+        state: 'error',
+        closed_at: undefined,
+        notes: expect.stringContaining('Session-open cleanup could not close runtime'),
+      });
+      expect(
+        (engineManager as unknown as {
+          sessions: Map<string, { handle: AdapterHandle | null }>;
+        }).sessions.get(failed!.id)?.handle,
+      ).toBe(handle);
+
+      await engineManager.shutdown();
+      expect(closeHandle).toHaveBeenCalledTimes(2);
+      expect(
+        (engineManager as unknown as {
+          sessions: Map<string, { handle: AdapterHandle | null }>;
+        }).sessions.get(failed!.id)?.handle,
+      ).toBeNull();
     });
   });
 
@@ -1235,6 +1445,49 @@ describe('Session Idle Timeout', () => {
     const reaped = mgr.reapIdleSessions();
     expect(reaped).toContain(result.metadata.id);
     expect(mgr.list().filter(s => s.state === 'connected')).toHaveLength(0);
+  });
+
+  it('retains an idle runtime when close fails and shutdown retries ownership', async () => {
+    const mgr = new SessionManager(null, 100);
+    const mock = createMockAdapter();
+    const closeHandle = vi.spyOn(mock.handle, 'close')
+      .mockImplementationOnce(() => {
+        throw new Error('synthetic idle close failure');
+      })
+      .mockImplementation(() => undefined);
+    mgr.registerAdapter(mock.adapter);
+
+    const result = await mgr.create({
+      kind: 'local_pty',
+      title: 'idle-close-retry',
+      initial_wait_ms: 0,
+    });
+    const internal = (mgr as unknown as {
+      sessions: Map<string, {
+        metadata: { last_activity_at: string };
+        handle: AdapterHandle | null;
+      }>;
+    }).sessions.get(result.metadata.id)!;
+    internal.metadata.last_activity_at = new Date(Date.now() - 200).toISOString();
+
+    expect(mgr.reapIdleSessions()).toEqual([]);
+    expect(mgr.getSession(result.metadata.id)).toMatchObject({
+      state: 'error',
+      closed_at: undefined,
+      notes: expect.stringContaining('Idle reaper runtime close failed'),
+    });
+    expect(internal.handle).toBe(mock.handle);
+    expect(mgr.listUnresolvedRuntimeOwnership()).toEqual([
+      expect.objectContaining({ id: result.metadata.id, state: 'error' }),
+    ]);
+    expect(() => mgr.reconcileAfterStateRollback())
+      .toThrow('retain live or unresolved runtime ownership');
+
+    await mgr.shutdown();
+    expect(closeHandle).toHaveBeenCalledTimes(2);
+    expect(internal.handle).toBeNull();
+    expect(() => mgr.reconcileAfterStateRollback()).not.toThrow();
+    expect(mgr.list()).toEqual([]);
   });
 
   it('does not reap active sessions', async () => {

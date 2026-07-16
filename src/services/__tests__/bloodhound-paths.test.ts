@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties, EdgeType } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
@@ -40,6 +43,7 @@ function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string, 
 
 function buildEnricher(graph: OverwatchGraph, config?: any) {
   const ctx = new EngineContext(graph, config || makeConfig(), './test-state.json');
+  ctx.mutationJournal = null;
   return new BloodHoundPathEnricher(ctx);
 }
 
@@ -73,23 +77,33 @@ describe('BloodHound Path Enricher', () => {
       addNode(graph, 'grp-da', { type: 'group', label: 'Domain Admins', sid: 'S-1-5-21-1234-512' });
       addNode(graph, 'user-bob', { type: 'user', label: 'bob' });
       addEdge(graph, 'user-bob', 'grp-da', 'MEMBER_OF');
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const directory = mkdtempSync(join(tmpdir(), 'overwatch-bloodhound-paths-'));
+      const ctx = new EngineContext(graph, makeConfig(), join(directory, 'state.json'));
       const journaled: Array<{ id?: unknown; hvt?: unknown; hvt_reason?: unknown }> = [];
-      const orig = ctx.journalMutation.bind(ctx);
-      ctx.journalMutation = ((type: string, payload: Record<string, unknown>, sid?: string) => {
-        if (type === 'merge_node_attrs') journaled.push((payload as { props: Record<string, unknown> }).props);
-        return orig(type as never, payload, sid);
-      }) as typeof ctx.journalMutation;
+      const journal = ctx.mutationJournal!;
+      const append = journal.appendTransaction.bind(journal);
+      vi.spyOn(journal, 'appendTransaction').mockImplementation(draft => {
+        for (const operation of draft.operations) {
+          if (operation.type === 'merge_node_attrs') {
+            journaled.push((operation.payload as { props: Record<string, unknown> }).props);
+          }
+        }
+        return append(draft);
+      });
+      try {
+        const enricher = new BloodHoundPathEnricher(ctx);
+        const hvts = enricher.computeHighValueTargets();
 
-      const enricher = new BloodHoundPathEnricher(ctx);
-      const hvts = enricher.computeHighValueTargets();
-
-      expect(hvts.length).toBeGreaterThan(0);
-      // Enrichment runs once post-ingest (not on load), so each tag MUST be
-      // journaled or it is lost on crash-before-snapshot.
-      const hvtMerges = journaled.filter(p => p.hvt === true);
-      expect(hvtMerges.length).toBe(hvts.length);
-      expect(hvtMerges.every(p => typeof p.id === 'string' && !!p.hvt_reason)).toBe(true);
+        expect(hvts.length).toBeGreaterThan(0);
+        // Enrichment runs once post-ingest (not on load), so each tag MUST be
+        // journaled or it is lost on crash-before-snapshot.
+        const hvtMerges = journaled.filter(p => p.hvt === true);
+        expect(hvtMerges.length).toBe(hvts.length);
+        expect(hvtMerges.every(p => typeof p.id === 'string' && !!p.hvt_reason)).toBe(true);
+      } finally {
+        vi.restoreAllMocks();
+        rmSync(directory, { recursive: true, force: true });
+      }
     });
 
     it('tags users with DCSync rights as HVT', () => {
@@ -238,6 +252,7 @@ describe('BloodHound Path Enricher', () => {
 
       // Build enricher with shared context
       const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      ctx.mutationJournal = null;
       const enricher = new BloodHoundPathEnricher(ctx);
       const queryGraph = (query: any) => {
         const nodes: any[] = [];
@@ -269,6 +284,7 @@ describe('BloodHound Path Enricher', () => {
       addNode(graph, 'grp-da', { type: 'group', label: 'Domain Admins', sid: 'S-1-5-21-1234-512' });
 
       const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      ctx.mutationJournal = null;
       const enricher = new BloodHoundPathEnricher(ctx);
       const queryGraph = () => ({ nodes: [], edges: [] });
       const pathAnalyzer = new PathAnalyzer(ctx, BIDIR, queryGraph);

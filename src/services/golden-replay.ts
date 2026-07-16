@@ -146,7 +146,9 @@ export function replayTape(engine: GraphEngine, tape: GoldenTape): ReplayResult 
   for (const op of tape.operations) {
     applyOperation(engine, op);
   }
-  const graph = engine.exportGraph();
+  // Golden replay hashes canonical durable graph state. Community IDs are a
+  // derived public projection and must not perturb deterministic replay hashes.
+  const graph = engine.exportGraph({ includeDerivedCommunities: false });
   const graph_hash = hashGraph(graph);
   const activity_digest = hashActivity(engine.getFullHistory());
   const matches_expected =

@@ -73,6 +73,17 @@ export function registerMockServiceCore(
   engine: GraphEngine,
   opts: RegisterMockServiceOpts,
 ): RegisterMockServiceResult {
+  return engine.runAtomicGraphCommand(
+    'register or refresh mock service',
+    opts.action_id,
+    () => registerMockServiceMutation(engine, opts),
+  );
+}
+
+function registerMockServiceMutation(
+  engine: GraphEngine,
+  opts: RegisterMockServiceOpts,
+): RegisterMockServiceResult {
   const {
     purpose, protocol, bind_host, bind_port, opsec_loud, notes,
     bound_session_id, bound_process_id, target_node,

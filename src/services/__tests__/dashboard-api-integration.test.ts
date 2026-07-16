@@ -211,6 +211,10 @@ describe('GET /api/state', () => {
       outcome: expect.any(String),
       complete: expect.any(Boolean),
       writable: expect.any(Boolean),
+      highest_allocated_logical_seq: expect.any(Number),
+      highest_allocated_frame_seq: expect.any(Number),
+      highest_physical_frame_seq: expect.any(Number),
+      highest_contiguous_applied_logical_seq: expect.any(Number),
       journal: expect.any(Object),
     });
     expect((body.state as { graph_summary: { nodes_by_type: unknown } }).graph_summary).toHaveProperty('nodes_by_type');
@@ -368,8 +372,12 @@ describe('GET /api/readiness', () => {
         reason: 'sequence gap',
         base_checkpoint: 2,
         highest_allocated_seq: 6,
+        highest_allocated_logical_seq: 6,
+        highest_allocated_frame_seq: 18,
         highest_on_disk_seq: 6,
+        highest_physical_frame_seq: 18,
         highest_contiguous_applied_seq: 4,
+        highest_contiguous_applied_logical_seq: 4,
         consecutive_persistence_failures: 0,
         journal: {
           enabled: true,
@@ -392,7 +400,9 @@ describe('GET /api/readiness', () => {
         outcome: 'incomplete',
         writable: false,
         highest_contiguous_applied_seq: 4,
+        highest_contiguous_applied_logical_seq: 4,
         highest_on_disk_seq: 6,
+        highest_physical_frame_seq: 18,
       });
       expect(body.issues[0]).toContain('sequence gap');
     } finally {

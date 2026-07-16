@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync, rmSync, readFileSync } from 'fs';
-import { resolve } from 'path';
+import { mkdtempSync, rmSync, readFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerTranscriptTools } from '../transcripts.js';
 import type { EngagementConfig } from '../../types.js';
 
-const TEST_STATE_FILE = './state-test-ingest-transcript.json';
 const FIXTURE_PATH = resolve(__dirname, '../../../fixtures/transcripts/sample.jsonl');
+let testDir: string;
+let testStateFile: string;
 
 function makeConfig(): EngagementConfig {
   return {
@@ -20,11 +22,6 @@ function makeConfig(): EngagementConfig {
   };
 }
 
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { rmSync('./evidence-test-ingest-transcript', { recursive: true, force: true }); } catch {}
-}
-
 function parse(result: any): any {
   return JSON.parse(result.content[0].text);
 }
@@ -34,8 +31,9 @@ describe('ingest_transcript', () => {
   let handlers: Record<string, (args: any) => Promise<any>>;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-ingest-transcript-'));
+    testStateFile = join(testDir, 'state.json');
+    engine = new GraphEngine(makeConfig(), testStateFile);
     handlers = {};
     const fakeServer = {
       registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
@@ -46,7 +44,8 @@ describe('ingest_transcript', () => {
   });
 
   afterEach(() => {
-    cleanup();
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('parses fixture jsonl, stores evidence, emits per-turn events with action_id linkage', async () => {

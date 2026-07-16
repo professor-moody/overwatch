@@ -216,6 +216,18 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         evidenceDetails.raw_output = raw_output.slice(0, 8192);
       }
 
+      const result = engine.ingestFinding(prepared.finding);
+
+      // Finding ingestion owns campaign attribution so the successful dedup
+      // fingerprint and campaign link share one durable state patch. Duplicate
+      // findings additionally commit their attribution merge, dedup counter,
+      // canonical audit event, and campaign link in one EngineTransaction.
+      const campaign_id = result.campaign_id;
+
+      // Blob-first ordering is intentional: a crash or failed ingest may leave
+      // an unreferenced content-addressed blob for later cleanup, but durable
+      // activity must never claim that evidence/finding landed before the graph
+      // mutation actually succeeds.
       engine.logActionEvent({
         description: `Finding reported: ${prepared.finding.nodes.length} nodes, ${prepared.finding.edges.length} edges`,
         agent_id,
@@ -232,20 +244,6 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         linked_finding_ids: [finding.id],
         result_classification: 'success',
         details: evidenceDetails,
-      });
-
-      const result = engine.ingestFinding(prepared.finding);
-
-      // Link this finding to its campaign (if any) so campaign-level
-      // reporting and the dashboard's campaign detail view see it. Before
-      // this, campaign.findings stayed empty until updateAgentStatus ran
-      // — and even then it never received a findingId, so the list was
-      // effectively never populated.
-      const campaign_id = engine.linkFindingToCampaign({
-        finding_id: finding.id,
-        frontier_item_id,
-        agent_id,
-        action_id: normalizedActionId,
       });
 
       // Durability: a reported finding is the engagement's most important data —
