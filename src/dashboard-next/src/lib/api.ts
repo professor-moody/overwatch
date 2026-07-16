@@ -69,13 +69,15 @@ import {
   type CampaignDispatchResponse,
   type ConfigDivergenceResolveRequest,
   type ConfigDivergenceResolveResponse,
+  type GraphCorrectionOperationDto,
+  type GraphCorrectionResultDto,
   type ObjectiveCreateRequest,
   type ObjectiveUpdateRequest,
   type RawGraphDto,
   type RecoveryStatusDto,
   type SettingsDto,
 } from '@overwatch/dashboard-contracts';
-import { dashboardFetch } from './dashboard-transport';
+import { createDashboardCommandId, dashboardFetch } from './dashboard-transport';
 import { useEngagementStore } from '../stores/engagement-store';
 
 const BASE = '';
@@ -319,10 +321,25 @@ export async function fleetDismiss(
 
 export interface DispatchAgentResult {
   dispatched: boolean;
-  task?: { id: string; agent_id: string };
+  task?: {
+    task_id?: string;
+    agent_label?: string;
+    id?: string;
+    agent_id?: string;
+  };
   reason?: string;
   existing_task_id?: string;
   existing_agent_id?: string;
+}
+
+export function dispatchedAgentLabel(
+  task: DispatchAgentResult['task'] | QuickDeployResult['task'],
+): string {
+  return task?.agent_label
+    ?? task?.agent_id
+    ?? task?.task_id
+    ?? task?.id
+    ?? 'Agent queued';
 }
 
 export interface AgentArchetypeSummary {
@@ -341,7 +358,14 @@ export async function getArchetypes(): Promise<{ archetypes: AgentArchetypeSumma
 
 export interface QuickDeployResult {
   dispatched: boolean;
-  task?: { id: string; agent_id: string; archetype?: string; objective?: string };
+  task?: {
+    task_id?: string;
+    agent_label?: string;
+    id?: string;
+    agent_id?: string;
+    archetype?: string;
+    objective?: string;
+  };
   archetype?: string;
   scope?: { added_cidrs: string[]; added_domains: string[]; affected_node_count: number };
   reason?: string;
@@ -456,7 +480,10 @@ export interface CommandPreview {
   unresolved: { text: string; reason: string }[];
   needs_planner: boolean;
   planner_task_id?: string;
+  command_id?: string;
+  planner_status?: string;
   planner_available?: boolean;
+  planner_plan?: ProposedPlan;
   /** Present when the input was a read-only query; render directly, no confirm. */
   query_answer?: QueryAnswer;
 }
@@ -489,22 +516,66 @@ export interface ProposedPlan {
 
 /** Phase 1: interpret a free-form command into a previewable plan (no mutation). */
 export async function previewCommand(command: string): Promise<CommandPreview> {
-  return fetchJson('/api/commands', { method: 'POST', body: JSON.stringify({ command }) });
+  const commandId = createDashboardCommandId();
+  return fetchJson('/api/commands', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': `operator-plan:${commandId}`,
+      'X-Overwatch-Command-Id': commandId,
+    },
+    body: JSON.stringify({ command }),
+  });
 }
 
 /** Phase 2: confirm + execute a previewed/proposed plan by id. */
 export async function confirmCommand(planId: string): Promise<{ executed: boolean; results: CommandOpResult[] }> {
-  return fetchJson('/api/commands', { method: 'POST', body: JSON.stringify({ confirm: true, plan_id: planId }) });
+  return fetchJson('/api/commands', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': `plan-confirm:${planId}`,
+      'X-Overwatch-Command-Id': createDashboardCommandId(),
+    },
+    body: JSON.stringify({ confirm: true, plan_id: planId }),
+  });
 }
 
 /** Dismiss a planner-proposed plan without executing it. */
 export async function denyCommandPlan(planId: string): Promise<{ denied: boolean }> {
-  return fetchJson('/api/commands', { method: 'POST', body: JSON.stringify({ deny: true, plan_id: planId }) });
+  return fetchJson('/api/commands', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': `plan-deny:${planId}`,
+      'X-Overwatch-Command-Id': createDashboardCommandId(),
+    },
+    body: JSON.stringify({ deny: true, plan_id: planId }),
+  });
 }
 
 /** Open planner-proposed plans awaiting operator confirmation. */
 export async function getProposedPlans(): Promise<{ plans: ProposedPlan[] }> {
   return fetchJson('/api/plans');
+}
+
+export interface ApplicationCommandRecord {
+  command_id: string;
+  idempotency_key: string;
+  command_kind: string;
+  validated_input: unknown;
+  status: 'accepted' | 'running' | 'succeeded' | 'failed' | 'interrupted';
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  plan_id?: string;
+  result?: unknown;
+  error?: { code?: string; message: string; details?: unknown };
+  entity_refs?: Record<string, string | string[]>;
+}
+
+export async function getApplicationCommand(
+  commandId: string,
+  signal?: AbortSignal,
+): Promise<{ command: ApplicationCommandRecord }> {
+  return fetchJson(`/api/commands/${encodeURIComponent(commandId)}`, { signal });
 }
 
 // --- Agent→operator question inbox (Phase 3D) ---
@@ -1071,23 +1142,8 @@ export async function exportGraphJson(): Promise<RawGraphDto> {
 
 // --- Graph Correct ---
 
-export interface GraphCorrectionOperation {
-  kind: 'drop_edge' | 'replace_edge' | 'patch_node';
-  source_id?: string;
-  target_id?: string;
-  edge_type?: string;
-  new_source_id?: string;
-  new_target_id?: string;
-  new_edge_type?: string;
-  node_id?: string;
-  patch?: Record<string, unknown>;
-}
-
-export interface GraphCorrectionResult {
-  dropped_edges: string[];
-  replaced_edges: Array<{ old_edge_id: string; new_edge_id: string }>;
-  patched_nodes: string[];
-}
+export type GraphCorrectionOperation = GraphCorrectionOperationDto;
+export type GraphCorrectionResult = GraphCorrectionResultDto;
 
 export async function correctGraph(
   reason: string,

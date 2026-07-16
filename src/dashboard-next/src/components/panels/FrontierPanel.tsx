@@ -16,7 +16,12 @@ import {
   formatFrontierScore,
 } from '../../lib/frontier-workspace';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
-import { getFindings, dispatchAgent, type FindingDto } from '../../lib/api';
+import {
+  dispatchedAgentLabel,
+  getFindings,
+  dispatchAgent,
+  type FindingDto,
+} from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 
 const SECTION_DEFAULT_LIMIT = 12;
@@ -285,7 +290,11 @@ function FrontierItemCard({
     setDispatching(true);
     try {
       const res = await dispatchAgent({ frontier_item_id: frontierKey });
-      addToast({ type: res.dispatched ? 'success' : 'warning', title: res.dispatched ? 'Agent dispatched' : 'Not dispatched', message: res.dispatched ? res.task?.agent_id : res.reason });
+      addToast({
+        type: res.dispatched ? 'success' : 'warning',
+        title: res.dispatched ? 'Agent dispatched' : 'Not dispatched',
+        message: res.dispatched ? dispatchedAgentLabel(res.task) : res.reason,
+      });
     } catch (err) {
       addToast({ type: 'error', title: 'Dispatch failed', message: err instanceof Error ? err.message : String(err) });
     } finally { setDispatching(false); }

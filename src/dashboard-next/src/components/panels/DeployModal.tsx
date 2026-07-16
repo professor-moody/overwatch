@@ -59,7 +59,7 @@ export function DeployModal({ onClose, onDeployed }: { onClose: () => void; onDe
       } else if (parsed.kind === 'nodes') {
         const res = await api.dispatchAgent({ target_node_ids: parsed.nodeIds, archetype: effectiveId, model: model || undefined });
         if (res.dispatched) {
-          addToast({ type: 'success', title: `Deployed ${effectiveId}`, message: res.task?.agent_id });
+          addToast({ type: 'success', title: `Deployed ${effectiveId}`, message: api.dispatchedAgentLabel(res.task) });
           onDeployed();
         } else {
           addToast({ type: 'warning', title: 'Not deployed', message: res.reason === 'frontier_lease_conflict' ? 'target already being worked' : (res.reason || 'dispatch refused') });

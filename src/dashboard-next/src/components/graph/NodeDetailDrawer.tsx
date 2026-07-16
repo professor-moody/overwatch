@@ -2,12 +2,12 @@
 // NodeDetailDrawer - right-side operator inspector
 // ============================================================
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
 import { useNavigation } from '../../hooks/useNavigation';
-import { correctGraph, dispatchAgent, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
+import { dispatchAgent, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { deriveNodeRelationships } from '../../lib/relationships';
@@ -33,7 +33,7 @@ interface NodeDetailDrawerProps {
 
 type EvidenceStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
 
-export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, onUndoPush }: NodeDetailDrawerProps) {
+export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetailDrawerProps) {
   const { navigateToEvidence, navigateToGraph, navigateToPanel } = useNavigation();
   const storeGraph = useEngagementStore(s => s.graph);
   const sessions = useEngagementStore(s => s.sessions);
@@ -387,7 +387,6 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
             Frontier
           </ActionButton>
         </div>
-        {editMode && <AddEdgeInline graph={graph} sourceId={nodeId} onUndoPush={onUndoPush} />}
       </div>
     </div>
   );
@@ -515,89 +514,4 @@ function findingSeverityClass(severity: FindingDto['severity']): string {
   if (severity === 'medium') return 'bg-warning/10 text-warning';
   if (severity === 'low') return 'bg-accent/10 text-accent';
   return 'bg-elevated text-muted-foreground';
-}
-
-// ---- Add Edge (inline, edit mode) ----
-
-function AddEdgeInline({ graph, sourceId, onUndoPush }: {
-  graph: Graph;
-  sourceId: string;
-  onUndoPush?: (op: { reason: string; reverse: GraphCorrectionOperation[] }) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [targetId, setTargetId] = useState('');
-  const [edgeType, setEdgeType] = useState('RELATED');
-  const [loading, setLoading] = useState(false);
-  const toast = useToastStore((s) => s.addToast);
-
-  const edgeTypes = new Set<string>();
-  graph.forEachEdge((_edge, attrs) => { edgeTypes.add((attrs.edgeType as string) || 'RELATED'); });
-  const sortedTypes = [...edgeTypes].sort();
-
-  const allNodeIds: string[] = [];
-  graph.forEachNode((id) => { allNodeIds.push(id); });
-
-  const handleAdd = useCallback(async () => {
-    if (!targetId.trim()) return;
-    setLoading(true);
-    try {
-      const pendingKey = `_pending_edge_${Date.now()}`;
-      const op: GraphCorrectionOperation = {
-        kind: 'patch_node',
-        node_id: sourceId,
-        patch: { [pendingKey]: `${edgeType}:${targetId.trim()}` },
-      };
-      await correctGraph(`[console] Add edge: ${sourceId} --[${edgeType}]--> ${targetId.trim()}`, [op]);
-      toast({ type: 'success', title: 'Edge flagged', message: `${sourceId} -> ${targetId.trim()} (${edgeType})` });
-      onUndoPush?.({
-        reason: `Undo: add edge ${sourceId} -> ${targetId.trim()}`,
-        reverse: [{ kind: 'patch_node', node_id: sourceId, patch: { [pendingKey]: undefined } }],
-      });
-      setOpen(false);
-      setTargetId('');
-    } catch (err) {
-      toast({ type: 'error', title: 'Failed', message: String(err) });
-    } finally {
-      setLoading(false);
-    }
-  }, [sourceId, targetId, edgeType, toast, onUndoPush]);
-
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="text-xs py-1.5 rounded border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-accent/40 transition-colors"
-      >
-        + Add Edge
-      </button>
-    );
-  }
-
-  return (
-    <div className="border border-border rounded p-2 space-y-2">
-      <div className="text-[10px] text-muted-foreground">Add edge from <span className="font-mono text-accent">{sourceId}</span></div>
-      <input
-        value={targetId}
-        onChange={(e) => setTargetId(e.target.value)}
-        placeholder="Target node ID..."
-        className="settings-input w-full text-xs"
-        list="node-targets"
-      />
-      <datalist id="node-targets">
-        {allNodeIds.slice(0, 100).map(id => <option key={id} value={id} />)}
-      </datalist>
-      <select value={edgeType} onChange={(e) => setEdgeType(e.target.value)} className="settings-input w-full text-xs">
-        {sortedTypes.map(type => <option key={type} value={type}>{type}</option>)}
-        <option value="RELATED">RELATED</option>
-      </select>
-      <div className="flex gap-2">
-        <button onClick={handleAdd} disabled={loading} className="flex-1 text-xs py-1 rounded bg-accent/10 text-accent hover:bg-accent/20">
-          {loading ? 'Adding...' : 'Add'}
-        </button>
-        <button onClick={() => setOpen(false)} className="flex-1 text-xs py-1 rounded bg-elevated text-muted-foreground hover:text-foreground">
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
 }
