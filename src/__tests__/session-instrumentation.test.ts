@@ -50,6 +50,7 @@ function makeSessionMetadata(overrides: Partial<SessionMetadata> = {}): SessionM
 function buildHarness(opts: {
   session?: SessionMetadata | null;
   sendResult?: SessionReadResult;
+  sendError?: Error & { code?: string };
   validateOverride?: (action: any) => ReturnType<MockEngineState['validate']>;
   nonce?: string;
 } = {}) {
@@ -73,14 +74,19 @@ function buildHarness(opts: {
     nonce: opts.nonce,
   };
 
-  const sendCommand = vi.fn(async () => opts.sendResult ?? {
-    session_id: 'session-1',
-    start_pos: 0,
-    end_pos: 12,
-    text: 'mocked stdout',
-    truncated: false,
-    completion_reason: 'idle' as const,
-    timed_out: false,
+  const sendCommand = vi.fn(async () => {
+    if (opts.sendError) throw opts.sendError;
+    return opts.sendResult ?? {
+      session_id: 'session-1',
+      connection_id: opts.session?.connection_id,
+      connection_generation: opts.session?.connection_generation,
+      start_pos: 0,
+      end_pos: 12,
+      text: 'mocked stdout',
+      truncated: false,
+      completion_reason: 'idle' as const,
+      timed_out: false,
+    };
   });
 
   const sessionManager = {
@@ -128,6 +134,8 @@ describe('send_to_session instrumentation', () => {
   it('runs the full lifecycle and persists evidence when default_validation is set', async () => {
     const session = makeSessionMetadata({
       default_validation: { technique: 'lateral_movement', target_ip: '10.10.10.7' } as SessionDefaultValidation,
+      connection_id: 'session-1:g4',
+      connection_generation: 4,
     });
     const { handlers, sendCommand, state } = buildHarness({ session });
 
@@ -135,14 +143,34 @@ describe('send_to_session instrumentation', () => {
 
     expect(result.isError).toBeUndefined();
     expect(sendCommand).toHaveBeenCalledOnce();
+    expect(sendCommand).toHaveBeenCalledWith(
+      'session-1',
+      'whoami',
+      expect.objectContaining({
+        connection_id: 'session-1:g4',
+        connection_generation: 4,
+      }),
+    );
 
     const payload = JSON.parse(result.content[0].text);
     expect(payload.action_id).toMatch(/^[0-9a-f-]+$/i);
     expect(payload.evidence_id).toBe('evid-1');
     expect(payload.validation_result).toBe('valid');
+    expect(payload).toMatchObject({
+      session_id: 'session-1',
+      connection_id: 'session-1:g4',
+      connection_generation: 4,
+    });
 
     const types = state.events.map(e => e.event_type);
     expect(types).toEqual(['action_validated', 'action_started', 'action_completed']);
+    for (const event of state.events) {
+      expect(event.details).toMatchObject({
+        session_id: 'session-1',
+        connection_id: 'session-1:g4',
+        connection_generation: 4,
+      });
+    }
 
     const completed = state.events.find(e => e.event_type === 'action_completed')!;
     expect(completed.tool_name).toBe('send_to_session');
@@ -227,6 +255,52 @@ describe('send_to_session instrumentation', () => {
     expect(completed).toBeDefined();
     expect((completed.details as any).completion_reason).toBe('timeout');
     expect((completed.details as any).timed_out).toBe(true);
+  });
+
+  it('pins execution to the validated connection generation', async () => {
+    const session = makeSessionMetadata({
+      connection_id: 'session-1:g1',
+      connection_generation: 1,
+      default_validation: {
+        technique: 'lateral_movement',
+        target_ip: '10.10.10.7',
+      } as SessionDefaultValidation,
+    });
+    const sendError = Object.assign(
+      new Error('Session session-1 connection generation changed.'),
+      { code: 'SESSION_GENERATION_CHANGED' },
+    );
+    const { handlers, sendCommand, state } = buildHarness({ session, sendError });
+
+    const result = await handlers.send_to_session({
+      session_id: 'session-1',
+      command: 'whoami',
+    });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(result.isError).toBe(true);
+    expect(sendCommand).toHaveBeenCalledWith(
+      'session-1',
+      'whoami',
+      expect.objectContaining({
+        connection_id: 'session-1:g1',
+        connection_generation: 1,
+      }),
+    );
+    expect(payload).toMatchObject({
+      connection_id: 'session-1:g1',
+      connection_generation: 1,
+      code: 'SESSION_GENERATION_CHANGED',
+      executed: false,
+    });
+    expect(state.events.at(-1)).toMatchObject({
+      event_type: 'action_failed',
+      details: expect.objectContaining({
+        connection_id: 'session-1:g1',
+        connection_generation: 1,
+        code: 'SESSION_GENERATION_CHANGED',
+      }),
+    });
   });
 
   it('records OPSEC noise when noise_estimate is provided', async () => {

@@ -181,7 +181,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Processes** | `src/tools/processes.ts` | `track_process`, `check_processes` |
 | **Remediation** | `src/tools/remediation.ts` | `correct_graph` |
 | **Retrospective** | `src/tools/retrospective.ts` | `run_retrospective` |
-| **Sessions** | `src/tools/sessions.ts` | `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `update_session`, `resize_session`, `signal_session`, `close_session` |
+| **Sessions** | `src/tools/sessions.ts` | `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `resume_session`, `update_session`, `resize_session`, `signal_session`, `close_session` |
 | **Scope** | `src/tools/scope.ts` | `update_scope` |
 | **Instructions** | `src/tools/instructions.ts` | `get_system_prompt` |
 | **Reporting** | `src/tools/reporting.ts` | `generate_report` |

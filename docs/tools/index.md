@@ -75,6 +75,7 @@ Overwatch exposes its MCP tools organized by function (the live count comes from
 | [`read_session`](sessions.md) | Cursor-based read from session buffer | Yes |
 | [`send_to_session`](sessions.md) | Instrumented command send with validation, action logging, and evidence capture | No |
 | [`list_sessions`](sessions.md) | List sessions with metadata | Yes |
+| [`resume_session`](sessions.md) | Explicitly rebind a recovered rearm listener | No |
 | [`update_session`](sessions.md) | Update capabilities, title, ownership | No |
 | [`resize_session`](sessions.md) | Resize terminal dimensions | No |
 | [`signal_session`](sessions.md) | Send signal to session process | No |

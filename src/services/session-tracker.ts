@@ -24,6 +24,43 @@ export interface SessionTrackerHost {
   invalidatePathGraph(): void;
 }
 
+interface LiveSessionReference {
+  session_id: string;
+  listener_id?: string;
+  connection_generation?: number;
+}
+
+function liveSessionReferences(attrs: Record<string, unknown>): LiveSessionReference[] {
+  if (Array.isArray(attrs.live_session_refs)) {
+    return attrs.live_session_refs
+      .filter((candidate): candidate is Record<string, unknown> =>
+        candidate !== null && typeof candidate === 'object')
+      .flatMap(candidate => typeof candidate.session_id === 'string'
+        ? [{
+            session_id: candidate.session_id,
+            ...(typeof candidate.listener_id === 'string'
+              ? { listener_id: candidate.listener_id }
+              : {}),
+            ...(typeof candidate.connection_generation === 'number'
+              ? { connection_generation: candidate.connection_generation }
+              : {}),
+          }]
+        : []);
+  }
+  const ids = Array.isArray(attrs.live_session_ids)
+    ? attrs.live_session_ids.filter((id): id is string => typeof id === 'string')
+    : [];
+  return ids.map(id => ({
+    session_id: id,
+    ...(id === attrs.session_id && typeof attrs.listener_id === 'string'
+      ? { listener_id: attrs.listener_id }
+      : {}),
+    ...(id === attrs.session_id && typeof attrs.connection_generation === 'number'
+      ? { connection_generation: attrs.connection_generation }
+      : {}),
+  }));
+}
+
 export function ingestSessionResult(
   host: SessionTrackerHost,
   result: {
@@ -33,12 +70,25 @@ export function ingestSessionResult(
     principal_node?: string;
     credential_node?: string;
     session_id?: string;
+    listener_id?: string;
+    connection_generation?: number;
     agent_id?: string;
     action_id?: string;
     frontier_item_id?: string;
   },
 ): void {
-  const { success, target_node, principal_node, credential_node, session_id, agent_id, action_id, frontier_item_id } = result;
+  const {
+    success,
+    target_node,
+    principal_node,
+    credential_node,
+    session_id,
+    listener_id,
+    connection_generation,
+    agent_id,
+    action_id,
+    frontier_item_id,
+  } = result;
   const confirmed = result.confirmed !== false; // default true for backward compat
 
   if (success) {
@@ -75,7 +125,18 @@ export function ingestSessionResult(
             confirmed_at: new Date().toISOString(),
             session_live: true,
             session_id,
+            listener_id,
+            connection_generation,
             live_session_ids: session_id ? [session_id] : [],
+            live_session_refs: session_id
+              ? [{
+                  session_id,
+                  ...(listener_id ? { listener_id } : {}),
+                  ...(connection_generation !== undefined
+                    ? { connection_generation }
+                    : {}),
+                }]
+              : [],
           }, edgeId);
           host.invalidateFrontierCache();
           host.invalidatePathGraph();
@@ -83,6 +144,19 @@ export function ingestSessionResult(
           const existing = host.ctx.graph.getEdgeAttributes(edgeId);
           const liveIds = new Set<string>((existing.live_session_ids as string[]) || []);
           if (session_id) liveIds.add(session_id);
+          const refs = liveSessionReferences(existing);
+          if (session_id) {
+            const nextRef: LiveSessionReference = {
+              session_id,
+              ...(listener_id ? { listener_id } : {}),
+              ...(connection_generation !== undefined
+                ? { connection_generation }
+                : {}),
+            };
+            const refIndex = refs.findIndex(ref => ref.session_id === session_id);
+            if (refIndex >= 0) refs[refIndex] = nextRef;
+            else refs.push(nextRef);
+          }
           const mergeProps: Record<string, unknown> = {
             confidence: 1.0,
             tested: true,
@@ -90,11 +164,16 @@ export function ingestSessionResult(
             confirmed_at: new Date().toISOString(),
             session_live: true,
             live_session_ids: [...liveIds],
+            live_session_refs: refs,
             session_unconfirmed: undefined,
           };
           // Only overwrite the scalar session_id when this open carries one —
           // an id-less re-open must not clobber a valid recorded session_id.
           if (session_id) mergeProps.session_id = session_id;
+          if (listener_id) mergeProps.listener_id = listener_id;
+          if (connection_generation !== undefined) {
+            mergeProps.connection_generation = connection_generation;
+          }
           host.mergeEdgeAttributes(edgeId, mergeProps);
         }
       }
@@ -106,13 +185,15 @@ export function ingestSessionResult(
     const eventType = confirmed ? 'session_access_confirmed' : 'session_access_unconfirmed';
     host.logActionEvent({
       event_type: eventType,
-      description: `SSH session ${session_id || '(unknown)'} to ${target_node} ${confirmed ? 'succeeded' : 'connected but unconfirmed — no shell detected'}${principal_node ? ` as ${principal_node}` : ''}`,
+      description: `Session ${session_id || '(unknown)'} to ${target_node} ${confirmed ? 'succeeded' : 'connected but unconfirmed — no shell detected'}${principal_node ? ` as ${principal_node}` : ''}`,
       agent_id,
       action_id,
       frontier_item_id,
       category: 'system',
       details: {
         session_id,
+        listener_id,
+        connection_generation,
         target_node,
         principal_node,
         credential_node,
@@ -126,7 +207,7 @@ export function ingestSessionResult(
 
     host.logActionEvent({
       event_type: 'session_error',
-      description: `SSH session to ${target_node} failed${principal_node ? ` as ${principal_node}` : ''}`,
+      description: `Session to ${target_node} failed${principal_node ? ` as ${principal_node}` : ''}`,
       agent_id,
       action_id,
       frontier_item_id,
@@ -181,17 +262,23 @@ export function onSessionClosed(host: SessionTrackerHost, sessionId: string, tar
     const attrs = host.ctx.graph.getEdgeAttributes(edgeId);
     const liveIds = new Set<string>((attrs.live_session_ids as string[]) || []);
     liveIds.delete(sessionId);
+    const refs = liveSessionReferences(attrs)
+      .filter(ref => ref.session_id !== sessionId);
     // Only mark the edge not-live once the LAST live session on it has closed —
     // a still-live concurrent session (same principal→target) keeps it live.
     const stillLive = liveIds.size > 0;
     const props: Record<string, unknown> = {
       live_session_ids: [...liveIds],
+      live_session_refs: refs,
       session_live: stillLive,
     };
     if (stillLive) {
       // Keep the scalar session_id pointing at a session that is actually still
       // live, not the one we just closed.
       props.session_id = [...liveIds][0];
+      const remainingRef = refs.find(ref => ref.session_id === props.session_id);
+      props.listener_id = remainingRef?.listener_id ?? null;
+      props.connection_generation = remainingRef?.connection_generation ?? null;
     } else {
       // Fully drained. Leave the scalar session_id as the last session id (a
       // historical marker) — do NOT set it to `undefined`: mutation-journal
@@ -231,6 +318,7 @@ export function reconcileSessionEdgesOnStartup(host: SessionTrackerHost): void {
         session_live: false,
         session_closed_at: attrs.session_closed_at || new Date().toISOString(),
         live_session_ids: [] as string[],
+        live_session_refs: [] as LiveSessionReference[],
       };
       host.mergeEdgeAttributes(_edgeId, props);
       downgraded++;

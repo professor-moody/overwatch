@@ -925,7 +925,8 @@ describe('SessionManager — ownership enforcement', () => {
       // shutdown must bypass ownership to close it
       await manager.shutdown();
       const meta = manager.getSession(sessionId);
-      expect(meta?.state).toBe('closed');
+      expect(meta?.state).toBe('interrupted');
+      expect(meta?.last_connection_state).toBe('interrupted');
     });
   });
 
@@ -1066,7 +1067,9 @@ describe('SocketAdapter — dumb session', () => {
         credential_node: 'cred-1',
         action_id: 'act-1',
         frontier_item_id: 'frontier-1',
-        session_id: result.metadata.id,
+        session_id: `${result.metadata.id}:g1`,
+        listener_id: result.metadata.id,
+        connection_generation: 1,
       }),
     ]);
     expect(events).toEqual(expect.arrayContaining([
@@ -1488,6 +1491,41 @@ describe('Session Idle Timeout', () => {
     expect(internal.handle).toBeNull();
     expect(() => mgr.reconcileAfterStateRollback()).not.toThrow();
     expect(mgr.list()).toEqual([]);
+    mgr.restorePersistedDescriptors([{
+      session_id: 'restored-after-rollback',
+      kind: 'socket',
+      adapter: 'socket',
+      transport: 'tcp-listen',
+      lifecycle: 'closed',
+      recovery_lifecycle: 'resume_available',
+      listener_id: 'restored-after-rollback',
+      connection_generation: 2,
+      mode: 'listen',
+      accept_mode: 'rearm',
+      title: 'Restored after rollback',
+      port: 4444,
+      started_at: '2026-07-16T00:00:00.000Z',
+      last_activity_at: '2026-07-16T00:00:00.000Z',
+      capabilities: {
+        has_stdin: true,
+        has_stdout: true,
+        supports_resize: false,
+        supports_signals: false,
+        tty_quality: 'dumb',
+      },
+      resume_intent: {
+        policy: 'manual',
+        requested: true,
+        prior_state: 'pending',
+        recovery_prior_state: 'resume_available',
+        recorded_at: '2026-07-16T00:00:00.000Z',
+      },
+    }]);
+    expect(mgr.list()).toContainEqual(expect.objectContaining({
+      id: 'restored-after-rollback',
+      state: 'resume_available',
+      connection_generation: 2,
+    }));
   });
 
   it('does not reap active sessions', async () => {

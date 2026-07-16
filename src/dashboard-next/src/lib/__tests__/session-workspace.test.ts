@@ -11,6 +11,7 @@ import {
   removeAttachedSession,
   searchSession,
   searchSessionBuffer,
+  sessionBufferRequestKey,
   sessionCopyFields,
   sessionsForAgent,
   sessionSupportsResize,
@@ -60,12 +61,16 @@ describe('session workspace helpers', () => {
     const grouped = groupSessions([
       session({ id: 'live', state: 'connected' }),
       session({ id: 'pending', state: 'pending' }),
+      session({ id: 'resume', state: 'resume_available' }),
+      session({ id: 'interrupted', state: 'interrupted' }),
       session({ id: 'closed', state: 'closed' }),
       session({ id: 'error', state: 'error' }),
     ]);
 
     expect(grouped.live.map(s => s.id)).toEqual(['live']);
     expect(grouped.pending.map(s => s.id)).toEqual(['pending']);
+    expect(grouped.resume_available.map(s => s.id)).toEqual(['resume']);
+    expect(grouped.interrupted.map(s => s.id)).toEqual(['interrupted']);
     expect(grouped.error.map(s => s.id)).toEqual(['error']);
     expect(grouped.closed.map(s => s.id)).toEqual(['closed']);
   });
@@ -100,6 +105,33 @@ describe('session workspace helpers', () => {
     expect(addAttachedSession(['a'], 'a')).toEqual(['a']);
     expect(addAttachedSession(['a'], 'b')).toEqual(['a', 'b']);
     expect(removeAttachedSession(['a', 'b'], 'a')).toEqual(['b']);
+  });
+
+  it('changes the buffer request key across connection generations and lifecycle transitions', () => {
+    const generationOne = session({
+      id: 'listener-1',
+      state: 'connected',
+      connection_id: 'listener-1:g1',
+      connection_generation: 1,
+    });
+    const generationTwo = session({
+      ...generationOne,
+      connection_id: 'listener-1:g2',
+      connection_generation: 2,
+    });
+    const disconnected = session({
+      ...generationTwo,
+      state: 'pending',
+      connection_id: undefined,
+      last_connection_id: 'listener-1:g2',
+    });
+
+    expect(sessionBufferRequestKey(generationOne)).not.toBe(
+      sessionBufferRequestKey(generationTwo),
+    );
+    expect(sessionBufferRequestKey(generationTwo)).not.toBe(
+      sessionBufferRequestKey(disconnected),
+    );
   });
 
   it('only treats sessions with explicit resize support as terminal-resizable', () => {
@@ -175,6 +207,8 @@ describe('session workspace helpers', () => {
   it('splits error sessions out from closed into their own group', () => {
     expect(groupForSession(session({ state: 'connected' }))).toBe('live');
     expect(groupForSession(session({ state: 'pending' }))).toBe('pending');
+    expect(groupForSession(session({ state: 'resume_available' }))).toBe('resume_available');
+    expect(groupForSession(session({ state: 'interrupted' }))).toBe('interrupted');
     expect(groupForSession(session({ state: 'error' }))).toBe('error');
     expect(groupForSession(session({ state: 'closed' }))).toBe('closed');
 

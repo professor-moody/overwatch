@@ -4,20 +4,37 @@ import { getFrontierKey, getFrontierNodeIds } from './frontier-workspace';
 // `error` is split out from `closed` — an errored session is a failure the
 // operator may want to act on, not a clean teardown, so it gets its own group
 // (ordered above closed so it surfaces).
-export type SessionGroup = 'live' | 'pending' | 'error' | 'closed';
+export type SessionGroup =
+  | 'live'
+  | 'pending'
+  | 'resume_available'
+  | 'interrupted'
+  | 'error'
+  | 'closed';
 
 export const SESSION_GROUP_LABELS: Record<SessionGroup, string> = {
   live: 'Live',
-  pending: 'Pending',
+  pending: 'Waiting',
+  resume_available: 'Resume Available',
+  interrupted: 'Interrupted',
   error: 'Error',
   closed: 'Closed',
 };
 
-const SESSION_GROUP_ORDER: SessionGroup[] = ['live', 'pending', 'error', 'closed'];
+const SESSION_GROUP_ORDER: SessionGroup[] = [
+  'live',
+  'pending',
+  'resume_available',
+  'interrupted',
+  'error',
+  'closed',
+];
 
 export function groupForSession(session: SessionInfo): SessionGroup {
   if (session.state === 'connected') return 'live';
   if (session.state === 'pending') return 'pending';
+  if (session.state === 'resume_available') return 'resume_available';
+  if (session.state === 'interrupted') return 'interrupted';
   if (session.state === 'error') return 'error';
   return 'closed';
 }
@@ -26,14 +43,29 @@ export function sessionTitle(session: SessionInfo): string {
   return session.title || session.host || session.target_node || session.id.slice(0, 8);
 }
 
+/** Changes whenever a stable listener moves to another connection generation
+ * or lifecycle state, so async buffer reads cannot retain prior-generation
+ * output under the same session ID. */
+export function sessionBufferRequestKey(session: SessionInfo): string {
+  return [
+    session.id,
+    session.state,
+    session.connection_id ?? '',
+    session.connection_generation ?? 0,
+    session.last_connection_id ?? '',
+  ].join(':');
+}
+
 export function sessionOperationalLabel(session: SessionInfo): string {
   const isListener = session.kind === 'socket' && session.mode === 'listen';
   if (isListener && session.state === 'pending') return 'listener waiting';
   if (isListener && session.state === 'connected') return 'shell connected';
+  if (isListener && session.state === 'resume_available') return 'resume available';
   if (isListener && session.state === 'closed') return 'listener closed';
   if (isListener && session.state === 'error') return 'listener error';
   if (session.state === 'connected') return 'connected';
   if (session.state === 'pending') return 'pending';
+  if (session.state === 'interrupted') return 'interrupted';
   return session.state;
 }
 
@@ -42,6 +74,9 @@ export function searchSession(session: SessionInfo, query: string): boolean {
   const q = query.toLowerCase();
   return [
     session.id,
+    session.listener_id,
+    session.connection_id,
+    session.last_connection_id,
     session.title,
     session.kind,
     session.transport,
@@ -73,7 +108,14 @@ export function sortSessionsForWorkspace(sessions: SessionInfo[]): SessionInfo[]
 }
 
 export function groupSessions(sessions: SessionInfo[]): Record<SessionGroup, SessionInfo[]> {
-  const result: Record<SessionGroup, SessionInfo[]> = { live: [], pending: [], error: [], closed: [] };
+  const result: Record<SessionGroup, SessionInfo[]> = {
+    live: [],
+    pending: [],
+    resume_available: [],
+    interrupted: [],
+    error: [],
+    closed: [],
+  };
   for (const session of sessions) result[groupForSession(session)].push(session);
   return result;
 }
@@ -171,6 +213,8 @@ export function relatedSessionActivity(session: SessionInfo, entries: ActivityEn
 export function sessionCopyFields(session: SessionInfo): Array<{ label: string; value: string }> {
   return [
     { label: 'Session', value: session.id },
+    session.listener_id ? { label: 'Listener', value: session.listener_id } : null,
+    session.connection_id ? { label: 'Connection', value: session.connection_id } : null,
     session.action_id ? { label: 'Action', value: session.action_id } : null,
     session.frontier_item_id ? { label: 'Frontier', value: session.frontier_item_id } : null,
     session.target_node ? { label: 'Target', value: session.target_node } : null,

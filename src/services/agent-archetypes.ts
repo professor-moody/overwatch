@@ -45,7 +45,18 @@ const BASE = [
 ];
 // Instrumented, OPSEC-gated target execution + the action lifecycle around it.
 const EXECUTE = ['run_bash', 'run_tool', 'validate_action', 'log_action_event', 'parse_output', 'report_finding', 'check_tools', 'track_process', 'check_processes'];
-const SESSIONS = ['open_session', 'send_to_session', 'write_session', 'read_session', 'close_session', 'list_sessions', 'resize_session', 'signal_session', 'update_session'];
+const SESSIONS = [
+  'open_session',
+  'send_to_session',
+  'write_session',
+  'read_session',
+  'resume_session',
+  'close_session',
+  'list_sessions',
+  'resize_session',
+  'signal_session',
+  'update_session',
+];
 // The expand/exchange entries are read-only, stateless plan generators. They
 // grant an archetype the ability to plan credential work; the emitted runner
 // or direct-tool descriptors still pass through the normal execution surface.

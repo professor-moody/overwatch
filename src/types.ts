@@ -1715,7 +1715,14 @@ export interface RetrospectiveResult {
 // ============================================================
 
 export type SessionKind = 'ssh' | 'local_pty' | 'socket';
-export type SessionState = 'pending' | 'connected' | 'closed' | 'error';
+export type SessionState =
+  | 'pending'
+  | 'connected'
+  | 'resume_available'
+  | 'interrupted'
+  | 'closed'
+  | 'error';
+export type SessionConnectionState = 'disconnected' | 'interrupted' | 'closed';
 export type TtyQuality = 'none' | 'dumb' | 'partial' | 'full';
 
 export interface SessionCapabilities {
@@ -1750,8 +1757,23 @@ export interface SessionDefaultValidation {
 export interface SessionMetadata {
   id: string;
   kind: SessionKind;
+  /** Explicit runtime adapter identifier. `kind` remains the compatibility alias. */
+  adapter?: SessionKind;
   transport: string;
   state: SessionState;
+  /** Stable listener identity. Present for socket listen sessions. */
+  listener_id?: string;
+  /** Monotonic accepted/connected generation. Zero means no connection has existed yet. */
+  connection_generation?: number;
+  /** Identity of the currently live connection generation, if any. */
+  connection_id?: string;
+  connection_started_at?: string;
+  /** Most recently ended connection generation, retained for recovery/audit. */
+  last_connection_id?: string;
+  last_connection_state?: SessionConnectionState;
+  last_connection_closed_at?: string;
+  /** Whether the listener can be explicitly rebound after restart. */
+  resume_policy?: 'none' | 'manual';
   mode?: 'connect' | 'listen';
   bind_host?: string;
   advertise_host?: string;
@@ -1788,10 +1810,15 @@ export interface SessionMetadata {
 
 export interface SessionReadResult {
   session_id: string;
+  connection_id?: string;
+  connection_generation?: number;
   start_pos: number;
   end_pos: number;
   text: string;
   truncated: boolean;
+  /** True when a supplied cursor was ahead of the current generation buffer
+   * and the read restarted from the generation's first retained byte. */
+  cursor_reset?: boolean;
   /**
    * Why the read returned. Lets callers distinguish "command finished and
    * the prompt came back" (`wait_for` / `idle`) from "we gave up waiting"
@@ -1806,6 +1833,8 @@ export interface SessionReadResult {
 
 export interface AdapterHandle {
   pid?: number;
+  /** Actual bound port for listeners created with port 0. */
+  bound_port?: number;
   capabilities: SessionCapabilities;
   write(data: string): void;
   resize?(cols: number, rows: number): void;
@@ -1813,5 +1842,5 @@ export interface AdapterHandle {
   close(): void;
   onData(cb: (chunk: string) => void): void;
   onExit(cb: (info: { exitCode?: number; signal?: number }) => void): void;
-  onDisconnect?(cb: (info?: { reason?: string }) => void): void;
+  onDisconnect?(cb: (info?: { reason?: string; connection_token?: string }) => void): void;
 }

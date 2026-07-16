@@ -16,12 +16,20 @@ import type {
 } from '../types.js';
 import type { GraphEngine } from './graph-engine.js';
 import type { ActivityEventType } from './engine-context.js';
+import type { PersistedSessionDescriptorV1 } from './persisted-state.js';
 
 // ============================================================
 // RingBuffer — fixed-size circular buffer with absolute cursors
 // ============================================================
 
 const DEFAULT_BUFFER_SIZE = 128 * 1024; // 128KB
+const SOCKET_LISTENER_WAITING_CAPABILITIES: SessionCapabilities = {
+  has_stdin: true,
+  has_stdout: true,
+  supports_resize: false,
+  supports_signals: false,
+  tty_quality: 'dumb',
+};
 
 export class RingBuffer {
   private chunks: Array<{ text: string; absStart: number }> = [];
@@ -29,8 +37,9 @@ export class RingBuffer {
   private _endPos: number = 0;
   private retainedLength: number = 0;
 
-  constructor(capacity: number = DEFAULT_BUFFER_SIZE) {
+  constructor(capacity: number = DEFAULT_BUFFER_SIZE, initialPosition: number = 0) {
     this.capacity = capacity;
+    this._endPos = initialPosition;
   }
 
   get endPos(): number {
@@ -38,7 +47,7 @@ export class RingBuffer {
   }
 
   get startPos(): number {
-    if (this.chunks.length === 0) return 0;
+    if (this.chunks.length === 0) return this._endPos;
     return this.chunks[0].absStart;
   }
 
@@ -128,6 +137,8 @@ export interface Session {
   metadata: SessionMetadata;
   handle: AdapterHandle | null;
   buffer: RingBuffer;
+  /** Ephemeral accept identity used to reject stale adapter callbacks. */
+  connection_token?: string;
   last_descriptor_activity_persisted_at?: number;
 }
 
@@ -160,8 +171,18 @@ export type SessionEventCallback = (event: SessionEvent) => void;
 
 const MAX_CLOSED_SESSIONS = 50;
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_IDLE_REAPER_INTERVAL_MS = 30_000;
 const PERSISTENCE_GATE_POLL_MS = 250;
 const SESSION_ACTIVITY_DURABILITY_MS = 1_000;
+const IRREVERSIBLE_LIFECYCLE_COMMIT_ATTEMPTS = 3;
+
+export function sessionIdleReaperIntervalMs(idleTimeoutMs: number): number | null {
+  if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) return null;
+  return Math.max(1, Math.min(
+    MAX_IDLE_REAPER_INTERVAL_MS,
+    Math.floor(idleTimeoutMs / 2),
+  ));
+}
 
 export interface SessionCreateOptions {
   kind: SessionKind;
@@ -261,13 +282,17 @@ export class SessionManager {
    */
   private durableEventListener?: SessionEventCallback;
   private persistenceGateTimer: ReturnType<typeof setInterval> | null = null;
+  private idleReaperTimer: ReturnType<typeof setInterval> | null = null;
   private persistenceFrozen = false;
+  private shuttingDown = false;
+  private resumeInProgress = new Set<string>();
   private persistenceAbortController = new AbortController();
 
   constructor(engine: GraphEngine | null = null, idleTimeoutMs?: number) {
     this.engine = engine;
     this.idleTimeoutMs = idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.startPersistenceGateMonitor();
+    this.startIdleReaper();
   }
 
   registerAdapter(adapter: SessionAdapterFactory): void {
@@ -291,7 +316,103 @@ export class SessionManager {
     };
   }
 
+  /**
+   * Hydrate durable, secret-free descriptors after engine recovery. Restored
+   * sessions intentionally have no runtime handle or output buffer. A rearmed
+   * listener remains inert until the operator explicitly calls resume().
+   */
+  restorePersistedDescriptors(descriptors: PersistedSessionDescriptorV1[]): void {
+    if (this.sessions.size > 0) {
+      throw new Error('Cannot restore session descriptors after runtime sessions exist.');
+    }
+    for (const descriptor of descriptors) {
+      const durableLifecycle = descriptor.recovery_lifecycle ?? descriptor.lifecycle;
+      const resumableListener = descriptor.kind === 'socket'
+        && descriptor.mode === 'listen'
+        && descriptor.accept_mode === 'rearm'
+        && descriptor.resume_intent.requested;
+      const recoveredState: SessionState =
+        durableLifecycle === 'pending' || durableLifecycle === 'connected'
+          ? (resumableListener ? 'resume_available' : 'interrupted')
+          : durableLifecycle;
+      const metadata: SessionMetadata = {
+        id: descriptor.session_id,
+        kind: descriptor.kind,
+        adapter: descriptor.adapter ?? descriptor.kind,
+        transport: descriptor.transport,
+        state: recoveredState,
+        listener_id: descriptor.listener_id
+          ?? (descriptor.kind === 'socket' && descriptor.mode === 'listen'
+            ? descriptor.session_id
+            : undefined),
+        connection_generation: descriptor.connection_generation
+          ?? (durableLifecycle === 'connected' ? 1 : 0),
+        connection_id: undefined,
+        connection_started_at: undefined,
+        last_connection_id: descriptor.last_connection_id
+          ?? (durableLifecycle === 'connected'
+            ? descriptor.connection_id
+              ?? `${descriptor.session_id}:g${Math.max(1, descriptor.connection_generation ?? 1)}`
+            : undefined),
+        last_connection_state: descriptor.last_connection_state
+          ?? (durableLifecycle === 'connected' ? 'interrupted' : undefined),
+        last_connection_closed_at: descriptor.last_connection_closed_at,
+        resume_policy: resumableListener ? 'manual' : 'none',
+        mode: descriptor.mode,
+        bind_host: descriptor.bind_host,
+        advertise_host: descriptor.advertise_host,
+        accept_mode: descriptor.accept_mode,
+        reachability_warnings: descriptor.reachability_warnings
+          ? [...descriptor.reachability_warnings]
+          : undefined,
+        auth_status: recoveredState === 'resume_available'
+          ? undefined
+          : descriptor.auth_status,
+        title: descriptor.title,
+        host: descriptor.host,
+        user: descriptor.user,
+        port: descriptor.port,
+        target_node: descriptor.target_node,
+        principal_node: descriptor.principal_node,
+        credential_node: descriptor.credential_node,
+        action_id: descriptor.action_id,
+        frontier_item_id: descriptor.frontier_item_id,
+        claimed_by: descriptor.owner_task_id,
+        started_at: descriptor.started_at,
+        last_activity_at: descriptor.last_activity_at,
+        closed_at: descriptor.closed_at,
+        capabilities: recoveredState === 'resume_available'
+          && descriptor.kind === 'socket'
+          && descriptor.mode === 'listen'
+          ? structuredClone(SOCKET_LISTENER_WAITING_CAPABILITIES)
+          : structuredClone(descriptor.capabilities),
+        buffer_end_pos: 0,
+        notes: descriptor.recovery_warning
+          ? [descriptor.notes, descriptor.recovery_warning].filter(Boolean).join('\n')
+          : descriptor.notes,
+        default_validation: descriptor.default_validation
+          ? structuredClone(descriptor.default_validation)
+          : undefined,
+      };
+      this.sessions.set(metadata.id, {
+        metadata,
+        handle: null,
+        buffer: new RingBuffer(),
+        last_descriptor_activity_persisted_at: 0,
+      });
+    }
+  }
+
+  /** Stop maintenance before any shutdown descriptor snapshot is taken. */
+  beginShutdown(): void {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    this.stopIdleReaper();
+    this.persistenceAbortController.abort(new Error('Session manager is shutting down.'));
+  }
+
   async create(options: SessionCreateOptions): Promise<{ metadata: SessionMetadata; initial: SessionReadResult }> {
+    if (this.shuttingDown) throw new Error('Session manager is shutting down.');
     this.assertPersistenceWritable();
     this.assertDurableDescriptorOwner();
     validateSessionCreateOptions(options);
@@ -318,8 +439,18 @@ export class SessionManager {
     const metadata: SessionMetadata = {
       id,
       kind: options.kind,
+      adapter: options.kind,
       transport,
       state: initialState,
+      listener_id: options.kind === 'socket' && options.mode === 'listen'
+        ? id
+        : undefined,
+      connection_generation: 0,
+      resume_policy: options.kind === 'socket'
+        && options.mode === 'listen'
+        && options.accept_mode === 'rearm'
+        ? 'manual'
+        : 'none',
       mode: options.mode,
       bind_host: options.bind_host,
       advertise_host: options.advertise_host,
@@ -383,9 +514,8 @@ export class SessionManager {
         advertise_host: options.advertise_host,
         accept_mode: options.accept_mode,
         sessionId: id,
-        onConnect: () => {
-          try { this.handleConnect(id); } catch { this.checkPersistenceGate(); }
-        },
+        onConnect: (info: { connection_token: string }) =>
+          this.handleConnect(id, info),
         // Built-in adapters use this to cancel a connect/listen/PTY spawn that
         // is still pending when persistence transitions to read-only.
         abort_signal: this.persistenceAbortController.signal,
@@ -403,67 +533,23 @@ export class SessionManager {
       }
 
       session.metadata.pid = handle.pid;
-      session.metadata.capabilities = { ...handle.capabilities };
-
-      // Wire output to ring buffer
-      handle.onData((chunk: string) => {
-        if (!this.checkPersistenceGate()) return;
-        session.buffer.write(chunk);
-        const priorMetadata = session.metadata;
-        const observedAt = new Date();
-        session.metadata = {
-          ...session.metadata,
-          buffer_end_pos: session.buffer.endPos,
-          last_activity_at: observedAt.toISOString(),
-        };
-        if (
-          observedAt.getTime() - (session.last_descriptor_activity_persisted_at ?? 0)
-          >= SESSION_ACTIVITY_DURABILITY_MS
-        ) {
-          try {
-            this.emitSessionEvent('session_updated', session);
-            session.last_descriptor_activity_persisted_at = observedAt.getTime();
-          } catch {
-            session.metadata = priorMetadata;
-            this.checkPersistenceGate();
-          }
-        }
-      });
-
-      handle.onExit((info) => {
-        if (!this.checkPersistenceGate()) return;
-        try {
-          if (session.metadata.state !== 'closed') {
-            const closedMetadata: SessionMetadata = {
-              ...session.metadata,
-              state: 'closed',
-              closed_at: new Date().toISOString(),
-              claimed_by: undefined,
-            };
-            this.commitSessionClosure(
-              session,
-              closedMetadata,
-              `Session "${session.metadata.title}" exited (code=${info.exitCode}, signal=${info.signal})`,
-            );
-            session.handle = null;
-            this.emitBestEffortSessionEvent('session_closed', session);
-          }
-          this.pruneClosedSessions();
-        } catch {
-          // Adapter event callbacks must never escape into EventEmitter. If the
-          // write gate closed between checks, freeze owns truthful cleanup.
-          this.checkPersistenceGate();
-        }
-      });
-      if (handle.onDisconnect) {
-        handle.onDisconnect(() => {
-          try { this.handleDisconnect(id); } catch { this.checkPersistenceGate(); }
-        });
+      if (handle.bound_port !== undefined) {
+        session.metadata.port = handle.bound_port;
       }
+      session.metadata.capabilities = { ...handle.capabilities };
+      this.attachHandleCallbacks(id, session, handle);
 
       // For PTY-backed sessions, mark connected immediately
       if (options.kind !== 'socket') {
-        session.metadata.state = 'connected';
+        const connectedAt = new Date().toISOString();
+        session.metadata = {
+          ...session.metadata,
+          state: 'connected',
+          connection_generation: 1,
+          connection_id: `${id}:g1`,
+          connection_started_at: connectedAt,
+          last_activity_at: connectedAt,
+        };
       }
 
       this.logSessionEvent(id, 'session_opened',
@@ -527,7 +613,8 @@ export class SessionManager {
           target_node: options.target_node,
           principal_node: options.principal_node,
           credential_node: options.credential_node,
-          session_id: id,
+          session_id: session.metadata.connection_id ?? id,
+          connection_generation: session.metadata.connection_generation,
           agent_id: options.agent_id,
           action_id: options.action_id,
           frontier_item_id: options.frontier_item_id,
@@ -545,6 +632,8 @@ export class SessionManager {
         metadata: cloneSessionMetadata(session.metadata),
         initial: {
           session_id: id,
+          connection_id: session.metadata.connection_id,
+          connection_generation: session.metadata.connection_generation,
           start_pos: initial.startPos,
           end_pos: initial.endPos,
           text: initial.text,
@@ -593,7 +682,8 @@ export class SessionManager {
             target_node: options.target_node,
             principal_node: options.principal_node,
             credential_node: options.credential_node,
-            session_id: id,
+            session_id: session.metadata.connection_id ?? id,
+            connection_generation: session.metadata.connection_generation,
             agent_id: options.agent_id,
             action_id: options.action_id,
             frontier_item_id: options.frontier_item_id,
@@ -614,12 +704,23 @@ export class SessionManager {
     }
   }
 
-  write(sessionId: string, data: string, claimedBy?: string, force?: boolean): { session_id: string; end_pos: number } {
+  write(
+    sessionId: string,
+    data: string,
+    claimedBy?: string,
+    force?: boolean,
+    expected: { connection_id?: string; connection_generation?: number } = {},
+  ): {
+    session_id: string;
+    connection_id?: string;
+    connection_generation?: number;
+    end_pos: number;
+  } {
     this.assertPersistenceWritable();
-    this.reapIdleSessions();
     const session = this.getSessionOrThrow(sessionId);
     this.assertConnected(session);
     this.assertOwnership(session, claimedBy, force);
+    this.assertExpectedConnectionGeneration(session, expected);
 
     if (!session.handle) {
       throw new Error(`Session ${sessionId} has no active handle`);
@@ -631,31 +732,76 @@ export class SessionManager {
       last_activity_at: new Date().toISOString(),
     });
     session.handle.write(data);
-    return { session_id: sessionId, end_pos: session.buffer.endPos };
+    return {
+      session_id: sessionId,
+      connection_id: session.metadata.connection_id,
+      connection_generation: session.metadata.connection_generation,
+      end_pos: session.buffer.endPos,
+    };
   }
 
-  read(sessionId: string, fromPos?: number, tailBytes?: number): SessionReadResult {
-    this.reapIdleSessions();
+  read(
+    sessionId: string,
+    fromPos?: number,
+    tailBytes?: number,
+    expected: { connection_id?: string; connection_generation?: number } = {},
+  ): SessionReadResult {
+    this.checkPersistenceGate();
     const session = this.getSessionOrThrow(sessionId);
+    this.assertExpectedConnectionGeneration(session, expected);
+    const generation = {
+      connection_id: session.metadata.connection_id,
+      connection_generation: session.metadata.connection_generation,
+    };
 
     if (fromPos !== undefined) {
-      const result = session.buffer.read(fromPos);
-      return { session_id: sessionId, start_pos: result.startPos, end_pos: result.endPos, text: result.text, truncated: result.truncated };
+      const cursorReset = fromPos > session.buffer.endPos;
+      const result = session.buffer.read(cursorReset ? session.buffer.startPos : fromPos);
+      return {
+        session_id: sessionId,
+        ...generation,
+        start_pos: result.startPos,
+        end_pos: result.endPos,
+        text: result.text,
+        truncated: result.truncated || cursorReset,
+        ...(cursorReset ? { cursor_reset: true } : {}),
+      };
     }
 
     const result = session.buffer.tail(tailBytes || 4096);
-    return { session_id: sessionId, start_pos: result.startPos, end_pos: result.endPos, text: result.text, truncated: result.truncated };
+    return {
+      session_id: sessionId,
+      ...generation,
+      start_pos: result.startPos,
+      end_pos: result.endPos,
+      text: result.text,
+      truncated: result.truncated,
+    };
   }
 
   async sendCommand(
     sessionId: string,
     command: string,
-    options: { timeout_ms?: number; idle_ms?: number; wait_for?: string; claimedBy?: string; force?: boolean } = {},
+    options: {
+      timeout_ms?: number;
+      idle_ms?: number;
+      wait_for?: string;
+      claimedBy?: string;
+      force?: boolean;
+      connection_id?: string;
+      connection_generation?: number;
+    } = {},
   ): Promise<SessionReadResult> {
     this.assertPersistenceWritable();
     const session = this.getSessionOrThrow(sessionId);
     this.assertConnected(session);
     this.assertOwnership(session, options.claimedBy, options.force);
+    this.assertExpectedConnectionGeneration(session, {
+      connection_id: options.connection_id,
+      connection_generation: options.connection_generation,
+    });
+    const connectionId = session.metadata.connection_id;
+    const connectionGeneration = session.metadata.connection_generation;
 
     const timeoutMs = options.timeout_ms || 10000;
     const idleMs = options.idle_ms || 500;
@@ -684,13 +830,18 @@ export class SessionManager {
     }
 
     // Record position before sending
-    const startPos = session.buffer.endPos;
+    const generationBuffer = session.buffer;
+    const startPos = generationBuffer.endPos;
 
     // Write command + newline
     if (!session.handle) {
       throw new Error(`Session ${sessionId} has no active handle`);
     }
     this.assertPersistenceWritable();
+    this.assertExpectedConnectionGeneration(session, {
+      connection_id: connectionId,
+      connection_generation: connectionGeneration,
+    });
     this.commitSessionMetadataUpdate(session, {
       ...session.metadata,
       last_activity_at: new Date().toISOString(),
@@ -702,7 +853,7 @@ export class SessionManager {
     // Phase 2: once output has started, use idle settling — return when no new
     //          output arrives for idle_ms consecutive milliseconds.
     return new Promise<SessionReadResult>((resolve) => {
-      let lastEndPos = session.buffer.endPos;
+      let lastEndPos = generationBuffer.endPos;
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let hasReceivedOutput = false;
       let finished = false;
@@ -718,9 +869,11 @@ export class SessionManager {
         if (idleTimer) clearTimeout(idleTimer);
         if (overallTimer) clearTimeout(overallTimer);
         if (waitInterval) clearInterval(waitInterval);
-        const result = session.buffer.read(startPos);
+        const result = generationBuffer.read(startPos);
         resolve({
           session_id: sessionId,
+          connection_id: connectionId,
+          connection_generation: connectionGeneration,
           start_pos: result.startPos,
           end_pos: result.endPos,
           text: result.text,
@@ -736,10 +889,18 @@ export class SessionManager {
           finish('session_closed');
           return;
         }
-        const currentEnd = session.buffer.endPos;
+        if (
+          session.metadata.state !== 'connected'
+          || !session.handle
+          || session.metadata.connection_id !== connectionId
+        ) {
+          finish('session_closed');
+          return;
+        }
+        const currentEnd = generationBuffer.endPos;
 
         if (waitForRegex) {
-          const data = session.buffer.read(startPos);
+          const data = generationBuffer.read(startPos);
           if (waitForRegex.test(data.text)) {
             finish('wait_for');
             return;
@@ -765,16 +926,20 @@ export class SessionManager {
         }
         // Detect session shutdown mid-command so callers don't have to
         // infer it from an empty `idle` return.
-        if (session.metadata.state === 'closed' || session.metadata.state === 'error' || !session.handle) {
+        if (
+          session.metadata.state !== 'connected'
+          || !session.handle
+          || session.metadata.connection_id !== connectionId
+        ) {
           finish('session_closed');
           return;
         }
-        const currentEnd = session.buffer.endPos;
+        const currentEnd = generationBuffer.endPos;
 
         // Check wait_for even before any output (covers edge case of
         // output arriving between the write and the first poll)
         if (waitForRegex) {
-          const data = session.buffer.read(startPos);
+          const data = generationBuffer.read(startPos);
           if (waitForRegex.test(data.text)) {
             finish('wait_for');
             return;
@@ -858,6 +1023,128 @@ export class SessionManager {
     return cloneSessionMetadata(session.metadata);
   }
 
+  async resume(
+    sessionId: string,
+    claimedBy?: string,
+    force?: boolean,
+  ): Promise<{ metadata: SessionMetadata }> {
+    if (this.shuttingDown) throw new Error('Session manager is shutting down.');
+    this.assertPersistenceWritable();
+    this.assertDurableDescriptorOwner();
+    const session = this.getSessionOrThrow(sessionId);
+    this.assertOwnership(session, claimedBy, force);
+    if (
+      session.metadata.state !== 'resume_available'
+      || session.metadata.kind !== 'socket'
+      || session.metadata.mode !== 'listen'
+      || session.metadata.accept_mode !== 'rearm'
+      || session.metadata.resume_policy !== 'manual'
+    ) {
+      const error = new Error(
+        `Session ${sessionId} is not an explicitly resumable listener (state: ${session.metadata.state}).`,
+      );
+      (error as Error & { code?: string }).code = 'SESSION_NOT_RESUMABLE';
+      throw error;
+    }
+    if (session.handle) {
+      const error = new Error(`Session ${sessionId} already has a runtime listener.`);
+      (error as Error & { code?: string }).code = 'SESSION_RESUME_CONFLICT';
+      throw error;
+    }
+    if (this.resumeInProgress.has(sessionId)) {
+      const error = new Error(`Session ${sessionId} resume is already in progress.`);
+      (error as Error & { code?: string }).code = 'SESSION_RESUME_CONFLICT';
+      throw error;
+    }
+    if (!Number.isSafeInteger(session.metadata.port) || (session.metadata.port ?? -1) < 0) {
+      throw new Error(`Session ${sessionId} has no valid persisted listener port.`);
+    }
+    const adapter = this.adapters.get(session.metadata.adapter ?? session.metadata.kind);
+    if (!adapter) {
+      throw new Error(`No adapter registered for session kind: ${session.metadata.kind}`);
+    }
+
+    const previousMetadata = cloneSessionMetadata(session.metadata);
+    this.resumeInProgress.add(sessionId);
+    try {
+      const handle = await adapter.spawn({
+        host: session.metadata.host,
+        port: session.metadata.port,
+        mode: 'listen',
+        bind_host: session.metadata.bind_host,
+        advertise_host: session.metadata.advertise_host,
+        accept_mode: 'rearm',
+        sessionId,
+        onConnect: (info: { connection_token: string }) =>
+          this.handleConnect(sessionId, info),
+        abort_signal: this.persistenceAbortController.signal,
+      });
+      session.handle = handle;
+      if (this.shuttingDown || !this.checkPersistenceGate()) {
+        throw this.persistenceReadOnlyError();
+      }
+      const boundMetadata: SessionMetadata = {
+        ...session.metadata,
+        state: 'pending',
+        pid: handle.pid,
+        port: handle.bound_port ?? session.metadata.port,
+        capabilities: { ...handle.capabilities },
+        buffer_end_pos: session.buffer.endPos,
+        closed_at: undefined,
+        last_activity_at: new Date().toISOString(),
+      };
+      this.commitSessionMetadataUpdate(session, boundMetadata);
+      this.attachHandleCallbacks(sessionId, session, handle);
+      this.resumeInProgress.delete(sessionId);
+      return { metadata: cloneSessionMetadata(session.metadata) };
+    } catch (error) {
+      const handle = session.handle;
+      let cleanupError: unknown;
+      try {
+        handle?.close();
+        if (session.handle === handle) session.handle = null;
+      } catch (closeError) {
+        // Retain the handle for shutdown retry and persist an unresolved
+        // ownership state instead of falsely claiming resume is available.
+        cleanupError = closeError;
+      }
+      if (this.persistenceWritable()) {
+        const message = error instanceof Error ? error.message : String(error);
+        const cleanupMessage = cleanupError instanceof Error
+          ? cleanupError.message
+          : cleanupError !== undefined
+            ? String(cleanupError)
+            : undefined;
+        const retryableMetadata: SessionMetadata = {
+          ...previousMetadata,
+          state: cleanupError === undefined ? 'resume_available' : 'error',
+          pid: undefined,
+          connection_id: undefined,
+          connection_started_at: undefined,
+          closed_at: undefined,
+          last_activity_at: new Date().toISOString(),
+          notes: [
+            previousMetadata.notes,
+            `Listener resume failed: ${message}`,
+            cleanupMessage
+              ? `Listener resume cleanup could not close runtime: ${cleanupMessage}`
+              : undefined,
+          ].filter(Boolean).join('\n'),
+        };
+        this.commitSessionMetadataUpdate(session, retryableMetadata);
+      }
+      if (cleanupError !== undefined) {
+        this.resumeInProgress.delete(sessionId);
+        throw new AggregateError(
+          [error, cleanupError],
+          `Session ${sessionId} resume failed and runtime cleanup was unresolved`,
+        );
+      }
+      this.resumeInProgress.delete(sessionId);
+      throw error;
+    }
+  }
+
   close(sessionId: string, claimedBy?: string, force?: boolean): { metadata: SessionMetadata; final: SessionReadResult } {
     return this.closeInternal(sessionId, claimedBy, force, false);
   }
@@ -879,16 +1166,27 @@ export class SessionManager {
     const tailResult = session.buffer.tail(8192);
     const final: SessionReadResult = {
       session_id: sessionId,
+      connection_id: session.metadata.connection_id,
+      connection_generation: session.metadata.connection_generation,
       start_pos: tailResult.startPos,
       end_pos: tailResult.endPos,
       text: tailResult.text,
       truncated: tailResult.truncated,
     };
 
+    const closedAt = new Date().toISOString();
+    const connectionId = session.metadata.connection_id;
     const closedMetadata: SessionMetadata = {
       ...session.metadata,
       state: 'closed',
-      closed_at: new Date().toISOString(),
+      connection_id: undefined,
+      connection_started_at: undefined,
+      last_connection_id: connectionId ?? session.metadata.last_connection_id,
+      last_connection_state: connectionId ? 'closed' : session.metadata.last_connection_state,
+      last_connection_closed_at: connectionId
+        ? closedAt
+        : session.metadata.last_connection_closed_at,
+      closed_at: closedAt,
       claimed_by: undefined,
     };
     const description = `Session "${session.metadata.title}" closed by operator`;
@@ -954,7 +1252,7 @@ export class SessionManager {
   }
 
   list(activeOnly: boolean = false): SessionMetadata[] {
-    this.reapIdleSessions();
+    this.checkPersistenceGate();
     const all = Array.from(this.sessions.values(), session =>
       cloneSessionMetadata(session.metadata));
     if (activeOnly) {
@@ -972,6 +1270,7 @@ export class SessionManager {
     return Array.from(this.sessions.values())
       .filter(session =>
         session.handle !== null
+        || this.resumeInProgress.has(session.metadata.id)
         || session.metadata.state === 'pending'
         || session.metadata.state === 'connected')
       .map(session => cloneSessionMetadata(session.metadata));
@@ -999,6 +1298,7 @@ export class SessionManager {
   }
 
   async shutdown(): Promise<void> {
+    this.beginShutdown();
     this.stopPersistenceGateMonitor();
     let firstError: unknown;
     try {
@@ -1011,17 +1311,14 @@ export class SessionManager {
           || session.metadata.state === 'pending';
         if (active || session.handle) {
           try {
-            const preserveDescriptor = active
-              && session.metadata.kind === 'socket'
-              && session.metadata.mode === 'listen'
-              && session.metadata.accept_mode === 'rearm';
-            this.closeInternal(id, undefined, true, preserveDescriptor);
+            this.interruptRuntimeForShutdown(id, session);
           } catch (error) {
             if (firstError === undefined) firstError = error;
           }
         }
       }
     } finally {
+      this.stopIdleReaper();
       this.stopPersistenceGateMonitor();
     }
     if (firstError !== undefined) throw firstError;
@@ -1045,10 +1342,19 @@ export class SessionManager {
         const title = session.metadata.title;
         const previousMetadata = cloneSessionMetadata(session.metadata);
         try {
+          const closedAt = new Date().toISOString();
+          const connectionId = session.metadata.connection_id;
           const closedMetadata: SessionMetadata = {
             ...session.metadata,
             state: 'closed',
-            closed_at: new Date().toISOString(),
+            connection_id: undefined,
+            connection_started_at: undefined,
+            last_connection_id: connectionId ?? session.metadata.last_connection_id,
+            last_connection_state: connectionId ? 'closed' : session.metadata.last_connection_state,
+            last_connection_closed_at: connectionId
+              ? closedAt
+              : session.metadata.last_connection_closed_at,
+            closed_at: closedAt,
             claimed_by: undefined,
           };
           this.commitSessionClosure(
@@ -1113,6 +1419,26 @@ export class SessionManager {
     this.checkPersistenceGate();
   }
 
+  private startIdleReaper(): void {
+    const intervalMs = sessionIdleReaperIntervalMs(this.idleTimeoutMs);
+    if (intervalMs === null || this.idleReaperTimer || this.shuttingDown) return;
+    this.idleReaperTimer = setInterval(() => {
+      if (this.shuttingDown) return;
+      try {
+        this.reapIdleSessions();
+      } catch {
+        this.checkPersistenceGate();
+      }
+    }, intervalMs);
+    this.idleReaperTimer.unref?.();
+  }
+
+  private stopIdleReaper(): void {
+    if (!this.idleReaperTimer) return;
+    clearInterval(this.idleReaperTimer);
+    this.idleReaperTimer = null;
+  }
+
   private stopPersistenceGateMonitor(): void {
     if (!this.persistenceGateTimer) return;
     clearInterval(this.persistenceGateTimer);
@@ -1136,6 +1462,21 @@ export class SessionManager {
 
   private checkPersistenceGate(): boolean {
     if (this.persistenceWritable()) return true;
+    const persistenceAwareEngine = this.engine as (GraphEngine & {
+      isStatePersistenceWritable?: () => boolean;
+    }) | null;
+    if (typeof persistenceAwareEngine?.isStatePersistenceWritable === 'function') {
+      try {
+        // Config divergence and deferred startup reconciliation temporarily
+        // block mutations but do not corrupt the WAL/state owner. Keep the
+        // manager inert and retryable so explicit reconciliation can reopen it
+        // in the same process.
+        if (persistenceAwareEngine.isStatePersistenceWritable()) return false;
+      } catch {
+        // Fall through to sticky runtime freeze when the durability owner
+        // cannot establish that state persistence is healthy.
+      }
+    }
     this.freezeForPersistence();
     return false;
   }
@@ -1145,6 +1486,7 @@ export class SessionManager {
   private freezeForPersistence(): void {
     if (!this.persistenceFrozen) {
       this.persistenceFrozen = true;
+      this.stopIdleReaper();
       this.stopPersistenceGateMonitor();
       this.persistenceAbortController.abort(this.persistenceReadOnlyError());
     }
@@ -1159,9 +1501,21 @@ export class SessionManager {
       try {
         handle?.close();
         session.handle = null;
+        const connectionId = session.metadata.connection_id;
         session.metadata.state = 'closed';
         session.metadata.closed_at = closedAt;
+        session.metadata.connection_id = undefined;
+        session.metadata.connection_started_at = undefined;
+        session.metadata.last_connection_id = connectionId
+          ?? session.metadata.last_connection_id;
+        session.metadata.last_connection_state = connectionId
+          ? 'interrupted'
+          : session.metadata.last_connection_state;
+        session.metadata.last_connection_closed_at = connectionId
+          ? closedAt
+          : session.metadata.last_connection_closed_at;
         session.metadata.claimed_by = undefined;
+        session.connection_token = undefined;
       } catch (error) {
         session.metadata.state = 'error';
         session.metadata.closed_at = undefined;
@@ -1199,6 +1553,71 @@ export class SessionManager {
     }
   }
 
+  private interruptRuntimeForShutdown(sessionId: string, session: Session): void {
+    const previousMetadata = cloneSessionMetadata(session.metadata);
+    const interruptedAt = new Date().toISOString();
+    const connectionId = session.metadata.connection_id;
+    const resumableListener = session.metadata.kind === 'socket'
+      && session.metadata.mode === 'listen'
+      && session.metadata.accept_mode === 'rearm';
+    const recoveredMetadata: SessionMetadata = {
+      ...session.metadata,
+      state: resumableListener ? 'resume_available' : 'interrupted',
+      pid: undefined,
+      connection_id: undefined,
+      connection_started_at: undefined,
+      last_connection_id: connectionId ?? session.metadata.last_connection_id,
+      last_connection_state: connectionId
+        ? 'interrupted'
+        : session.metadata.last_connection_state,
+      last_connection_closed_at: connectionId
+        ? interruptedAt
+        : session.metadata.last_connection_closed_at,
+      auth_status: resumableListener ? undefined : session.metadata.auth_status,
+      capabilities: resumableListener
+        ? { ...SOCKET_LISTENER_WAITING_CAPABILITIES }
+        : session.metadata.capabilities,
+      resume_policy: resumableListener ? 'manual' : 'none',
+      closed_at: undefined,
+    };
+    this.commitSessionClosure(
+      session,
+      recoveredMetadata,
+      resumableListener
+        ? `Listener "${session.metadata.title}" stopped; explicit resume is available`
+        : `Session "${session.metadata.title}" interrupted by service shutdown`,
+      false,
+      {
+        connection_id: connectionId,
+        event_type: 'session_closed',
+      },
+    );
+    const handle = session.handle;
+    try {
+      handle?.close();
+      session.handle = null;
+      session.connection_token = undefined;
+    } catch (error) {
+      session.handle = handle;
+      const message = error instanceof Error ? error.message : String(error);
+      const unresolvedMetadata: SessionMetadata = {
+        ...previousMetadata,
+        state: 'error',
+        closed_at: undefined,
+        last_activity_at: interruptedAt,
+        notes: [
+          previousMetadata.notes,
+          `Shutdown runtime close failed: ${message}`,
+        ].filter(Boolean).join('\n'),
+      };
+      this.commitSessionMetadataUpdate(session, unresolvedMetadata);
+      throw new Error(`Session ${sessionId} runtime close failed during shutdown: ${message}`, {
+        cause: error,
+      });
+    }
+    this.emitBestEffortSessionEvent('session_updated', session);
+  }
+
   private getSessionOrThrow(sessionId: string): Session {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
@@ -1221,48 +1640,256 @@ export class SessionManager {
     }
   }
 
-  private handleConnect(sessionId: string): void {
-    if (!this.checkPersistenceGate()) return;
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    if (session.metadata.state === 'pending') {
-      session.metadata.state = 'connected';
-      session.metadata.last_activity_at = new Date().toISOString();
-      this.logSessionEvent(sessionId, 'session_connected',
-        `Session "${session.metadata.title}" transport connected`);
-      if (this.engine && session.metadata.kind === 'socket' && session.metadata.target_node) {
-        try {
-          this.engine.ingestSessionResult({
-            success: true,
-            confirmed: true,
-            target_node: session.metadata.target_node,
-            principal_node: session.metadata.principal_node,
-            credential_node: session.metadata.credential_node,
-            session_id: sessionId,
-            agent_id: session.metadata.agent_id,
-            action_id: session.metadata.action_id,
-            frontier_item_id: session.metadata.frontier_item_id,
-          });
-        } catch (err) {
-          this.logSessionEvent(sessionId, 'session_error',
-            `Session "${session.metadata.title}" connected but graph access ingest failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      if (session.handle) this.emitSessionEvent('session_updated', session);
+  private assertExpectedConnectionGeneration(
+    session: Session,
+    expected: { connection_id?: string; connection_generation?: number },
+  ): void {
+    if (
+      (expected.connection_id !== undefined
+        && session.metadata.connection_id !== expected.connection_id)
+      || (expected.connection_generation !== undefined
+        && session.metadata.connection_generation !== expected.connection_generation)
+    ) {
+      const error = new Error(
+        `Session ${session.metadata.id} connection generation changed; refresh session metadata before continuing I/O.`,
+      );
+      (error as Error & { code?: string }).code = 'SESSION_GENERATION_CHANGED';
+      throw error;
     }
   }
 
-  private handleDisconnect(sessionId: string): void {
+  private attachHandleCallbacks(
+    sessionId: string,
+    session: Session,
+    handle: AdapterHandle,
+  ): void {
+    handle.onData((chunk: string) => {
+      if (!this.checkPersistenceGate()) return;
+      session.buffer.write(chunk);
+      const priorMetadata = session.metadata;
+      const observedAt = new Date();
+      session.metadata = {
+        ...session.metadata,
+        buffer_end_pos: session.buffer.endPos,
+        last_activity_at: observedAt.toISOString(),
+      };
+      if (
+        observedAt.getTime() - (session.last_descriptor_activity_persisted_at ?? 0)
+        >= SESSION_ACTIVITY_DURABILITY_MS
+      ) {
+        try {
+          this.emitSessionEvent('session_updated', session);
+          session.last_descriptor_activity_persisted_at = observedAt.getTime();
+        } catch {
+          session.metadata = priorMetadata;
+          this.checkPersistenceGate();
+        }
+      }
+    });
+
+    handle.onExit((info) => {
+      if (!this.checkPersistenceGate()) return;
+      try {
+        if (
+          session.metadata.state !== 'closed'
+          && session.metadata.state !== 'resume_available'
+          && session.metadata.state !== 'interrupted'
+        ) {
+          const endedAt = new Date().toISOString();
+          const connectionId = session.metadata.connection_id;
+          const closedMetadata: SessionMetadata = {
+            ...session.metadata,
+            state: 'closed',
+            connection_id: undefined,
+            connection_started_at: undefined,
+            last_connection_id: connectionId ?? session.metadata.last_connection_id,
+            last_connection_state: connectionId ? 'closed' : session.metadata.last_connection_state,
+            last_connection_closed_at: connectionId
+              ? endedAt
+              : session.metadata.last_connection_closed_at,
+            closed_at: endedAt,
+            claimed_by: undefined,
+          };
+          this.commitIrreversibleSessionClosure(
+            session,
+            closedMetadata,
+            `Session "${session.metadata.title}" exited (code=${info.exitCode}, signal=${info.signal})`,
+          );
+          session.connection_token = undefined;
+          session.handle = null;
+          this.emitBestEffortSessionEvent('session_closed', session);
+        }
+        this.pruneClosedSessions();
+      } catch (error) {
+        // Adapter event callbacks must never escape into EventEmitter. If the
+        // durable transition cannot be recorded, retire the dead runtime
+        // projection locally and let recovery reconcile the durable graph.
+        const failedAt = new Date().toISOString();
+        const connectionId = session.metadata.connection_id;
+        session.handle = null;
+        session.connection_token = undefined;
+        session.metadata = {
+          ...session.metadata,
+          state: 'error',
+          connection_id: undefined,
+          connection_started_at: undefined,
+          last_connection_id: connectionId ?? session.metadata.last_connection_id,
+          last_connection_state: connectionId
+            ? 'interrupted'
+            : session.metadata.last_connection_state,
+          last_connection_closed_at: connectionId
+            ? failedAt
+            : session.metadata.last_connection_closed_at,
+          closed_at: undefined,
+          notes: [
+            session.metadata.notes,
+            `Session exit could not be durably finalized: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ].filter(Boolean).join('\n'),
+        };
+        this.emitBestEffortSessionEvent('session_updated', session);
+        this.checkPersistenceGate();
+      }
+    });
+    if (handle.onDisconnect) {
+      handle.onDisconnect((info) => {
+        try { this.handleDisconnect(sessionId, info); } catch { this.checkPersistenceGate(); }
+      });
+    }
+  }
+
+  private handleConnect(
+    sessionId: string,
+    info?: { connection_token?: string },
+  ): void {
     if (!this.checkPersistenceGate()) return;
     const session = this.sessions.get(sessionId);
-    if (!session) return;
-    if (session.metadata.kind === 'socket' && session.metadata.mode === 'listen' && session.metadata.accept_mode === 'rearm') {
-      session.metadata.state = 'pending';
-      session.metadata.last_activity_at = new Date().toISOString();
-      this.logSessionEvent(sessionId, 'session_updated',
-        `Listener "${session.metadata.title}" returned to waiting`);
-      this.emitSessionEvent('session_updated', session);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+    if (session.metadata.state !== 'pending') {
+      throw new Error(
+        `Session ${sessionId} cannot accept a connection while ${session.metadata.state}.`,
+      );
     }
+    const connectedAt = new Date().toISOString();
+    const generation = (session.metadata.connection_generation ?? 0) + 1;
+    const connectionId = `${session.metadata.listener_id ?? sessionId}:g${generation}`;
+    const previousMetadata = session.metadata;
+    const previousBuffer = session.buffer;
+    const previousToken = session.connection_token;
+    const previousPersistedActivity = session.last_descriptor_activity_persisted_at;
+    const nextBufferPosition = previousBuffer.endPos;
+    session.buffer = new RingBuffer(DEFAULT_BUFFER_SIZE, nextBufferPosition);
+    session.last_descriptor_activity_persisted_at = 0;
+    session.connection_token = info?.connection_token
+      ?? `${sessionId}:compat:${generation}`;
+    const connectedMetadata: SessionMetadata = {
+      ...session.metadata,
+      state: 'connected',
+      connection_generation: generation,
+      connection_id: connectionId,
+      connection_started_at: connectedAt,
+      auth_status: undefined,
+      capabilities: session.handle
+        ? { ...session.handle.capabilities }
+        : session.metadata.capabilities,
+      buffer_end_pos: nextBufferPosition,
+      last_activity_at: connectedAt,
+      closed_at: undefined,
+    };
+    try {
+      this.commitSessionConnection(
+        session,
+        connectedMetadata,
+        `Session "${session.metadata.title}" connected as generation ${generation}`,
+      );
+    } catch (error) {
+      session.metadata = previousMetadata;
+      session.buffer = previousBuffer;
+      session.connection_token = previousToken;
+      session.last_descriptor_activity_persisted_at = previousPersistedActivity;
+      throw error;
+    }
+    this.emitBestEffortSessionEvent('session_updated', session);
+  }
+
+  private handleDisconnect(
+    sessionId: string,
+    info?: { reason?: string; connection_token?: string },
+  ): void {
+    this.assertPersistenceWritable();
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    if (
+      session.connection_token
+      && info?.connection_token !== session.connection_token
+    ) return;
+    if (
+      session.metadata.kind !== 'socket'
+      || session.metadata.mode !== 'listen'
+      || session.metadata.accept_mode !== 'rearm'
+      || session.metadata.state !== 'connected'
+    ) return;
+    const disconnectedAt = new Date().toISOString();
+    const connectionId = session.metadata.connection_id;
+    const waitingMetadata: SessionMetadata = {
+      ...session.metadata,
+      state: 'pending',
+      connection_id: undefined,
+      connection_started_at: undefined,
+      last_connection_id: connectionId ?? session.metadata.last_connection_id,
+      last_connection_state: connectionId
+        ? 'disconnected'
+        : session.metadata.last_connection_state,
+      last_connection_closed_at: connectionId
+        ? disconnectedAt
+        : session.metadata.last_connection_closed_at,
+      auth_status: undefined,
+      capabilities: session.handle
+        ? { ...session.handle.capabilities }
+        : { ...SOCKET_LISTENER_WAITING_CAPABILITIES },
+      last_activity_at: disconnectedAt,
+    };
+    try {
+      this.commitIrreversibleSessionClosure(
+        session,
+        waitingMetadata,
+        `Listener "${session.metadata.title}" generation ${session.metadata.connection_generation ?? 0} disconnected and returned to waiting`,
+        {
+          connection_id: connectionId,
+          event_type: 'session_updated',
+        },
+      );
+    } catch (error) {
+      try { session.handle?.close(); } catch { /* preserve primary durability error */ }
+      session.handle = null;
+      session.connection_token = undefined;
+      session.metadata = {
+        ...session.metadata,
+        state: 'error',
+        connection_id: undefined,
+        connection_started_at: undefined,
+        last_connection_id: connectionId ?? session.metadata.last_connection_id,
+        last_connection_state: connectionId
+          ? 'interrupted'
+          : session.metadata.last_connection_state,
+        last_connection_closed_at: connectionId
+          ? disconnectedAt
+          : session.metadata.last_connection_closed_at,
+        closed_at: undefined,
+        notes: [
+          session.metadata.notes,
+          `Listener disconnect could not be durably finalized: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ].filter(Boolean).join('\n'),
+      };
+      this.emitBestEffortSessionEvent('session_updated', session);
+      this.checkPersistenceGate();
+      throw error;
+    }
+    session.connection_token = undefined;
+    this.emitBestEffortSessionEvent('session_updated', session);
   }
 
   private emitSessionEvent(type: SessionEventType, session: Session): void {
@@ -1305,6 +1932,10 @@ export class SessionManager {
     closedMetadata: SessionMetadata,
     description: string,
     preserveDescriptor = false,
+    options: {
+      connection_id?: string;
+      event_type?: ActivityEventType;
+    } = {},
   ): void {
     const previous = session.metadata;
     if (
@@ -1313,6 +1944,8 @@ export class SessionManager {
     ) {
       this.engine.closeSessionDurably(closedMetadata, description, {
         preserve_descriptor: preserveDescriptor,
+        connection_id: options.connection_id,
+        event_type: options.event_type,
       });
       session.metadata = closedMetadata;
       return;
@@ -1325,6 +1958,85 @@ export class SessionManager {
       session.metadata = previous;
       throw error;
     }
+  }
+
+  private commitSessionConnection(
+    session: Session,
+    connectedMetadata: SessionMetadata,
+    description: string,
+  ): void {
+    const previous = session.metadata;
+    if (
+      this.engine
+      && typeof this.engine.connectSessionGenerationDurably === 'function'
+    ) {
+      this.engine.connectSessionGenerationDurably(connectedMetadata, description);
+      session.metadata = connectedMetadata;
+      return;
+    }
+    session.metadata = connectedMetadata;
+    try {
+      if (
+        this.engine
+        && connectedMetadata.kind === 'socket'
+        && connectedMetadata.target_node
+      ) {
+        this.engine.ingestSessionResult({
+          success: true,
+          confirmed: true,
+          target_node: connectedMetadata.target_node,
+          principal_node: connectedMetadata.principal_node,
+          credential_node: connectedMetadata.credential_node,
+          session_id: connectedMetadata.connection_id ?? connectedMetadata.id,
+          listener_id: connectedMetadata.listener_id,
+          connection_generation: connectedMetadata.connection_generation,
+          agent_id: connectedMetadata.agent_id,
+          action_id: connectedMetadata.action_id,
+          frontier_item_id: connectedMetadata.frontier_item_id,
+        });
+      }
+      this.logSessionEvent(
+        connectedMetadata.id,
+        'session_connected',
+        description,
+      );
+      this.emitDurableSessionEvent('session_updated', session);
+    } catch (error) {
+      session.metadata = previous;
+      throw error;
+    }
+  }
+
+  private commitIrreversibleSessionClosure(
+    session: Session,
+    metadata: SessionMetadata,
+    description: string,
+    options: {
+      connection_id?: string;
+      event_type?: ActivityEventType;
+    } = {},
+  ): void {
+    let lastError: unknown;
+    for (
+      let attempt = 0;
+      attempt < IRREVERSIBLE_LIFECYCLE_COMMIT_ATTEMPTS;
+      attempt++
+    ) {
+      try {
+        this.commitSessionClosure(
+          session,
+          metadata,
+          description,
+          false,
+          options,
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!this.persistenceWritable()) break;
+      }
+    }
+    throw lastError;
   }
 
   private commitSessionMetadataUpdate(

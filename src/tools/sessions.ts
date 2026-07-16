@@ -305,13 +305,13 @@ The session is claimed by the opening agent — other agents can read but not wr
         params.mock_service_purpose
         && params.kind === 'socket'
         && effectiveMode === 'listen'
-        && typeof params.port === 'number'
+        && typeof result.metadata.port === 'number'
       ) {
         const reg = registerMockServiceCore(engine, {
           purpose: params.mock_service_purpose,
           protocol: params.mock_service_protocol ?? 'tcp',
           bind_host: bindHost ?? '127.0.0.1',
-          bind_port: params.port,
+          bind_port: result.metadata.port,
           notes: params.mock_service_notes,
           bound_session_id: result.metadata.id,
           target_node: params.target_node,
@@ -358,6 +358,8 @@ Only the claiming agent can write (use force to override).`,
         append_newline: z.boolean().default(false).describe('Append \\n after data'),
         agent_id: z.string().optional().describe('Agent performing the write (checked against claimed_by)'),
         force: z.boolean().default(false).describe('Override ownership check'),
+        connection_id: z.string().optional().describe('Expected live connection generation ID; rejects if the listener reconnected.'),
+        connection_generation: z.number().int().nonnegative().optional().describe('Expected connection generation number.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -366,9 +368,23 @@ Only the claiming agent can write (use force to override).`,
         openWorldHint: true,
       },
     },
-    withErrorBoundary('write_session', async ({ session_id, data, append_newline, agent_id, force }) => {
+    withErrorBoundary('write_session', async ({
+      session_id,
+      data,
+      append_newline,
+      agent_id,
+      force,
+      connection_id,
+      connection_generation,
+    }) => {
       const payload = append_newline ? data + '\n' : data;
-      const result = sessionManager.write(session_id, payload, agent_id, force);
+      const result = sessionManager.write(
+        session_id,
+        payload,
+        agent_id,
+        force,
+        { connection_id, connection_generation },
+      );
 
       return {
         content: [{
@@ -391,12 +407,15 @@ Only the claiming agent can write (use force to override).`,
 Provide from_pos to read incrementally (returns everything since that position).
 Omit from_pos to read the last tail_chars of output.
 Returns start_pos/end_pos for stable cursor tracking across reads.
-truncated=true means the buffer wrapped past your requested from_pos.`,
+truncated=true means the buffer wrapped past your requested from_pos.
+Pass the connection_id/generation returned by the prior read to reject stale-generation cursors.`,
       inputSchema: {
         session_id: z.string().describe('Session ID to read from'),
         from_pos: z.number().int().optional().describe('Absolute buffer position to read from (for incremental reads)'),
         tail_chars: z.number().int().optional().describe('Characters to read from tail when from_pos is omitted (default 4096)'),
         tail_bytes: z.number().int().optional().describe('Alias for tail_chars'),
+        connection_id: z.string().optional().describe('Expected live connection generation ID.'),
+        connection_generation: z.number().int().nonnegative().optional().describe('Expected connection generation number.'),
       },
       annotations: {
         readOnlyHint: true,
@@ -405,9 +424,21 @@ truncated=true means the buffer wrapped past your requested from_pos.`,
         openWorldHint: false,
       },
     },
-    withErrorBoundary('read_session', async ({ session_id, from_pos, tail_chars, tail_bytes }) => {
+    withErrorBoundary('read_session', async ({
+      session_id,
+      from_pos,
+      tail_chars,
+      tail_bytes,
+      connection_id,
+      connection_generation,
+    }) => {
       const effectiveTailChars = tail_chars ?? tail_bytes ?? 4096;
-      const result = sessionManager.read(session_id, from_pos, effectiveTailChars);
+      const result = sessionManager.read(
+        session_id,
+        from_pos,
+        effectiveTailChars,
+        { connection_id, connection_generation },
+      );
 
       return {
         content: [{
@@ -482,6 +513,13 @@ Result fields include action_id, evidence_id, validation_result, plus completion
           isError: true,
         };
       }
+      const connectionId = session.connection_id;
+      const connectionGeneration = session.connection_generation;
+      const generationDetails = {
+        session_id,
+        connection_id: connectionId,
+        connection_generation: connectionGeneration,
+      };
 
       // Merge per-call override > session default > session host fallback.
       // When neither yields a technique, fall back to a generic
@@ -555,7 +593,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
         target_ips: targetIpsForEvent,
         validation_result: validationResult,
         result_classification: !v.valid ? 'failure' : v.warnings.length > 0 ? 'partial' : 'success',
-        details: { session_id, errors: v.errors, warnings: v.warnings, opsec_context: v.opsec_context, opsec_skipped: v.opsec_skipped },
+        details: { ...generationDetails, errors: v.errors, warnings: v.warnings, opsec_context: v.opsec_context, opsec_skipped: v.opsec_skipped },
       });
 
       if (!v.valid) {
@@ -570,7 +608,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
           target_node_ids: targetNodeIdsForEvent,
           target_ips: targetIpsForEvent,
           result_classification: 'failure',
-          details: { session_id, reason: 'validation_failed', validation_errors: v.errors },
+          details: { ...generationDetails, reason: 'validation_failed', validation_errors: v.errors },
         });
         engine.persist();
         return {
@@ -578,7 +616,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
             type: 'text',
             text: JSON.stringify({
               action_id: normalizedActionId,
-              session_id,
+              ...generationDetails,
               executed: false,
               validation_result: 'invalid',
               errors: v.errors,
@@ -601,7 +639,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
         target_node_ids: targetNodeIdsForEvent,
         target_ips: targetIpsForEvent,
         noise_estimate,
-        details: { session_id, command, timeout_ms, idle_ms, wait_for, invoking_tool: 'send_to_session' },
+        details: { ...generationDetails, command, timeout_ms, idle_ms, wait_for, invoking_tool: 'send_to_session' },
       });
       if (typeof noise_estimate === 'number') {
         engine.recordOpsecNoise({
@@ -616,6 +654,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
       // ---- 3. Execute ----
       let sendResult: Awaited<ReturnType<typeof sessionManager.sendCommand>>;
       let spawnError: string | undefined;
+      let spawnErrorCode: string | undefined;
       try {
         sendResult = await sessionManager.sendCommand(session_id, command, {
           timeout_ms,
@@ -623,9 +662,14 @@ Result fields include action_id, evidence_id, validation_result, plus completion
           wait_for,
           claimedBy: agent_id,
           force,
+          connection_id: connectionId,
+          connection_generation: connectionGeneration,
         });
       } catch (err) {
         spawnError = err instanceof Error ? err.message : String(err);
+        spawnErrorCode = err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: unknown }).code ?? '')
+          : undefined;
         engine.logActionEvent({
           description: `send_to_session failed: ${command}`,
           agent_id: effective.agent_id,
@@ -637,7 +681,12 @@ Result fields include action_id, evidence_id, validation_result, plus completion
           target_node_ids: targetNodeIdsForEvent,
           target_ips: targetIpsForEvent,
           result_classification: 'failure',
-          details: { session_id, reason: 'spawn_error', spawn_error: spawnError },
+          details: {
+            ...generationDetails,
+            reason: 'spawn_error',
+            spawn_error: spawnError,
+            ...(spawnErrorCode ? { code: spawnErrorCode } : {}),
+          },
         });
         engine.persist();
         return {
@@ -645,9 +694,10 @@ Result fields include action_id, evidence_id, validation_result, plus completion
             type: 'text',
             text: JSON.stringify({
               action_id: normalizedActionId,
-              session_id,
+              ...generationDetails,
               executed: false,
               spawn_error: spawnError,
+              ...(spawnErrorCode ? { code: spawnErrorCode } : {}),
             }, null, 2),
           }],
           isError: true,
@@ -673,6 +723,11 @@ Result fields include action_id, evidence_id, validation_result, plus completion
       const terminalReason = sendResult.completion_reason;
       const succeeded = terminalReason !== 'timeout' && terminalReason !== 'session_closed';
       const terminalEventType = succeeded ? 'action_completed' as const : 'action_failed' as const;
+      const terminalGenerationDetails = {
+        session_id,
+        connection_id: sendResult.connection_id,
+        connection_generation: sendResult.connection_generation,
+      };
       engine.logActionEvent({
         description: `send_to_session: ${command}`,
         agent_id: effective.agent_id,
@@ -685,7 +740,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
         target_ips: targetIpsForEvent,
         result_classification: succeeded ? 'success' : 'failure',
         details: {
-          session_id,
+          ...terminalGenerationDetails,
           completion_reason: terminalReason,
           timed_out: sendResult.timed_out,
           captured_bytes: sendResult.text?.length ?? 0,
@@ -793,6 +848,94 @@ Use session_id to get details for a specific session.`,
           }, null, 2),
         }],
       };
+    }),
+  );
+
+  // ============================================================
+  // Tool: resume_session
+  // ============================================================
+  server.registerTool(
+    'resume_session',
+    {
+      title: 'Resume Session Listener',
+      description: `Explicitly rebind a recovered rearm socket listener.
+
+The listener keeps its stable session/listener ID and generation counter, but
+does not become connected and does not create HAS_SESSION access until a new
+target connection is accepted.`,
+      inputSchema: {
+        session_id: z.string().describe('Recovered listener session ID'),
+        agent_id: z.string().optional().describe('Task resuming the listener (checked against claimed_by)'),
+        force: z.boolean().default(false).describe('Override ownership check'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    withErrorBoundary('resume_session', async ({ session_id, agent_id, force }) => {
+      const actorResolution = agent_id
+        ? engine.resolveAgentTaskReference(agent_id)
+        : { status: 'missing' as const };
+      if (actorResolution.status === 'ambiguous_legacy_label') {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: `Agent label is ambiguous: ${agent_id}`,
+              candidate_task_ids: actorResolution.candidate_task_ids,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      const actorTaskId = actorResolution.status === 'exact'
+        || actorResolution.status === 'unique_legacy_label'
+        ? actorResolution.task.task_id ?? actorResolution.task.id
+        : agent_id;
+      try {
+        const result = await sessionManager.resume(session_id, actorTaskId, force);
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              resumed: true,
+              session: result.metadata,
+            }, null, 2),
+          }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const code = error && typeof error === 'object' && 'code' in error
+          ? String((error as { code?: unknown }).code ?? '')
+          : '';
+        const notFound = /not found/i.test(message);
+        if (
+          code === 'SESSION_NOT_RESUMABLE'
+          || code === 'SESSION_RESUME_CONFLICT'
+          || notFound
+        ) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: message,
+                session_id,
+                code: code || 'SESSION_NOT_FOUND',
+                error_type: notFound
+                  ? 'not_found'
+                  : code === 'SESSION_RESUME_CONFLICT'
+                    ? 'conflict'
+                    : 'validation_error',
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
+        throw error;
+      }
     }),
   );
 

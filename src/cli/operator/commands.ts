@@ -184,6 +184,23 @@ export const READ_COMMANDS: Record<string, Command> = {
 };
 
 export const WRITE_COMMANDS: Record<string, Command> = {
+  session: {
+    summary: 'Resume a recovered listener',
+    usage: 'session resume <session-id>',
+    async run({ client, args }) {
+      const positional = positionals(args);
+      if (positional[0] !== 'resume') {
+        throw new Error('Expected `session resume <session-id>`.');
+      }
+      const id = positional[1];
+      if (!id) throw new Error('Missing required <session-id>.');
+      const data = await client.post<unknown>(
+        `/api/sessions/${encodeURIComponent(id)}/resume`,
+        {},
+      );
+      return { data, text: render.ok(`Listener ${id} resumed and is waiting for a connection.`) };
+    },
+  },
   config: {
     summary: 'Reconcile active configuration using explicit file or state authority',
     usage: 'config reconcile <use_file|use_state> --file-hash SHA256 --state-hash SHA256',

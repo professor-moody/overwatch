@@ -217,9 +217,15 @@ Ownership can be transferred via `update_session` by the current owner.
 
 ### Do sessions survive server restarts?
 
-No. Sessions are **ephemeral runtime state** — PTY file descriptors and socket connections cannot be serialized. When the server shuts down, all sessions are closed and their final output is captured. After restart, agents must open new sessions.
+Live PTYs, sockets, buffers, secrets, and process handles do not survive. Their
+secret-free descriptors do: owner, target references, validation defaults,
+capabilities, listener intent, and connection-generation history are restored.
 
-The engagement graph (findings, frontier, objectives) survives restarts. Sessions do not.
+SSH, local PTY, and socket-connect sessions return as `interrupted`. A rearmed
+socket listener returns as `resume_available` and remains inert until the
+operator explicitly calls `resume_session` (or uses the dashboard/CLI Resume
+action). Rebinding preserves the listener ID and generation counter, but no
+`HAS_SESSION` access exists until a fresh target connection is accepted.
 
 ### What's the difference between `write_session` and `send_to_session`?
 

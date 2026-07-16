@@ -370,6 +370,70 @@ describe('PersistedStateV1 and migration', () => {
     duplicateSession.sessionDescriptors.push(structuredClone(duplicateSession.sessionDescriptors[0]));
     expect(() => validatePersistedStateV1(duplicateSession)).toThrow(/duplicate session_id/);
 
+    const invalidResume = structuredClone(base);
+    Object.assign(invalidResume.sessionDescriptors[0], {
+      kind: 'socket',
+      lifecycle: 'closed',
+      recovery_lifecycle: 'resume_available',
+      mode: 'listen',
+      accept_mode: 'rearm',
+      connection_id: undefined,
+      resume_intent: {
+        policy: 'none',
+        requested: false,
+        recorded_at: NOW,
+      },
+    });
+    expect(() => validatePersistedStateV1(invalidResume))
+      .toThrow(/resume_available requires/);
+
+    const backwardReadableResume = structuredClone(base);
+    Object.assign(backwardReadableResume.sessionDescriptors[0], {
+      kind: 'socket',
+      lifecycle: 'closed',
+      recovery_lifecycle: 'resume_available',
+      mode: 'listen',
+      accept_mode: 'rearm',
+      connection_id: undefined,
+      resume_intent: {
+        policy: 'manual',
+        requested: true,
+        prior_state: 'pending',
+        recovery_prior_state: 'resume_available',
+        recorded_at: NOW,
+      },
+    });
+    expect(() => validatePersistedStateV1(backwardReadableResume)).not.toThrow();
+    const priorBinaryView = structuredClone(backwardReadableResume);
+    delete priorBinaryView.sessionDescriptors[0].recovery_lifecycle;
+    delete priorBinaryView.sessionDescriptors[0].resume_intent.recovery_prior_state;
+    expect(priorBinaryView.sessionDescriptors[0].lifecycle).toBe('closed');
+    expect(() => validatePersistedStateV1(priorBinaryView)).not.toThrow();
+
+    const incompatibleRecoveryFallback = structuredClone(backwardReadableResume);
+    incompatibleRecoveryFallback.sessionDescriptors[0].lifecycle = 'error';
+    expect(() => validatePersistedStateV1(incompatibleRecoveryFallback))
+      .toThrow(/incompatible V1 lifecycle fallback/);
+
+    const invalidConnectedGeneration = structuredClone(base);
+    Object.assign(invalidConnectedGeneration.sessionDescriptors[0], {
+      lifecycle: 'connected',
+      connection_generation: 0,
+      connection_id: 'session-1:g0',
+    });
+    expect(() => validatePersistedStateV1(invalidConnectedGeneration))
+      .toThrow(/connection_generation >= 1/);
+
+    const invalidInterruptedConnection = structuredClone(base);
+    Object.assign(invalidInterruptedConnection.sessionDescriptors[0], {
+      lifecycle: 'error',
+      recovery_lifecycle: 'interrupted',
+      connection_generation: 1,
+      connection_id: 'session-1:g1',
+    });
+    expect(() => validatePersistedStateV1(invalidInterruptedConnection))
+      .toThrow(/connection_id is only valid/);
+
     const duplicateRuntime = structuredClone(base);
     duplicateRuntime.runtimeRuns.push(structuredClone(duplicateRuntime.runtimeRuns[0]));
     expect(() => validatePersistedStateV1(duplicateRuntime)).toThrow(/duplicate run_id/);

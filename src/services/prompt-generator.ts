@@ -319,7 +319,7 @@ const SUBAGENT_TOOL_NAMES = new Set([
   'agent_heartbeat', 'acknowledge_agent_directive', 'ask_operator',
   'query_graph', 'get_skill',
   'open_session', 'write_session', 'read_session', 'send_to_session',
-  'list_sessions', 'close_session', 'resize_session', 'signal_session',
+  'list_sessions', 'resume_session', 'close_session', 'resize_session', 'signal_session',
   'update_session', 'get_evidence',
 ]);
 
@@ -677,6 +677,7 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
     '- **For reverse-shell catchers, prefer `open_session({ kind: "socket", mode: "listen", bind_host, advertise_host, mock_service_purpose: "reverse_shell_catcher" })`** over raw `nc`. Reverse-shell catchers default to rearm mode, so a local test connection will not consume the listener.',
     '- **`send_to_session` is the instrumented send.** It validates scope, persists captured output as evidence, and emits action_started/completed. Use `write_session` only for partial I/O (password prompts, REPL navigation) where lifecycle overhead is wrong.',
     '- **A closed session is dead.** Once a shell exits or the watchdog reaps the session, that `HAS_SESSION` edge is marked `session_live: false`. Frontier, path reachability, and objective achievement now ignore dead sessions. If you want to reach a host through a previous compromise, confirm the session is still live (or open a new one).',
+    '- **Recovered rearm listeners require explicit Resume.** They return as `resume_available` after restart; call `resume_session` to rebind one. Each accepted connection gets a fresh generation and `HAS_SESSION` reference, and disconnect closes only that generation.',
     '- **Long-running sub-agents must call `agent_heartbeat({ task_id })` periodically.** Otherwise the watchdog interrupts the task and releases its frontier lease.',
     '',
     '### Visibility & audit',

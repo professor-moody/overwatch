@@ -420,7 +420,12 @@ Overwatch maintains **persistent interactive sessions** — long-lived bidirecti
 
 ### I/O Model
 
-The core primitives are `write_session` (raw bytes) and `read_session` (cursor-based). Each session has a 128KB ring buffer with absolute monotonic positions. Agents track `end_pos` from each read and pass it as `from_pos` on the next to get only new output.
+The core primitives are `write_session` (raw bytes) and `read_session`
+(cursor-based). Each session has a 128KB ring buffer with absolute monotonic
+positions. Agents track `end_pos`, `connection_id`, and
+`connection_generation` from each read and pass them on the next call. That
+rejects stale-generation I/O after reconnect; `cursor_reset: true` explicitly
+signals that a cursor had to restart at the first retained byte.
 
 `send_to_session` is the audited command path for persistent sessions. It validates scope using per-call metadata or the session's `default_validation`, writes the command, waits for output to settle, persists the captured output as evidence, and records action lifecycle events. Use `write_session` and `read_session` for partial I/O such as prompts, REPL navigation, and streaming tools.
 
@@ -445,12 +450,31 @@ Sessions have a `claimed_by` field (agent ID). When set, only the claiming agent
 
 Sessions follow this state machine:
 
-```
-pending → connected → closed
-                   → error
+```text
+resume_available --Resume--> pending --accept--> connected
+                                  ^                 |
+                                  |---disconnect----|
+
+connected --restart--> interrupted       (PTY/SSH/socket-connect)
+connected --restart--> resume_available  (rearm listener)
 ```
 
-Socket sessions (reverse shells, listeners) start in `pending` and transition to `connected` when a connection is established. PTY and SSH sessions connect immediately. Sessions are ephemeral across server restarts — PTY file descriptors cannot be serialized.
+Socket listeners are `pending` only while a real listener is bound. Each
+accepted connection gets a fresh generation, buffer, and generation-bound
+`HAS_SESSION` reference. Disconnect closes that generation and returns a rearm
+listener to `pending`.
+
+Live PTYs, sockets, buffers, secrets, and handles remain ephemeral. Secret-free
+session descriptors survive restart. PTY/SSH/socket-connect descriptors become
+`interrupted`; rearm listeners become `resume_available` and require explicit
+`resume_session`/dashboard Resume before binding again.
+
+For one-release rollback compatibility, persisted V1 descriptors keep the
+original `lifecycle` enum (`closed` as the conservative fallback for
+resume-available listeners and `error` for interrupted sessions) and carry the
+richer truth in additive recovery metadata. The current binary always projects
+the richer lifecycle; the preceding binary can still open the state without
+classifying V1 as corrupt.
 
 ### Listener Mode and Mock-Service Binding
 

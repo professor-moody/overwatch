@@ -4,7 +4,14 @@ Persistent interactive sessions maintained server-side across MCP tool calls. Su
 
 ## Architecture
 
-Sessions are long-lived bidirectional I/O channels owned by the Overwatch server process. They survive across individual MCP tool calls but are ephemeral across server restarts (PTY file descriptors cannot be serialized).
+Sessions are long-lived bidirectional I/O channels owned by the Overwatch
+server process. Live PTYs, sockets, buffers, secrets, and process handles are
+ephemeral. Secret-free descriptors survive restart: owner, targets, validation
+defaults, capabilities, listener intent, and accepted-connection generations.
+
+A rearmed socket listener is restored as `resume_available` and remains inert
+until the operator explicitly resumes it. Each accepted connection has a fresh
+generation identity and its own `HAS_SESSION` liveness reference.
 
 **I/O model:** `write_session` (raw bytes) and `read_session` (cursor-based) are the low-level primitives. `send_to_session` is the audited command path: it writes a command, waits for output, persists captured evidence, and emits action lifecycle events.
 
@@ -59,8 +66,10 @@ Write raw bytes to a session. The I/O primitive.
 | `append_newline` | boolean? | Append `\n` after data (default: false) |
 | `agent_id` | string? | Checked against `claimed_by` |
 | `force` | boolean? | Override ownership check |
+| `connection_id` | string? | Expected live generation ID; rejects if the listener reconnected |
+| `connection_generation` | number? | Expected generation number |
 
-Returns `{ session_id, end_pos }`.
+Returns `{ session_id, connection_id, connection_generation, end_pos }`.
 
 ### `read_session`
 
@@ -71,10 +80,18 @@ Cursor-based read from session output buffer.
 | `session_id` | string | Session to read from |
 | `from_pos` | number? | Absolute buffer position (for incremental reads) |
 | `tail_bytes` | number? | Read last N bytes when `from_pos` omitted (default: 4096) |
+| `connection_id` | string? | Expected live generation ID |
+| `connection_generation` | number? | Expected generation number |
 
-Returns `SessionReadResult`: `{ session_id, start_pos, end_pos, text, truncated }`.
+Returns `SessionReadResult`: `{ session_id, connection_id,
+connection_generation, start_pos, end_pos, text, truncated, cursor_reset? }`.
 
-**Cursor pattern:** Track `end_pos` from each read. Pass it as `from_pos` on the next read to get only new output.
+**Cursor pattern:** Track `end_pos`, `connection_id`, and
+`connection_generation` from each read. Pass them on the next read to get only
+new output and reject a stale generation. Positions remain monotonic across
+same-process listener reconnects. `cursor_reset: true` means a supplied cursor
+was ahead of the current retained generation buffer and the read restarted at
+its first available byte.
 
 ### `send_to_session`
 
@@ -113,6 +130,27 @@ List sessions with metadata. Always returns an envelope `{ total, active, sessio
 | `active_only` | boolean? | Only pending/connected (default: false) |
 | `session_id` | string? | Get details for one session |
 | `agent_id` | string? | Filter to sessions claimed by this agent (or unclaimed) |
+
+The additive metadata includes `listener_id`, `connection_generation`,
+`connection_id`, `last_connection_id`, `last_connection_state`, and
+`resume_policy`. `active` counts only actually bound waiting listeners and live
+connections (`pending` and `connected`); `resume_available` is actionable but
+not live.
+
+### `resume_session`
+
+Explicitly rebind a recovered rearm socket listener.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | string | Listener descriptor in `resume_available` state |
+| `agent_id` | string? | Checked against `claimed_by` |
+| `force` | boolean? | Override ownership check |
+
+Returns `{ resumed: true, session }`. The stable listener/session ID and
+generation counter are preserved. The result is `pending`; it becomes
+`connected` only after a new target connects. Duplicate or invalid-state resume
+requests fail with a conflict and never create a second listener.
 
 ### `update_session`
 
@@ -167,15 +205,31 @@ Returns final output snapshot + session summary (duration, total bytes).
 
 ## Session States
 
-```
-pending → connected → closed
-                   → error
+```text
+resume_available --resume_session--> pending --accept--> connected
+                                            ^              |
+                                            |--disconnect--|
+
+connected --restart/shutdown--> interrupted       (non-listener)
+connected --restart/shutdown--> resume_available  (rearm listener)
+pending   --restart/shutdown--> resume_available  (rearm listener)
+any live state --operator close / idle reap--> closed
+adapter or cleanup failure --> error
 ```
 
-- **pending**: Socket session waiting for connection (listen/connect mode)
+- **pending**: A listener is actually bound and waiting for a connection
 - **connected**: Active session, I/O available
+- **resume_available**: Durable listener intent exists, but no socket is bound;
+  explicit Resume is required
+- **interrupted**: A non-resumable connection existed before restart/shutdown;
+  no live handle or graph access is claimed
 - **closed**: Session terminated (normal exit or operator close)
 - **error**: Adapter failure
+
+Disconnecting a rearmed listener closes only the current connection generation
+and its `HAS_SESSION` reference. The listener returns to `pending`. Reconnect
+increments `connection_generation`, creates a fresh buffer, and opens a fresh
+generation-bound graph reference.
 
 ## TTY Quality Levels
 

@@ -45,7 +45,7 @@ That's **stdio** mode (Claude launches Overwatch for one session). To run it as 
 
 ## Documentation
 
-**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 82 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
+**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 83 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
 
 ## Disclaimer
 

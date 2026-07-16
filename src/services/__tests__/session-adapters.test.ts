@@ -138,6 +138,34 @@ describe('Session Adapters', () => {
       handle.close();
     });
 
+    it('destroys an unacknowledged accepted socket and keeps a rearm listener retryable', async () => {
+      const adapter = new SocketAdapter();
+      const port = await getFreePort();
+      let accepts = 0;
+      const handle = await adapter.spawn({
+        mode: 'listen',
+        bind_host: '127.0.0.1',
+        port,
+        sessionId: 'durable-ack-test',
+        accept_mode: 'rearm',
+        onConnect() {
+          accepts += 1;
+          if (accepts === 1) throw new Error('descriptor commit failed');
+        },
+      });
+      let disconnects = 0;
+      handle.onDisconnect?.(() => { disconnects += 1; });
+
+      await connectAndClose(port);
+      await waitFor(() => accepts === 1);
+      expect(disconnects).toBe(0);
+
+      await connectAndClose(port);
+      await waitFor(() => disconnects === 1);
+      expect(accepts).toBe(2);
+      handle.close();
+    });
+
     it('closes an active listener when the persistence signal aborts', async () => {
       const adapter = new SocketAdapter();
       const controller = new AbortController();

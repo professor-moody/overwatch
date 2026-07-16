@@ -22,6 +22,7 @@ import {
   relatedSessionFrontier,
   searchSessionBuffer,
   searchSession,
+  sessionBufferRequestKey,
   sessionCopyFields,
   sessionOperationalLabel,
   sessionSupportsResize,
@@ -33,6 +34,7 @@ import type { SessionBufferResponse } from '../../lib/types';
 
 interface TerminalEntry {
   sessionId: string;
+  connectionId?: string;
   terminal: import('@xterm/xterm').Terminal;
   fitAddon: import('@xterm/addon-fit').FitAddon;
   ws: WebSocket | null;
@@ -41,6 +43,8 @@ interface TerminalEntry {
 function stateClass(state: SessionInfo['state']): string {
   if (state === 'connected') return 'bg-success/10 text-success';
   if (state === 'pending') return 'bg-warning/10 text-warning';
+  if (state === 'resume_available') return 'bg-accent/10 text-accent';
+  if (state === 'interrupted') return 'bg-warning/10 text-warning';
   if (state === 'error') return 'bg-destructive/10 text-destructive';
   return 'bg-elevated text-muted-foreground';
 }
@@ -63,6 +67,7 @@ export function SessionsPanel() {
   const [draftNotes, setDraftNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [closingId, setClosingId] = useState<string | null>(null);
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [buffer, setBuffer] = useState<SessionBufferResponse | null>(null);
   const [bufferQuery, setBufferQuery] = useState('');
@@ -121,6 +126,11 @@ export function SessionsPanel() {
     }
 
     const session = useEngagementStore.getState().sessions.find(s => s.id === sessionId);
+    if (!session || session.state !== 'connected' || !session.connection_id) {
+      throw new Error(`Session ${sessionId.slice(0, 8)} no longer has an attachable connection generation.`);
+    }
+    const connectionId = session.connection_id;
+    const connectionGeneration = session.connection_generation ?? 0;
     const canResize = sessionSupportsResize(session);
     const { Terminal } = await import('@xterm/xterm');
     await import('@xterm/xterm/css/xterm.css');
@@ -159,7 +169,13 @@ export function SessionsPanel() {
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
-    const ws = createDashboardWebSocket(`/ws/session/${encodeURIComponent(sessionId)}`);
+    const socketQuery = new URLSearchParams({
+      connection_id: connectionId,
+      connection_generation: String(connectionGeneration),
+    });
+    const ws = createDashboardWebSocket(
+      `/ws/session/${encodeURIComponent(sessionId)}?${socketQuery.toString()}`,
+    );
 
     ws.binaryType = 'arraybuffer';
 
@@ -209,7 +225,13 @@ export function SessionsPanel() {
       }
     });
 
-    const entry: TerminalEntry = { sessionId, terminal: term, fitAddon, ws };
+    const entry: TerminalEntry = {
+      sessionId,
+      connectionId,
+      terminal: term,
+      fitAddon,
+      ws,
+    };
     terminalsRef.current.set(sessionId, entry);
     setAttachedIds(prev => addAttachedSession(prev, sessionId));
     setActiveTab(sessionId);
@@ -246,6 +268,18 @@ export function SessionsPanel() {
     finally { setClosingId(null); }
   }, [detach, refresh]);
 
+  const handleResumeSession = useCallback(async (sessionId: string) => {
+    setResumingId(sessionId);
+    setAttachError(null);
+    try {
+      await api.resumeSession(sessionId);
+      await refresh();
+    } catch (error) {
+      setAttachError(error instanceof Error ? error.message : String(error));
+    }
+    finally { setResumingId(null); }
+  }, [refresh]);
+
   const startEdit = useCallback((session: SessionInfo) => {
     setDraftTitle(session.title || '');
     setDraftNotes(session.notes || '');
@@ -272,6 +306,21 @@ export function SessionsPanel() {
       setCopied(null);
     }
   }, []);
+
+  useEffect(() => {
+    for (const id of attachedIds) {
+      const entry = terminalsRef.current.get(id);
+      const current = sessions.find(session => session.id === id);
+      if (
+        !entry
+        || !current
+        || current.state !== 'connected'
+        || current.connection_id !== entry.connectionId
+      ) {
+        detach(id);
+      }
+    }
+  }, [attachedIds, detach, sessions]);
 
   useEffect(() => {
     if (!selectedSession || selectedSession.state !== 'connected') return;
@@ -318,18 +367,26 @@ export function SessionsPanel() {
   const selectedCopyFields = selectedSession ? sessionCopyFields(selectedSession) : [];
   const bufferCommands = useMemo(() => extractCommandLikeLines(buffer), [buffer]);
   const bufferMatches = useMemo(() => searchSessionBuffer(buffer, bufferQuery), [buffer, bufferQuery]);
+  const selectedBufferRequestKey = selectedSession
+    ? sessionBufferRequestKey(selectedSession)
+    : null;
 
   useEffect(() => {
     if (!selectedSession) {
       setBuffer(null);
       return;
     }
+    setBuffer(null);
     let cancelled = false;
-    api.getSessionBuffer(selectedSession.id, { tailBytes: 12000 })
+    api.getSessionBuffer(selectedSession.id, {
+      tailBytes: 12000,
+      connectionId: selectedSession.connection_id,
+      connectionGeneration: selectedSession.connection_generation,
+    })
       .then(data => { if (!cancelled) setBuffer(data); })
       .catch(() => { if (!cancelled) setBuffer(null); });
     return () => { cancelled = true; };
-  }, [selectedSession?.id]);
+  }, [selectedBufferRequestKey]);
 
   return (
     <div className="h-[calc(100vh-7rem)] min-h-[680px] flex flex-col gap-4">
@@ -362,7 +419,14 @@ export function SessionsPanel() {
               <SessionStat label="Total" value={sessions.length} />
             </div>
             <div className="overflow-y-auto p-2 space-y-3">
-              {(['live', 'pending', 'error', 'closed'] as SessionGroup[]).map(group => (
+              {([
+                'live',
+                'pending',
+                'resume_available',
+                'interrupted',
+                'error',
+                'closed',
+              ] as SessionGroup[]).map(group => (
                 <div key={group} className="space-y-1.5">
                   <div className="flex items-center justify-between px-1 text-[10px] uppercase tracking-wider text-muted-foreground">
                     <span>{SESSION_GROUP_LABELS[group]}</span>
@@ -402,6 +466,11 @@ export function SessionsPanel() {
                 )
               )}
             </div>
+            {attachError && (
+              <div className="flex-shrink-0 border-b border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                {attachError}
+              </div>
+            )}
             {attachedIds.length > 0 ? (
               <>
                 <div className="flex-shrink-0 flex gap-0.5 border-b border-border px-2 pt-2 overflow-x-auto">
@@ -423,7 +492,6 @@ export function SessionsPanel() {
             ) : (
               <div className="h-full flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
                 <EmptyPanelState message="Attach a connected session to open a terminal." className="border-0 bg-transparent" />
-                {attachError && <div className="max-w-sm text-center text-xs text-destructive">{attachError}</div>}
                 {selectedSession?.state === 'connected' && (
                   <ActionButton onClick={() => attachSession(selectedSession.id)} variant="success">
                     Attach Terminal
@@ -464,6 +532,15 @@ export function SessionsPanel() {
                         <ActionButton onClick={() => attachSession(selectedSession.id)} variant="success">Attach</ActionButton>
                       )
                     )}
+                    {selectedSession.state === 'resume_available' && (
+                      <ActionButton
+                        onClick={() => handleResumeSession(selectedSession.id)}
+                        disabled={resumingId === selectedSession.id}
+                        variant="success"
+                      >
+                        {resumingId === selectedSession.id ? 'Resuming...' : 'Resume Listener'}
+                      </ActionButton>
+                    )}
                     {selectedSession.target_node && <ActionButton onClick={() => navigateToGraph(selectedSession.target_node, 2)} variant="ghost" className="text-accent">Graph</ActionButton>}
                     {selectedSession.target_node && <ActionButton onClick={() => navigateToEvidence(selectedSession.target_node!)} variant="secondary">Evidence</ActionButton>}
                     {editing ? (
@@ -487,6 +564,9 @@ export function SessionsPanel() {
                   <DetailFact label="Owner" value={selectedSession.claimed_by || selectedSession.owner || selectedSession.agent_id || 'dashboard'} mono />
                   <DetailFact label="Validation" value={selectedSession.default_validation?.technique || 'per-command'} mono />
                   <DetailFact label="Last Activity" value={selectedSession.last_activity_at ? formatRelativeTime(selectedSession.last_activity_at) : '—'} />
+                  <DetailFact label="Generation" value={String(selectedSession.connection_generation ?? 0)} mono />
+                  {selectedSession.connection_id && <DetailFact label="Connection" value={selectedSession.connection_id} mono />}
+                  {!selectedSession.connection_id && selectedSession.last_connection_id && <DetailFact label="Last Connection" value={selectedSession.last_connection_id} mono />}
                   {selectedSession.bind_host && <DetailFact label="Bind" value={`${selectedSession.bind_host}${selectedSession.port ? `:${selectedSession.port}` : ''}`} mono />}
                   {selectedSession.advertise_host && <DetailFact label="Callback" value={`${selectedSession.advertise_host}${selectedSession.port ? `:${selectedSession.port}` : ''}`} mono />}
                 </div>
@@ -677,6 +757,8 @@ function SessionRow({
         <span className={cn('mt-1.5 w-2 h-2 rounded-full flex-shrink-0',
           session.state === 'connected' && 'bg-success',
           session.state === 'pending' && 'bg-warning animate-pulse',
+          session.state === 'resume_available' && 'bg-accent',
+          session.state === 'interrupted' && 'bg-warning',
           session.state === 'closed' && 'bg-muted',
           session.state === 'error' && 'bg-destructive',
         )} />

@@ -54,7 +54,17 @@ interface AgentInfo { id: string; status: string; agent_id?: string; skill?: str
 interface FindingDto { id: string; severity: string; title: string; risk_score: number; affected_assets: string[] }
 interface FindingsResponse { findings: FindingDto[]; total: number; severity_summary: Record<string, number> }
 interface PendingAction { action_id: string; technique?: string; target?: string; description: string; noise_level?: number; agent_id?: string }
-interface SessionInfo { id: string; kind: string; state: string; title?: string; host?: string; agent_id?: string }
+interface SessionInfo {
+  id: string;
+  kind: string;
+  state: string;
+  title?: string;
+  host?: string;
+  agent_id?: string;
+  claimed_by?: string;
+  connection_generation?: number;
+  connection_id?: string;
+}
 interface AgentQuery { query_id: string; agent_id?: string; question: string }
 interface OpsecBudget { global_noise_spent: number; noise_budget_remaining: number; max_noise: number; recommended_approach: string; time_window_remaining_hours?: number; warning?: string }
 
@@ -380,9 +390,16 @@ export function renderApprovals(pending: PendingAction[]): string {
 
 export function renderSessions(sessions: SessionInfo[]): string {
   return formatTable(
-    ['STATE', 'ID', 'KIND', 'TITLE', 'AGENT'],
-    sessions.map(s => [s.state, s.id, s.kind, s.title ?? s.host ?? '', s.agent_id ?? '']),
-    { color: [s => (s.trim() === 'connected' ? green : s.trim() === 'error' ? red : dim)(s), dim, undefined, undefined, dim] },
+    ['STATE', 'ID', 'KIND', 'GEN', 'TITLE', 'AGENT'],
+    sessions.map(s => [
+      s.state,
+      s.id,
+      s.kind,
+      String(s.connection_generation ?? 0),
+      s.title ?? s.host ?? '',
+      s.claimed_by ?? s.agent_id ?? '',
+    ]),
+    { color: [s => (s.trim() === 'connected' ? green : s.trim() === 'error' ? red : dim)(s), dim, undefined, dim, undefined, dim] },
   );
 }
 
