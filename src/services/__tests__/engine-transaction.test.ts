@@ -1260,8 +1260,9 @@ describe('EngineTransaction v2 coordination boundary', () => {
       linkage_status: 'validated',
       last_event_id: event.event_id,
     });
-    const recoveredChainTail = second.getFullHistory()
-      .findLast(candidate => candidate.event_hash)
+    const recoveredChainTail = [...second.getFullHistory()]
+      .reverse()
+      .find(candidate => candidate.event_hash)
       ?.event_hash;
     const inherited = second.logActionEvent({
       description: 'continued bounded activity',
