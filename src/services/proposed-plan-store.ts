@@ -9,9 +9,8 @@
 //
 // This store is the shared hand-off point: the propose_plan tool (which only has
 // the GraphEngine) writes here, and the dashboard's /api/commands confirm path
-// reads here. It is in-memory only (a proposed-but-unconfirmed plan can be
-// re-proposed) with a TTL, mirroring DashboardServer.commandPlans for the
-// grammar path.
+// reads here. The store serializes with an absolute TTL so restart neither
+// discards an open decision nor extends its operator-confirmation window.
 // ============================================================
 
 import { randomUUID } from 'crypto';
@@ -33,6 +32,8 @@ export interface ProposedPlan {
   /** Dry-run scope-impact preview, present when the plan has scope op(s). */
   scope_preview?: ScopePreview;
   created_at: number;
+  /** Absolute expiry; restart never extends the operator decision window. */
+  expires_at: number;
   status: ProposedPlanStatus;
 }
 
@@ -66,11 +67,17 @@ export type PlanResolution = 'open' | 'confirmed' | 'denied' | 'expired' | 'unkn
 // answer after the plan itself has been pruned from the live map.
 const TOMBSTONE_CAP = 200;
 
+export interface SerializedProposedPlanStore {
+  plans: ProposedPlan[];
+  tombstones: Array<[string, 'confirmed' | 'denied' | 'expired']>;
+}
+
 export class ProposedPlanStore {
   private plans = new Map<string, ProposedPlan>();
   // plan_id → how it ended (confirmed/denied/expired). Insertion-ordered + capped.
   private tombstones = new Map<string, 'confirmed' | 'denied' | 'expired'>();
-  private onChangeCb: (() => void) | null = null;
+  private listeners = new Set<() => void>();
+  private mutationGuard: (() => void) | undefined;
 
   constructor(private ttlMs: number = DEFAULT_TTL_MS) {}
 
@@ -83,15 +90,29 @@ export class ProposedPlanStore {
     }
   }
 
-  /** Register a change listener (the dashboard uses this to broadcast). */
-  onChange(cb: () => void): void {
-    this.onChangeCb = cb;
+  /** Register a change listener (dashboard broadcast + persistence coexist). */
+  onChange(cb: () => void): () => void {
+    this.listeners.add(cb);
+    return () => this.listeners.delete(cb);
+  }
+
+  setMutationGuard(guard: (() => void) | undefined): void {
+    this.mutationGuard = guard;
+  }
+
+  private notifyChange(): void {
+    let firstError: unknown;
+    for (const listener of this.listeners) {
+      try { listener(); } catch (error) { firstError ??= error; }
+    }
+    if (firstError !== undefined) throw firstError;
   }
 
   /** Record a freshly-proposed plan. Returns the stored record (with its plan_id). */
   add(args: AddProposedPlanArgs): ProposedPlan {
+    this.mutationGuard?.();
     const now = args.now ?? Date.now();
-    this.prune(now);
+    this.pruneInternal(now, false);
     const plan: ProposedPlan = {
       plan_id: randomUUID(),
       command: args.command,
@@ -102,10 +123,11 @@ export class ProposedPlanStore {
       source_agent_id: args.source_agent_id,
       scope_preview: args.scope_preview,
       created_at: now,
+      expires_at: now + this.ttlMs,
       status: 'open',
     };
     this.plans.set(plan.plan_id, plan);
-    this.onChangeCb?.();
+    this.notifyChange();
     return plan;
   }
 
@@ -116,9 +138,9 @@ export class ProposedPlanStore {
 
   /** All currently-open plans, newest first. */
   getOpen(now: number = Date.now()): ProposedPlan[] {
-    this.prune(now);
+    try { this.prune(now); } catch { /* degraded reads filter without mutating */ }
     return [...this.plans.values()]
-      .filter(p => p.status === 'open')
+      .filter(p => p.status === 'open' && p.expires_at > now)
       .sort((a, b) => b.created_at - a.created_at);
   }
 
@@ -130,12 +152,13 @@ export class ProposedPlanStore {
    * top of handleCommand) instead of relying on a GET /api/plans poll to sweep.
    */
   resolve(plan_id: string, status: 'confirmed' | 'denied', now: number = Date.now()): ProposedPlan | null {
-    this.prune(now);
+    this.mutationGuard?.();
+    this.pruneInternal(now, false);
     const plan = this.plans.get(plan_id);
     if (!plan || plan.status !== 'open') return null;
     plan.status = status;
     this.tombstone(plan_id, status);
-    this.onChangeCb?.();
+    this.notifyChange();
     return plan;
   }
 
@@ -146,23 +169,82 @@ export class ProposedPlanStore {
    * of both). Prunes first so an expired-but-unswept plan reports `expired`.
    */
   describeResolution(plan_id: string, now: number = Date.now()): PlanResolution {
-    this.prune(now);
+    try { this.prune(now); } catch { /* degraded reads remain available */ }
     const plan = this.plans.get(plan_id);
+    if (plan && plan.expires_at <= now) return 'expired';
     if (plan) return plan.status; // 'open' | 'confirmed' | 'denied' (expired ones are pruned, not kept)
     return this.tombstones.get(plan_id) ?? 'unknown';
   }
 
   /** Sweep plans older than the TTL, tombstoning still-open ones as expired before dropping. */
   prune(now: number = Date.now()): void {
-    const cutoff = now - this.ttlMs;
-    for (const [id, p] of this.plans) {
-      if (p.created_at < cutoff) {
-        // A still-open plan that timed out is 'expired'; a resolved one already has
-        // its confirmed/denied tombstone from resolve() — don't overwrite it.
-        if (p.status === 'open') this.tombstone(id, 'expired');
-        this.plans.delete(id);
+    this.pruneInternal(now, true);
+  }
+
+  private pruneInternal(now: number, guard: boolean, notify = true): void {
+    const expired = [...this.plans.entries()]
+      .filter(([, plan]) => {
+        const expiresAt = Number.isFinite(plan.expires_at)
+          ? plan.expires_at
+          : plan.created_at + this.ttlMs;
+        return expiresAt <= now;
+      });
+    if (expired.length === 0) return;
+    if (guard) this.mutationGuard?.();
+    for (const [id, plan] of expired) {
+      // A still-open plan that timed out is 'expired'; a resolved one already has
+      // its confirmed/denied tombstone from resolve() — don't overwrite it.
+      if (plan.status === 'open') this.tombstone(id, 'expired');
+      this.plans.delete(id);
+    }
+    if (notify) this.notifyChange();
+  }
+
+  serialize(): SerializedProposedPlanStore {
+    return JSON.parse(JSON.stringify({
+      plans: [...this.plans.values()],
+      tombstones: [...this.tombstones.entries()],
+    })) as SerializedProposedPlanStore;
+  }
+
+  /** Restore in place so dashboard/persistence listeners remain attached. */
+  restore(data: unknown, now: number = Date.now()): void {
+    const record = data && typeof data === 'object' && !Array.isArray(data)
+      ? data as Partial<SerializedProposedPlanStore>
+      : {};
+    const plans = Array.isArray(record.plans) ? record.plans : [];
+    const tombstones = Array.isArray(record.tombstones) ? record.tombstones : [];
+    this.plans.clear();
+    this.tombstones.clear();
+    for (const candidate of plans) {
+      if (!candidate || typeof candidate !== 'object') continue;
+      const plan = candidate as ProposedPlan;
+      if (typeof plan.plan_id !== 'string' || typeof plan.created_at !== 'number') continue;
+      this.plans.set(plan.plan_id, {
+        ...(JSON.parse(JSON.stringify(plan)) as ProposedPlan),
+        expires_at: Number.isFinite(plan.expires_at)
+          ? plan.expires_at
+          : plan.created_at + this.ttlMs,
+      });
+    }
+    for (const candidate of tombstones) {
+      if (!Array.isArray(candidate) || candidate.length !== 2) continue;
+      const [id, disposition] = candidate;
+      if (
+        typeof id === 'string'
+        && (disposition === 'confirmed' || disposition === 'denied' || disposition === 'expired')
+      ) {
+        this.tombstone(id, disposition);
       }
     }
+    // Expire against the original absolute deadline, never restart time.
+    this.pruneInternal(now, false, false);
+  }
+
+  static deserialize(data: unknown, ttlMs: number = DEFAULT_TTL_MS, now: number = Date.now()): ProposedPlanStore {
+    const store = new ProposedPlanStore(ttlMs);
+    store.restore(data, now);
+    return store;
   }
 
   /** Test/inspection helper. */

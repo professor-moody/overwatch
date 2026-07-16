@@ -194,6 +194,40 @@ describe('SessionManager', () => {
         title: 'no adapter',
       })).rejects.toThrow('No adapter registered for session kind: ssh');
     });
+
+    it.each([
+      {
+        name: 'empty host',
+        options: { kind: 'local_pty' as const, title: 'shell', host: '' },
+        message: 'Session host must not be empty',
+      },
+      {
+        name: 'empty owner',
+        options: { kind: 'local_pty' as const, title: 'shell', agent_id: '' },
+        message: 'Session agent_id must not be empty',
+      },
+      {
+        name: 'out-of-range port',
+        options: { kind: 'local_pty' as const, title: 'shell', port: 65_536 },
+        message: 'Session port must be an integer from 0 through 65535',
+      },
+      {
+        name: 'empty validation technique',
+        options: {
+          kind: 'local_pty' as const,
+          title: 'shell',
+          default_validation: { technique: '' },
+        },
+        message: 'default_validation.technique must not be empty',
+      },
+    ])('rejects $name before spawning an adapter', async ({ options, message }) => {
+      const spawn = vi.spyOn(mockAdapter.adapter, 'spawn');
+      await expect(manager.create({
+        ...options,
+        initial_wait_ms: 0,
+      })).rejects.toThrow(message);
+      expect(spawn).not.toHaveBeenCalled();
+    });
   });
 
   describe('write', () => {

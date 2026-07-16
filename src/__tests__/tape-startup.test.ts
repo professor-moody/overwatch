@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { mkdtempSync, rmSync } from 'fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import {
@@ -97,6 +103,37 @@ describe('tape startup attribution', () => {
     maybeAutoEnableTape(app);
 
     expect(app.tape.getStatus().enabled).toBe(false);
+  });
+
+  it('does not create an auto-tape artifact during degraded recovery', async () => {
+    const tapeDir = join(tmpDir, 'degraded-tapes');
+    const stateFilePath = join(tmpDir, 'state-degraded.json');
+    const config = makeConfig({ tape: { enabled: true, dir: tapeDir } });
+    app = createOverwatchApp({
+      config,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+      stateFilePath,
+    });
+    app.engine.persistImmediate();
+    await shutdownOverwatchApp(app);
+    app = null;
+
+    const future = JSON.parse(readFileSync(stateFilePath, 'utf8')) as Record<string, unknown>;
+    future.state_version = 2;
+    writeFileSync(stateFilePath, JSON.stringify(future));
+    app = createOverwatchApp({
+      config,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+      stateFilePath,
+    });
+
+    expect(app.engine.isPersistenceWritable()).toBe(false);
+    expect(() => app!.tape.enable({ defaultDir: tapeDir })).toThrow(/durable mutations are disabled/i);
+    maybeAutoEnableTape(app);
+    expect(app.tape.getStatus().enabled).toBe(false);
+    expect(existsSync(tapeDir)).toBe(false);
   });
 
   it('auto-enables tape for HTTP startup and records HTTP frames', async () => {

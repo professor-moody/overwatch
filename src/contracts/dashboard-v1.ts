@@ -517,6 +517,21 @@ export const ConfigRecoveryStatusSchema = z.object({
 }).passthrough();
 export type ConfigRecoveryStatusDto = z.infer<typeof ConfigRecoveryStatusSchema>;
 
+export const StateMigrationStatusSchema = z.object({
+  status: z.enum(['not_checked', 'current', 'backup_created', 'migrated', 'blocked']),
+  supported_state_version: z.number().int().positive(),
+  supported_journal_version: z.number().int().positive(),
+  observed_state_version: z.number().int().nonnegative().optional(),
+  // Zero is not a supported journal version, but it is a useful observed
+  // value when an invalid on-disk discriminator forced read-only recovery.
+  observed_journal_version: z.number().int().nonnegative().optional(),
+  migration_required: z.boolean(),
+  backup_path: z.string().optional(),
+  backup_manifest_sha256: Sha256Schema.optional(),
+  reason: z.string().optional(),
+}).passthrough();
+export type StateMigrationStatusDto = z.infer<typeof StateMigrationStatusSchema>;
+
 export const RecoveryStatusDtoSchema = z.object({
   outcome: z.enum(['clean', 'recovered', 'incomplete', 'reinitialized']),
   source: z.enum(['fresh', 'state', 'snapshot', 'config']),
@@ -539,6 +554,7 @@ export const RecoveryStatusDtoSchema = z.object({
   last_persistence_error: z.string().optional(),
   journal: z.object({
     enabled: z.boolean(),
+    format_version: z.number().int().positive().optional(),
     path: z.string().optional(),
     read: z.number().int().nonnegative(),
     attempted: z.number().int().nonnegative(),
@@ -548,6 +564,7 @@ export const RecoveryStatusDtoSchema = z.object({
     malformed: z.boolean(),
     preserved: z.boolean(),
   }).passthrough(),
+  state_migration: StateMigrationStatusSchema.optional(),
   config_recovery: ConfigRecoveryStatusSchema.optional(),
 }).passthrough();
 export type RecoveryStatusDto = z.infer<typeof RecoveryStatusDtoSchema>;

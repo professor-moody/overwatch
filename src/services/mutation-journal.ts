@@ -34,6 +34,10 @@ import { dirname, join, basename } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
 import { decodeUtf8Fatal } from './durable-json.js';
+import {
+  assertStateMigrationWriteAllowed,
+  withStateMigrationWriteGuard,
+} from './state-migration-lock.js';
 import type {
   ConfigIntentConflict,
   EdgeProperties,
@@ -838,18 +842,34 @@ export interface MutationReplayOptions {
 }
 
 export class MutationJournal {
+  private stateFilePath: string;
   private journalPath: string;
   private nextSeq: number = 0;
   private appliedThroughSeq: number = 0;
   private lastReadIssue: MutationReadIssue | undefined;
   private appendBlockedReason: string | undefined;
+  private migrationOwnerToken: string | undefined;
 
   constructor(stateFilePath: string) {
+    this.stateFilePath = stateFilePath;
     const stateDir = dirname(stateFilePath);
-    if (!existsSync(stateDir)) {
-      mkdirDurable(stateDir);
-    }
     this.journalPath = join(stateDir, basename(stateFilePath, '.json') + '.journal.jsonl');
+  }
+
+  setMigrationOwnerToken(token: string | undefined): void {
+    this.migrationOwnerToken = token;
+  }
+
+  private assertMigrationWriteAllowed(): void {
+    assertStateMigrationWriteAllowed(this.stateFilePath, this.migrationOwnerToken);
+  }
+
+  private withMigrationWriteGuard<T>(operation: () => T): T {
+    return withStateMigrationWriteGuard(
+      this.stateFilePath,
+      this.migrationOwnerToken,
+      operation,
+    );
   }
 
   /** Resolve the WAL path without creating directories or opening the file. */
@@ -938,9 +958,16 @@ export class MutationJournal {
    * "the mutation is not durable, do not apply it in memory."
    */
   append(entry: Omit<MutationEntry, 'seq' | 'ts'> & { ts?: string }): MutationEntry {
+    return this.withMigrationWriteGuard(() => this.appendUnlocked(entry));
+  }
+
+  private appendUnlocked(
+    entry: Omit<MutationEntry, 'seq' | 'ts'> & { ts?: string },
+  ): MutationEntry {
     if (this.appendBlockedReason) {
       throw new Error(`Mutation journal is read-only: ${this.appendBlockedReason}`);
     }
+    this.assertMigrationWriteAllowed();
     const seq = this.nextSeq + 1;
     const full: MutationEntry = {
       seq,
@@ -961,6 +988,8 @@ export class MutationJournal {
 
     // Open-append-fsync-close: simple and bulletproof; the bulkier
     // engagements that justify a long-lived stream can land later.
+    const stateDir = dirname(this.journalPath);
+    if (!existsSync(stateDir)) mkdirDurable(stateDir);
     const existed = existsSync(this.journalPath);
     let fd: number | undefined;
     try {
@@ -1232,6 +1261,11 @@ export class MutationJournal {
    * Atomic on POSIX via write-tmp-then-rename.
    */
   compactUpTo(upTo: number): MutationCompactionResult {
+    return this.withMigrationWriteGuard(() => this.compactUpToUnlocked(upTo));
+  }
+
+  private compactUpToUnlocked(upTo: number): MutationCompactionResult {
+    this.assertMigrationWriteAllowed();
     const scan = this.scanJournal();
     if (scan.raw.length === 0) return { kept: 0, dropped: 0 };
     if (scan.issue) {
@@ -1283,6 +1317,11 @@ export class MutationJournal {
    * Atomic on POSIX via rename-to-tmp-then-unlink.
    */
   truncate(): void {
+    this.withMigrationWriteGuard(() => this.truncateUnlocked());
+  }
+
+  private truncateUnlocked(): void {
+    this.assertMigrationWriteAllowed();
     if (!existsSync(this.journalPath)) return;
     // Rename first so the durable snapshot/checkpoint and the WAL removal have
     // an atomic directory-entry boundary.  Never swallow a failure here: the
@@ -1301,6 +1340,11 @@ export class MutationJournal {
    * The active journal is intentionally left untouched for manual recovery.
    */
   quarantine(): string | undefined {
+    return this.withMigrationWriteGuard(() => this.quarantineUnlocked());
+  }
+
+  private quarantineUnlocked(): string | undefined {
+    this.assertMigrationWriteAllowed();
     if (!existsSync(this.journalPath)) return undefined;
     const raw = readFileSync(this.journalPath);
     if (raw.length === 0) return undefined;

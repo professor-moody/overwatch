@@ -4,6 +4,10 @@
 
 import type { ApiClient } from './client.js';
 import * as render from './render.js';
+import { existsSync, readFileSync } from 'fs';
+import { dirname, join, resolve } from 'path';
+import { engagementConfigSchema } from '../../types.js';
+import { inspectStateMigration } from '../../services/state-migration.js';
 
 export interface CommandContext {
   client: ApiClient;
@@ -15,6 +19,7 @@ export interface CommandContext {
 export interface CommandResult {
   data: unknown;
   text: string;
+  exitCode?: number;
 }
 
 export interface Command {
@@ -32,6 +37,7 @@ function flagValue(args: string[], name: string): string | undefined {
 const VALUE_FLAGS = new Set([
   'url', 'token', 'reason', 'archetype', 'skill', 'type', 'max', 'severity', 'node',
   'file-hash', 'state-hash',
+  'state-file', 'config-file',
 ]);
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -68,6 +74,41 @@ function requireFirst(args: string[], label: string): string {
 interface StateResp { state?: { frontier?: Array<{ type: string }> } }
 
 export const READ_COMMANDS: Record<string, Command> = {
+  state: {
+    summary: 'Inspect local persisted-state version and migration readiness',
+    usage: 'state migrate --check [--state-file PATH] [--config-file PATH]',
+    async run({ args }) {
+      const positional = positionals(args);
+      if (positional[0] !== 'migrate' || !args.includes('--check')) {
+        throw new Error('Expected `state migrate --check`.');
+      }
+      const configFile = resolve(
+        flagValue(args, 'config-file')
+          ?? process.env.OVERWATCH_CONFIG
+          ?? './engagement.json',
+      );
+      let stateFile = flagValue(args, 'state-file')
+        ?? process.env.OVERWATCH_STATE_FILE;
+      if (!stateFile) {
+        if (!existsSync(configFile)) {
+          throw new Error('Cannot derive the state path because the config file is missing; pass --state-file PATH.');
+        }
+        const config = engagementConfigSchema.parse(
+          JSON.parse(readFileSync(configFile, 'utf8')),
+        );
+        stateFile = join(dirname(configFile), `state-${config.id}.json`);
+      }
+      const inspection = inspectStateMigration({
+        stateFilePath: resolve(stateFile),
+        configFilePath: configFile,
+      });
+      return {
+        data: inspection,
+        text: render.renderStateMigrationInspection(inspection),
+        exitCode: inspection.ready ? 0 : 1,
+      };
+    },
+  },
   status: {
     summary: 'Engagement snapshot: graph, objectives, agents, approvals, frontier',
     async run({ client }) {

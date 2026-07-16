@@ -8,8 +8,8 @@
 // This store is the shared hand-off point — the tool writes here, the dashboard
 // reads/answers here, and the heartbeat path drains answers back to the agent.
 //
-// In-memory only (a question is meaningless after the agent times out) with a
-// TTL, mirroring ProposedPlanStore / the command-plan store.
+// Serialized with an absolute TTL, so restart preserves a live operator
+// decision without extending it past the asking agent's original window.
 // ============================================================
 
 import { randomUUID } from 'crypto';
@@ -26,6 +26,8 @@ export interface AgentQuery {
   status: AgentQueryStatus;
   answer?: string;
   created_at: number;
+  /** Absolute expiry; restart must not extend this deadline. */
+  expires_at: number;
   answered_at?: number;
 }
 
@@ -41,21 +43,40 @@ export interface AddAgentQueryArgs {
 // agent that asked it is dead weight.
 const DEFAULT_TTL_MS = 30 * 60_000;
 
+export interface SerializedAgentQueryStore {
+  queries: AgentQuery[];
+}
+
 export class AgentQueryStore {
   private queries = new Map<string, AgentQuery>();
-  private onChangeCb: (() => void) | null = null;
+  private listeners = new Set<() => void>();
+  private mutationGuard: (() => void) | undefined;
 
   constructor(private ttlMs: number = DEFAULT_TTL_MS) {}
 
-  /** Register a change listener (the dashboard uses this to broadcast). */
-  onChange(cb: () => void): void {
-    this.onChangeCb = cb;
+  /** Register a change listener (dashboard broadcast + persistence coexist). */
+  onChange(cb: () => void): () => void {
+    this.listeners.add(cb);
+    return () => this.listeners.delete(cb);
+  }
+
+  setMutationGuard(guard: (() => void) | undefined): void {
+    this.mutationGuard = guard;
+  }
+
+  private notifyChange(): void {
+    let firstError: unknown;
+    for (const listener of this.listeners) {
+      try { listener(); } catch (error) { firstError ??= error; }
+    }
+    if (firstError !== undefined) throw firstError;
   }
 
   /** Record a new question. Returns the stored record (with its query_id). */
   add(args: AddAgentQueryArgs): AgentQuery {
+    this.mutationGuard?.();
     const now = args.now ?? Date.now();
-    this.prune(now);
+    this.pruneInternal(now, false);
     const query: AgentQuery = {
       query_id: randomUUID(),
       task_id: args.task_id,
@@ -64,9 +85,10 @@ export class AgentQueryStore {
       options: args.options,
       status: 'open',
       created_at: now,
+      expires_at: now + this.ttlMs,
     };
     this.queries.set(query.query_id, query);
-    this.onChangeCb?.();
+    this.notifyChange();
     return query;
   }
 
@@ -76,9 +98,9 @@ export class AgentQueryStore {
 
   /** All still-open questions, oldest first (FIFO for the operator inbox). */
   getOpen(now: number = Date.now()): AgentQuery[] {
-    this.prune(now);
+    try { this.prune(now); } catch { /* degraded reads filter without mutating */ }
     return [...this.queries.values()]
-      .filter(q => q.status === 'open')
+      .filter(q => q.status === 'open' && q.expires_at > now)
       .sort((a, b) => a.created_at - b.created_at);
   }
 
@@ -87,14 +109,15 @@ export class AgentQueryStore {
    * is unknown / already answered / expired.
    */
   answer(query_id: string, answer: string, now: number = Date.now()): AgentQuery | null {
+    this.mutationGuard?.();
     // Prune first so an expired-but-unswept question can't be answered (matches
     // ProposedPlanStore.resolve). getOpen already prunes, but the answer path
     // must not rely on a prior poll having run.
-    this.prune(now);
+    this.pruneInternal(now, false);
     const query = this.queries.get(query_id);
     if (!query || query.status !== 'open') return null;
     this.resolveQuery(query, answer, now);
-    this.onChangeCb?.();
+    this.notifyChange();
     return query;
   }
 
@@ -107,7 +130,8 @@ export class AgentQueryStore {
    * Fires onChange once (not per member).
    */
   answerMany(query_ids: string[], answer: string, now: number = Date.now()): AgentQuery[] {
-    this.prune(now);
+    this.mutationGuard?.();
+    this.pruneInternal(now, false);
     const resolved: AgentQuery[] = [];
     for (const id of query_ids) {
       const query = this.queries.get(id);
@@ -115,7 +139,7 @@ export class AgentQueryStore {
       this.resolveQuery(query, answer, now);
       resolved.push(query);
     }
-    if (resolved.length > 0) this.onChangeCb?.();
+    if (resolved.length > 0) this.notifyChange();
     return resolved;
   }
 
@@ -133,9 +157,13 @@ export class AgentQueryStore {
    * acts on a given answer once. The record is cleared when the task goes
    * terminal (expireForTask) or by TTL.
    */
-  getAnswerForTask(task_id: string): AgentQuery | null {
+  getAnswerForTask(task_id: string, now: number = Date.now()): AgentQuery | null {
+    try { this.prune(now); } catch { /* degraded reads filter without mutating */ }
     const answered = [...this.queries.values()]
-      .filter(q => q.task_id === task_id && q.status === 'answered')
+      .filter(q =>
+        q.task_id === task_id
+        && q.status === 'answered'
+        && q.expires_at > now)
       .sort((a, b) => (b.answered_at ?? 0) - (a.answered_at ?? 0));
     return answered[0] ?? null;
   }
@@ -146,19 +174,63 @@ export class AgentQueryStore {
    * answered into the void).
    */
   expireForTask(task_id: string): void {
+    this.mutationGuard?.();
     let changed = false;
     for (const [id, q] of this.queries) {
       if (q.task_id === task_id) { this.queries.delete(id); changed = true; }
     }
-    if (changed) this.onChangeCb?.();
+    if (changed) this.notifyChange();
   }
 
   /** Sweep questions older than the TTL (open ones effectively expire). */
   prune(now: number = Date.now()): void {
-    const cutoff = now - this.ttlMs;
-    for (const [id, q] of this.queries) {
-      if (q.created_at < cutoff) this.queries.delete(id);
+    this.pruneInternal(now, true);
+  }
+
+  private pruneInternal(now: number, guard: boolean, notify = true): void {
+    const expired = [...this.queries.entries()]
+      .filter(([, query]) => {
+        const expiresAt = Number.isFinite(query.expires_at)
+          ? query.expires_at
+          : query.created_at + this.ttlMs;
+        return expiresAt <= now;
+      });
+    if (expired.length === 0) return;
+    if (guard) this.mutationGuard?.();
+    for (const [id] of expired) this.queries.delete(id);
+    if (notify) this.notifyChange();
+  }
+
+  serialize(): SerializedAgentQueryStore {
+    return JSON.parse(JSON.stringify({
+      queries: [...this.queries.values()],
+    })) as SerializedAgentQueryStore;
+  }
+
+  /** Restore in place so dashboard/persistence listeners remain attached. */
+  restore(data: unknown, now: number = Date.now()): void {
+    const record = data && typeof data === 'object' && !Array.isArray(data)
+      ? data as Partial<SerializedAgentQueryStore>
+      : {};
+    this.queries.clear();
+    for (const candidate of Array.isArray(record.queries) ? record.queries : []) {
+      if (!candidate || typeof candidate !== 'object') continue;
+      const query = candidate as AgentQuery;
+      if (typeof query.query_id !== 'string' || typeof query.created_at !== 'number') continue;
+      this.queries.set(query.query_id, {
+        ...(JSON.parse(JSON.stringify(query)) as AgentQuery),
+        expires_at: Number.isFinite(query.expires_at)
+          ? query.expires_at
+          : query.created_at + this.ttlMs,
+      });
     }
+    this.pruneInternal(now, false, false);
+  }
+
+  static deserialize(data: unknown, ttlMs: number = DEFAULT_TTL_MS, now: number = Date.now()): AgentQueryStore {
+    const store = new AgentQueryStore(ttlMs);
+    store.restore(data, now);
+    return store;
   }
 
   size(): number {

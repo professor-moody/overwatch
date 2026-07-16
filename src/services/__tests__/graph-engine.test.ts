@@ -1999,6 +1999,148 @@ describe('GraphEngine', () => {
       expect(engine3.getTrackedProcesses()).toHaveLength(1);
       expect(engine3.getTrackedProcesses()[0].id).toBe('proc-a');
     });
+
+    it('coordinates external runtime owners around snapshot rollback', () => {
+      const stateFile = makeTempStateFile();
+      const first = trackedEngine(makeConfig(), stateFile);
+      first.setTrackedProcesses([{
+        id: 'proc-before',
+        pid: 1001,
+        command: 'before',
+        description: 'before',
+        started_at: '2026-03-21T00:00:00.000Z',
+        status: 'unknown',
+      }]);
+      first.flushNow();
+
+      const current = trackedEngine(makeConfig(), stateFile);
+      current.setTrackedProcesses([{
+        id: 'proc-after',
+        pid: 1002,
+        command: 'after',
+        description: 'after',
+        started_at: '2026-03-21T00:05:00.000Z',
+        status: 'unknown',
+      }]);
+      current.flushNow();
+      const snapshots = current.listSnapshots();
+      expect(snapshots.length).toBeGreaterThan(0);
+
+      let beforeCalls = 0;
+      let afterCalls = 0;
+      current.setRollbackCoordinator({
+        beforeRollback: () => { beforeCalls++; },
+        afterRollback: () => {
+          afterCalls++;
+          expect(current.getTrackedProcesses()).toContainEqual(
+            expect.objectContaining({ id: 'proc-before' }),
+          );
+        },
+      });
+
+      expect(current.rollbackToSnapshot(snapshots[snapshots.length - 1])).toBe(true);
+      expect(beforeCalls).toBe(1);
+      expect(afterCalls).toBe(1);
+    });
+
+    it('rejects rollback before durable state changes when a runtime owner vetoes it', () => {
+      const stateFile = makeTempStateFile();
+      const first = trackedEngine(makeConfig(), stateFile);
+      first.setTrackedProcesses([{
+        id: 'proc-before',
+        pid: 1001,
+        command: 'before',
+        description: 'before',
+        started_at: '2026-03-21T00:00:00.000Z',
+        status: 'unknown',
+      }]);
+      first.flushNow();
+
+      const current = trackedEngine(makeConfig(), stateFile);
+      current.setTrackedProcesses([{
+        id: 'proc-current',
+        pid: 1002,
+        command: 'current',
+        description: 'current',
+        started_at: '2026-03-21T00:05:00.000Z',
+        status: 'unknown',
+      }]);
+      current.flushNow();
+      const snapshots = current.listSnapshots();
+      let afterCalls = 0;
+      current.setRollbackCoordinator({
+        beforeRollback: () => { throw new Error('live runtime owner'); },
+        afterRollback: () => { afterCalls++; },
+      });
+
+      expect(() => current.rollbackToSnapshot(snapshots[snapshots.length - 1]))
+        .toThrow('live runtime owner');
+      expect(afterCalls).toBe(0);
+      expect(current.getTrackedProcesses()).toContainEqual(
+        expect.objectContaining({ id: 'proc-current' }),
+      );
+    });
+
+    it('preserves runtime ownership metadata while tracked-process status is reconciled', () => {
+      const engine = trackedEngine(makeConfig(), makeTempStateFile());
+      engine.setRuntimeRuns([{
+        run_id: 'proc-owned',
+        kind: 'tracked_process',
+        action_id: 'act-owned',
+        process_group_id: 4321,
+        process_start_identity: 'pid-start-identity',
+        daemon_owner: 'daemon-a',
+        started_at: '2026-03-21T00:00:00.000Z',
+        last_output_at: '2026-03-21T00:01:00.000Z',
+        lifecycle: 'running',
+        evidence_state: 'captured',
+      }]);
+      engine.setTrackedProcesses([{
+        id: 'proc-owned',
+        pid: 12345,
+        command: 'nmap -sV',
+        description: 'scan',
+        started_at: '2026-03-21T00:00:00.000Z',
+        status: 'unknown',
+        completed_at: '2026-03-21T00:02:00.000Z',
+      }]);
+
+      expect(engine.getRuntimeRuns()).toContainEqual(expect.objectContaining({
+        run_id: 'proc-owned',
+        action_id: 'act-owned',
+        process_group_id: 4321,
+        process_start_identity: 'pid-start-identity',
+        daemon_owner: 'daemon-a',
+        last_output_at: '2026-03-21T00:01:00.000Z',
+        lifecycle: 'unknown',
+        evidence_state: 'captured',
+      }));
+    });
+
+    it('reapplies persisted frontier weights immediately after snapshot rollback', () => {
+      const engine = trackedEngine(makeConfig(), makeTempStateFile());
+      (engine as any).ctx.lastSnapshotTime = Date.now();
+      engine.setFrontierWeights({
+        fan_out: { http: 21 },
+        noise: { http_probe: 0.11 },
+      });
+      engine.flushNow();
+
+      (engine as any).ctx.lastSnapshotTime = 0;
+      engine.setFrontierWeights({
+        fan_out: { http: 99 },
+        noise: { http_probe: 0.91 },
+      });
+      engine.flushNow();
+      const snapshots = engine.listSnapshots();
+      expect(snapshots.length).toBeGreaterThan(0);
+
+      expect(engine.rollbackToSnapshot(snapshots[snapshots.length - 1])).toBe(true);
+      expect(engine.getFrontierWeights()).toMatchObject({
+        fan_out: { http: 21 },
+        noise: { http_probe: 0.11 },
+      });
+    });
   });
 
   // =============================================
@@ -2400,16 +2542,22 @@ describe('GraphEngine', () => {
   // Corrupted State Recovery (Bug 6)
   // =============================================
   describe('corrupted state recovery', () => {
-    it('recovers from corrupted state file by falling back to seed', () => {
+    it('preserves a lone corrupted state file and starts read-only', () => {
       // Write a corrupted state file
       const { writeFileSync: wfs } = require('fs');
       wfs(TEST_STATE_FILE, '{ corrupted json!!!');
-      // Should not throw — falls back to seedFromConfig
+      // A persisted artifact may contain non-WAL state that is not represented
+      // by the config. Do not overwrite it with a fresh engagement.
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const state = engine.getState();
-      // Should have re-seeded domain and objective nodes (no CIDR host expansion)
-      expect(state.graph_summary.nodes_by_type['domain']).toBe(1);
-      expect(state.graph_summary.nodes_by_type['objective']).toBe(1);
+      expect(engine.isPersistenceWritable()).toBe(false);
+      expect(engine.getPersistenceRecoveryStatus()).toMatchObject({
+        outcome: 'incomplete',
+        complete: false,
+        writable: false,
+      });
+      expect(state.graph_summary.total_nodes).toBe(0);
+      expect(readFileSync(TEST_STATE_FILE, 'utf8')).toBe('{ corrupted json!!!');
     });
 
     it('recovers tracked processes from snapshot after state corruption', () => {
@@ -3802,18 +3950,33 @@ describe('approval log pruning (bounded durable approvals)', () => {
   it('caps resolved approval records while preserving pending ones', () => {
     const stateFile = makeTempStateFile();
     const e = trackedEngine(makeConfig(), stateFile);
+    const approvalRequests = (e as unknown as {
+      ctx: { approvalRequests: Map<string, Record<string, unknown>> };
+    }).ctx.approvalRequests;
+    const submittedAt = '2026-07-16T00:00:00.000Z';
+    const timeoutAt = '2026-07-16T00:05:00.000Z';
     for (let i = 0; i < 210; i++) {
       const id = `act-${i}`;
-      e.recordApprovalRequest({ action_id: id, description: 'a', opsec_context: OPSEC, validation_result: 'valid' });
-      e.resolveApprovalRequest({ action_id: id, status: 'approved', resolved_at: new Date().toISOString() });
+      approvalRequests.set(id, {
+        action_id: id,
+        description: 'a',
+        opsec_context: OPSEC,
+        validation_result: 'valid',
+        status: 'approved',
+        submitted_at: submittedAt,
+        timeout_at: timeoutAt,
+        resolved_at: submittedAt,
+      });
     }
     // A still-pending request must never be pruned.
     e.recordApprovalRequest({ action_id: 'pending-keep', description: 'p', opsec_context: OPSEC, validation_result: 'valid' });
+    e.recordApprovalRequest({ action_id: 'act-210', description: 'newest', opsec_context: OPSEC, validation_result: 'valid' });
+    e.resolveApprovalRequest({ action_id: 'act-210', status: 'approved', resolved_at: new Date().toISOString() });
 
     const resolved = e.getApprovalRequests({ includeResolved: true }).filter(r => r.status !== 'pending');
     expect(resolved.length).toBeLessThanOrEqual(200);
     expect(e.getApprovalRequest('pending-keep')?.status).toBe('pending'); // preserved
-    expect(e.getApprovalRequest('act-209')?.status).toBe('approved');     // newest resolved kept
+    expect(e.getApprovalRequest('act-210')?.status).toBe('approved');     // newest resolved kept
     expect(e.getApprovalRequest('act-0')).toBeUndefined();                // oldest resolved pruned
     e.dispose();
   });

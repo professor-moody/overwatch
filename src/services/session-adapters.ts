@@ -260,15 +260,19 @@ export class SocketAdapter implements SessionAdapterFactory {
     const onConnect = options.onConnect as (() => void) | undefined;
     const acceptMode = (options.accept_mode as 'single' | 'rearm' | undefined) || 'single';
 
-    if (!port) throw new Error('Socket adapter requires a port');
-
     if (mode === 'listen') {
+      if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) {
+        throw new Error('Socket adapter requires a port from 0 through 65535');
+      }
       const bindHost = host || '127.0.0.1';
       if (bindHost === '0.0.0.0') {
         console.error(`[session] Warning: listener binding to 0.0.0.0 — exposed on all interfaces`);
       }
       return this.spawnListener(bindHost, port, sessionId, acceptMode, onConnect, abortSignal);
     } else {
+      if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+        throw new Error('Socket adapter requires a port');
+      }
       if (!host) throw new Error('Socket adapter connect mode requires a host');
       return this.spawnConnect(host, port, sessionId, onConnect, abortSignal);
     }

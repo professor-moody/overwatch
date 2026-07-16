@@ -6,7 +6,12 @@
 // src/dashboard-next/src/lib/api.ts / types.ts.
 
 import { bold, cyan, dim, green, red, yellow, blue, gray, formatTable, keyValues, heading } from './format.js';
-import type { ConfigRecoveryStatus, PersistenceRecoveryStatus } from '../../types.js';
+import type {
+  ConfigRecoveryStatus,
+  PersistenceRecoveryStatus,
+  StateMigrationStatus,
+} from '../../types.js';
+import type { StateMigrationInspection } from '../../services/state-migration.js';
 
 const sev = (s: string): ((x: string) => string) => {
   switch (s) {
@@ -144,6 +149,27 @@ function renderStateWalHealth(recovery: PersistenceRecoveryStatus): string {
   return green('healthy');
 }
 
+function renderStateMigrationStatus(status: StateMigrationStatus): string {
+  const pairs: Array<[string, string]> = [
+    ['status', status.status],
+    ['supported state version', String(status.supported_state_version)],
+    ['supported journal version', String(status.supported_journal_version)],
+    ['migration required', status.migration_required ? 'yes' : 'no'],
+  ];
+  if (status.observed_state_version !== undefined) {
+    pairs.push(['observed state version', String(status.observed_state_version)]);
+  }
+  if (status.observed_journal_version !== undefined) {
+    pairs.push(['observed journal version', String(status.observed_journal_version)]);
+  }
+  if (status.backup_path) pairs.push(['migration backup', status.backup_path]);
+  if (status.backup_manifest_sha256) {
+    pairs.push(['backup manifest SHA-256', status.backup_manifest_sha256]);
+  }
+  if (status.reason) pairs.push(['reason', status.reason]);
+  return keyValues(pairs);
+}
+
 export function renderRecovery(data: RecoveryResponse): string {
   const recovery = data.recovery;
   const persistencePairs: Array<[string, string]> = [
@@ -166,6 +192,46 @@ export function renderRecovery(data: RecoveryResponse): string {
   ];
   if (recovery.config_recovery) {
     out.push('', heading('Active configuration'), renderConfigRecovery(recovery.config_recovery));
+  }
+  if (recovery.state_migration) {
+    out.push('', heading('State format'), renderStateMigrationStatus(recovery.state_migration));
+  }
+  return out.join('\n');
+}
+
+export function renderStateMigrationInspection(
+  inspection: StateMigrationInspection,
+): string {
+  const pairs: Array<[string, string]> = [
+    ['status', inspection.status],
+    ['state file', inspection.state_file],
+    ['ready', inspection.ready ? 'yes' : 'no'],
+    ['migration required', inspection.migration_required ? 'yes' : 'no'],
+    ['supported state version', String(inspection.supported_state_version)],
+    ['supported journal version', String(inspection.supported_journal_version)],
+  ];
+  if (inspection.config_file) pairs.push(['config file', inspection.config_file]);
+  if (inspection.selected_base) pairs.push(['selected recovery base', inspection.selected_base]);
+  if (inspection.observed_state_version !== undefined) {
+    pairs.push(['observed state version', String(inspection.observed_state_version)]);
+  }
+  if (inspection.observed_journal_version !== undefined) {
+    pairs.push(['observed journal version', String(inspection.observed_journal_version)]);
+  }
+  if (inspection.config_semantics_match !== undefined) {
+    pairs.push(['config semantics match', inspection.config_semantics_match ? 'yes' : 'no']);
+  }
+  if (inspection.config_revision_seed_allowed !== undefined) {
+    pairs.push(['revision 1 seed allowed', inspection.config_revision_seed_allowed ? 'yes' : 'no']);
+  }
+  const out = [heading('State migration check'), keyValues(pairs)];
+  if (inspection.blockers.length > 0) {
+    out.push('', heading('Blockers'));
+    out.push(inspection.blockers.map(blocker => `  ${red('!')} ${blocker}`).join('\n'));
+  }
+  if (inspection.warnings.length > 0) {
+    out.push('', heading('Warnings'));
+    out.push(inspection.warnings.map(warning => `  ${yellow('!')} ${warning}`).join('\n'));
   }
   return out.join('\n');
 }

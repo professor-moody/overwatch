@@ -78,6 +78,7 @@ import {
   withConfigMetadata,
   writeJsonAtomicDurable,
 } from './services/engagement-config-service.js';
+import { withStateMigrationWriteGuard } from './services/state-migration.js';
 import type { ToolEntry } from './services/prompt-generator.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
 import { setTelemetry, getTelemetry } from './tools/error-boundary.js';
@@ -319,7 +320,9 @@ export type OverwatchApp = {
   engine: GraphEngine;
   skills: SkillIndex;
   processTracker: ProcessTracker;
+  processTrackerUnsubscribe?: () => void;
   sessionManager: SessionManager;
+  sessionDescriptorUnsubscribe?: () => void;
   engagementManager: EngagementManager;
   server: McpServer;
   dashboard: DashboardServer | null;
@@ -448,6 +451,55 @@ function discoverRecoveryStateFile(
   return candidates[0];
 }
 
+function hasStateArtifactsForPath(stateFilePath: string): boolean {
+  const directory = dirname(stateFilePath);
+  const base = basename(stateFilePath, '.json');
+  if (
+    existsSync(stateFilePath)
+    || existsSync(join(directory, `${base}.journal.jsonl`))
+    || existsSync(`${stateFilePath}.rollback-intent.json`)
+    || existsSync(`${stateFilePath}.migration-intent.json`)
+    || existsSync(`${stateFilePath}.migration-lock`)
+  ) {
+    return true;
+  }
+  try {
+    if (readdirSync(directory).some(name =>
+      name.startsWith(`${base}.snap-`) && name.endsWith('.json'))) {
+      return true;
+    }
+  } catch { /* unavailable directory is handled by the later config/state open */ }
+  try {
+    if (readdirSync(join(directory, '.snapshots')).some(name =>
+      name.startsWith(`${base}.snap-`) && name.endsWith('.json'))) {
+      return true;
+    }
+  } catch { /* no retained snapshots */ }
+  return false;
+}
+
+function hasAnyStateArtifactsBeside(configPath: string): boolean {
+  const directory = dirname(configPath);
+  try {
+    if (readdirSync(directory).some(name =>
+      /^state-.+\.json$/.test(name)
+      || /^state-.+\.journal\.jsonl$/.test(name)
+      || /^state-.+\.json\.(?:rollback-intent|migration-intent)\.json$/.test(name)
+      || /^state-.+\.json\.migration-lock$/.test(name)
+      || /^state-.+\.snap-.+\.json$/.test(name))) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  try {
+    return readdirSync(join(directory, '.snapshots'))
+      .some(name => /^state-.+\.snap-.+\.json$/.test(name));
+  } catch {
+    return false;
+  }
+}
+
 export function registerAllTools(
   server: OverwatchToolRegistrar,
   deps: {
@@ -528,11 +580,37 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   const explicitStateFilePath = options.stateFilePath || process.env.OVERWATCH_STATE_FILE;
   let config: EngagementConfig;
   let recoveredStateFilePath: string | undefined;
+  let bootstrapConfigPending = false;
   if (options.config) {
     config = options.config;
+  } else if (!existsSync(resolvedConfigPath)) {
+    const explicitRecoveryConfig = explicitStateFilePath
+      ? readConfigFromDurableState(explicitStateFilePath)
+      : undefined;
+    const discovered = explicitRecoveryConfig
+      ? { path: explicitStateFilePath!, config: explicitRecoveryConfig }
+      : discoverRecoveryStateFile(resolvedConfigPath);
+    if (discovered) {
+      recoveredStateFilePath = discovered.path;
+      config = discovered.config;
+      console.error(
+        `[recovery] active config is missing; starting read-only from durable state ${discovered.path}`,
+      );
+    } else {
+      const durableArtifactsExist = explicitStateFilePath
+        ? hasStateArtifactsForPath(explicitStateFilePath)
+        : hasAnyStateArtifactsBeside(resolvedConfigPath);
+      if (durableArtifactsExist) {
+        throw new Error(
+          'Active config is missing, but durable state/WAL/snapshot artifacts could not be validated. ' +
+          'Refusing bootstrap publication; select and repair the state explicitly.',
+        );
+      }
+      config = loadConfig(resolvedConfigPath);
+      bootstrapConfigPending = process.env.OVERWATCH_BOOTSTRAP === '1';
+    }
   } else {
     try {
-      recoverInterruptedAtomicJsonWrite(resolvedConfigPath);
       config = loadConfig(resolvedConfigPath);
     } catch (configError) {
       const explicitRecoveryConfig = explicitStateFilePath
@@ -547,12 +625,23 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
       const discovered = explicitRecoveryConfig
         ? { path: explicitStateFilePath!, config: explicitRecoveryConfig }
         : discoverRecoveryStateFile(resolvedConfigPath);
-      if (!discovered) throw configError;
-      recoveredStateFilePath = discovered.path;
-      config = discovered.config;
-      console.error(
-        `[recovery] active config could not be loaded; starting read-only from durable state ${discovered.path}`,
-      );
+      if (discovered) {
+        recoveredStateFilePath = discovered.path;
+        config = discovered.config;
+        console.error(
+          `[recovery] active config could not be loaded; starting read-only from durable state ${discovered.path}`,
+        );
+      } else {
+        // Config CAS recovery can mutate pathnames. Only perform it after
+        // proving there is no durable state that may still require a V0
+        // migration backup; managed-state recovery owns that ordering.
+        try {
+          recoverInterruptedAtomicJsonWrite(resolvedConfigPath);
+          config = loadConfig(resolvedConfigPath);
+        } catch {
+          throw configError;
+        }
+      }
     }
   }
 
@@ -562,10 +651,17 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
 
   // Bootstrap is an explicit request to create a new active engagement. Make
   // the file real before enabling managed write-through so a fresh bootstrap
-  // cannot immediately classify its own absent file as divergence.
-  if (!options.config && process.env.OVERWATCH_BOOTSTRAP === '1' && !existsSync(resolvedConfigPath)) {
+  // cannot immediately classify its own absent file as divergence. This write
+  // is deferred until durable-state discovery proves the path genuinely fresh.
+  if (!options.config && bootstrapConfigPending && !existsSync(resolvedConfigPath)) {
+    const bootstrapStatePath = explicitStateFilePath
+      || join(dirname(resolvedConfigPath), `state-${config.id}.json`);
     config = withConfigMetadata(config, config.config_revision ?? 1);
-    writeJsonAtomicDurable(resolvedConfigPath, config);
+    withStateMigrationWriteGuard(
+      bootstrapStatePath,
+      undefined,
+      () => writeJsonAtomicDurable(resolvedConfigPath, config),
+    );
   }
 
   const defaultStateFilePath = join(dirname(resolvedConfigPath), `state-${config.id}.json`);
@@ -588,16 +684,29 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   const processTracker = savedProcesses.length > 0
     ? ProcessTracker.deserialize(savedProcesses)
     : new ProcessTracker();
+  processTracker.setMutationGuard(() => engine.assertPersistenceWritable());
 
   // Reconcile tracked process liveness on startup — dead PIDs are marked completed
-  if (savedProcesses.length > 0) {
-    processTracker.refreshStatuses();
+  const processStatusesChangedOnStartup = savedProcesses.length > 0
+    && engine.isPersistenceWritable()
+    ? processTracker.refreshStatuses()
+    : false;
+  const processTrackerUnsubscribe = processTracker.onChange(() => {
+    if (!engine.isPersistenceWritable()) return;
+    engine.setTrackedProcesses(processTracker.serialize());
+  });
+  if (processStatusesChangedOnStartup) {
+    engine.reconcileTrackedProcessesOnStartup(processTracker.serialize());
   }
 
   const sessionManager = new SessionManager(engine);
   sessionManager.registerAdapter(new LocalPtyAdapter());
   sessionManager.registerAdapter(new SshAdapter());
   sessionManager.registerAdapter(new SocketAdapter());
+  const sessionDescriptorUnsubscribe = sessionManager.onEvent(event => {
+    if (!engine.isPersistenceWritable()) return;
+    engine.recordSessionDescriptor(event.session);
+  });
 
   const server = new McpServer({
     name: 'overwatch-mcp-server',
@@ -621,7 +730,34 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   // File-backed engagement manager for the create_engagement / list_engagements
   // tools. Stateless over engagements/ (no in-memory cache), so this instance is
   // equivalent to the dashboard's own — no need to share a single object.
-  const engagementManager = new EngagementManager(configPath);
+  const engagementManager = new EngagementManager(
+    configPath,
+    undefined,
+    {
+      readOnly: !engine.isPersistenceWritable(),
+      isWritable: () => engine.isPersistenceWritable(),
+    },
+  );
+  engine.setRollbackCoordinator({
+    beforeRollback: () => {
+      const liveSessions = sessionManager.list(true);
+      if (liveSessions.length > 0) {
+        throw new Error(
+          `Close ${liveSessions.length} live session(s) before rolling back durable state.`,
+        );
+      }
+      const liveProcesses = processTracker.listActive();
+      if (liveProcesses.length > 0) {
+        throw new Error(
+          `Resolve ${liveProcesses.length} live tracked process(es) before rolling back durable state.`,
+        );
+      }
+    },
+    afterRollback: () => {
+      sessionManager.reconcileAfterStateRollback();
+      processTracker.restore(engine.getTrackedProcesses(), { notify: false });
+    },
+  });
 
   const registeredTools = registerAllTools(server, {
     engine,
@@ -652,7 +788,9 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     engine,
     skills,
     processTracker,
+    processTrackerUnsubscribe,
     sessionManager,
+    sessionDescriptorUnsubscribe,
     engagementManager,
     server,
     dashboard,
@@ -693,7 +831,8 @@ export function getAutoTapeStartDecision(config: EngagementConfig): { enabled: b
 
 export function maybeAutoEnableTape(app: OverwatchApp): void {
   const decision = getAutoTapeStartDecision(app.engine.getConfig());
-  if (!decision.enabled || app.tape.isEnabled()) return;
+  if (!decision.enabled || app.tape.isEnabled() || !app.engine.isPersistenceWritable()) return;
+  app.engine.assertPersistenceWritable();
   const status = app.tape.enable({ startedBy: decision.startedBy });
   const suffix = status.started_by ? ` (started_by=${status.started_by})` : '';
   console.error(`Overwatch tape recording to ${status.path}${suffix}`);
@@ -926,6 +1065,16 @@ export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
         app.httpServer!.close(error => error ? reject(error) : resolve());
       }));
     }
+    if (app.engine.isPersistenceWritable()) {
+      await cleanup(() => {
+        for (const session of app.sessionManager.list(true)) {
+          app.engine.recordSessionDescriptor(session);
+        }
+      });
+    }
+    // Preserve the pre-shutdown descriptors (including listener resume intent)
+    // while SessionManager tears down runtime handles and closes graph edges.
+    await cleanup(() => app.sessionDescriptorUnsubscribe?.());
     await cleanup(() => app.sessionManager.shutdown());
     if (app.dashboard) await cleanup(() => app.dashboard!.stop());
     await cleanup(() => app.tape.disable({ audit: app.engine.isPersistenceWritable() }));
@@ -946,6 +1095,9 @@ export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
     // dispose() cancels persistence retries, approval timers, and process-level
     // flush hooks. It must run even when another shutdown component failed or
     // the persistence gate is already closed.
+    try { app.processTrackerUnsubscribe?.(); } catch (error) { capture(error); }
+    try { app.processTracker.setMutationGuard(undefined); } catch (error) { capture(error); }
+    try { app.engine.setRollbackCoordinator(undefined); } catch (error) { capture(error); }
     try { app.engine.dispose(); } catch (error) { capture(error); }
   }
 

@@ -100,6 +100,7 @@ describe('dashboard v1 contracts', () => {
         consecutive_persistence_failures: 0,
         journal: {
           enabled: true,
+          format_version: 1,
           read: 0,
           attempted: 0,
           applied: 0,
@@ -108,6 +109,16 @@ describe('dashboard v1 contracts', () => {
           malformed: false,
           preserved: true,
           future_journal_field: true,
+        },
+        state_migration: {
+          status: 'blocked',
+          supported_state_version: 1,
+          supported_journal_version: 1,
+          observed_state_version: 2,
+          observed_journal_version: 0,
+          migration_required: false,
+          reason: 'future state version',
+          future_migration_field: 'additive',
         },
         config_recovery: {
           status: 'diverged',
@@ -135,6 +146,7 @@ describe('dashboard v1 contracts', () => {
       future_envelope_field: 'additive',
     });
     expect(parsed.recovery.config_recovery?.future_config_field).toBe('additive');
+    expect(parsed.recovery.state_migration?.future_migration_field).toBe('additive');
     expect(parsed.recovery.config_recovery?.conflicted_intent?.future_conflict_field).toBe('additive');
     expect(parsed.recovery.future_recovery_field).toBe('additive');
     expect(RecoveryStatusResponseSchema.safeParse({

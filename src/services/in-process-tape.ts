@@ -111,6 +111,10 @@ export class InProcessTapeController {
    */
   enable(opts: InProcessTapeOptions = {}): TapeStatus {
     if (this.writer) return this.getStatus();
+    // The writer creates directories/files immediately. Check the durable gate
+    // before constructing it so degraded startup cannot leave an untracked tape
+    // artifact and then fail while recording the audit event.
+    this.engine.assertPersistenceWritable();
     const sessionId = opts.sessionId ?? this.defaults.sessionId ?? randomUUID();
     const explicit = opts.file ?? this.defaults.file;
     const dir = opts.defaultDir ?? this.defaults.defaultDir ?? './tapes';
@@ -120,22 +124,33 @@ export class InProcessTapeController {
     this.currentSessionId = sessionId;
     this.currentStartedBy = opts.startedBy ?? this.defaults.startedBy;
     this.startedAt = new Date().toISOString();
-    // Auto-register with the engagement so retrospectives can locate the
-    // tape without needing the operator to call register_tape_session.
-    const event = this.engine.logActionEvent({
-      description: `In-process tape session started: ${sessionId}`,
-      event_type: 'tape_session_started',
-      category: 'system',
-      provenance: 'system',
-      details: {
-        session_id: sessionId,
-        tape_path: path,
-        capture_mode: 'in_process',
-        started_at: this.startedAt,
-        started_by: this.currentStartedBy,
-      },
-    });
-    this.startEventId = event.event_id;
+    try {
+      // Auto-register with the engagement so retrospectives can locate the
+      // tape without needing the operator to call register_tape_session.
+      const event = this.engine.logActionEvent({
+        description: `In-process tape session started: ${sessionId}`,
+        event_type: 'tape_session_started',
+        category: 'system',
+        provenance: 'system',
+        details: {
+          session_id: sessionId,
+          tape_path: path,
+          capture_mode: 'in_process',
+          started_at: this.startedAt,
+          started_by: this.currentStartedBy,
+        },
+      });
+      this.startEventId = event.event_id;
+    } catch (error) {
+      this.writer.abortAndRemoveCreatedFile();
+      this.writer = null;
+      this.currentPath = undefined;
+      this.currentSessionId = undefined;
+      this.currentStartedBy = undefined;
+      this.startedAt = undefined;
+      this.startEventId = undefined;
+      throw error;
+    }
     return this.getStatus();
   }
 

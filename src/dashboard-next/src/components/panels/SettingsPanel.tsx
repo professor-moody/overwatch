@@ -181,7 +181,7 @@ function shortHash(hash?: string): string {
   return hash ? `${hash.slice(0, 12)}…${hash.slice(-8)}` : '—';
 }
 
-function RecoverySection({
+export function RecoverySection({
   recovery,
   error,
   resolvingMode,
@@ -195,6 +195,7 @@ function RecoverySection({
   if (!recovery && !error) return null;
   const view = recoveryPresentation(recovery);
   const config = recovery?.config_recovery;
+  const migration = recovery?.state_migration;
   const configTone = config?.status === 'diverged'
     ? 'warning'
     : config?.status === 'write_incomplete'
@@ -221,6 +222,19 @@ function RecoverySection({
               value={`${recovery.highest_contiguous_applied_seq} / ${recovery.highest_on_disk_seq} on disk`}
             />
             <RecoveryValue label="Writable" value={recovery.writable ? 'yes' : 'no'} />
+            <RecoveryValue
+              label="State format"
+              value={migration
+                ? `${migration.observed_state_version ?? '—'} / supported ${migration.supported_state_version}`
+                : '—'}
+            />
+            <RecoveryValue
+              label="Journal format"
+              value={migration
+                ? `${migration.observed_journal_version ?? '—'} / supported ${migration.supported_journal_version}`
+                : `${recovery.journal.format_version ?? '—'}`}
+            />
+            <RecoveryValue label="Migration" value={migration?.status.replace(/_/g, ' ') ?? '—'} />
             <RecoveryValue label="File revision" value={config?.file_revision?.toString() ?? '—'} />
             <RecoveryValue label="State revision" value={config?.state_revision?.toString() ?? '—'} />
             <RecoveryValue label="Runtime revision" value={config?.runtime_revision?.toString() ?? '—'} />
@@ -252,6 +266,14 @@ function RecoverySection({
           {config?.intent_present && (
             <div className="mt-3 text-xs text-muted-foreground">
               Recorded write intent: <code title={config.intent_path}>{config.intent_path ?? 'present'}</code>
+            </div>
+          )}
+          {migration?.backup_path && (
+            <div className="mt-3 text-xs text-muted-foreground">
+              Migration backup: <code title={migration.backup_path}>{migration.backup_path}</code>
+              {migration.backup_manifest_sha256 && (
+                <> · manifest <code title={migration.backup_manifest_sha256}>{shortHash(migration.backup_manifest_sha256)}</code></>
+              )}
             </div>
           )}
           {config?.last_resolution && (

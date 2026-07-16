@@ -162,5 +162,106 @@ describe('ProcessTracker', () => {
       // Already-completed processes are untouched
       expect(restored.get('p-done')!.completed_at).toBe('2025-01-01T01:00:00Z');
     });
+
+    it('restore replaces stale runtime state and notifies once', () => {
+      tracker.register({ id: 'stale', pid: 1, command: 'old', description: 'old' });
+      let calls = 0;
+      tracker.onChange(() => { calls++; });
+      const authoritative = [{
+        id: 'restored',
+        pid: 2,
+        command: 'new',
+        description: 'new',
+        started_at: '2026-01-01T00:00:00.000Z',
+        status: 'unknown' as const,
+      }];
+
+      tracker.restore(authoritative);
+      authoritative[0].description = 'mutated by caller';
+
+      expect(calls).toBe(1);
+      expect(tracker.get('stale')).toBeNull();
+      expect(tracker.get('restored')).toMatchObject({
+        description: 'new',
+        status: 'unknown',
+      });
+    });
+
+    it('reset clears all runtime state', () => {
+      tracker.register({ id: 'stale', pid: 1, command: 'old', description: 'old' });
+      tracker.reset();
+      expect(tracker.listAll()).toEqual([]);
+    });
+  });
+
+  describe('change listeners', () => {
+    it('fires for register, update, and startup status reconciliation', () => {
+      let calls = 0;
+      tracker.onChange(() => { calls++; });
+
+      tracker.register({ id: 'p1', pid: process.pid, command: 'live', description: 'live process' });
+      tracker.update('p1', 'completed');
+      tracker.register({ id: 'p-dead', pid: 999999999, command: 'dead', description: 'dead process' });
+      tracker.refreshStatuses();
+
+      expect(calls).toBe(4);
+      expect(tracker.get('p-dead')?.status).toBe('unknown');
+    });
+
+    it('supports multiple listeners and listener removal', () => {
+      let first = 0;
+      let second = 0;
+      const removeFirst = tracker.onChange(() => { first++; });
+      tracker.onChange(() => { second++; });
+
+      tracker.register({ id: 'p1', pid: process.pid, command: 'live', description: 'live process' });
+      removeFirst();
+      tracker.update('p1', 'completed');
+
+      expect(first).toBe(1);
+      expect(second).toBe(2);
+    });
+  });
+
+  describe('mutation guard', () => {
+    it('blocks register, update, refresh, and restore before changing memory', () => {
+      tracker.register({
+        id: 'live',
+        pid: process.pid,
+        command: 'live',
+        description: 'live process',
+      });
+      tracker.register({
+        id: 'dead',
+        pid: 999999999,
+        command: 'dead',
+        description: 'dead process',
+      });
+      const before = tracker.serialize().map(proc => ({ ...proc }));
+      tracker.setMutationGuard(() => { throw new Error('read-only'); });
+
+      expect(() => tracker.register({
+        id: 'blocked',
+        pid: 1,
+        command: 'blocked',
+        description: 'blocked',
+      })).toThrow('read-only');
+      expect(() => tracker.update('live', 'completed')).toThrow('read-only');
+      expect(() => tracker.refreshStatuses()).toThrow('read-only');
+      expect(() => tracker.restore([])).toThrow('read-only');
+
+      expect(tracker.serialize()).toEqual(before);
+      expect(tracker.get('blocked')).toBeNull();
+    });
+
+    it('does not invoke the guard for read-only/no-op operations', () => {
+      let calls = 0;
+      tracker.setMutationGuard(() => { calls++; });
+
+      expect(tracker.update('missing', 'failed')).toBe(false);
+      expect(tracker.refreshStatuses()).toBe(false);
+      expect(tracker.listAll()).toEqual([]);
+      expect(calls).toBe(0);
+    });
   });
 });

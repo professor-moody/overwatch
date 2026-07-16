@@ -234,7 +234,14 @@ export class DashboardServer {
     this.sessionManager = sessionManager || null;
     this.configPath = configPath;
     if (configPath) {
-      this.engagementManager = new EngagementManager(configPath);
+      this.engagementManager = new EngagementManager(
+        configPath,
+        undefined,
+        {
+          readOnly: !engine.isPersistenceWritable(),
+          isWritable: () => engine.isPersistenceWritable(),
+        },
+      );
     }
 
     // Wire engine updates to WS push without requiring external wiring in app.ts.
@@ -2062,19 +2069,6 @@ export class DashboardServer {
   // Two-phase, like update_scope: a command is first interpreted into a plan
   // (preview, no mutation); the operator then confirms the plan_id to execute.
   // Nothing mutates without an explicit confirm.
-  private commandPlans = new Map<string, { ops: OperatorOp[]; command: string; created_at: number }>();
-  // Plan ids that have already been confirmed+executed, kept briefly so a DUPLICATE
-  // confirm (double-click, retry, re-render) is idempotent — it returns the prior
-  // result instead of a 404 "re-issue the command" (which the operator saw AFTER the
-  // first confirm had already deployed the agents). Both grammar + planner plans.
-  private executedPlanIds = new Map<string, { at: number; results: unknown[] }>();
-
-  private pruneCommandPlans(): void {
-    const cutoff = Date.now() - 10 * 60_000; // 10 min TTL
-    for (const [id, p] of this.commandPlans) if (p.created_at < cutoff) this.commandPlans.delete(id);
-    for (const [id, e] of this.executedPlanIds) if (e.at < cutoff) this.executedPlanIds.delete(id);
-  }
-
   private buildInterpreterState(): InterpreterState {
     return {
       tasks: this.engine.getAgentTasks().map(t => ({ id: t.id, agent_id: t.agent_id, status: t.status, skill: t.skill })),
@@ -2278,8 +2272,6 @@ export class DashboardServer {
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
       const b = (body ?? {}) as Record<string, unknown>;
-      this.pruneCommandPlans();
-
       // Dismiss a planner-proposed plan without executing it.
       if (b.deny === true && typeof b.plan_id === 'string') {
         const denied = this.engine.getProposedPlanStore().resolve(b.plan_id, 'denied');
@@ -2292,14 +2284,14 @@ export class DashboardServer {
       // plan_id may be a grammar plan (commandPlans) or a planner-proposed plan
       // (the shared ProposedPlanStore) — both execute through the same path.
       if (b.confirm === true && typeof b.plan_id === 'string') {
-        const grammarPlan = this.commandPlans.get(b.plan_id);
+        const grammarPlan = this.engine.getCommandPlan(b.plan_id);
         const proposed = grammarPlan ? null : this.engine.getProposedPlanStore().resolve(b.plan_id, 'confirmed');
         const plan = grammarPlan ?? (proposed ? { ops: proposed.ops, command: proposed.command } : null);
         if (!plan) {
           // Idempotent duplicate: a prior confirm already executed this plan (and
           // deployed its agents). Return that result instead of a 404 that wrongly
           // tells the operator to re-issue the command — re-executing would double it.
-          const already = this.executedPlanIds.get(b.plan_id);
+          const already = this.engine.getCommandOutcome(b.plan_id);
           if (already) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ executed: true, already_executed: true, results: already.results }));
@@ -2323,10 +2315,10 @@ export class DashboardServer {
           res.end(JSON.stringify({ error, resolution: disp, already_handled: alreadyHandled }));
           return;
         }
-        if (grammarPlan) this.commandPlans.delete(b.plan_id);
+        if (grammarPlan) this.engine.deleteCommandPlan(b.plan_id);
         const results = executeOps(this.engine, plan.ops, 'operator');
         // Record BEFORE responding so a duplicate confirm racing this one is idempotent.
-        this.executedPlanIds.set(b.plan_id, { at: Date.now(), results });
+        this.engine.recordCommandOutcome(b.plan_id, results);
         this.engine.logActionEvent({
           description: `Operator command executed: ${plan.command || '(planner plan)'}`,
           event_type: 'operator_command',
@@ -2372,8 +2364,7 @@ export class DashboardServer {
       const interp = interpretCommand(command, state);
       let plan_id: string | undefined;
       if (interp.ops.length > 0) {
-        plan_id = randomUUID();
-        this.commandPlans.set(plan_id, { ops: interp.ops, command, created_at: Date.now() });
+        plan_id = this.engine.createCommandPlan({ ops: interp.ops, command });
       }
 
       // The grammar punted entirely — hand the free-form command to a headless

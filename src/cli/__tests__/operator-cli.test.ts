@@ -3,6 +3,9 @@ import { setColorEnabled, formatTable, truncate, keyValues } from '../operator/f
 import { resolveClientOptions, createClient, ApiError, type ApiClient } from '../operator/client.js';
 import { READ_COMMANDS, WRITE_COMMANDS } from '../operator/commands.js';
 import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents, renderRecovery } from '../operator/render.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 // Deterministic output: force color off for all assertions.
 beforeEach(() => setColorEnabled(false));
@@ -95,6 +98,50 @@ function fakeClient(map: Record<string, unknown>): ApiClient {
 }
 
 describe('read commands', () => {
+  it('state migrate --check inspects local files without contacting HTTP', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'overwatch-cli-state-check-'));
+    try {
+      const configPath = join(directory, 'engagement.json');
+      const statePath = join(directory, 'state-cli-check.json');
+      const engagement = {
+        id: 'cli-check',
+        name: 'CLI check',
+        created_at: '2026-07-16T00:00:00.000Z',
+        scope: { cidrs: [], domains: [], exclusions: [] },
+        objectives: [],
+        opsec: { name: 'pentest', max_noise: 0.7, blacklisted_techniques: [] },
+      };
+      writeFileSync(configPath, JSON.stringify(engagement));
+      writeFileSync(statePath, JSON.stringify({
+        config: engagement,
+        graph: { attributes: {}, nodes: [], edges: [] },
+        journalSnapshotSeq: 0,
+      }));
+      const client = fakeClient({});
+      const result = await READ_COMMANDS.state.run({
+        client,
+        args: [
+          'migrate',
+          '--check',
+          '--state-file',
+          statePath,
+          '--config-file',
+          configPath,
+        ],
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.data).toMatchObject({
+        status: 'migration_required',
+        observed_state_version: 0,
+        migration_required: true,
+        ready: true,
+      });
+      expect(result.text).toContain('State migration check');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('recovery reads the dedicated degraded-safe endpoint', async () => {
     const payload = { recovery: {
       outcome: 'clean', source: 'state', complete: true, writable: true,

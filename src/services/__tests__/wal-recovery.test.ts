@@ -174,6 +174,8 @@ describe('WAL recovery integration', () => {
     writer.flushNow();
     const durableCheckpoint = checkpoint(statePath);
     const legacy = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    delete legacy.state_version;
+    delete legacy.journal_version;
     delete legacy.walCompactionAuthority;
     delete legacy.journalCheckpointSemantics;
     legacy.journalSnapshotSeq = durableCheckpoint + 1;
@@ -427,6 +429,8 @@ describe('WAL recovery integration', () => {
       ts: NOW,
     });
     state.journalSnapshotSeq = possiblyHidden.seq;
+    delete state.state_version;
+    delete state.journal_version;
     delete state.journalCheckpointSemantics;
     delete state.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(state));
@@ -458,6 +462,8 @@ describe('WAL recovery integration', () => {
     closeEngine(base);
 
     const state = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    delete state.state_version;
+    delete state.journal_version;
     delete state.journalCheckpointSemantics;
     delete state.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(state));
@@ -847,7 +853,7 @@ describe('WAL recovery integration', () => {
     closeEngine(engine);
   });
 
-  it('restores the incoming config after rejecting a partially deserialized base', () => {
+  it('keeps the incoming config and blocks writes after rejecting a malformed V1 base', () => {
     const originalName = config.name;
     const writer = openEngine();
     writer.addNode(host('must-not-leak-from-rejected-base'));
@@ -863,20 +869,23 @@ describe('WAL recovery integration', () => {
     rejected.inferenceRules = { invalid: true };
     delete rejected.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(rejected));
+    const rejectedBytes = readFileSync(statePath);
 
     const recovered = openEngine();
     expect(recovered.getConfig().name).toBe(originalName);
     expect(recovered.getNode('must-not-leak-from-rejected-base')).toBeNull();
     expect(recovered.getPersistenceRecoveryStatus()).toMatchObject({
-      outcome: 'reinitialized',
-      source: 'config',
-      complete: true,
-      writable: true,
+      outcome: 'incomplete',
+      source: 'state',
+      complete: false,
+      writable: false,
+      state_migration: { status: 'blocked', observed_state_version: 1 },
     });
+    expect(readFileSync(statePath)).toEqual(rejectedBytes);
     closeEngine(recovered);
   });
 
-  it('rejects a persisted base whose engagement config fails the canonical schema', () => {
+  it('blocks without reseeding when a V1 config fails the canonical schema', () => {
     const originalName = config.name;
     const writer = openEngine();
     closeEngine(writer);
@@ -889,15 +898,18 @@ describe('WAL recovery integration', () => {
     };
     delete rejected.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(rejected));
+    const rejectedBytes = readFileSync(statePath);
 
     const recovered = openEngine();
     expect(recovered.getConfig().name).toBe(originalName);
     expect(recovered.getPersistenceRecoveryStatus()).toMatchObject({
-      outcome: 'reinitialized',
-      source: 'config',
-      complete: true,
-      writable: true,
+      outcome: 'incomplete',
+      source: 'state',
+      complete: false,
+      writable: false,
+      state_migration: { status: 'blocked', observed_state_version: 1 },
     });
+    expect(readFileSync(statePath)).toEqual(rejectedBytes);
     closeEngine(recovered);
   });
 
@@ -1115,6 +1127,8 @@ describe('WAL recovery integration', () => {
     writer.persist();
     writer.flushNow();
     const oldestSnapshot = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+    delete oldestSnapshot.state_version;
+    delete oldestSnapshot.journal_version;
     delete oldestSnapshot.journalCheckpointSemantics;
     delete oldestSnapshot.walCompactionAuthority;
     const oldestSnapshotBytes = Buffer.from(JSON.stringify(oldestSnapshot));
@@ -1747,6 +1761,8 @@ describe('WAL recovery integration', () => {
   it('sticky-gates a malformed or unknown WAL discovered by legacy rollback preflight', () => {
     const writer = openEngine();
     const legacy = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+    delete legacy.state_version;
+    delete legacy.journal_version;
     delete legacy.walCompactionAuthority;
     delete legacy.journalCheckpointSemantics;
     const snapshotDir = join(tempDir, '.snapshots');
@@ -1775,6 +1791,8 @@ describe('WAL recovery integration', () => {
   it('sticky-gates an unreadable WAL discovered by legacy rollback preflight', () => {
     const writer = openEngine();
     const legacy = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+    delete legacy.state_version;
+    delete legacy.journal_version;
     delete legacy.walCompactionAuthority;
     delete legacy.journalCheckpointSemantics;
     const snapshotDir = join(tempDir, '.snapshots');
