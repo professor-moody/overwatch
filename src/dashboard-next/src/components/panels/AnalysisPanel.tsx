@@ -441,7 +441,7 @@ function DeployFromRun({ nodeIds, rawTarget }: { nodeIds: string[]; rawTarget: s
       if (nodeIds.length) {
         const res = await api.dispatchAgent({ target_node_ids: nodeIds, archetype: effectiveId });
         if (res.dispatched) {
-          addToast({ type: 'success', title: `Deployed ${effectiveId}`, message: res.task?.agent_id });
+          addToast({ type: 'success', title: `Deployed ${effectiveId}`, message: api.dispatchedAgentLabel(res.task) });
           setExpanded(false);
         } else {
           addToast({ type: 'warning', title: 'Not deployed', message: res.reason === 'frontier_lease_conflict' ? 'target already being worked' : (res.reason || 'dispatch refused') });

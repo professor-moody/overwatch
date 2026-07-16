@@ -9,7 +9,7 @@ export const POLL = {
   CONSOLE_DRAWER_MS: 8000,
   /** Agent roster / fleet status. */
   AGENTS_MS: 5000,
-  /** Planner-proposed-plan poll in the command bar. */
+  /** Durable planner-command status poll in the command bar. */
   PLAN_POLL_MS: 2000,
   /** Overview metrics (budget, trust signals). */
   OVERVIEW_MS: 10000,

@@ -2,10 +2,20 @@ import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
+import {
+  ApprovalCommandError,
+  ApprovalCommandService,
+} from '../services/approval-command-service.js';
+import {
+  CampaignCommandError,
+  CampaignCommandService,
+} from '../services/campaign-command-service.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { toolText, COMPACT_PARAM_DESCRIPTION } from './_tool-output.js';
 
 export function registerScoringTools(server: McpServer, engine: GraphEngine): void {
+  const approvalCommands = new ApprovalCommandService(engine);
+  const campaignCommands = new CampaignCommandService(engine);
 
   // ============================================================
   // Tool: next_task
@@ -283,33 +293,41 @@ This resolves the live approval gate used by validate_action/run_bash/run_tool. 
       },
     },
     withErrorBoundary('approve_action', async ({ action_id, notes }) => {
-      const queue = engine.getPendingActionQueue();
-      const durable = engine.getApprovalRequest(action_id);
-      const result = queue.approve(action_id, notes);
-      if (!result) {
-        const reason = durable ? 'approval_not_live' : 'approval_not_found';
+      try {
+        const execution = approvalCommands.approve(
+          action_id,
+          notes,
+          { transport: 'mcp' },
+        );
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              action_id,
+              approved: true,
+              approval: execution.result?.approval,
+              command_id: execution.command_id,
+              replayed: execution.replayed,
+            }, null, 2),
+          }],
+        };
+      } catch (error) {
+        if (!(error instanceof ApprovalCommandError)) throw error;
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
               action_id,
               approved: false,
-              error: reason,
-              message: durable
-                ? 'Approval record exists, but no live MCP tool call is waiting for this action.'
-                : 'No pending approval record exists for this action.',
+              error: error.code === 'APPROVAL_NOT_LIVE'
+                ? 'approval_not_live'
+                : 'approval_not_found',
+              message: error.message,
             }, null, 2),
           }],
           isError: true,
         };
       }
-      engine.resolveApprovalRequest(result);
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ action_id, approved: true, approval: result }, null, 2),
-        }],
-      };
     }),
   );
 
@@ -332,33 +350,41 @@ This resolves the live approval gate used by validate_action/run_bash/run_tool. 
       },
     },
     withErrorBoundary('deny_action', async ({ action_id, reason }) => {
-      const queue = engine.getPendingActionQueue();
-      const durable = engine.getApprovalRequest(action_id);
-      const result = queue.deny(action_id, reason);
-      if (!result) {
-        const failureReason = durable ? 'approval_not_live' : 'approval_not_found';
+      try {
+        const execution = approvalCommands.deny(
+          action_id,
+          reason,
+          { transport: 'mcp' },
+        );
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              action_id,
+              denied: true,
+              approval: execution.result?.approval,
+              command_id: execution.command_id,
+              replayed: execution.replayed,
+            }, null, 2),
+          }],
+        };
+      } catch (error) {
+        if (!(error instanceof ApprovalCommandError)) throw error;
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
               action_id,
               denied: false,
-              error: failureReason,
-              message: durable
-                ? 'Approval record exists, but no live MCP tool call is waiting for this action.'
-                : 'No pending approval record exists for this action.',
+              error: error.code === 'APPROVAL_NOT_LIVE'
+                ? 'approval_not_live'
+                : 'approval_not_found',
+              message: error.message,
             }, null, 2),
           }],
           isError: true,
         };
       }
-      engine.resolveApprovalRequest(result);
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ action_id, denied: true, approval: result }, null, 2),
-        }],
-      };
     }),
   );
 
@@ -413,54 +439,87 @@ Use next_task(group_by="campaign") to see available campaigns.`,
       let campaign;
       let extra: Record<string, unknown> = {};
 
-      switch (action) {
-        case 'create': {
-          if (!name) return { content: [{ type: 'text', text: JSON.stringify({ error: 'name is required for create' }) }] };
-          if (!strategy) return { content: [{ type: 'text', text: JSON.stringify({ error: 'strategy is required for create' }) }] };
-          if (!item_ids || item_ids.length === 0) return { content: [{ type: 'text', text: JSON.stringify({ error: 'item_ids (non-empty) is required for create' }) }] };
-          campaign = engine.createCampaign({ name, strategy, item_ids, abort_conditions });
-          break;
-        }
-        case 'update': {
-          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for update' }) }] };
-          try {
-            campaign = engine.updateCampaign(campaign_id, { name, abort_conditions, add_items, remove_items });
-          } catch (err: any) {
-            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }] };
+      try {
+        switch (action) {
+          case 'create': {
+            if (!name) return { content: [{ type: 'text', text: JSON.stringify({ error: 'name is required for create' }) }] };
+            if (!strategy) return { content: [{ type: 'text', text: JSON.stringify({ error: 'strategy is required for create' }) }] };
+            if (!item_ids || item_ids.length === 0) return { content: [{ type: 'text', text: JSON.stringify({ error: 'item_ids (non-empty) is required for create' }) }] };
+            const execution = campaignCommands.create({
+              name,
+              strategy,
+              item_ids,
+              abort_conditions,
+            }, { transport: 'mcp' });
+            campaign = execution.result!.campaign;
+            extra = {
+              command_id: execution.command_id,
+              replayed: execution.replayed,
+            };
+            break;
           }
-          break;
-        }
-        case 'clone': {
-          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for clone' }) }] };
-          campaign = engine.cloneCampaign(campaign_id);
-          break;
-        }
-        case 'delete': {
-          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for delete' }) }] };
-          try {
-            const deleted = engine.deleteCampaign(campaign_id);
-            if (!deleted) return { content: [{ type: 'text', text: JSON.stringify({ error: `Campaign ${campaign_id} not found` }) }] };
-            return { content: [{ type: 'text', text: JSON.stringify({ deleted: true, campaign_id }) }] };
-          } catch (err: any) {
-            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }] };
+          case 'update': {
+            if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for update' }) }] };
+            const execution = campaignCommands.update(campaign_id, {
+              name,
+              abort_conditions,
+              add_items,
+              remove_items,
+            }, { transport: 'mcp' });
+            campaign = execution.result!.campaign;
+            extra = {
+              command_id: execution.command_id,
+              replayed: execution.replayed,
+            };
+            break;
           }
-        }
-        case 'activate':
-          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
-          campaign = engine.activateCampaign(campaign_id);
-          break;
-        case 'pause':
-          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
-          campaign = engine.pauseCampaign(campaign_id);
-          break;
-        case 'resume':
-          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
-          campaign = engine.resumeCampaign(campaign_id);
-          break;
-        case 'abort':
-          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
-          campaign = engine.abortCampaign(campaign_id);
-          break;
+          case 'clone': {
+            if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for clone' }) }] };
+            const execution = campaignCommands.clone(
+              campaign_id,
+              { transport: 'mcp' },
+            );
+            campaign = execution.result!.campaign;
+            extra = {
+              command_id: execution.command_id,
+              replayed: execution.replayed,
+            };
+            break;
+          }
+          case 'delete': {
+            if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for delete' }) }] };
+            const execution = campaignCommands.delete(
+              campaign_id,
+              { transport: 'mcp' },
+            );
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  ...execution.result,
+                  command_id: execution.command_id,
+                  replayed: execution.replayed,
+                }),
+              }],
+            };
+          }
+          case 'activate':
+          case 'pause':
+          case 'resume':
+          case 'abort': {
+            if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
+            const execution = campaignCommands.action(
+              campaign_id,
+              { action },
+              { transport: 'mcp' },
+            );
+            campaign = execution.result!.campaign;
+            extra = {
+              command_id: execution.command_id,
+              replayed: execution.replayed,
+            };
+            break;
+          }
         case 'status':
           if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
           campaign = engine.getCampaign(campaign_id);
@@ -470,12 +529,24 @@ Use next_task(group_by="campaign") to see available campaigns.`,
           campaign = engine.getCampaign(campaign_id);
           extra = engine.checkCampaignAbortConditions(campaign_id);
           break;
-        case 'split': {
-          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for split' }) }] };
-          const children = engine.splitCampaign(campaign_id, split_count);
-          if (!children) return { content: [{ type: 'text', text: JSON.stringify({ error: `Campaign ${campaign_id} not found or cannot be split` }) }] };
-          return { content: [{ type: 'text', text: JSON.stringify({ parent_id: campaign_id, children, count: children.length }, null, 2) }] };
-        }
+          case 'split': {
+            if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for split' }) }] };
+            const execution = campaignCommands.split(
+              campaign_id,
+              split_count,
+              { transport: 'mcp' },
+            );
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  ...execution.result,
+                  command_id: execution.command_id,
+                  replayed: execution.replayed,
+                }, null, 2),
+              }],
+            };
+          }
         case 'children': {
           if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for children' }) }] };
           const kids = engine.getCampaignChildren(campaign_id);
@@ -491,6 +562,19 @@ Use next_task(group_by="campaign") to see available campaigns.`,
           extra = { aggregated_progress: progress, derived_status: derived };
           break;
         }
+        }
+      } catch (error) {
+        if (!(error instanceof CampaignCommandError)) throw error;
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: error.message,
+              code: error.code,
+            }),
+          }],
+          isError: true,
+        };
       }
 
       if (!campaign) {

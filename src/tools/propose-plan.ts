@@ -18,84 +18,15 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import type { OperatorOp } from '../services/command-interpreter.js';
-import type { AgentDirectiveKind } from '../types.js';
-import { previewScopeChange, mergeScopeAdds, type ScopePreview } from '../services/scope-preview.js';
-import { isArchetypeId, recommendExploreArchetype } from '../services/agent-archetypes.js';
 import { withErrorBoundary } from './error-boundary.js';
-
-const DIRECTIVE_KINDS: readonly AgentDirectiveKind[] = [
-  'pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize', 'instruct',
-];
-
-export interface ProposePlanArgs {
-  agent_id?: string;
-  task_id?: string;
-  command?: string;
-  summary: string;
-  rationale?: string;
-  ops: OperatorOp[];
-}
-
-export type ProposePlanResult =
-  | { ok: true; plan_id: string; ops_count: number; summary: string; scope_preview?: ScopePreview }
-  | { ok: false; error: string; rejected?: { op: OperatorOp; reason: string }[] };
-
-/** Dry-run scope-impact preview for a plan's scope op(s) — which existing nodes
- *  transition in/out of scope if the plan is confirmed. Null when the plan has no
- *  scope ops. Pure read of current scope + the live graph; never mutates. */
-export function computeScopePreview(engine: GraphEngine, ops: OperatorOp[]): ScopePreview | undefined {
-  const adds = mergeScopeAdds(ops);
-  if (!adds) return undefined;
-  const scope = engine.getConfig().scope;
-  const exported = engine.exportGraph();
-  // Include COLD-store hosts (alive ping-sweep responders with no services/edges live
-  // outside the graphology graph) — they're part of the inventory + exactly what a scope
-  // change moves in/out.
-  const cold = (exported.cold_nodes ?? []).map(c => ({ id: c.id, properties: { ip: c.ip, hostname: c.hostname, label: c.label } }));
-  return previewScopeChange(
-    [...exported.nodes, ...cold],
-    { cidrs: scope.cidrs, domains: scope.domains, exclusions: scope.exclusions },
-    adds,
-  );
-}
-
-/**
- * Validate every op against live engine state. Returns the list of rejections
- * (empty = all ops are executable). A directive must target a real running
- * task; approve/deny must reference a still-pending action; scope must add
- * something. This is the gate that keeps a confirmed plan from no-op'ing.
- */
-export function validateProposedOps(engine: GraphEngine, ops: OperatorOp[]): { op: OperatorOp; reason: string }[] {
-  const rejected: { op: OperatorOp; reason: string }[] = [];
-  const pendingIds = new Set(engine.getPendingActionQueue().getPending().map(a => a.action_id));
-  for (const op of ops) {
-    if (op.op === 'directive') {
-      if (!DIRECTIVE_KINDS.includes(op.kind)) {
-        rejected.push({ op, reason: `unknown directive kind "${op.kind}"` });
-        continue;
-      }
-      const task = op.task_id ? engine.getTask(op.task_id) : undefined;
-      if (!task) rejected.push({ op, reason: `no agent task with id "${op.task_id}"` });
-      else if (task.status !== 'running') rejected.push({ op, reason: `task "${op.task_id}" is ${task.status}, not running` });
-    } else if (op.op === 'scope') {
-      const adds = (op.add_cidrs?.length ?? 0) + (op.add_domains?.length ?? 0) + (op.add_exclusions?.length ?? 0);
-      if (adds === 0) rejected.push({ op, reason: 'scope op adds nothing (no cidrs/domains/exclusions)' });
-    } else if (op.op === 'approve' || op.op === 'deny') {
-      if (!pendingIds.has(op.action_id)) rejected.push({ op, reason: `no pending action with id "${op.action_id}"` });
-    } else if (op.op === 'dispatch') {
-      if (!op.target_node_ids?.length) {
-        rejected.push({ op, reason: 'dispatch op has no target_node_ids' });
-      } else {
-        const missing = op.target_node_ids.filter(id => !engine.getNode(id));
-        if (missing.length) rejected.push({ op, reason: `unknown node id(s): ${missing.join(', ')}` });
-        else if (op.archetype && !isArchetypeId(op.archetype)) rejected.push({ op, reason: `unknown agent type "${op.archetype}"` });
-      }
-    } else {
-      rejected.push({ op: op as OperatorOp, reason: `unsupported op type "${(op as { op: string }).op}"` });
-    }
-  }
-  return rejected;
-}
+import { OperatorOpSchema } from '../services/operator-op-schema.js';
+import {
+  OperatorCommandService,
+  computeScopePreview,
+  validateProposedOps,
+  type PlannerProposalInput,
+  type PlannerProposalResult,
+} from '../services/operator-command-service.js';
 
 /**
  * Core recording logic, extracted from the tool handler so it's unit-testable
@@ -103,113 +34,16 @@ export function validateProposedOps(engine: GraphEngine, ops: OperatorOp[]): { o
  * unexecutable, otherwise stores it in the engine's ProposedPlanStore and emits
  * a `plan_proposed` activity event.
  */
-export function recordProposedPlan(engine: GraphEngine, args: ProposePlanArgs): ProposePlanResult {
-  const { agent_id, task_id, command, summary, rationale, ops } = args;
-  if (!ops.length) {
-    return { ok: false, error: 'a plan must contain at least one op' };
-  }
-  const rejected = validateProposedOps(engine, ops);
-  if (rejected.length) {
-    return { ok: false, error: `${rejected.length} op(s) could not be resolved against live state`, rejected };
-  }
+export type ProposePlanArgs = PlannerProposalInput;
+export type ProposePlanResult = PlannerProposalResult;
+export { computeScopePreview, validateProposedOps };
 
-  // Resolve each dispatch op's archetype to a concrete type NOW (post-validation) so the
-  // operator confirms exactly what will deploy — never a hidden full-surface 'default'.
-  for (const op of ops) {
-    if (op.op === 'dispatch' && op.target_node_ids.length) {
-      op.archetype = recommendExploreArchetype(op.archetype, engine.getNode(op.target_node_ids[0])?.type);
-    }
-  }
-
-  const ownerReference = task_id ?? agent_id;
-  const ownerResolution = ownerReference
-    ? engine.resolveAgentTaskReference(ownerReference)
-    : { status: 'missing' as const };
-  if (ownerResolution.status === 'ambiguous_legacy_label') {
-    return {
-      ok: false,
-      error: `agent label "${ownerReference}" is ambiguous; pass the exact task_id`,
-    };
-  }
-  if (ownerReference && ownerResolution.status === 'missing') {
-    return { ok: false, error: `planner task not found: ${ownerReference}` };
-  }
-  const ownerTask = ownerResolution.status === 'exact'
-    || ownerResolution.status === 'unique_legacy_label'
-    ? ownerResolution.task
-    : undefined;
-  const ownerTaskId = ownerTask?.task_id ?? ownerTask?.id;
-  const ownerAgentLabel = ownerTask?.agent_label ?? ownerTask?.agent_id;
-  if (
-    task_id
-    && agent_id
-    && ownerTask
-    && agent_id !== ownerTaskId
-    && agent_id !== ownerAgentLabel
-  ) {
-    return {
-      ok: false,
-      error: `agent_id "${agent_id}" does not match planner task ${ownerTaskId} (${ownerAgentLabel})`,
-    };
-  }
-  const scope_preview = computeScopePreview(engine, ops);
-  const plan = engine.getProposedPlanStore().add({
-    command: command ?? '',
-    ops,
-    summary,
-    rationale,
-    owner_task_id: ownerTaskId,
-    owner_agent_label: ownerAgentLabel,
-    scope_preview,
-  });
-
-  engine.logActionEvent({
-    description: `Planner proposed a ${ops.length}-op plan: ${summary}`,
-    event_type: 'plan_proposed',
-    category: 'agent',
-    result_classification: 'neutral',
-    agent_id: ownerAgentLabel,
-    linked_agent_task_id: ownerTaskId,
-    details: { reason: 'plan_proposed', plan_id: plan.plan_id, command: command ?? '', summary, ops },
-  });
-
-  return { ok: true, plan_id: plan.plan_id, ops_count: ops.length, summary, ...(scope_preview ? { scope_preview } : {}) };
+export function recordProposedPlan(
+  engine: GraphEngine,
+  args: ProposePlanArgs,
+): ProposePlanResult {
+  return new OperatorCommandService(engine).submitProposal(args);
 }
-
-const opSchema = z.discriminatedUnion('op', [
-  z.object({
-    op: z.literal('directive'),
-    task_id: z.string().describe('The EXACT id of a running agent task to steer'),
-    agent_label: z.string().optional().describe('Display name for the agent (cosmetic)'),
-    kind: z.enum(['pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize', 'instruct']),
-    node_ids: z.array(z.string()).optional().describe('narrow_scope: node ids to restrict to'),
-    frontier_types: z.array(z.string()).optional().describe('skip_types/prioritize: frontier item types'),
-    note: z.string().optional(),
-  }),
-  z.object({
-    op: z.literal('scope'),
-    add_cidrs: z.array(z.string()).optional(),
-    add_domains: z.array(z.string()).optional(),
-    add_exclusions: z.array(z.string()).optional(),
-  }),
-  z.object({
-    op: z.literal('approve'),
-    action_id: z.string().describe('The EXACT id of a pending action to approve'),
-    notes: z.string().optional(),
-  }),
-  z.object({
-    op: z.literal('deny'),
-    action_id: z.string().describe('The EXACT id of a pending action to deny'),
-    reason: z.string().optional(),
-  }),
-  z.object({
-    op: z.literal('dispatch'),
-    target_node_ids: z.array(z.string()).min(1).describe('EXISTING graph node id(s) to deploy the agent at (from your objective/query_graph)'),
-    archetype: z.string().optional().describe('Agent type: recon_scanner, web_tester, credential_operator, post_exploit, cve_researcher, osint_recon, pathfinder, … — omit to auto-select from the node type'),
-    skill: z.string().optional(),
-    objective: z.string().optional().describe('What the agent should accomplish at these nodes'),
-  }),
-]);
 
 export function registerProposePlanTools(server: McpServer, engine: GraphEngine): void {
   server.registerTool(
@@ -227,7 +61,7 @@ Valid ops: directive (pause/resume/stop/narrow_scope/skip_types/prioritize a run
         command: z.string().optional().describe('The operator command this plan answers'),
         summary: z.string().describe('One-line human-readable summary of the plan'),
         rationale: z.string().optional().describe('Why these ops accomplish the command'),
-        ops: z.array(opSchema).min(1).describe('The ops to propose (at least one)'),
+        ops: z.array(OperatorOpSchema).min(1).describe('The ops to propose (at least one)'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },

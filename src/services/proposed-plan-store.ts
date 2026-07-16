@@ -21,6 +21,8 @@ export type ProposedPlanStatus = 'open' | 'confirmed' | 'denied' | 'expired';
 
 export interface ProposedPlan {
   plan_id: string;
+  /** Application command whose planner produced this plan. */
+  command_id?: string;
   /** The operator's free-form command this plan answers. */
   command: string;
   ops: OperatorOp[];
@@ -52,6 +54,7 @@ export interface ProposedPlan {
 }
 
 export interface AddProposedPlanArgs {
+  command_id?: string;
   command: string;
   ops: OperatorOp[];
   summary: string;
@@ -160,6 +163,7 @@ export class ProposedPlanStore {
       this.pruneInternal(now, false);
       const plan: ProposedPlan = {
         plan_id: randomUUID(),
+        command_id: args.command_id,
         command: args.command,
         ops: args.ops,
         summary: args.summary,
@@ -183,6 +187,11 @@ export class ProposedPlanStore {
   /** Look up a plan by id (does not expire on read — confirm-path checks status). */
   get(plan_id: string): ProposedPlan | undefined {
     return this.plans.get(plan_id);
+  }
+
+  /** Return the plan produced by one durable planner command, if any. */
+  getByCommandId(command_id: string): ProposedPlan | undefined {
+    return [...this.plans.values()].find(plan => plan.command_id === command_id);
   }
 
   /** All currently-open plans, newest first. */

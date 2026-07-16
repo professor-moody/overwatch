@@ -13,6 +13,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
+import { recordProposedPlan } from '../../tools/propose-plan.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 
 let dashboard: DashboardServer;
@@ -281,11 +282,27 @@ describe('/api/commands — headless planner fallback', () => {
     const r = await (await post({ command: 'go take care of the noisy box somehow' })).json();
     expect(r.needs_planner).toBe(true);
     expect(r.planner_available).toBe(true);
+    expect(r.command_id).toBeTruthy();
+    expect(r.planner_status).toBe('accepted');
     expect(r.planner_task_id).toBeTruthy();
     const task = engine.getTask(r.planner_task_id);
     expect(task?.role).toBe('planner');
     expect(task?.backend).toBe('headless_mcp');
     expect(task?.objective).toContain('go take care of the noisy box somehow');
+    expect(task?.application_command_id).toBe(r.command_id);
+    const dispatchEvent = engine.getFullHistory()
+      .find(event => event.linked_agent_task_id === r.planner_task_id
+        && event.event_type === 'agent_registered');
+    expect(dispatchEvent?.description).toContain('as operator planner');
+    expect(dispatchEvent?.description).not.toContain('undefined');
+    const durable = await (
+      await fetch(`${baseUrl}/api/commands/${encodeURIComponent(r.command_id)}`)
+    ).json();
+    expect(durable.command).toMatchObject({
+      command_id: r.command_id,
+      status: 'accepted',
+      entity_refs: { planner_task_id: r.planner_task_id },
+    });
   });
 
   it('re-issuing the same free-form command reuses the in-flight planner (no duplicate)', async () => {
@@ -303,6 +320,61 @@ describe('/api/commands — headless planner fallback', () => {
     expect(planners).toHaveLength(1);
   });
 
+  it('correlates the planner proposal to the durable command without a timeout window', async () => {
+    headlessAvail = true;
+    const command = 'work out how to investigate the correlation target';
+    const queued = await (await post({ command })).json();
+    expect(queued).toMatchObject({
+      needs_planner: true,
+      planner_status: 'accepted',
+      command_id: expect.any(String),
+      planner_task_id: expect.any(String),
+    });
+
+    engine.addNode({
+      id: 'planner-correlation-target',
+      type: 'host',
+      label: '10.0.0.77',
+      ip: '10.0.0.77',
+      discovered_at: new Date().toISOString(),
+      discovered_by: 'test',
+      confidence: 1,
+    });
+    const proposed = recordProposedPlan(engine, {
+      task_id: queued.planner_task_id,
+      command,
+      summary: 'dispatch a recon agent',
+      ops: [{
+        op: 'dispatch',
+        target_node_ids: ['planner-correlation-target'],
+        archetype: 'recon_scanner',
+      }],
+    });
+    expect(proposed.ok).toBe(true);
+
+    const durable = await (
+      await fetch(`${baseUrl}/api/commands/${encodeURIComponent(queued.command_id)}`)
+    ).json();
+    expect(durable.command).toMatchObject({
+      command_id: queued.command_id,
+      status: 'succeeded',
+      plan_id: proposed.ok ? proposed.plan_id : undefined,
+      entity_refs: {
+        planner_task_id: queued.planner_task_id,
+        plan_id: proposed.ok ? proposed.plan_id : undefined,
+      },
+      result: {
+        phase: 'plan_ready',
+        command_id: queued.command_id,
+        planner_task_id: queued.planner_task_id,
+        plan: {
+          plan_id: proposed.ok ? proposed.plan_id : undefined,
+          owner_task_id: queued.planner_task_id,
+        },
+      },
+    });
+  });
+
   it('surfaces an already-open plan for the command instead of spawning a duplicate planner', async () => {
     headlessAvail = true;
     // A prior planner proposed a plan for this command and has since terminated; the
@@ -317,7 +389,62 @@ describe('/api/commands — headless planner fallback', () => {
     const r = await (await post({ command: 'Deal with the leftover box' })).json(); // case-insensitive match
     expect(r.planner_task_id).toBe('planner-prior');
     expect(r.planner_available).toBe(true);
+    expect(r.planner_plan).toMatchObject({
+      command: 'deal with the leftover box',
+      owner_task_id: 'planner-prior',
+      owner_agent_label: 'planner-prior-a',
+    });
     expect(engine.getAgentTasks().filter(t => t.role === 'planner').length).toBe(before); // no new planner
+  });
+
+  it('hydrates a legacy succeeded command from its linked open plan', async () => {
+    const plan = engine.getProposedPlanStore().add({
+      command: 'hydrate the legacy plan',
+      ops: [{
+        op: 'directive',
+        task_id: 'target-1',
+        agent_label: 'scanner-1',
+        kind: 'pause',
+      }],
+      summary: 'pause the scanner',
+      source_task_id: 'legacy-planner-task',
+      source_agent_id: 'legacy-planner',
+    });
+    engine.recordApplicationCommand({
+      command_id: 'legacy-planner-command',
+      idempotency_key: 'legacy-planner-idempotency',
+      input_sha256: 'legacy-input',
+      command_kind: 'operator.plan',
+      validated_input: { command: plan.command },
+      transport: 'dashboard',
+      actor_task_id: null,
+      status: 'succeeded',
+      created_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      plan_id: plan.plan_id,
+      entity_refs: {
+        planner_task_id: 'legacy-planner-task',
+        plan_id: plan.plan_id,
+      },
+      result: {
+        phase: 'plan_ready',
+        command_id: 'legacy-planner-command',
+        plan_id: plan.plan_id,
+      },
+    });
+
+    const response = await fetch(
+      `${baseUrl}/api/commands/legacy-planner-command`,
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).command).toMatchObject({
+      status: 'succeeded',
+      result: {
+        planner_task_id: 'legacy-planner-task',
+        plan_id: plan.plan_id,
+        plan: { plan_id: plan.plan_id },
+      },
+    });
   });
 
   it('reports planner_available:false in stdio mode (no daemon)', async () => {
@@ -326,6 +453,16 @@ describe('/api/commands — headless planner fallback', () => {
     expect(r.needs_planner).toBe(true);
     expect(r.planner_available).toBe(false);
     expect(r.planner_task_id).toBeUndefined();
+    expect(r.command_id).toBeTruthy();
+    expect(r.planner_status).toBe('failed');
+    const durable = await (
+      await fetch(`${baseUrl}/api/commands/${encodeURIComponent(r.command_id)}`)
+    ).json();
+    expect(durable.command).toMatchObject({
+      command_id: r.command_id,
+      status: 'failed',
+      error: { code: 'PLANNER_UNAVAILABLE' },
+    });
     headlessAvail = true;
   });
 });

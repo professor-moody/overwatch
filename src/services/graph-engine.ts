@@ -120,6 +120,7 @@ import { MutationJournal } from './mutation-journal.js';
 import type {
   DurableStatePatchV1,
   DurableStateSliceKey,
+  DurableStateSlices,
 } from './durable-state-patch.js';
 import type { EngineOperation } from './engine-transaction.js';
 import {
@@ -135,6 +136,7 @@ import { queryGraphImpl } from './graph-query.js';
 import { CredentialCoverageTracker } from './credential-coverage.js';
 import type { OperatorOp } from './command-interpreter.js';
 import type {
+  PersistedApplicationCommandV1,
   PersistedCommandOutcomeV1,
   PersistedCommandPlanV1,
   PersistedPlaybookRunV1,
@@ -172,7 +174,7 @@ export interface RecentOutcome {
   action_id?: string;
 }
 
-type FindingIngestResult = {
+export type FindingIngestResult = {
   new_nodes: string[];
   new_edges: string[];
   updated_nodes: string[];
@@ -181,6 +183,15 @@ type FindingIngestResult = {
   deduplicated?: boolean;
   campaign_id?: string;
 };
+
+export interface FindingIngestCompletion {
+  additional_state_keys?: readonly DurableStateSliceKey[];
+  /**
+   * Runs inside the finding's speculative durable draft. Command receipts and
+   * terminal audit events installed here commit with the graph/campaign delta.
+   */
+  complete(result: FindingIngestResult): void;
+}
 
 type FindingDraftResult = {
   result: Omit<FindingIngestResult, 'deduplicated' | 'campaign_id'>;
@@ -282,8 +293,18 @@ export class GraphEngine {
       assertWriteAllowed: () => this.persistence.assertMigrationWriteAllowed(),
       withWriteGuard: operation => this.persistence.withMigrationWriteGuard(operation),
       applyRuntimeConfig: (next, context) => this.applyRuntimeConfig(next, context),
-      commitRuntimeConfig: (next, context, event) =>
-        this.commitRuntimeConfigTransaction(next, context, event),
+      commitRuntimeConfig: (next, context, event, applicationCommand) =>
+        this.commitRuntimeConfigTransaction(
+          next,
+          context,
+          event,
+          applicationCommand,
+        ),
+      recordApplicationCommand: command => {
+        this.recordApplicationCommand(command);
+      },
+      hasApplicationCommand: idempotencyKey =>
+        this.ctx.applicationCommands.has(idempotencyKey),
       persistRuntimeState: () => this.persistence.persistImmediate(),
       recordConfigEvent: ({ description, result, details }) => {
         this.ctx.logEvent({
@@ -1154,7 +1175,10 @@ export class GraphEngine {
 
   private static readonly DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
-  ingestFinding(finding: Finding): FindingIngestResult {
+  ingestFinding(
+    finding: Finding,
+    completion?: FindingIngestCompletion,
+  ): FindingIngestResult {
     this.assertPersistenceWritable();
     // --- Finding Deduplication (7.8) ---
     const now = Date.now(); // clock-ok: dedup-window elapsed-time check (transient cache; not a stored timestamp)
@@ -1232,8 +1256,17 @@ export class GraphEngine {
         }
       }
 
-      const stateKeys = ['finding_counters', 'activity', 'frontier', 'campaigns'] as const;
+      const stateKeys = [
+        ...new Set<DurableStateSliceKey>([
+          'finding_counters',
+          'activity',
+          'frontier',
+          'campaigns',
+          ...(completion?.additional_state_keys ?? []),
+        ]),
+      ];
       const baselineSlices = this.ctx.captureDurableStateSlices(stateKeys);
+      let duplicateResult!: FindingIngestResult;
       const draft = this.ctx.draftDurableStateSlices(stateKeys, () => {
         this.ctx.recentFindingHashes = new Map(activeFindingHashes);
         this.ctx.dedupCount++;
@@ -1262,12 +1295,23 @@ export class GraphEngine {
             ingested_node_ids: [...ingestedNodeIds],
           },
         });
-        return this.linkFindingToCampaign({
+        const campaignId = this.linkFindingToCampaign({
           finding_id: finding.id,
           frontier_item_id: finding.frontier_item_id,
           agent_id: finding.agent_id,
           action_id: finding.action_id,
         });
+        duplicateResult = {
+          new_nodes: [],
+          new_edges: [],
+          updated_nodes: updatedNodes,
+          updated_edges: [],
+          inferred_edges: [],
+          deduplicated: true,
+          ...(campaignId ? { campaign_id: campaignId } : {}),
+        };
+        completion?.complete(detached(duplicateResult));
+        return campaignId;
       });
       const statePatch: DurableStatePatchV1 = {
         payload_version: 1,
@@ -1313,18 +1357,19 @@ export class GraphEngine {
       // objective/config follow-up. A truthful retry is deduplicated, but still
       // completes that deferred evaluation boundary.
       this.evaluateObjectives();
-      return {
-        new_nodes: [],
-        new_edges: [],
-        updated_nodes: updatedNodes,
-        updated_edges: [],
-        inferred_edges: [],
-        deduplicated: true,
-        ...(draft.result ? { campaign_id: draft.result } : {}),
-      };
+      return detached(duplicateResult);
     }
 
-    const stateKeys = ['activity', 'frontier', 'finding_counters', 'campaigns', 'phase'] as const;
+    const stateKeys = [
+      ...new Set<DurableStateSliceKey>([
+        'activity',
+        'frontier',
+        'finding_counters',
+        'campaigns',
+        'phase',
+        ...(completion?.additional_state_keys ?? []),
+      ]),
+    ];
     const graphBaseline = detached(this.ctx.graph.export());
     const coldBaseline = detached(this.ctx.coldStore.export());
     const sliceBaseline = this.ctx.captureDurableStateSlices(stateKeys);
@@ -1392,6 +1437,11 @@ export class GraphEngine {
           agent_id: finding.agent_id,
           action_id: finding.action_id,
         });
+        const completedResult: FindingIngestResult = {
+          ...result,
+          ...(campaignId ? { campaign_id: campaignId } : {}),
+        };
+        completion?.complete(detached(completedResult));
         return { result, ...(campaignId ? { campaign_id: campaignId } : {}) };
       });
       captured = detached(captured);
@@ -3069,6 +3119,88 @@ export class GraphEngine {
     return detached(payload.result);
   }
 
+  correctGraphApplicationCommand(
+    reason: string,
+    operations: GraphCorrectionOperation[],
+    actionId: string | undefined,
+    buildCommand: (
+      result: GraphCorrectedMutationPayloadV1['result'],
+    ) => PersistedApplicationCommandV1,
+  ): {
+    result: GraphCorrectedMutationPayloadV1['result'];
+    command: PersistedApplicationCommandV1;
+  } {
+    this.assertPersistenceWritable();
+    if (reason.trim().length === 0) {
+      throw new Error('Graph correction reason must not be empty.');
+    }
+    const payload = this.planGraphCorrectionMutation(
+      reason,
+      operations,
+      this.ctx.nowIso(),
+      actionId,
+    );
+    const command = detached(buildCommand(detached(payload.result)));
+    if (command.status !== 'succeeded') {
+      throw new Error(
+        'A graph correction application command must be terminal before it is journaled.',
+      );
+    }
+    const stateKeys = ['command_state'] as const;
+    const stateBefore = this.ctx.captureDurableStateSlices(stateKeys);
+    let draft!: {
+      result: PersistedApplicationCommandV1;
+      slices: DurableStatePatchV1['slices'];
+    };
+    try {
+      draft = this.ctx.draftDurableStateSlices(
+        stateKeys,
+        () => this.installApplicationCommandDraft(command),
+      );
+    } finally {
+      this.applyRestoredRuntimeProjections();
+    }
+    const changedStateKeys = Object.keys(
+      draft.slices,
+    ) as DurableStateSliceKey[];
+    const stateBeforePatch = Object.fromEntries(
+      changedStateKeys.map(key => [key, stateBefore[key]]),
+    ) as DurableStateSlices;
+    payload.state_patch = {
+      payload_version: 1,
+      operation_id: uuidv4(),
+      occurred_at: payload.occurred_at,
+      reason,
+      slices: draft.slices,
+    };
+    payload.state_patch_before_sha256 = createHash('sha256')
+      .update(canonicalJson(stateBeforePatch))
+      .digest('hex');
+    payload.state_patch_after_sha256 = createHash('sha256')
+      .update(canonicalJson(draft.slices))
+      .digest('hex');
+
+    this.ensureCompositeJournal();
+    const applied = this.ctx.applyCompositeJournaledMutation(
+      'graph_corrected',
+      payload as unknown as Record<string, unknown>,
+      () => this.applyGraphCorrectedMutation(payload, false),
+      actionId,
+    );
+    if (applied.status !== 'applied') throw new Error(applied.reason);
+    this.evaluateObjectives();
+    this.persist({
+      removed_nodes: payload.result.dropped_nodes,
+      removed_edges: payload.result.dropped_edges,
+      new_edges: payload.result.replaced_edges.map(edge => edge.new_edge_id),
+      updated_nodes: payload.result.patched_nodes,
+    });
+    return {
+      result: detached(payload.result),
+      command: detached(draft.result),
+    };
+  }
+
   /**
    * Legacy engagements may predate WAL creation. Before their first composite
    * mutation, checkpoint the complete pre-state once and then start a journal
@@ -3090,6 +3222,9 @@ export class GraphEngine {
     operations: GraphCorrectionOperation[],
     occurredAt: string,
     actionId?: string,
+    statePatch?: DurableStatePatchV1,
+    statePatchBeforeSha256?: string,
+    statePatchAfterSha256?: string,
   ): GraphCorrectedMutationPayloadV1 {
     const beforeNodes = this.collectGraphNodeStates(this.ctx.graph);
     const beforeEdges = this.collectGraphEdgeStates(this.ctx.graph);
@@ -3230,6 +3365,13 @@ export class GraphEngine {
       edge_changes: edgeChanges,
       before_summary: beforeSummary,
       after_summary: { total_nodes: scratch.order, total_edges: scratch.size },
+      ...(statePatch
+        ? {
+            state_patch: statePatch,
+            state_patch_before_sha256: statePatchBeforeSha256,
+            state_patch_after_sha256: statePatchAfterSha256,
+          }
+        : {}),
       result: {
         dropped_nodes: [...new Set(droppedNodes)],
         dropped_edges: [...new Set(droppedEdges)],
@@ -3246,10 +3388,51 @@ export class GraphEngine {
     if (payload.payload_version !== 1) {
       return { status: 'skipped', reason: `unsupported graph_corrected payload version: ${String(payload.payload_version)}` };
     }
-    const alreadyApplied = this.exactGraphDeltaMatches(payload, 'after');
-    const readyToApply = !alreadyApplied && this.exactGraphDeltaMatches(payload, 'before');
+    const graphApplied = this.exactGraphDeltaMatches(payload, 'after');
+    const graphReady = this.exactGraphDeltaMatches(payload, 'before');
+    const statePatchKeys = payload.state_patch
+      ? Object.keys(payload.state_patch.slices) as DurableStateSliceKey[]
+      : [];
+    if (
+      payload.state_patch
+      && (
+        !payload.state_patch_before_sha256
+        || !payload.state_patch_after_sha256
+        || !/^[a-f0-9]{64}$/.test(payload.state_patch_before_sha256)
+        || !/^[a-f0-9]{64}$/.test(payload.state_patch_after_sha256)
+      )
+    ) {
+      return {
+        status: 'skipped',
+        reason:
+          'graph_corrected state patch is missing valid before/after hashes',
+      };
+    }
+    const currentStateSlices = payload.state_patch
+      ? this.ctx.captureDurableStateSlices(statePatchKeys)
+      : {};
+    const currentStateHash = createHash('sha256')
+      .update(canonicalJson(currentStateSlices))
+      .digest('hex');
+    const statePatchReady = !payload.state_patch
+      || currentStateHash === payload.state_patch_before_sha256;
+    const statePatchApplied = !payload.state_patch
+      || currentStateHash === payload.state_patch_after_sha256;
+    const alreadyApplied = graphApplied && statePatchApplied;
+    const readyToApply = (
+      (graphReady || graphApplied)
+      && (statePatchReady || statePatchApplied)
+      && !alreadyApplied
+    );
     if (!alreadyApplied && !readyToApply) {
-      return { status: 'skipped', reason: `graph_corrected preconditions changed for operation ${payload.operation_id}` };
+      return {
+        status: 'skipped',
+        reason: [
+          `graph_corrected preconditions changed for operation ${payload.operation_id}`,
+          `graph=${graphReady ? 'before' : graphApplied ? 'after' : 'different'}`,
+          `state=${statePatchReady ? 'before' : statePatchApplied ? 'after' : 'different'}`,
+        ].join('; '),
+      };
     }
 
     const graphSnapshot = this.ctx.graph.export();
@@ -3262,9 +3445,12 @@ export class GraphEngine {
       [...this.ctx.actionFrontierMap].map(([key, value]) => [key, detached(value)]),
     );
     const frontierLinkageSnapshot = detached(this.ctx.frontierLinkage.serialize());
+    const statePatchSnapshot = payload.state_patch
+      ? this.ctx.captureDurableStateSlices(statePatchKeys)
+      : undefined;
     try {
       this.ctx.withClock(payload.occurred_at, () => {
-        if (readyToApply) {
+        if (graphReady) {
           for (const change of payload.edge_changes) {
             if (change.before && this.ctx.graph.hasEdge(change.edge_id)) this.ctx.graph.dropEdge(change.edge_id);
           }
@@ -3294,6 +3480,19 @@ export class GraphEngine {
           }
           if (!this.exactGraphDeltaMatches(payload, 'after')) {
             throw new Error(`graph_corrected did not reach its frozen post-state for operation ${payload.operation_id}`);
+          }
+        }
+        if (payload.state_patch && statePatchReady) {
+          this.ctx.applyDurableStatePatch(payload.state_patch.slices);
+          const appliedStateHash = createHash('sha256')
+            .update(canonicalJson(
+              this.ctx.captureDurableStateSlices(statePatchKeys),
+            ))
+            .digest('hex');
+          if (appliedStateHash !== payload.state_patch_after_sha256) {
+            throw new Error(
+              `graph_corrected did not reach its frozen command state for operation ${payload.operation_id}`,
+            );
           }
         }
         const alreadyAudited = this.ctx.activityLog.some(entry =>
@@ -3334,6 +3533,9 @@ export class GraphEngine {
       this.ctx.deterministicSeq = deterministicSeqSnapshot;
       this.ctx.actionFrontierMap = actionFrontierSnapshot;
       this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(frontierLinkageSnapshot);
+      if (statePatchSnapshot) {
+        this.ctx.applyDurableStatePatch(statePatchSnapshot);
+      }
       this.invalidateAllCaches();
       this.invalidatePathGraph();
       if (!recovery) throw error;
@@ -4229,6 +4431,120 @@ export class GraphEngine {
     return this.commitScopeUpdate({ replace_scope: scope, reason });
   }
 
+  /**
+   * Compose a scope/config update with synchronous coordination-state effects
+   * as one journaled command. The callback is drafted against the current
+   * coordination state; its absolute after-state is embedded in the immutable
+   * scope record and applied only when the matching before-state is present.
+   *
+   * This is the transaction boundary used by quick deploy: either both the
+   * target enters scope and the agent/idempotency record exist, or neither does.
+   */
+  runAtomicScopeCommand<T>(
+    changes: {
+      add_cidrs?: string[];
+      remove_cidrs?: string[];
+      add_domains?: string[];
+      remove_domains?: string[];
+      add_exclusions?: string[];
+      remove_exclusions?: string[];
+      reason: string;
+    },
+    sourceActionId: string | undefined,
+    stateKeys: readonly DurableStateSliceKey[],
+    mutation: (scope: {
+      before: EngagementConfig['scope'];
+      after: EngagementConfig['scope'];
+      affected_node_count: number;
+    }) => T,
+  ): {
+    scope: {
+      applied: boolean;
+      errors: string[];
+      before: EngagementConfig['scope'];
+      after: EngagementConfig['scope'];
+      affected_node_count: number;
+    };
+    result: T;
+  } {
+    this.assertPersistenceWritable();
+    const plan = planScopeUpdate(this.scopeHost, changes);
+    if (plan.errors.length > 0) {
+      const error = new Error(plan.errors.join('; '));
+      (error as Error & { code: string }).code = 'SCOPE_VALIDATION_FAILED';
+      throw error;
+    }
+
+    if (canonicalJson(plan.before) === canonicalJson(plan.after)) {
+      const result = this.runApplicationCommandTransaction(
+        changes.reason,
+        sourceActionId,
+        () => mutation({
+          before: detached(plan.before),
+          after: detached(plan.after),
+          affected_node_count: 0,
+        }),
+        stateKeys,
+      );
+      return {
+        scope: {
+          applied: true,
+          errors: [],
+          before: detached(plan.before),
+          after: detached(plan.after),
+          affected_node_count: 0,
+        },
+        result,
+      };
+    }
+
+    const sourceConfig = this.ctx.config;
+    const targetConfig = this.configService.prepareJournalTarget(
+      mergeConfig(sourceConfig, { scope: plan.after }),
+    );
+    const sourceFileHash = this.configService.getStatus().file_hash ?? computeConfigHash(sourceConfig);
+    const uniqueStateKeys = [...new Set(stateKeys)];
+    const stateBefore = this.ctx.captureDurableStateSlices(uniqueStateKeys);
+    let draft!: { result: T; slices: DurableStatePatchV1['slices'] };
+    try {
+      draft = this.ctx.draftDurableStateSlices(
+        uniqueStateKeys,
+        () => mutation({
+          before: detached(plan.before),
+          after: detached(plan.after),
+          affected_node_count: plan.affected_node_count,
+        }),
+      );
+    } finally {
+      this.applyRestoredRuntimeProjections();
+    }
+    const changedStateKeys = Object.keys(draft.slices) as DurableStateSliceKey[];
+    const stateBeforePatch = Object.fromEntries(
+      changedStateKeys.map(key => [key, stateBefore[key]]),
+    ) as DurableStateSlices;
+    const statePatch = Object.keys(draft.slices).length > 0
+      ? {
+          payload_version: 1 as const,
+          operation_id: uuidv4(),
+          occurred_at: this.ctx.nowIso(),
+          reason: changes.reason,
+          slices: draft.slices,
+        }
+      : undefined;
+    const scope = this.commitScopePlan(
+      plan,
+      targetConfig,
+      changes.reason,
+      sourceFileHash,
+      undefined,
+      undefined,
+      statePatch,
+      statePatch ? createHash('sha256').update(canonicalJson(stateBeforePatch)).digest('hex') : undefined,
+      statePatch ? createHash('sha256').update(canonicalJson(draft.slices)).digest('hex') : undefined,
+    );
+    return { scope, result: draft.result };
+  }
+
   private commitScopeUpdate(changes: {
     add_cidrs?: string[];
     remove_cidrs?: string[];
@@ -4274,6 +4590,9 @@ export class GraphEngine {
     sourceFileHash: string,
     configResolution?: 'use_file',
     supersededConfigIntent?: ConfigIntentConflict,
+    statePatch?: DurableStatePatchV1,
+    statePatchBeforeSha256?: string,
+    statePatchAfterSha256?: string,
   ): { applied: boolean; errors: string[]; before: EngagementConfig['scope']; after: EngagementConfig['scope']; affected_node_count: number } {
     const sourceConfig = this.ctx.config;
     const occurredAt = this.ctx.nowIso();
@@ -4294,6 +4613,13 @@ export class GraphEngine {
       ...(configResolution ? { config_resolution: configResolution } : {}),
       ...(supersededConfigIntent
         ? { superseded_config_intent: detached(supersededConfigIntent) }
+        : {}),
+      ...(statePatch
+        ? {
+            state_patch: statePatch,
+            state_patch_before_sha256: statePatchBeforeSha256,
+            state_patch_after_sha256: statePatchAfterSha256,
+          }
         : {}),
       affected_node_count: plan.affected_node_count,
     };
@@ -4344,6 +4670,30 @@ export class GraphEngine {
     }
 
     const currentHash = computeConfigHash(this.ctx.config);
+    const statePatchKeys = payload.state_patch
+      ? Object.keys(payload.state_patch.slices) as DurableStateSliceKey[]
+      : [];
+    if (
+      payload.state_patch
+      && (
+        !payload.state_patch_before_sha256
+        || !payload.state_patch_after_sha256
+        || !/^[a-f0-9]{64}$/.test(payload.state_patch_before_sha256)
+        || !/^[a-f0-9]{64}$/.test(payload.state_patch_after_sha256)
+      )
+    ) {
+      return { status: 'skipped', reason: 'scope_updated state patch is missing valid before/after hashes' };
+    }
+    const currentStateSlices = payload.state_patch
+      ? this.ctx.captureDurableStateSlices(statePatchKeys)
+      : {};
+    const currentStateHash = createHash('sha256')
+      .update(canonicalJson(currentStateSlices))
+      .digest('hex');
+    const statePatchReady = !payload.state_patch
+      || currentStateHash === payload.state_patch_before_sha256;
+    const statePatchApplied = !payload.state_patch
+      || currentStateHash === payload.state_patch_after_sha256;
     const promotionsBefore = payload.promotions.every(promotion => {
       const cold = this.ctx.coldStore.get(promotion.cold_record.id);
       return !this.ctx.graph.hasNode(promotion.hot_node.id)
@@ -4374,10 +4724,32 @@ export class GraphEngine {
         props: this.ctx.graph.getEdgeAttributes(change.edge_id),
       }) === canonicalJson(change.after);
     });
-    const alreadyApplied = currentHash === target.data.config_hash && promotionsAfter && edgesAfter;
-    const readyToApply = currentHash === payload.source_config_hash && promotionsBefore && edgesBefore;
+    const alreadyApplied = currentHash === target.data.config_hash
+      && promotionsAfter
+      && edgesAfter
+      && statePatchApplied;
+    const readyToApply = currentHash === payload.source_config_hash
+      && promotionsBefore
+      && edgesBefore
+      && statePatchReady;
     if (!alreadyApplied && !readyToApply) {
-      return { status: 'skipped', reason: 'scope_updated frozen config, cold-store, node, or edge preconditions changed' };
+      return {
+        status: 'skipped',
+        reason: [
+          'scope_updated frozen preconditions changed',
+          `config=${currentHash === payload.source_config_hash ? 'before' : currentHash === target.data.config_hash ? 'after' : 'different'}`,
+          `promotions=${promotionsBefore ? 'before' : promotionsAfter ? 'after' : 'different'}`,
+          `edges=${edgesBefore ? 'before' : edgesAfter ? 'after' : 'different'}`,
+          `state=${statePatchReady ? 'before' : statePatchApplied ? 'after' : 'different'}`,
+          ...(payload.state_patch
+            ? [
+                `state_hash=${currentStateHash}`,
+                `expected_before=${payload.state_patch_before_sha256}`,
+                `expected_after=${payload.state_patch_after_sha256}`,
+              ]
+            : []),
+        ].join('; '),
+      };
     }
 
     const graphSnapshot = this.ctx.graph.export();
@@ -4388,6 +4760,9 @@ export class GraphEngine {
     const chainCheckpointsSnapshot = detached(this.ctx.chainCheckpoints);
     const chainEventsSnapshot = this.ctx.chainEventsSinceCheckpoint;
     const deterministicSeqSnapshot = this.ctx.deterministicSeq;
+    const statePatchSnapshot = payload.state_patch
+      ? this.ctx.captureDurableStateSlices(statePatchKeys)
+      : undefined;
 
     try {
       this.ctx.withClock(payload.occurred_at, () => {
@@ -4430,6 +4805,15 @@ export class GraphEngine {
           );
           if (!postPromotions || !postEdges) {
             throw new Error(`scope_updated did not reach its frozen post-state for operation ${payload.operation_id}`);
+          }
+          if (payload.state_patch) {
+            this.ctx.applyDurableStatePatch(payload.state_patch.slices);
+            const appliedStateHash = createHash('sha256')
+              .update(canonicalJson(this.ctx.captureDurableStateSlices(statePatchKeys)))
+              .digest('hex');
+            if (appliedStateHash !== payload.state_patch_after_sha256) {
+              throw new Error(`scope_updated did not reach its frozen command state for operation ${payload.operation_id}`);
+            }
           }
         }
         for (const [index, event] of payload.inference_events.entries()) {
@@ -4522,6 +4906,7 @@ export class GraphEngine {
       this.ctx.chainCheckpoints = chainCheckpointsSnapshot;
       this.ctx.chainEventsSinceCheckpoint = chainEventsSnapshot;
       this.ctx.deterministicSeq = deterministicSeqSnapshot;
+      if (statePatchSnapshot) this.ctx.applyDurableStatePatch(statePatchSnapshot);
       this.invalidateAllCaches();
       this.invalidatePathGraph();
       if (!recovery) throw error;
@@ -4631,6 +5016,46 @@ export class GraphEngine {
     remove_exclusions?: string[];
   }): { before: EngagementConfig['scope']; after: EngagementConfig['scope']; nodes_entering_scope: number; nodes_leaving_scope: number; pending_suggestions_resolved: string[] } {
     return _previewScopeChange(this.scopeHost, changes);
+  }
+
+  previewScopeConfig(scope: EngagementConfig['scope']): {
+    before: EngagementConfig['scope'];
+    after: EngagementConfig['scope'];
+    nodes_entering_scope: number;
+    nodes_leaving_scope: number;
+    pending_suggestions_resolved: string[];
+    affected_node_count: number;
+  } {
+    const plan = planScopeUpdate(this.scopeHost, {
+      replace_scope: scope,
+      reason: 'scope replacement preview',
+    });
+    if (plan.errors.length > 0) {
+      const error = new Error(plan.errors.join('; '));
+      (error as Error & { code: string }).code = 'SCOPE_VALIDATION_FAILED';
+      throw error;
+    }
+    const diff = (next: string[], current: string[]) => ({
+      add: next.filter(value => !current.includes(value)),
+      remove: current.filter(value => !next.includes(value)),
+    });
+    const cidrs = diff(plan.after.cidrs, plan.before.cidrs);
+    const domains = diff(plan.after.domains, plan.before.domains);
+    const exclusions = diff(plan.after.exclusions, plan.before.exclusions);
+    const network = this.previewScopeChange({
+      add_cidrs: cidrs.add,
+      remove_cidrs: cidrs.remove,
+      add_domains: domains.add,
+      remove_domains: domains.remove,
+      add_exclusions: exclusions.add,
+      remove_exclusions: exclusions.remove,
+    });
+    return {
+      ...network,
+      before: detached(plan.before),
+      after: detached(plan.after),
+      affected_node_count: plan.affected_node_count,
+    };
   }
 
   // =============================================
@@ -4917,8 +5342,7 @@ export class GraphEngine {
       } else {
         result = this.configService.commitPreparedResolution(prepared);
       }
-      this.completeDeferredStartupReconciliation();
-      this.evidenceStore.enableWrites();
+      this.resumeDeferredStartupReconciliation();
       return result;
     } catch (error) {
       if (!this.configService.isBlocked() && this.startupReconciliationDeferred) {
@@ -4931,19 +5355,153 @@ export class GraphEngine {
     }
   }
 
-  private completeDeferredStartupReconciliation(): void {
-    if (!this.startupReconciliationDeferred) return;
-    this.evaluateObjectives();
-    this.reconcileSessionEdgesOnStartup();
-    this.reconcileSessionDescriptorsOnStartup();
-    this.reconcileAgentsOnStartup();
-    this.reconcilePendingApprovalsOnStartup();
-    this.runtimeOwnershipRecoveryHandler?.();
-    this.persistence.persistImmediate();
-    this.runAutoHealthCheck('configuration recovery startup reconciliation');
-    this.warnIfOpsecInert();
-    this.startupReconciliationDeferred = false;
-    this.deferredStartupRecoveryError = undefined;
+  resolveConfigDivergenceApplicationCommand(
+    input: ResolveConfigDivergenceInput,
+    buildCommand: (
+      result: ResolveConfigDivergenceResult,
+    ) => PersistedApplicationCommandV1,
+  ): {
+    result: ResolveConfigDivergenceResult;
+    command: PersistedApplicationCommandV1;
+  } {
+    this.persistence.assertWritable();
+    this.recoveryMaintenanceInProgress = true;
+    try {
+      const prepared = this.configService.prepareResolution(input);
+      const expected = this.configService.previewPreparedResolution(prepared);
+      const command = detached(buildCommand(expected));
+      if (command.status !== 'succeeded') {
+        throw new Error(
+          'A recovery application command must be terminal before it is committed.',
+        );
+      }
+      let result: ResolveConfigDivergenceResult;
+      if (
+        prepared.mode === 'use_file'
+        && canonicalJson(prepared.config.scope)
+          !== canonicalJson(this.ctx.config.scope)
+      ) {
+        const plan = planScopeUpdate(this.scopeHost, {
+          replace_scope: prepared.config.scope,
+          reason: 'Configuration reconciliation applied file scope',
+        });
+        if (plan.errors.length > 0) {
+          throw new Error(
+            `The file-authoritative scope is invalid: ${plan.errors.join('; ')}`,
+          );
+        }
+        result = this.configService.applyPreparedResolution(
+          prepared,
+          target => {
+            const stateKeys = ['command_state'] as const;
+            const stateBefore = this.ctx.captureDurableStateSlices(stateKeys);
+            let draft!: {
+              result: PersistedApplicationCommandV1;
+              slices: DurableStatePatchV1['slices'];
+            };
+            try {
+              draft = this.ctx.draftDurableStateSlices(
+                stateKeys,
+                () => this.installApplicationCommandDraft(command),
+              );
+            } finally {
+              this.applyRestoredRuntimeProjections();
+            }
+            const changedStateKeys = Object.keys(
+              draft.slices,
+            ) as DurableStateSliceKey[];
+            const stateBeforePatch = Object.fromEntries(
+              changedStateKeys.map(key => [key, stateBefore[key]]),
+            ) as DurableStateSlices;
+            const statePatch: DurableStatePatchV1 = {
+              payload_version: 1,
+              operation_id: uuidv4(),
+              occurred_at: this.ctx.nowIso(),
+              reason: 'Configuration reconciliation applied file scope',
+              slices: draft.slices,
+            };
+            this.commitScopePlan(
+              plan,
+              target,
+              'Configuration reconciliation applied file scope',
+              prepared.expected_file_hash,
+              'use_file',
+              prepared.intent_conflict,
+              statePatch,
+              createHash('sha256')
+                .update(canonicalJson(stateBeforePatch))
+                .digest('hex'),
+              createHash('sha256')
+                .update(canonicalJson(draft.slices))
+                .digest('hex'),
+            );
+            return this.getConfig();
+          },
+        );
+      } else {
+        result = this.configService.commitPreparedResolution(
+          prepared,
+          command,
+        );
+      }
+      if (canonicalJson(result) !== canonicalJson(expected)) {
+        throw new Error(
+          'Configuration reconciliation response differed from its command intent.',
+        );
+      }
+      this.resumeDeferredStartupReconciliation();
+      return { result, command };
+    } catch (error) {
+      if (
+        !this.configService.isBlocked()
+        && this.startupReconciliationDeferred
+      ) {
+        this.deferredStartupRecoveryError =
+          `Configuration was reconciled, but startup lifecycle recovery did not complete: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      throw error;
+    } finally {
+      this.recoveryMaintenanceInProgress = false;
+    }
+  }
+
+  /**
+   * Retry the post-config startup lifecycle without recommitting config or
+   * creating another recovery command. Safe to call for an already-complete
+   * recovery replay.
+   */
+  resumeDeferredStartupReconciliation(): void {
+    this.persistence.assertWritable();
+    if (this.configService.isBlocked()) {
+      throw new Error(
+        'Configuration must be reconciled before startup lifecycle recovery can resume.',
+      );
+    }
+    this.recoveryMaintenanceInProgress = true;
+    try {
+      if (this.startupReconciliationDeferred) {
+        this.evaluateObjectives();
+        this.reconcileSessionEdgesOnStartup();
+        this.reconcileSessionDescriptorsOnStartup();
+        this.reconcileAgentsOnStartup();
+        this.reconcilePendingApprovalsOnStartup();
+        this.runtimeOwnershipRecoveryHandler?.();
+        this.persistence.persistImmediate();
+        this.runAutoHealthCheck('configuration recovery startup reconciliation');
+        this.warnIfOpsecInert();
+        this.startupReconciliationDeferred = false;
+        this.deferredStartupRecoveryError = undefined;
+      }
+      this.evidenceStore.enableWrites();
+    } catch (error) {
+      if (this.startupReconciliationDeferred) {
+        this.deferredStartupRecoveryError =
+          `Configuration was reconciled, but startup lifecycle recovery did not complete: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      throw error;
+    } finally {
+      this.recoveryMaintenanceInProgress = false;
+    }
   }
 
   setRuntimeOwnershipRecoveryHandler(handler: (() => void) | undefined): void {
@@ -5198,6 +5756,122 @@ export class GraphEngine {
     if (this.isPersistenceWritable()) this.pruneCommandCoordination(effectiveNow);
     const outcome = this.ctx.commandOutcomes.get(planId);
     return outcome && outcome.expires_at > effectiveNow ? detached(outcome) : undefined;
+  }
+
+  getApplicationCommand(idempotencyKey: string): PersistedApplicationCommandV1 | undefined {
+    const command = this.ctx.applicationCommands.get(idempotencyKey);
+    return command ? detached(command) : undefined;
+  }
+
+  getApplicationCommandById(commandId: string): PersistedApplicationCommandV1 | undefined {
+    for (const command of this.ctx.applicationCommands.values()) {
+      if (command.command_id === commandId) return detached(command);
+    }
+    return undefined;
+  }
+
+  listApplicationCommands(): PersistedApplicationCommandV1[] {
+    return [...this.ctx.applicationCommands.values()].map(command => detached(command));
+  }
+
+  recordApplicationCommand(
+    command: PersistedApplicationCommandV1,
+  ): PersistedApplicationCommandV1 {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        `record application command ${command.command_kind}`,
+        ['command_state'],
+        () => this.recordApplicationCommand(command),
+      );
+    }
+    this.assertPersistenceWritable();
+    if (!command.idempotency_key.trim()) {
+      throw new Error('Application command idempotency_key must not be empty.');
+    }
+    if (!command.command_id.trim()) {
+      throw new Error('Application command command_id must not be empty.');
+    }
+    const duplicateCommandId = [...this.ctx.applicationCommands.entries()]
+      .find(([idempotencyKey, existing]) =>
+        idempotencyKey !== command.idempotency_key
+        && existing.command_id === command.command_id);
+    if (duplicateCommandId) {
+      const error = new Error(
+        `Application command command_id ${command.command_id} is already bound to ${duplicateCommandId[0]}.`,
+      );
+      (error as Error & { code: string }).code = 'COMMAND_ID_CONFLICT';
+      throw error;
+    }
+    this.ctx.applicationCommands.set(command.idempotency_key, detached(command));
+    this.persist();
+    return detached(command);
+  }
+
+  /** Install command state while an already-authorized composite/config
+   * transaction is drafting its absolute after-state. This deliberately skips
+   * the config-convergence half of the public write gate: recovery and scope
+   * transactions establish their own durable authority before applying the
+   * draft. */
+  private installApplicationCommandDraft(
+    command: PersistedApplicationCommandV1,
+  ): PersistedApplicationCommandV1 {
+    if (!this.ctx.isDraftingTransaction()) {
+      throw new Error(
+        'Application command draft installation requires an active transaction draft.',
+      );
+    }
+    if (!command.idempotency_key.trim()) {
+      throw new Error(
+        'Application command idempotency_key must not be empty.',
+      );
+    }
+    if (!command.command_id.trim()) {
+      throw new Error('Application command command_id must not be empty.');
+    }
+    const duplicateCommandId = [...this.ctx.applicationCommands.entries()]
+      .find(([idempotencyKey, existing]) =>
+        idempotencyKey !== command.idempotency_key
+        && existing.command_id === command.command_id);
+    if (duplicateCommandId) {
+      const error = new Error(
+        `Application command command_id ${command.command_id} is already bound to ${duplicateCommandId[0]}.`,
+      );
+      (error as Error & { code: string }).code = 'COMMAND_ID_CONFLICT';
+      throw error;
+    }
+    this.ctx.applicationCommands.set(
+      command.idempotency_key,
+      detached(command),
+    );
+    return detached(command);
+  }
+
+  deleteApplicationCommand(idempotencyKey: string): boolean {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'delete application command',
+        ['command_state'],
+        () => this.deleteApplicationCommand(idempotencyKey),
+      );
+    }
+    this.assertPersistenceWritable();
+    const deleted = this.ctx.applicationCommands.delete(idempotencyKey);
+    if (deleted) this.persist();
+    return deleted;
+  }
+
+  runApplicationCommandTransaction<T>(
+    reason: string,
+    sourceActionId: string | undefined,
+    mutation: () => T,
+    additionalStateKeys: readonly DurableStateSliceKey[] = [],
+  ): T {
+    return this.runAtomicGraphCommand(
+      reason,
+      sourceActionId,
+      mutation,
+      [...new Set<DurableStateSliceKey>(['command_state', ...additionalStateKeys])],
+    );
   }
 
   getSessionDescriptors(): PersistedSessionDescriptorV1[] {
@@ -6203,14 +6877,23 @@ export class GraphEngine {
     next: EngagementConfig,
     context: ConfigApplyContext,
     event?: ConfigCommitEvent,
+    applicationCommand?: PersistedApplicationCommandV1,
   ): void {
     if (this.ctx.isDraftingTransaction()) {
       this.applyRuntimeConfig(next, context);
       if (event) this.recordConfigCommitEvent(event);
+      if (applicationCommand) {
+        this.recordApplicationCommand(applicationCommand);
+      }
       return;
     }
 
-    const stateKeys = ['config', 'activity', 'frontier'] as const;
+    const stateKeys: DurableStateSliceKey[] = [
+      'config',
+      'activity',
+      'frontier',
+      ...(applicationCommand ? ['command_state' as const] : []),
+    ];
     const graphBaseline = detached(this.ctx.graph.export());
     const coldBaseline = detached(this.ctx.coldStore.export());
     const sliceBaseline = this.ctx.captureDurableStateSlices(stateKeys);
@@ -6242,6 +6925,9 @@ export class GraphEngine {
       captured = this.ctx.captureEngineOperations(() => {
         this.applyRuntimeConfig(next, context);
         if (event) this.recordConfigCommitEvent(event);
+        if (applicationCommand) {
+          this.recordApplicationCommand(applicationCommand);
+        }
       });
       graphAfter = detached(this.ctx.graph.export());
       coldAfter = detached(this.ctx.coldStore.export());
@@ -6386,6 +7072,110 @@ export class GraphEngine {
       return this.getConfig();
     }
     return this.configService.commit(next, 'engine.update_config');
+  }
+
+  commitConfigApplicationCommand(
+    nextConfig: EngagementConfig,
+    source: string,
+    _sourceActionId: string | undefined,
+    buildCommand: (
+      committedConfig: EngagementConfig,
+      scopeResult: {
+        before: EngagementConfig['scope'];
+        after: EngagementConfig['scope'];
+        affected_node_count: number;
+      },
+    ) => PersistedApplicationCommandV1,
+  ): {
+    config: EngagementConfig;
+    command: PersistedApplicationCommandV1;
+  } {
+    this.assertPersistenceWritable();
+    const parsedNext = engagementConfigSchema.parse(nextConfig);
+    if (
+      canonicalJson(parsedNext.scope)
+      === canonicalJson(this.ctx.config.scope)
+    ) {
+      const scope = detached(this.ctx.config.scope);
+      return this.configService.commitWithCommand(
+        parsedNext,
+        source,
+        committedConfig => buildCommand(committedConfig, {
+          before: scope,
+          after: scope,
+          affected_node_count: 0,
+        }),
+      );
+    }
+
+    const plan = planScopeUpdate(this.scopeHost, {
+      replace_scope: parsedNext.scope,
+      reason: source,
+    });
+    if (plan.errors.length > 0) {
+      const error = new Error(plan.errors.join('; '));
+      (error as Error & { code: string }).code = 'SCOPE_VALIDATION_FAILED';
+      throw error;
+    }
+    const targetConfig = this.configService.prepareJournalTarget(parsedNext);
+    const command = detached(buildCommand(targetConfig, {
+      before: detached(plan.before),
+      after: detached(plan.after),
+      affected_node_count: plan.affected_node_count,
+    }));
+    if (command.status !== 'succeeded') {
+      throw new Error(
+        'A config application command must be terminal before it is journaled.',
+      );
+    }
+    const sourceFileHash = this.configService.getStatus().file_hash
+      ?? computeConfigHash(this.ctx.config);
+    const stateKeys = ['command_state'] as const;
+    const stateBefore = this.ctx.captureDurableStateSlices(stateKeys);
+    let draft!: {
+      result: PersistedApplicationCommandV1;
+      slices: DurableStatePatchV1['slices'];
+    };
+    try {
+      draft = this.ctx.draftDurableStateSlices(
+        stateKeys,
+        () => this.installApplicationCommandDraft(command),
+      );
+    } finally {
+      this.applyRestoredRuntimeProjections();
+    }
+    const changedStateKeys = Object.keys(
+      draft.slices,
+    ) as DurableStateSliceKey[];
+    const stateBeforePatch = Object.fromEntries(
+      changedStateKeys.map(key => [key, stateBefore[key]]),
+    ) as DurableStateSlices;
+    const statePatch: DurableStatePatchV1 = {
+      payload_version: 1,
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      reason: source,
+      slices: draft.slices,
+    };
+    this.commitScopePlan(
+      plan,
+      targetConfig,
+      source,
+      sourceFileHash,
+      undefined,
+      undefined,
+      statePatch,
+      createHash('sha256')
+        .update(canonicalJson(stateBeforePatch))
+        .digest('hex'),
+      createHash('sha256')
+        .update(canonicalJson(draft.slices))
+        .digest('hex'),
+    );
+    return {
+      config: this.getConfig(),
+      command: detached(draft.result),
+    };
   }
 
   addObjective(obj: { description: string; target_node_type?: string; target_criteria?: Record<string, unknown>; achievement_edge_types?: string[] }): EngagementConfig['objectives'][0] {

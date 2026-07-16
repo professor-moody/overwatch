@@ -33,19 +33,19 @@ export function NodeContextMenu({ menu, onClose, onFocus, onUndoPush }: NodeCont
     const op: GraphCorrectionOperation = {
       kind: 'patch_node',
       node_id: menu.nodeId,
-      patch,
+      set_properties: patch,
     };
     try {
       await correctGraph(`[console] ${label}: ${menu.nodeId}`, [op]);
       toast({ type: 'success', title: label, message: menu.nodeId });
       // Push reverse operation for undo
-      const reversePatch: Record<string, unknown> = {};
-      for (const key of Object.keys(patch)) {
-        reversePatch[key] = undefined;
-      }
       onUndoPush({
         reason: `Undo: ${label}: ${menu.nodeId}`,
-        reverse: [{ kind: 'patch_node', node_id: menu.nodeId, patch: reversePatch }],
+        reverse: [{
+          kind: 'patch_node',
+          node_id: menu.nodeId,
+          unset_properties: Object.keys(patch),
+        }],
       });
     } catch (err) {
       toast({ type: 'error', title: 'Correction failed', message: String(err) });

@@ -7,6 +7,10 @@ import { parseAndMaybeIngest, type ParseIngestResult } from '../services/parse-i
 import { withErrorBoundary } from './error-boundary.js';
 import { validateFilePath } from '../utils/path-validation.js';
 import { ParserContextSchema } from '../types.js';
+import {
+  ParseCommandService,
+  buildParseSourceFingerprint,
+} from '../services/parse-command-service.js';
 
 /** Render the shared parse result into the parse_output tool's JSON response shapes. */
 function formatParseResult(
@@ -87,7 +91,11 @@ function formatParseResult(
   }
 }
 
-export function registerParseOutputTools(server: McpServer, engine: GraphEngine): void {
+export function registerParseOutputTools(
+  server: McpServer,
+  engine: GraphEngine,
+  parseCommands = new ParseCommandService(engine),
+): void {
 
   // ============================================================
   // Tool: parse_output
@@ -127,6 +135,8 @@ Pass either the raw output content or a local file path for large artifacts.`,
         context: ParserContextSchema.optional().describe('Optional credential, tenant, repository, branch, cloud, target, domain, host, or provider-specific parser context'),
         ingest: z.boolean().default(true).describe('Automatically ingest parsed findings into the graph'),
         list_parsers: z.boolean().default(false).describe('List all supported parser names'),
+        command_id: z.string().min(1).optional().describe('Stable application-command ID for status correlation and safe retries.'),
+        idempotency_key: z.string().min(1).optional().describe('Stable retry key. Identical retries return the original parse result without ingesting again.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -135,7 +145,7 @@ Pass either the raw output content or a local file path for large artifacts.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('parse_output', async ({ tool_name: rawToolName, tool, output, file_path, agent_id, action_id, frontier_item_id, context, ingest, list_parsers }) => {
+    withErrorBoundary('parse_output', async ({ tool_name: rawToolName, tool, output, file_path, agent_id, action_id, frontier_item_id, context, ingest, list_parsers, command_id, idempotency_key }) => {
       const tool_name = rawToolName || tool;
       if (list_parsers) {
         return {
@@ -200,7 +210,44 @@ Pass either the raw output content or a local file path for large artifacts.`,
         outputText = output!;
       }
 
-      const result = parseAndMaybeIngest(engine, { tool_name, outputText, agent_id, action_id, frontier_item_id, context, ingest });
+      const sourceKind = filePathProvided ? 'file_path' as const : 'output' as const;
+      const contextKeys = Object.keys(context ?? {}).sort();
+      const result = await parseCommands.execute(
+        {
+          tool_name,
+          source_kind: sourceKind,
+          source_length: Buffer.byteLength(outputText),
+          source_fingerprint: buildParseSourceFingerprint({
+            source_kind: sourceKind,
+            output: outputText,
+            tool_name,
+            context: context ?? {},
+            ingest,
+          }),
+          context_keys: contextKeys,
+          agent_id,
+          action_id,
+          frontier_item_id,
+          ingest,
+        },
+        commandCompletion => parseAndMaybeIngest(engine, {
+          tool_name,
+          outputText,
+          agent_id,
+          action_id,
+          frontier_item_id,
+          context,
+          ingest,
+          command_completion: commandCompletion,
+        }),
+        {
+          command_id,
+          idempotency_key,
+          actor_task_id: parseCommands.resolveActorTaskId(agent_id),
+          action_id,
+          frontier_item_id,
+        },
+      );
       return formatParseResult(result, filePathProvided ? 'file_path' : 'output', ingest);
     })
   );

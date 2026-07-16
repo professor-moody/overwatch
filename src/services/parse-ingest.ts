@@ -28,6 +28,11 @@ export interface ParseIngestOpts {
   parsed_from_evidence?: boolean;
   evidence_read_error?: string;
   exit_code?: number | null;
+  /**
+   * Optional application-command terminalizer. The callback is responsible for
+   * committing `appendAudit` with the supplied result in one durable boundary.
+   */
+  command_completion?: ParseIngestCommandCompletion;
 }
 
 export type ParseOutcome = 'ok' | 'no_data' | 'validation_failed' | 'parser_exception' | 'partial';
@@ -62,6 +67,11 @@ export interface ParseIngestResult {
   evidence_read_error?: string;
   exit_code?: number | null;
 }
+
+export type ParseIngestCommandCompletion = (
+  result: ParseIngestResult,
+  appendAudit: () => void,
+) => void;
 
 /**
  * Parser context is operational metadata, but provider extensions are open-
@@ -102,10 +112,30 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
     evidence_read_error: opts.evidence_read_error,
     exit_code: opts.exit_code,
   };
+  const finish = (
+    result: ParseIngestResult,
+    audit: Parameters<GraphEngine['logActionEvent']>[0],
+  ): ParseIngestResult => {
+    if (opts.command_completion) {
+      opts.command_completion(result, () => {
+        engine.logActionEvent(audit);
+      });
+    } else {
+      engine.logActionEvent(audit);
+      engine.persist();
+    }
+    return result;
+  };
 
   const parsedContext = ParserContextSchema.safeParse(opts.context ?? {});
   if (!parsedContext.success) {
-    engine.logActionEvent({
+    const result: ParseIngestResult = {
+      parsed: false, parse_status: 'validation_failed', parse_outcome: 'validation_failed',
+      isError: true, tool: tool_name, action_id, nodes_parsed: 0, edges_parsed: 0,
+      ingested: false, validation_errors: parsedContext.error.issues, failure_stage: 'context',
+      ...quality,
+    };
+    return finish(result, {
       description: `Output parse rejected for ${tool_name}: invalid parser context`,
       agent_id, action_id, event_type: 'parse_output', category: 'finding',
       tool_name, frontier_item_id, frontier_type: frontierType, result_classification: 'failure',
@@ -115,13 +145,6 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
         parsed_nodes: 0, parsed_edges: 0, ingested: false, ...quality,
       },
     });
-    engine.persist();
-    return {
-      parsed: false, parse_status: 'validation_failed', parse_outcome: 'validation_failed',
-      isError: true, tool: tool_name, action_id, nodes_parsed: 0, edges_parsed: 0,
-      ingested: false, validation_errors: parsedContext.error.issues, failure_stage: 'context',
-      ...quality,
-    };
   }
 
   // Build a NetBIOS→FQDN domain alias map from existing graph domain nodes so
@@ -146,7 +169,14 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
 
   const finding = parseOutput(tool_name, outputText, agent_id, enrichedContext);
   if (!finding) {
-    engine.logActionEvent({
+    const result: ParseIngestResult = {
+      parsed: false, parse_status: 'no_parser', parse_outcome: 'validation_failed', isError: true, tool: tool_name, action_id,
+      nodes_parsed: 0, edges_parsed: 0, ingested: false, failure_stage: 'parser_selection',
+      error: `No parser found for tool: ${tool_name}`,
+      supported_parsers: getSupportedParsers(),
+      ...quality,
+    };
+    return finish(result, {
       description: `Output parse failed: no parser for ${tool_name}`,
       agent_id, action_id, event_type: 'parse_output', category: 'finding',
       tool_name, frontier_item_id, frontier_type: frontierType, result_classification: 'failure',
@@ -155,14 +185,6 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
         parsed_nodes: 0, parsed_edges: 0, ingested: false, parser_context: durableParserContext, ...quality,
       },
     });
-    engine.persist();
-    return {
-      parsed: false, parse_status: 'no_parser', parse_outcome: 'validation_failed', isError: true, tool: tool_name, action_id,
-      nodes_parsed: 0, edges_parsed: 0, ingested: false, failure_stage: 'parser_selection',
-      error: `No parser found for tool: ${tool_name}`,
-      supported_parsers: getSupportedParsers(),
-      ...quality,
-    };
   }
 
   finding.action_id = action_id;
@@ -170,7 +192,13 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
   finding.frontier_item_id = frontier_item_id;
 
   if (isParserError(finding)) {
-    engine.logActionEvent({
+    const result: ParseIngestResult = {
+      parsed: false, parse_status: 'parser_exception', parse_outcome: 'parser_exception', isError: true, tool: tool_name, action_id,
+      finding_id: finding.id, nodes_parsed: 0, edges_parsed: 0, ingested: false,
+      error: finding.raw_output, parser_exception: finding.raw_output,
+      ...quality,
+    };
+    return finish(result, {
       description: `Parser '${tool_name}' threw an exception`,
       agent_id: finding.agent_id, action_id, event_type: 'parse_output', category: 'finding',
       tool_name, frontier_item_id, frontier_type: frontierType, result_classification: 'failure',
@@ -179,13 +207,6 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
         parsed_nodes: 0, parsed_edges: 0, ingested: false, parser_context: durableParserContext, ...quality,
       },
     });
-    engine.persist();
-    return {
-      parsed: false, parse_status: 'parser_exception', parse_outcome: 'parser_exception', isError: true, tool: tool_name, action_id,
-      finding_id: finding.id, nodes_parsed: 0, edges_parsed: 0, ingested: false,
-      error: finding.raw_output, parser_exception: finding.raw_output,
-      ...quality,
-    };
   }
 
   if (tool_name === 'certipy' && finding.nodes.length > 0 && finding.edges.length === 0) {
@@ -214,25 +235,30 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
   };
 
   if (finding.nodes.length === 0 && finding.edges.length === 0) {
-    engine.logActionEvent({
+    const result: ParseIngestResult = {
+      parsed: false, parse_status: 'no_data', parse_outcome: 'no_data', isError: true, tool: tool_name, action_id,
+      finding_id: finding.id, nodes_parsed: 0, edges_parsed: 0, ingested: false,
+      warnings: warnings.length > 0 ? warnings : undefined,
+      ...findingQuality,
+    };
+    return finish(result, {
       description: `Output parsed for ${tool_name} but no graph data was extracted`,
       agent_id: finding.agent_id, action_id, event_type: 'parse_output', category: 'finding',
       tool_name, frontier_item_id, frontier_type: frontierType, linked_finding_ids: [finding.id],
       result_classification: 'failure',
       details: { parsed_nodes: 0, parsed_edges: 0, ingested: false, parse_status: 'no_data', parse_outcome: 'no_data', parser_context: durableParserContext, ...findingQuality },
     });
-    engine.persist();
-    return {
-      parsed: false, parse_status: 'no_data', parse_outcome: 'no_data', isError: true, tool: tool_name, action_id,
-      finding_id: finding.id, nodes_parsed: 0, edges_parsed: 0, ingested: false,
-      warnings: warnings.length > 0 ? warnings : undefined,
-      ...findingQuality,
-    };
   }
 
   const prepared = prepareFindingForIngest(finding, nodeId => engine.getNode(nodeId));
   if (prepared.errors.length > 0) {
-    engine.logActionEvent({
+    const result: ParseIngestResult = {
+      parsed: true, parse_status: 'validation_failed', parse_outcome: 'validation_failed', isError: true, tool: tool_name, action_id,
+      finding_id: finding.id, nodes_parsed: finding.nodes.length, edges_parsed: finding.edges.length,
+      ingested: false, validation_errors: prepared.errors, failure_stage: 'finding_validation',
+      warnings: warnings.length > 0 ? warnings : undefined, ...findingQuality,
+    };
+    return finish(result, {
       description: `Output parse rejected for ${tool_name}: invalid graph mutation`,
       agent_id: finding.agent_id, action_id, event_type: 'parse_output', category: 'finding',
       tool_name, frontier_item_id, frontier_type: frontierType, linked_finding_ids: [finding.id],
@@ -242,31 +268,49 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
         failure_stage: 'finding_validation', validation_errors: prepared.errors, parser_context: durableParserContext, ...findingQuality,
       },
     });
-    engine.persist();
-    return {
-      parsed: true, parse_status: 'validation_failed', parse_outcome: 'validation_failed', isError: true, tool: tool_name, action_id,
-      finding_id: finding.id, nodes_parsed: finding.nodes.length, edges_parsed: finding.edges.length,
-      ingested: false, validation_errors: prepared.errors, failure_stage: 'finding_validation',
-      warnings: warnings.length > 0 ? warnings : undefined, ...findingQuality,
-    };
   }
 
-  let ingestResult: {
+  type IngestCounts = {
     new_nodes: string[];
     new_edges: string[];
     inferred_edges: string[];
     campaign_id?: string;
-  } | undefined;
-  let campaignId: string | undefined;
-  if (ingest) {
-    ingestResult = engine.ingestFinding(prepared.finding);
-    campaignId = ingestResult.campaign_id;
-  }
-
-  engine.logActionEvent({
-    description: ingest ? `Output parsed and ingested for ${tool_name}` : `Output parsed for ${tool_name} without ingest`,
-    agent_id: finding.agent_id, action_id, event_type: 'parse_output', category: 'finding',
-    tool_name, frontier_item_id, frontier_type: frontierType, linked_finding_ids: [finding.id],
+  };
+  const buildSuccessResult = (ingestResult?: IngestCounts): ParseIngestResult => ({
+    parsed: true,
+    parse_status: 'ok',
+    parse_outcome: effectivePartial ? 'partial' : 'ok',
+    isError: false,
+    tool: tool_name,
+    action_id,
+    finding_id: finding.id,
+    nodes_parsed: finding.nodes.length,
+    edges_parsed: finding.edges.length,
+    campaign_id: ingestResult?.campaign_id,
+    ingested: ingestResult
+      ? {
+          new_nodes: ingestResult.new_nodes.length,
+          new_edges: ingestResult.new_edges.length,
+          inferred_edges: ingestResult.inferred_edges.length,
+        }
+      : undefined,
+    warnings: warnings.length > 0 ? warnings : undefined,
+    ...findingQuality,
+  });
+  const buildSuccessAudit = (
+    ingestResult?: IngestCounts,
+  ): Parameters<GraphEngine['logActionEvent']>[0] => ({
+    description: ingest
+      ? `Output parsed and ingested for ${tool_name}`
+      : `Output parsed for ${tool_name} without ingest`,
+    agent_id: finding.agent_id,
+    action_id,
+    event_type: 'parse_output',
+    category: 'finding',
+    tool_name,
+    frontier_item_id,
+    frontier_type: frontierType,
+    linked_finding_ids: [finding.id],
     result_classification: effectivePartial ? 'partial' : ingest ? 'success' : 'neutral',
     details: {
       // `parse_status` predates partial outcomes; retain its successful `ok`
@@ -276,24 +320,38 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
       parsed_nodes: finding.nodes.length,
       parsed_edges: finding.edges.length,
       ingested: ingest,
-      new_nodes: ingest ? ingestResult!.new_nodes.length : 0,
-      new_edges: ingest ? ingestResult!.new_edges.length : 0,
-      inferred_edges: ingest ? ingestResult!.inferred_edges.length : 0,
+      new_nodes: ingestResult?.new_nodes.length ?? 0,
+      new_edges: ingestResult?.new_edges.length ?? 0,
+      inferred_edges: ingestResult?.inferred_edges.length ?? 0,
       parser_context: durableParserContext,
       ...findingQuality,
     },
   });
-  engine.persist();
 
-  return {
-    parsed: true, parse_status: 'ok', parse_outcome: effectivePartial ? 'partial' : 'ok',
-    isError: false, tool: tool_name, action_id,
-    finding_id: finding.id, nodes_parsed: finding.nodes.length, edges_parsed: finding.edges.length,
-    campaign_id: campaignId,
-    ingested: ingest
-      ? { new_nodes: ingestResult!.new_nodes.length, new_edges: ingestResult!.new_edges.length, inferred_edges: ingestResult!.inferred_edges.length }
-      : undefined,
-    warnings: warnings.length > 0 ? warnings : undefined,
-    ...findingQuality,
-  };
+  if (ingest) {
+    if (opts.command_completion) {
+      let completedResult: ParseIngestResult | undefined;
+      engine.ingestFinding(prepared.finding, {
+        additional_state_keys: ['command_state'],
+        complete: ingestResult => {
+          completedResult = buildSuccessResult(ingestResult);
+          opts.command_completion!(
+            completedResult,
+            () => engine.logActionEvent(buildSuccessAudit(ingestResult)),
+          );
+        },
+      });
+      if (!completedResult) {
+        throw new Error('Finding ingest did not complete its application command.');
+      }
+      return completedResult;
+    }
+    const ingestResult = engine.ingestFinding(prepared.finding);
+    return finish(
+      buildSuccessResult(ingestResult),
+      buildSuccessAudit(ingestResult),
+    );
+  }
+
+  return finish(buildSuccessResult(), buildSuccessAudit());
 }

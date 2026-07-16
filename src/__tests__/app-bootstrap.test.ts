@@ -12,6 +12,7 @@ import type { EngagementConfig, SessionMetadata } from '../types.js';
 import { registerEngagementTools } from '../tools/engagement.js';
 import { withErrorBoundary } from '../tools/error-boundary.js';
 import { verifyStateMigrationBackup } from '../services/state-migration.js';
+import { getApplicationCommandInvocation } from '../services/application-command-service.js';
 
 function recoveryConfig(): EngagementConfig {
   return {
@@ -25,6 +26,95 @@ function recoveryConfig(): EngagementConfig {
 }
 
 describe('app bootstrap', () => {
+  it('binds MCP agent aliases to canonical task actors without merging terminal sessions', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    const fakeServer = {
+      registerTool(name: string, _config: unknown, callback: (...args: unknown[]) => Promise<unknown>) {
+        handlers.set(name, callback);
+        return { enable() {}, disable() {}, enabled: true };
+      },
+    };
+    const recovery = {
+      outcome: 'clean' as const,
+      source: 'state' as const,
+      complete: true,
+      writable: true,
+      base_checkpoint: 0,
+      highest_allocated_seq: 0,
+      highest_on_disk_seq: 0,
+      highest_contiguous_applied_seq: 0,
+      consecutive_persistence_failures: 0,
+      journal: {
+        enabled: true,
+        read: 0,
+        attempted: 0,
+        applied: 0,
+        skipped: 0,
+        failed: 0,
+        malformed: false,
+        preserved: false,
+      },
+    };
+    const registrar = new ToolRegistrar(fakeServer as never, {
+      isPersistenceWritable: () => true,
+      getPersistenceRecoveryStatus: () => recovery,
+      resolveAgentTaskReference: reference => reference === 'dashboard-agent'
+        ? {
+            status: 'unique_legacy_label',
+            task: {
+              id: 'task-dashboard-agent',
+              task_id: 'task-dashboard-agent',
+              agent_id: 'dashboard-agent',
+              agent_label: 'dashboard-agent',
+              assigned_at: '2026-07-16T00:00:00.000Z',
+              status: 'running',
+              subgraph_node_ids: [],
+            },
+          }
+        : { status: 'missing' },
+    });
+    registrar.registerTool('actor_probe', {
+      description: 'returns command invocation ownership',
+      annotations: { readOnlyHint: true },
+    }, async () => ({
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify(getApplicationCommandInvocation()),
+      }],
+    }));
+
+    const dashboardAgent = await handlers.get('actor_probe')!(
+      { agent_id: 'dashboard-agent' },
+      { requestId: 1, sessionId: 'dashboard-agent-session' },
+    ) as { content: Array<{ text: string }> };
+    const terminalPrimary = await handlers.get('actor_probe')!(
+      {},
+      { requestId: 1, sessionId: 'terminal-primary-session' },
+    ) as { content: Array<{ text: string }> };
+
+    expect(JSON.parse(dashboardAgent.content[0].text)).toMatchObject({
+      actor_task_id: 'task-dashboard-agent',
+      session_id: 'dashboard-agent-session',
+    });
+    expect(JSON.parse(terminalPrimary.content[0].text)).toMatchObject({
+      actor_task_id: null,
+      session_id: 'terminal-primary-session',
+    });
+
+    const bareRetryA = await handlers.get('actor_probe')!(
+      {},
+      { requestId: 7 },
+    ) as { content: Array<{ text: string }> };
+    const bareRetryB = await handlers.get('actor_probe')!(
+      {},
+      { requestId: 7 },
+    ) as { content: Array<{ text: string }> };
+    const bareContextA = JSON.parse(bareRetryA.content[0].text);
+    const bareContextB = JSON.parse(bareRetryB.content[0].text);
+    expect(bareContextA.session_id).toMatch(/^mcp-runtime-/);
+    expect(bareContextB.session_id).toBe(bareContextA.session_id);
+  });
+
   it('starts read-only from durable state when the active config is missing, then permits use_state recovery', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-recovery-'));
     const configPath = join(dir, 'engagement.json');

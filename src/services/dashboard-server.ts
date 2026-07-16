@@ -9,22 +9,63 @@ import { readFileSync, existsSync, statSync } from 'fs';
 import { join, dirname, extname, relative, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
+import { z } from 'zod';
 import type { GraphEngine } from './graph-engine.js';
+import {
+  ApplicationCommandConflictError,
+  ApplicationCommandService,
+  getApplicationCommandInvocation,
+  withApplicationCommandInvocation,
+} from './application-command-service.js';
+import {
+  DispatchCommandError,
+  DispatchCommandService,
+} from './dispatch-command-service.js';
+import {
+  OperatorCommandError,
+  OperatorCommandService,
+} from './operator-command-service.js';
+import {
+  ApprovalCommandError,
+  ApprovalCommandService,
+} from './approval-command-service.js';
+import {
+  AgentLifecycleCommandError,
+  AgentLifecycleCommandService,
+} from './agent-lifecycle-command-service.js';
+import {
+  CampaignCommandError,
+  CampaignCommandService,
+} from './campaign-command-service.js';
+import {
+  EngagementCommandError,
+  EngagementCommandService,
+} from './engagement-command-service.js';
+import {
+  RecoveryCommandError,
+  RecoveryCommandService,
+} from './recovery-command-service.js';
+import {
+  GraphCorrectionCommandError,
+  GraphCorrectionCommandService,
+} from './graph-correction-command-service.js';
 import { parseAndMaybeIngest } from './parse-ingest.js';
+import {
+  ParseCommandService,
+  buildParseSourceFingerprint,
+} from './parse-command-service.js';
 import { getSupportedParsers } from './parsers/index.js';
 import type { GraphUpdateDetail } from './engine-context.js';
 import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionEvent, SessionManager } from './session-manager.js';
-import { dispatchCampaignAgents } from '../tools/agents.js';
-import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, type InterpreterState } from './command-interpreter.js';
+import { interpretCommand, type InterpreterState } from './command-interpreter.js';
 import { interpretQuery, executeQuery, type QueryAnswer } from './query-interpreter.js';
-import { getArchetype, isArchetypeId, listArchetypes, recommendArchetype, recommendExploreArchetype } from './agent-archetypes.js';
+import { listArchetypes } from './agent-archetypes.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import {
   opsecPartialUpdateSchema,
   operatorPolicyUpdateSchema,
   type AgentDirectiveKind,
-  type AgentTask,
   type Campaign,
 } from '../types.js';
 import type { DefensiveSignal, OpsecContext } from './opsec-tracker.js';
@@ -65,6 +106,8 @@ import {
   CampaignUpdateResponseSchema,
   ConfigDivergenceResolveRequestSchema,
   ConfigDivergenceResolveResponseSchema,
+  GraphCorrectionRequestSchema,
+  GraphCorrectionResultSchema,
   FrontierWeightsPatchSchema,
   FrontierWeightsResetResultSchema,
   FrontierWeightsUpdateResultSchema,
@@ -225,10 +268,51 @@ export class DashboardServer {
   } | null = null;
   attachTaskExecution(svc: { cancelHeadless(task_id: string, reason?: string): boolean; isHeadlessAvailable(): boolean }): void {
     this.taskExecution = svc;
+    this.agentLifecycleCommands.setRuntimeController(svc);
   }
 
-  constructor(engine: GraphEngine, port: number = 8384, host?: string, sessionManager?: SessionManager, configPath?: string) {
+  private readonly applicationCommands: ApplicationCommandService;
+  private readonly dispatchCommands: DispatchCommandService;
+  private readonly operatorCommands: OperatorCommandService;
+  private readonly approvalCommands: ApprovalCommandService;
+  private readonly agentLifecycleCommands: AgentLifecycleCommandService;
+  private readonly campaignCommands: CampaignCommandService;
+  private readonly engagementCommands: EngagementCommandService;
+  private readonly recoveryCommands: RecoveryCommandService;
+  private readonly graphCorrectionCommands: GraphCorrectionCommandService;
+  private readonly parseCommands: ParseCommandService;
+
+  constructor(
+    engine: GraphEngine,
+    port: number = 8384,
+    host?: string,
+    sessionManager?: SessionManager,
+    configPath?: string,
+    applicationCommands?: ApplicationCommandService,
+  ) {
     this.engine = engine;
+    this.applicationCommands = applicationCommands ?? new ApplicationCommandService(engine);
+    this.dispatchCommands = new DispatchCommandService(engine, this.applicationCommands);
+    this.operatorCommands = new OperatorCommandService(engine, this.applicationCommands);
+    this.approvalCommands = new ApprovalCommandService(engine, this.applicationCommands);
+    this.agentLifecycleCommands = new AgentLifecycleCommandService(engine, this.applicationCommands);
+    this.campaignCommands = new CampaignCommandService(engine, this.applicationCommands);
+    this.engagementCommands = new EngagementCommandService(
+      engine,
+      this.applicationCommands,
+    );
+    this.recoveryCommands = new RecoveryCommandService(
+      engine,
+      this.applicationCommands,
+    );
+    this.graphCorrectionCommands = new GraphCorrectionCommandService(
+      engine,
+      this.applicationCommands,
+    );
+    this.parseCommands = new ParseCommandService(
+      engine,
+      this.applicationCommands,
+    );
     this.port = port;
     this.host = host || process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
     this.sessionManager = sessionManager || null;
@@ -921,14 +1005,35 @@ export class DashboardServer {
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     // Top-level boundary: a synchronous throw in routing (e.g. a URIError from
     // decodeURIComponent on a malformed %-escape path) must not crash the daemon.
-    try {
-      this.handleHttpRoute(req, res);
-    } catch (err) {
-      if (!res.headersSent) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Bad request' }));
+    const client = req.headers['x-overwatch-client'];
+    const commandId = req.headers['x-overwatch-command-id'];
+    const idempotencyKey = req.headers['idempotency-key'];
+    const actorTaskId = req.headers['x-overwatch-actor-task-id'];
+    withApplicationCommandInvocation(
+      {
+        transport: client === 'cli' ? 'cli' : 'dashboard',
+        actor_task_id: typeof actorTaskId === 'string' && actorTaskId.trim()
+          ? actorTaskId.trim()
+          : null,
+        request_id: `${req.method ?? 'GET'}:${req.url ?? '/'}:${randomUUID()}`,
+        ...(typeof commandId === 'string' && commandId.trim()
+          ? { command_id: commandId.trim() }
+          : {}),
+        ...(typeof idempotencyKey === 'string' && idempotencyKey.trim()
+          ? { idempotency_key: idempotencyKey.trim() }
+          : {}),
+      },
+      () => {
+        try {
+          this.handleHttpRoute(req, res);
+        } catch {
+          if (!res.headersSent) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Bad request' }));
+          }
+        }
       }
-    }
+    );
   }
 
   private handleHttpRoute(req: IncomingMessage, res: ServerResponse): void {
@@ -941,7 +1046,10 @@ export class DashboardServer {
       res.setHeader('Access-Control-Allow-Origin', origin);
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, Idempotency-Key, X-Overwatch-Command-Id, X-Overwatch-Actor-Task-Id, X-Overwatch-Client',
+    );
 
     if (method === 'OPTIONS') {
       res.writeHead(204);
@@ -1110,6 +1218,7 @@ export class DashboardServer {
       const agentCancelMatch = pathname.match(/^\/api\/agents\/([^/]+)\/cancel$/);
       const agentDismissMatch = pathname.match(/^\/api\/agents\/([^/]+)\/dismiss$/);
       const agentDirectiveMatch = pathname.match(/^\/api\/agents\/([^/]+)\/directive$/);
+      const applicationCommandMatch = pathname.match(/^\/api\/commands\/([^/]+)$/);
       const agentQueryAnswerMatch = pathname.match(/^\/api\/agent-queries\/([^/]+)\/answer$/);
       const objectiveMatch = pathname.match(/^\/api\/config\/objectives\/([^/]+)$/);
       const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([^/]+)$/);
@@ -1141,7 +1250,9 @@ export class DashboardServer {
       const findingContextMatch = pathname.match(/^\/api\/findings\/([^/]+)\/context$/);
       const reportDetailMatch = pathname.match(/^\/api\/reports\/([a-f0-9-]+)$/);
 
-      if (agentCtxMatch) {
+      if (applicationCommandMatch && method === 'GET') {
+        this.serveApplicationCommand(decodeURIComponent(applicationCommandMatch[1]), res);
+      } else if (agentCtxMatch) {
         this.serveAgentContext(decodeURIComponent(agentCtxMatch[1]), res);
       } else if (agentHistoryMatch) {
         this.serveAgentHistory(decodeURIComponent(agentHistoryMatch[1]), res);
@@ -1393,50 +1504,15 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid settings patch', issues: parsed.error.issues }));
         return;
       }
-      if (!this.requireWritablePersistence(res)) return;
-      const current = this.engine.getConfig().opsec;
-      const opsec = { ...current };
-      let changed = false;
-
-      const patch = parsed.data;
-      if (patch.enabled !== undefined) {
-        opsec.enabled = patch.enabled;
-        changed = true;
-      }
-      if (patch.max_noise !== undefined) {
-        opsec.max_noise = patch.max_noise;
-        changed = true;
-      }
-      if (patch.approval_mode !== undefined) {
-        opsec.approval_mode = patch.approval_mode;
-        changed = true;
-      }
-      if (patch.approval_timeout_ms !== undefined) {
-        opsec.approval_timeout_ms = patch.approval_timeout_ms;
-        changed = true;
-      }
-      if (patch.blacklisted_techniques !== undefined) {
-        opsec.blacklisted_techniques = patch.blacklisted_techniques;
-        changed = true;
-      }
-      if (patch.time_window !== undefined) {
-        if (patch.time_window === null) {
-          opsec.time_window = undefined;
-          changed = true;
-        } else {
-          opsec.time_window = patch.time_window;
-          changed = true;
-        }
-      }
-
-      if (changed) {
-        const updatePayload = patch.time_window === null
-          ? { ...opsec, time_window: null }
-          : opsec;
-        this.engine.updateConfig({ opsec: updatePayload as Parameters<GraphEngine['updateConfig']>[0]['opsec'] });
-      }
-
-      const payload = SettingsUpdateResultSchema.parse({ updated: changed, opsec: this.engine.getConfig().opsec });
+      const execution = this.engagementCommands.updateSettings(parsed.data, {
+        transport: 'dashboard',
+      });
+      const payload = SettingsUpdateResultSchema.parse({
+        ...execution.result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
     }).catch(error => {
@@ -1445,7 +1521,7 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid JSON body' }));
         return;
       }
-      this.respondMutationFailure(res, error);
+      this.respondEngagementCommandFailure(res, error);
     });
   }
 
@@ -1508,11 +1584,18 @@ export class DashboardServer {
         }
       }
       try {
-        const updated = this.engine.updateConfig(b);
+        const execution = this.engagementCommands.patchConfig(b, {
+          transport: 'dashboard',
+        });
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ updated: true, config: updated }));
+        res.end(JSON.stringify({
+          ...execution.result,
+          command_id: execution.command_id,
+          idempotency_key: execution.idempotency_key,
+          replayed: execution.replayed,
+        }));
       } catch (err) {
-        this.respondMutationFailure(res, err);
+        this.respondEngagementCommandFailure(res, err);
       }
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1530,31 +1613,23 @@ export class DashboardServer {
         return;
       }
       try {
-        const incoming = body as Record<string, unknown>;
-        const current = this.engine.getConfig().scope;
-        const next = structuredClone(current);
-        for (const key of ['cidrs', 'domains', 'exclusions', 'hosts', 'url_patterns', 'aws_accounts', 'azure_subscriptions', 'gcp_projects'] as const) {
-          if (Array.isArray(incoming[key])) {
-            (next as unknown as Record<string, unknown>)[key] = incoming[key].filter(value => typeof value === 'string');
-          }
-        }
-        if (Array.isArray(incoming.cross_tier_links)) next.cross_tier_links = incoming.cross_tier_links as NonNullable<typeof next.cross_tier_links>;
-        const scopeResult = this.engine.updateScopeConfig(next, 'dashboard scope update');
-        if (!scopeResult.applied) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: scopeResult.errors.join('; '), errors: scopeResult.errors }));
-          return;
-        }
+        const execution = this.engagementCommands.replaceScope(body, {
+          transport: 'dashboard',
+        });
+        const scopeResult = execution.result!;
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-          updated: true,
-          scope: this.engine.getConfig().scope,
+          updated: scopeResult.updated,
+          scope: scopeResult.scope,
           applied: scopeResult.applied,
           affected_node_count: scopeResult.affected_node_count,
+          command_id: execution.command_id,
+          idempotency_key: execution.idempotency_key,
+          replayed: execution.replayed,
         }));
       } catch (err) {
-        this.respondMutationFailure(res, err);
+        this.respondEngagementCommandFailure(res, err);
       }
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1576,37 +1651,32 @@ export class DashboardServer {
         return;
       }
       try {
-        // Same parse + diff as handleUpdateScope so the preview matches the
-        // commit exactly (only network fields — cidrs/domains/exclusions —
-        // participate in scope analysis; passthrough fields have no preview).
-        const incoming = body as Record<string, unknown>;
-        const current = this.engine.getConfig().scope;
-        const arr = (v: unknown): string[] | undefined =>
-          Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
-        const diff = (next: string[] | undefined, prev: string[]): { add: string[]; remove: string[] } => {
-          if (!next) return { add: [], remove: [] };
-          const nextSet = new Set(next);
-          const prevSet = new Set(prev);
-          return { add: next.filter(x => !prevSet.has(x)), remove: prev.filter(x => !nextSet.has(x)) };
-        };
-        const cidrsDiff = diff(arr(incoming.cidrs), current.cidrs);
-        const domainsDiff = diff(arr(incoming.domains), current.domains);
-        const exclusionsDiff = diff(arr(incoming.exclusions), current.exclusions);
-
-        const preview = this.engine.previewScopeChange({
-          add_cidrs: cidrsDiff.add,
-          remove_cidrs: cidrsDiff.remove,
-          add_domains: domainsDiff.add,
-          remove_domains: domainsDiff.remove,
-          add_exclusions: exclusionsDiff.add,
-          remove_exclusions: exclusionsDiff.remove,
+        const preview = this.engagementCommands.previewScope(body);
+        const diff = (next: string[], current: string[]) => ({
+          add: next.filter(value => !current.includes(value)),
+          remove: current.filter(value => !next.includes(value)),
         });
+        const cidrsDiff = diff(preview.after.cidrs, preview.before.cidrs);
+        const domainsDiff = diff(
+          preview.after.domains,
+          preview.before.domains,
+        );
+        const exclusionsDiff = diff(
+          preview.after.exclusions,
+          preview.before.exclusions,
+        );
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           ...preview,
           added: { cidrs: cidrsDiff.add, domains: domainsDiff.add, exclusions: exclusionsDiff.add },
           removed: { cidrs: cidrsDiff.remove, domains: domainsDiff.remove, exclusions: exclusionsDiff.remove },
+          changed_fields: Object.keys(preview.after).filter(key =>
+            JSON.stringify(
+              (preview.before as unknown as Record<string, unknown>)[key],
+            ) !== JSON.stringify(
+              (preview.after as unknown as Record<string, unknown>)[key],
+            )),
         }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1628,13 +1698,15 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid objective create request', issues: parsed.error.issues }));
         return;
       }
-      const objective = this.engine.addObjective({
-        description: parsed.data.description,
-        target_node_type: parsed.data.target_node_type,
-        target_criteria: parsed.data.target_criteria,
-        achievement_edge_types: parsed.data.achievement_edge_types,
+      const execution = this.engagementCommands.addObjective(parsed.data, {
+        transport: 'dashboard',
       });
-      const payload = ObjectiveCreateResponseSchema.parse({ created: true, objective });
+      const payload = ObjectiveCreateResponseSchema.parse({
+        ...execution.result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
     }).catch(error => {
@@ -1643,7 +1715,7 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid JSON body' }));
         return;
       }
-      this.respondMutationFailure(res, error);
+      this.respondEngagementCommandFailure(res, error);
     });
   }
 
@@ -1657,13 +1729,17 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid objective update request', issues: parsed.error.issues }));
         return;
       }
-      const ok = this.engine.updateObjective(id, parsed.data);
-      if (!ok) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Objective not found' }));
-        return;
-      }
-      const payload = ObjectiveUpdateResponseSchema.parse({ updated: true });
+      const execution = this.engagementCommands.updateObjective(
+        id,
+        parsed.data,
+        { transport: 'dashboard' },
+      );
+      const payload = ObjectiveUpdateResponseSchema.parse({
+        updated: true,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
     }).catch(error => {
@@ -1672,7 +1748,7 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid JSON body' }));
         return;
       }
-      this.respondMutationFailure(res, error);
+      this.respondEngagementCommandFailure(res, error);
     });
   }
 
@@ -1680,254 +1756,40 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     if (!this.requireWritablePersistence(res)) return;
     try {
-      const ok = this.engine.removeObjective(id);
-      if (!ok) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Objective not found' }));
-        return;
-      }
-      const payload = ObjectiveDeleteResponseSchema.parse({ deleted: true });
+      const execution = this.engagementCommands.deleteObjective(id, {
+        transport: 'dashboard',
+      });
+      const payload = ObjectiveDeleteResponseSchema.parse({
+        deleted: true,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
     } catch (error) {
-      this.respondMutationFailure(res, error);
+      this.respondEngagementCommandFailure(res, error);
     }
   }
 
   // ---- Agent dispatch endpoint ----
 
-  // Resolve the model for a dispatch: the EFFECTIVE model — whether an explicit
-  // choice or the engagement's `default_agent_model` fallback — must pass the
-  // `available_models` allowlist (when configured). A misconfigured default that
-  // isn't on the list must not silently reach `claude -p --model`; it fails loudly
-  // so the operator fixes the config rather than running a disallowed model.
-  /** True when `model` is permitted by the engagement's `available_models` allowlist
-   *  (an empty/unset list means "no restriction" → everything allowed). */
-  private isModelAllowed(model: string): boolean {
-    const allowed = this.engine.getConfig().available_models;
-    return !(Array.isArray(allowed) && allowed.length > 0) || allowed.includes(model);
-  }
-
-  private resolveDispatchModel(raw: unknown): { ok: true; model?: string } | { ok: false; error: string } {
-    const config = this.engine.getConfig();
-    const allowed = config.available_models;
-    const requested = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
-    if (requested === undefined) {
-      const fallback = config.default_agent_model;
-      if (fallback !== undefined && !this.isModelAllowed(fallback)) {
-        return { ok: false, error: `default_agent_model "${fallback}" is not in available_models (${(allowed ?? []).join(', ')}) — fix the engagement config` };
-      }
-      return { ok: true, model: fallback };
-    }
-    if (!this.isModelAllowed(requested)) {
-      return { ok: false, error: `model "${requested}" is not allowed (available_models: ${(allowed ?? []).join(', ')})` };
-    }
-    return { ok: true, model: requested };
-  }
-
   private handleAgentDispatch(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      if (!body || typeof body !== 'object') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Expected JSON object' }));
-        return;
-      }
-      const b = body as Record<string, unknown>;
-      const frontierItemId = typeof b.frontier_item_id === 'string' && b.frontier_item_id.trim()
-        ? b.frontier_item_id.trim()
-        : undefined;
-      let dispatchBody = b;
-      let targetNodeIds: string[];
-      let campaignToActivate: string | undefined;
-
-      if (frontierItemId) {
-        const known = this.engine.getFrontierItem(frontierItemId);
-        if (!known) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Frontier item not found', reason: 'frontier_not_found', frontier_item_id: frontierItemId }));
-          return;
-        }
-        const actionable = this.engine.getActionableFrontierItem(frontierItemId);
-        if (!actionable) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Frontier item is no longer actionable', reason: 'frontier_not_actionable', frontier_item_id: frontierItemId }));
-          return;
-        }
-
-        // The frontier id is authoritative. Ignore legacy target_node_ids and
-        // derive both scope and agent type from the current server-side item.
-        targetNodeIds = this.engine.computeSubgraphNodeIds(frontierItemId, 2);
-        if (targetNodeIds.length === 0 && actionable.type !== 'network_discovery') {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Frontier item has no live graph scope', reason: 'frontier_unscoped', frontier_item_id: frontierItemId }));
-          return;
-        }
-        const seedType = targetNodeIds[0] ? this.engine.getNode(targetNodeIds[0])?.type : undefined;
-        const archetype = recommendArchetype({ frontierType: actionable.type, nodeType: seedType });
-        const canonicalCampaign = this.engine.findCampaignForItem(actionable.id);
-        const itemStatus = canonicalCampaign?.item_status?.[actionable.id];
-        if (itemStatus) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            error: `Campaign item already ${itemStatus}`,
-            reason: `already_${itemStatus}`,
-            campaign_id: canonicalCampaign.id,
-            frontier_item_id: actionable.id,
-          }));
-          return;
-        }
-        if (canonicalCampaign && canonicalCampaign.status !== 'draft' && canonicalCampaign.status !== 'active') {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            error: `Campaign is ${canonicalCampaign.status} — cannot dispatch frontier work`,
-            reason: 'campaign_not_dispatchable',
-            campaign_id: canonicalCampaign.id,
-            frontier_item_id: actionable.id,
-          }));
-          return;
-        }
-        if (canonicalCampaign?.status === 'draft') campaignToActivate = canonicalCampaign.id;
-        dispatchBody = {
-          ...b,
-          frontier_item_id: actionable.id,
-          target_node_ids: targetNodeIds,
-          archetype,
-          objective: actionable.description,
-          // A client-supplied campaign cannot override canonical membership.
-          // Ambiguous clone/split membership intentionally leaves this unset.
-          campaign_id: canonicalCampaign?.id,
-        };
-      } else {
-        targetNodeIds = Array.isArray(b.target_node_ids)
-          ? b.target_node_ids.filter((x: unknown): x is string => typeof x === 'string')
-          : [];
-      }
-
-      if (!frontierItemId && targetNodeIds.length === 0) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'frontier_item_id or a non-empty target_node_ids array is required' }));
-        return;
-      }
-
-      const built = this.buildDispatchTask(dispatchBody, targetNodeIds);
-      if (!built.ok) {
-        res.writeHead(built.status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: built.error }));
-        return;
-      }
-      const task = built.task;
-
-      // F2: registerAgent may refuse on frontier-lease conflict.
-      // Returning 201 with { dispatched: true } when the task was never
-      // inserted left the dashboard claiming work that didn't exist.
-      const reg = this.engine.registerAgent(task);
-      if (reg.cap_exceeded) {
-        // 429 (not 409): the dispatch cap is a deferral — retry when a slot frees.
-        res.writeHead(429, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          dispatched: false,
-          reason: 'dispatch_cap_exceeded',
-          cap_scope: reg.cap_exceeded.scope,
-          cap_key: reg.cap_exceeded.key,
-          limit: reg.cap_exceeded.limit,
-          current: reg.cap_exceeded.current,
-        }));
-        return;
-      }
-      if (!reg.ok) {
-        // Two distinct refusal modes: a frontier-lease conflict (same frontier item)
-        // or a node-dedup conflict (same archetype already at this node — a re-issued
-        // deploy-at-node). Surface each with its own reason so the UI isn't told a
-        // bogus "frontier lease" with a null agent.
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(reg.node_conflict
-          ? {
-              dispatched: false,
-              reason: 'node_dispatch_conflict',
-              node_id: reg.node_conflict.node_id,
-              existing_task_id: reg.node_conflict.existing_task_id,
-              existing_agent_id: reg.node_conflict.existing_agent_id,
-            }
-          : {
-              dispatched: false,
-              reason: 'frontier_lease_conflict',
-              existing_task_id: reg.lease_conflict?.existing_task_id,
-              existing_agent_id: reg.lease_conflict?.existing_agent_id,
-            }));
-        return;
-      }
-
-      if (campaignToActivate) this.engine.activateCampaign(campaignToActivate);
-
-      res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ dispatched: true, task }));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      const execution = this.dispatchCommands.dispatch(body);
+      const result = execution.result!;
+      res.writeHead(result.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ...result.body,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondDispatchCommandFailure(res, error);
     });
-  }
-
-  /**
-   * Build a node-scoped dispatch task from a request body + the resolved target
-   * node ids. Centralizes the agent-type / objective / model resolution shared by
-   * single dispatch (handleAgentDispatch) and fan-out (handleAgentDispatchBatch),
-   * so both stay honest about the explore-safe archetype floor and the
-   * no-`{target}`-placeholder objective rule. Does NOT register the task — the
-   * caller registers (and handles cap/lease outcomes).
-   */
-  private buildDispatchTask(
-    b: Record<string, unknown>,
-    targetNodeIds: string[],
-  ): { ok: true; task: AgentTask } | { ok: false; status: number; error: string } {
-    // Fail closed — an unknown explicit archetype must not silently become the
-    // full-surface default agent.
-    if (typeof b.archetype === 'string' && !isArchetypeId(b.archetype)) {
-      return { ok: false, status: 400, error: `Unknown agent type: ${b.archetype}` };
-    }
-    const explicitArch = typeof b.archetype === 'string' ? getArchetype(b.archetype) : undefined;
-    // No explicit agent type → auto-select from the seed node type. Explore-safe:
-    // never fall through to the full-surface `default` (recon_scanner is the floor).
-    const seedType = targetNodeIds[0] ? this.engine.getNode(targetNodeIds[0])?.type : undefined;
-    const autoArchetype = recommendExploreArchetype(undefined, seedType);
-    const skill = typeof b.skill === 'string' ? b.skill : explicitArch?.defaultSkill;
-    // No explicit objective + no explicit archetype → default explore objective
-    // that grounds the agent in prior actions (#156). We do NOT fall back to the
-    // archetype's defaultObjective (those carry an uninterpolated `{target}` that
-    // only quick-deploy interpolates), so the explicit-archetype path keeps
-    // objective undefined (runner mission + get_agent_context carry the intent).
-    const objective = typeof b.objective === 'string'
-      ? b.objective
-      : (explicitArch
-        ? undefined
-        : 'Explore and assess this node: check get_agent_context for prior actions on it first, then pursue untested attack surface.');
-    const modelRes = this.resolveDispatchModel(b.model);
-    if (!modelRes.ok) return { ok: false, status: 400, error: modelRes.error };
-
-    const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
-    const frontierItemId = typeof b.frontier_item_id === 'string' ? b.frontier_item_id : undefined;
-    const taskId = randomUUID();
-    const agentId = `dashboard-agent-${taskId.slice(0, 8)}`;
-
-    const task: AgentTask = {
-      id: taskId,
-      agent_id: agentId,
-      assigned_at: new Date().toISOString(),
-      // 'running' so the runners actually pick it up — both drain loops skip
-      // non-running tasks (matches the planner/cve self-dispatch precedent).
-      status: 'running',
-      subgraph_node_ids: targetNodeIds,
-      skill,
-      campaign_id: campaignId,
-      frontier_item_id: frontierItemId,
-      ...(explicitArch
-        ? { archetype: explicitArch.id, role: explicitArch.role, backend: explicitArch.backend }
-        : { archetype: autoArchetype }),
-      ...(objective ? { objective } : {}),
-      ...(modelRes.model ? { model: modelRes.model } : {}),
-    };
-    return { ok: true, task };
   }
 
   // ---- Fan-out dispatch ----
@@ -1946,107 +1808,17 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      if (!body || typeof body !== 'object') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Expected JSON object' }));
-        return;
-      }
-      const b = body as Record<string, unknown>;
-      // De-dupe while preserving selection order.
-      const rawIds = Array.isArray(b.target_node_ids)
-        ? b.target_node_ids.filter((x: unknown): x is string => typeof x === 'string')
-        : [];
-      const nodeIds = [...new Set(rawIds)];
-      if (nodeIds.length === 0) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'target_node_ids must be a non-empty array of node IDs' }));
-        return;
-      }
-
-      // Validate agent-type + model ONCE up front so a bad request fails fast even
-      // if every node ends up skipped (the per-group buildDispatchTask would
-      // otherwise never run its own validation for a fully-skipped batch).
-      if (typeof b.archetype === 'string' && !isArchetypeId(b.archetype)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Unknown agent type: ${b.archetype}` }));
-        return;
-      }
-      const modelPre = this.resolveDispatchModel(b.model);
-      if (!modelPre.ok) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: modelPre.error }));
-        return;
-      }
-
-      const mode = b.mode === 'per-batch' ? 'per-batch' : 'per-node';
-
-      const dispatched: Array<{ node_ids: string[]; task_id: string; agent_id: string; archetype?: string }> = [];
-      const skipped: Array<{ node_ids: string[]; reason: string; existing_agent_id?: string }> = [];
-      const deferred: Array<{ node_ids: string[]; reason: string }> = [];
-
-      // Partition FIRST: pull out nodes already covered by a running task and skip
-      // each individually, so a fresh node batched alongside a worked one is never
-      // stranded (only the worked node is skipped) and skip counts are per-node.
-      // Cover RUNNING and PENDING (queued-behind-cap) tasks: a pending agent already
-      // owns its nodes, and register() would refuse a duplicate at one anyway — pre-
-      // skipping here reports it as 'already_being_worked' instead of a late conflict.
-      const runningCoverage = new Map<string, string>(); // node_id -> agent_id
-      for (const t of this.engine.getAgentTasks()) {
-        if (t.status !== 'running' && t.status !== 'pending') continue;
-        for (const nid of t.subgraph_node_ids ?? []) {
-          if (!runningCoverage.has(nid)) runningCoverage.set(nid, t.agent_id);
-        }
-      }
-      const fresh: string[] = [];
-      for (const nid of nodeIds) {
-        const worker = runningCoverage.get(nid);
-        if (worker) skipped.push({ node_ids: [nid], reason: 'already_being_worked', existing_agent_id: worker });
-        else fresh.push(nid);
-      }
-
-      // Group only the FRESH nodes into per-agent lanes (per-node = one each).
-      const rawBatch = typeof b.batch_size === 'number' && Number.isFinite(b.batch_size) ? Math.floor(b.batch_size) : 5;
-      const batchSize = mode === 'per-batch' ? Math.max(1, rawBatch) : 1;
-      const groups: string[][] = [];
-      for (let i = 0; i < fresh.length; i += batchSize) {
-        groups.push(fresh.slice(i, i + batchSize));
-      }
-
-      for (const group of groups) {
-        // Validated up front, so buildDispatchTask cannot fail here — but keep the
-        // guard so a future validation added there can't silently 200.
-        const built = this.buildDispatchTask(b, group);
-        if (!built.ok) {
-          res.writeHead(built.status, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: built.error }));
-          return;
-        }
-        const reg = this.engine.registerAgent(built.task);
-        if (reg.cap_exceeded) {
-          // Concurrency cap hit — defer this group (a later group on a different
-          // target IP can still register, so keep looping rather than bailing).
-          deferred.push({ node_ids: group, reason: 'dispatch_cap_exceeded' });
-          continue;
-        }
-        if (!reg.ok) {
-          skipped.push(reg.node_conflict
-            ? { node_ids: group, reason: 'already_being_worked', existing_agent_id: reg.node_conflict.existing_agent_id }
-            : { node_ids: group, reason: 'frontier_lease_conflict', existing_agent_id: reg.lease_conflict?.existing_agent_id });
-          continue;
-        }
-        dispatched.push({ node_ids: group, task_id: built.task.id, agent_id: built.task.agent_id, archetype: built.task.archetype });
-      }
-
+      const execution = this.dispatchCommands.dispatchBatch(body);
+      const result = execution.result!;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        dispatched,
-        skipped,
-        deferred,
-        summary: { dispatched: dispatched.length, skipped: skipped.length, deferred: deferred.length, groups: groups.length },
+        ...result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
       }));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    }).catch(error => {
+      this.respondDispatchCommandFailure(res, error);
     });
   }
 
@@ -2059,107 +1831,17 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      if (!body || typeof body !== 'object') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Expected JSON object' }));
-        return;
-      }
-      const b = body as Record<string, unknown>;
-      const targetRaw = typeof b.target === 'string' ? b.target.trim() : '';
-      if (!targetRaw) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'target (IP, CIDR, or domain) is required' }));
-        return;
-      }
-      // Fail closed on an unknown explicit agent type, before touching scope.
-      if (typeof b.archetype === 'string' && !isArchetypeId(b.archetype)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Unknown agent type: ${b.archetype}` }));
-        return;
-      }
-      // Validate the model BEFORE any scope mutation. updateScope persists, so a
-      // model rejected here must not leave the target durably in scope.
-      const modelRes = this.resolveDispatchModel(b.model);
-      if (!modelRes.ok) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: modelRes.error }));
-        return;
-      }
-      // Same classification as the `scan` command + the dashboard Add-Targets
-      // parser (IPv4 CIDR / IP→/32 / domain; IPv6 + junk rejected).
-      const CIDR_RE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
-      const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
-      const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9-]+\.)+[a-z]{2,}$/i;
-      const add_cidrs: string[] = [];
-      const add_domains: string[] = [];
-      for (const tok of targetRaw.split(/[\s,]+/).filter(Boolean)) {
-        if (CIDR_RE.test(tok)) add_cidrs.push(tok);
-        else if (IP_RE.test(tok)) add_cidrs.push(`${tok}/32`);
-        else if (DOMAIN_RE.test(tok)) add_domains.push(tok.toLowerCase());
-      }
-      if (add_cidrs.length === 0 && add_domains.length === 0) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `no valid IPv4/CIDR/domain target in "${targetRaw}"` }));
-        return;
-      }
-
-      const scopeResult = this.engine.updateScope({ add_cidrs, add_domains, reason: 'quick-deploy' });
-      if (!scopeResult.applied) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: scopeResult.errors.join('; ') || 'scope update failed', errors: scopeResult.errors }));
-        return;
-      }
-
-      // Recommend recon for a raw target unless the operator chose a type.
-      const arch = getArchetype(typeof b.archetype === 'string' ? b.archetype : recommendArchetype({ rawTarget: true }));
-      const objective = (arch.defaultObjective || 'Investigate {target}.').replace('{target}', targetRaw);
-      const taskId = randomUUID();
-      const task = {
-        id: taskId,
-        agent_id: `quick-${taskId.slice(0, 8)}`,
-        assigned_at: new Date().toISOString(),
-        status: 'running' as const, // so the runner picks it up (see handleAgentDispatch)
-        subgraph_node_ids: [] as string[],
-        skill: arch.defaultSkill,
-        archetype: arch.id,
-        role: arch.role,
-        backend: arch.backend,
-        objective,
-        ...(modelRes.model ? { model: modelRes.model } : {}),
-      };
-      const reg = this.engine.registerAgent(task);
-      if (reg.cap_exceeded) {
-        res.writeHead(429, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          dispatched: false,
-          reason: 'dispatch_cap_exceeded',
-          cap_scope: reg.cap_exceeded.scope,
-          cap_key: reg.cap_exceeded.key,
-          limit: reg.cap_exceeded.limit,
-          current: reg.cap_exceeded.current,
-        }));
-        return;
-      }
-      if (!reg.ok) {
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ dispatched: false, reason: 'dispatch_refused' }));
-        return;
-      }
-
+      const execution = this.dispatchCommands.quickDeploy(body);
+      const result = execution.result!;
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        dispatched: true,
-        task,
-        archetype: arch.id,
-        scope: { added_cidrs: add_cidrs, added_domains: add_domains, affected_node_count: scopeResult.affected_node_count },
+        ...result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
       }));
     }).catch(error => {
-      if (error instanceof Error && (error.message === 'Invalid JSON' || error.message === 'Body too large')) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-        return;
-      }
-      this.respondMutationFailure(res, error);
+      this.respondDispatchCommandFailure(res, error);
     });
   }
 
@@ -2200,77 +1882,45 @@ export class DashboardServer {
     };
   }
 
-  /**
-   * 3A.2: register a read-only headless 'planner' sub-agent to translate a
-   * free-form command (the grammar couldn't resolve) into a proposed plan. The
-   * planner carries the command + a snapshot of steerable state as its objective,
-   * reasons over the graph, and submits ops via propose_plan for the operator to
-   * confirm. No frontier_item_id → no lease conflict. Returns the task id, or
-   * null if the headless runtime isn't available.
-   */
-  private dispatchPlanner(command: string, state: InterpreterState): string | null {
-    // No task-execution service attached (e.g. a dashboard-only deployment) or
-    // no /mcp endpoint (stdio mode) → headless is unavailable; report it instead
-    // of registering a planner task that can never launch.
-    if (!this.taskExecution || !this.taskExecution.isHeadlessAvailable()) return null;
-
-    // Dedup: if a planner is ALREADY working this exact command (the operator
-    // re-issued after a stale-plan 404, or double-submitted), reuse it instead of
-    // spawning a second planner that would propose a duplicate plan. The command is
-    // embedded verbatim in the objective's first line (buildPlannerObjective), so we
-    // extract + normalize it. Self-cleaning: a terminated planner isn't running/pending.
-    const norm = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
-    const wanted = norm(command);
-    // (1) A planner is still WORKING this command (double-submit, or a re-issue while
-    // it's mid-thought) → reuse it.
-    for (const t of this.engine.getAgentTasks()) {
-      if (t.role !== 'planner') continue;
-      if (t.status !== 'running' && t.status !== 'pending') continue;
-      const m = t.objective?.match(/^OPERATOR COMMAND \(free-form\): "([\s\S]*?)"$/m);
-      if (m && norm(m[1]) === wanted) return t.id; // latch onto the in-flight planner
-    }
-    // (2) A planner already PROPOSED an open plan for this command and has since
-    // terminated → surface that plan instead of spawning a duplicate. The UI polls
-    // GET /api/plans by source_task_id, so returning it points the operator at the
-    // plan that's already waiting to be confirmed.
-    const openPlan = this.engine.getProposedPlanStore().getOpen().find(p => norm(p.command) === wanted);
-    if (openPlan?.source_task_id) return openPlan.source_task_id;
-
-    const taskId = randomUUID();
-    // Uphold the same allowlist as the operator dispatch paths: never pass a
-    // disallowed default_agent_model to `claude -p --model`. A misconfigured default
-    // is dropped here (planner falls back to the CLI default) rather than blocking
-    // planning — but LOG it, so an operator who only drives via natural language (and
-    // never hits the explicit 400 on a direct dispatch) can still discover the bad config.
-    const configuredModel = this.engine.getConfig().default_agent_model;
-    const modelAllowed = !configuredModel || this.isModelAllowed(configuredModel);
-    if (configuredModel && !modelAllowed) {
-      this.engine.logActionEvent({
-        description: `default_agent_model "${configuredModel}" is not in available_models — planner is using the CLI default; fix the engagement config`,
-        event_type: 'instrumentation_warning', category: 'system', result_classification: 'failure',
-        details: { reason: 'default_model_not_allowed', model: configuredModel },
-      });
-    }
-    const plannerModel = modelAllowed ? configuredModel : undefined;
-    const reg = this.engine.registerAgent({
-      id: taskId,
-      agent_id: `planner-${taskId.slice(0, 8)}`,
-      assigned_at: new Date().toISOString(),
-      status: 'running',
-      subgraph_node_ids: [],
-      backend: 'headless_mcp',
-      role: 'planner',
-      skill: 'operator-planner',
-      objective: buildPlannerObjective(command, state),
-      ...(plannerModel ? { model: plannerModel } : {}),
-    });
-    return reg.ok ? taskId : null;
-  }
-
   private serveProposedPlans(res: ServerResponse): void {
     const plans = this.engine.getProposedPlanStore().getOpen();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ plans }));
+  }
+
+  private serveApplicationCommand(commandId: string, res: ServerResponse): void {
+    const command = this.engine.getApplicationCommandById(commandId);
+    if (!command) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'command not found', command_id: commandId }));
+      return;
+    }
+    const existingResult = command.result
+      && typeof command.result === 'object'
+      && !Array.isArray(command.result)
+      ? command.result as Record<string, unknown>
+      : {};
+    const linkedPlan = command.plan_id
+      && !existingResult.plan
+      ? this.engine.getProposedPlanStore().get(command.plan_id)
+      : undefined;
+    const projectedCommand = linkedPlan
+      ? {
+          ...command,
+          result: {
+            ...existingResult,
+            phase: 'plan_ready',
+            command_id: command.command_id,
+            planner_task_id:
+              existingResult.planner_task_id
+              ?? command.entity_refs?.planner_task_id,
+            plan_id: linkedPlan.plan_id,
+            plan: linkedPlan,
+          },
+        }
+      : command;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ command: projectedCommand }));
   }
 
   // ---- Agent→operator question inbox (Phase 3D) ----
@@ -2291,39 +1941,20 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'answer (non-empty string) is required' }));
         return;
       }
-      // If the asking agent is already gone (reaped/timed out), don't answer into
-      // the void — terminal transitions expire a task's queries, but guard the race.
-      const existing = this.engine.getAgentQueryStore().get(queryId);
-      if (existing?.task_id) {
-        const task = this.engine.getTask(existing.task_id);
-        if (!task || task.status !== 'running') {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'the asking agent is no longer running — answer would not be delivered' }));
-          return;
-        }
-      }
-      const resolved = this.engine.getAgentQueryStore().answer(queryId, answer);
-      if (!resolved) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'question not found or already answered/expired' }));
-        return;
-      }
-      // Surface the answer in the console; the agent picks it up on its next heartbeat.
-      this.engine.logActionEvent({
-        description: `Operator answered agent question: ${resolved.question}`,
-        event_type: 'operator_command',
-        category: 'system',
-        source_kind: 'dashboard',
-        result_classification: 'neutral',
-        linked_agent_task_id: resolved.task_id,
-        details: { reason: 'agent_query_answered', source: 'dashboard', query_id: queryId, question: resolved.question, answer },
-      });
-      this.engine.persist();
+      const execution = this.agentLifecycleCommands.answerQuestions({
+        query_ids: [queryId],
+        answer,
+      }, { transport: 'dashboard' });
+      const resolved = execution.result!.queries[0];
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, query: resolved }));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      res.end(JSON.stringify({
+        ok: true,
+        query: resolved,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondAgentLifecycleCommandFailure(res, error);
     });
   }
 
@@ -2352,42 +1983,21 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'query_ids (non-empty string array) is required' }));
         return;
       }
-      const store = this.engine.getAgentQueryStore();
-      // Only fan out to queries whose asking agent is still running.
-      const deliverable = queryIds.filter(id => {
-        const existing = store.get(id);
-        if (!existing) return false;
-        if (!existing.task_id) return true;
-        const task = this.engine.getTask(existing.task_id);
-        return !!task && task.status === 'running';
-      });
-      const resolved = store.answerMany(deliverable, answer);
-      if (resolved.length === 0) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'no answerable questions — all unknown, already answered, or their agents are gone' }));
-        return;
-      }
-      this.engine.logActionEvent({
-        description: `Operator answered ${resolved.length} clustered agent question(s): ${resolved[0].question}`,
-        event_type: 'operator_command',
-        category: 'system',
-        source_kind: 'dashboard',
-        result_classification: 'neutral',
-        details: {
-          reason: 'agent_query_answered_batch',
-          source: 'dashboard',
-          query_ids: resolved.map(r => r.query_id),
-          question: resolved[0].question,
-          answer,
-          count: resolved.length,
-        },
-      });
-      this.engine.persist();
+      const execution = this.agentLifecycleCommands.answerQuestions({
+        query_ids: queryIds,
+        answer,
+      }, { transport: 'dashboard' });
+      const resolved = execution.result!.queries;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, answered: resolved.length, queries: resolved }));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      res.end(JSON.stringify({
+        ok: true,
+        answered: resolved.length,
+        queries: resolved,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondAgentLifecycleCommandFailure(res, error);
     });
   }
 
@@ -2398,9 +2008,20 @@ export class DashboardServer {
       const b = (body ?? {}) as Record<string, unknown>;
       // Dismiss a planner-proposed plan without executing it.
       if (b.deny === true && typeof b.plan_id === 'string') {
-        const denied = this.engine.getProposedPlanStore().resolve(b.plan_id, 'denied');
-        res.writeHead(denied ? 200 : 404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(denied ? { denied: true, plan_id: b.plan_id } : { error: 'plan not found or already resolved' }));
+        try {
+          const execution = this.operatorCommands.denyPlan(b.plan_id, {
+            transport: 'dashboard',
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ...execution.result,
+            command_id: execution.command_id,
+            idempotency_key: execution.idempotency_key,
+            replayed: execution.replayed,
+          }));
+        } catch (error) {
+          this.respondOperatorCommandFailure(res, error);
+        }
         return;
       }
 
@@ -2408,57 +2029,20 @@ export class DashboardServer {
       // plan_id may be a grammar plan (commandPlans) or a planner-proposed plan
       // (the shared ProposedPlanStore) — both execute through the same path.
       if (b.confirm === true && typeof b.plan_id === 'string') {
-        const grammarPlan = this.engine.getCommandPlan(b.plan_id);
-        const proposed = grammarPlan ? null : this.engine.getProposedPlanStore().resolve(b.plan_id, 'confirmed');
-        const plan = grammarPlan ?? (proposed ? { ops: proposed.ops, command: proposed.command } : null);
-        if (!plan) {
-          // Idempotent duplicate: a prior confirm already executed this plan (and
-          // deployed its agents). Return that result instead of a 404 that wrongly
-          // tells the operator to re-issue the command — re-executing would double it.
-          const already = this.engine.getCommandOutcome(b.plan_id);
-          if (already) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ executed: true, already_executed: true, results: already.results }));
-            return;
-          }
-          // State-aware error: ONLY an expired/unknown plan should be re-issued. A plan
-          // confirmed or denied from the OTHER surface (the "Needs you" queue can resolve
-          // the same plan_id) is already handled — a blind "re-issue the command" there
-          // spawns a duplicate planner + a duplicate dispatch, which is exactly the
-          // "404 said re-enter, but agents still deployed" symptom.
-          // (grammarPlan is always falsy in this !plan branch — a found grammar plan
-          // wouldn't be null — so the disposition is always the proposed-store's.)
-          const disp = this.engine.getProposedPlanStore().describeResolution(b.plan_id);
-          const alreadyHandled = disp === 'confirmed' || disp === 'denied';
-          const error = disp === 'confirmed'
-            ? 'plan was already confirmed — check the fleet (do not re-issue)'
-            : disp === 'denied'
-              ? 'plan was dismissed — it will not deploy (do not re-issue)'
-              : 'plan not found or expired — re-issue the command';
-          res.writeHead(alreadyHandled ? 409 : 404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error, resolution: disp, already_handled: alreadyHandled }));
-          return;
+        try {
+          const execution = this.operatorCommands.confirmPlan(b.plan_id, {
+            transport: 'dashboard',
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ...execution.result,
+            command_id: execution.command_id,
+            idempotency_key: execution.idempotency_key,
+            replayed: execution.replayed,
+          }));
+        } catch (error) {
+          this.respondOperatorCommandFailure(res, error);
         }
-        if (grammarPlan) this.engine.deleteCommandPlan(b.plan_id);
-        const results = executeOps(this.engine, plan.ops, 'operator');
-        if (proposed) {
-          this.engine.getProposedPlanStore().recordExecutionOutcome(b.plan_id, results);
-        }
-        // Record BEFORE responding so a duplicate confirm racing this one is idempotent.
-        this.engine.recordCommandOutcome(b.plan_id, results);
-        this.engine.logActionEvent({
-          description: `Operator command executed: ${plan.command || '(planner plan)'}`,
-          event_type: 'operator_command',
-          category: 'system',
-          // source:'dashboard' makes this surface as an operator command card in
-          // the console (inferSourceKind), not an anonymous system warning.
-          source_kind: 'dashboard',
-          result_classification: results.every(r => r.ok) ? 'success' : 'partial',
-          details: { reason: 'operator_command', source: 'dashboard', command: plan.command, planner: !!proposed, results },
-        });
-        this.engine.persist();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ executed: true, results }));
         return;
       }
 
@@ -2490,8 +2074,15 @@ export class DashboardServer {
 
       const interp = interpretCommand(command, state);
       let plan_id: string | undefined;
+      let preview_command_id: string | undefined;
       if (interp.ops.length > 0) {
-        plan_id = this.engine.createCommandPlan({ ops: interp.ops, command });
+        const execution = this.operatorCommands.createGrammarPlan(
+          command,
+          interp.ops,
+          { transport: 'dashboard' },
+        );
+        plan_id = execution.result!.plan_id;
+        preview_command_id = execution.command_id;
       }
 
       // The grammar punted entirely — hand the free-form command to a headless
@@ -2499,11 +2090,40 @@ export class DashboardServer {
       // the proposed plan via the same confirm path (polling GET /api/plans).
       const needsPlanner = interp.unresolved.length > 0 && interp.ops.length === 0;
       let planner_task_id: string | undefined;
+      let planner_command_id: string | undefined;
+      let planner_status: string | undefined;
       let planner_available = true;
+      let planner_plan: unknown;
       if (needsPlanner) {
-        const tid = this.dispatchPlanner(command, state);
-        if (tid) planner_task_id = tid;
-        else planner_available = false;
+        const execution = this.operatorCommands.requestPlanner(
+          command,
+          state,
+          {
+            runtime_available:
+              this.taskExecution?.isHeadlessAvailable() === true,
+          },
+          { transport: 'dashboard' },
+        );
+        planner_command_id = execution.command_id;
+        planner_status = execution.status;
+        if (typeof execution.result?.planner_task_id === 'string') {
+          planner_task_id = execution.result.planner_task_id;
+        } else if (
+          typeof execution.record.entity_refs?.planner_task_id === 'string'
+        ) {
+          planner_task_id = execution.record.entity_refs.planner_task_id;
+        }
+        planner_plan = execution.result?.plan;
+        if (!planner_plan && execution.record.plan_id) {
+          planner_plan = this.engine.getProposedPlanStore()
+            .get(execution.record.plan_id);
+        }
+        if (
+          execution.status === 'failed'
+          || execution.status === 'interrupted'
+        ) {
+          planner_available = false;
+        }
       }
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2516,11 +2136,21 @@ export class DashboardServer {
         // When a planner was dispatched, the UI polls GET /api/plans for the
         // proposed plan. planner_available=false means stdio mode (no daemon).
         planner_task_id,
+        command_id: planner_command_id ?? preview_command_id,
+        planner_status,
         planner_available: needsPlanner ? planner_available : undefined,
+        planner_plan,
       }));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    }).catch(error => {
+      if (
+        error instanceof Error
+        && (error.message === 'Invalid JSON' || error.message === 'Body too large')
+      ) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+      this.respondOperatorCommandFailure(res, error);
     });
   }
 
@@ -2697,18 +2327,21 @@ export class DashboardServer {
         return;
       }
       try {
-        const result = this.engine.resolveConfigDivergence({
+        const execution = this.recoveryCommands.resolveConfig({
           mode: parsed.data.resolution,
           expected_file_hash: parsed.data.expected_file_hash,
           expected_state_hash: parsed.data.expected_state_hash,
+        }, { transport: 'dashboard' });
+        const payload = ConfigDivergenceResolveResponseSchema.parse({
+          ...execution.result,
+          command_id: execution.command_id,
+          idempotency_key: execution.idempotency_key,
+          replayed: execution.replayed,
         });
-        const payload = ConfigDivergenceResolveResponseSchema.parse(result);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(payload));
       } catch (error) {
-        this.respondMutationFailure(res, error, {
-          conflictWhen: message => /No active configuration divergence/i.test(message),
-        });
+        this.respondRecoveryCommandFailure(res, error);
       }
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -3053,20 +2686,56 @@ export class DashboardServer {
         .filter(event => event.action_id === actionId && event.event_type === 'parse_output')
         .map(event => (event.details as Record<string, unknown> | undefined)?.parser_context)
         .find((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value));
-      const result = parseAndMaybeIngest(this.engine, {
-        tool_name: toolName,
-        outputText: raw,
-        action_id: actionId,
-        ingest,
-        context: body?.context ?? storedParserContext,
-        agent_id: 'operator',
+      const parserContext = body?.context ?? storedParserContext;
+      const contextKeys = parserContext && typeof parserContext === 'object'
+        && !Array.isArray(parserContext)
+        ? Object.keys(parserContext).sort()
+        : [];
+      const resolvedEvidenceId = store.resolveKey(evidenceId)!;
+      return this.parseCommands.execute(
+        {
+          tool_name: toolName,
+          source_kind: 'evidence',
+          source_reference: resolvedEvidenceId,
+          source_length: Buffer.byteLength(raw),
+          source_fingerprint: buildParseSourceFingerprint({
+            source_kind: 'evidence',
+            source_reference: resolvedEvidenceId,
+            output: raw,
+            tool_name: toolName,
+            context: parserContext ?? {},
+            ingest,
+          }),
+          context_keys: contextKeys,
+          agent_id: 'operator',
+          action_id: actionId,
+          ingest,
+        },
+        commandCompletion => parseAndMaybeIngest(this.engine, {
+          tool_name: toolName,
+          outputText: raw,
+          action_id: actionId,
+          ingest,
+          context: parserContext,
+          agent_id: 'operator',
+          command_completion: commandCompletion,
+        }),
+        { action_id: actionId },
+      ).then(result => {
+        res.writeHead(200, JSON_HEADERS);
+        res.end(JSON.stringify({
+          ...result,
+          evidence_id: resolvedEvidenceId,
+        }));
       });
-      res.writeHead(200, JSON_HEADERS);
-      res.end(JSON.stringify({ ...result, evidence_id: store.resolveKey(evidenceId) }));
     }).catch(err => {
       const message = err instanceof Error ? err.message : String(err);
-      res.writeHead(400, JSON_HEADERS);
-      res.end(JSON.stringify({ error: message }));
+      const conflict = err instanceof ApplicationCommandConflictError;
+      res.writeHead(conflict ? 409 : 400, JSON_HEADERS);
+      res.end(JSON.stringify({
+        error: message,
+        ...(conflict ? { code: err.code } : {}),
+      }));
     });
   }
 
@@ -3346,57 +3015,21 @@ export class DashboardServer {
 
   private handleAgentCancel(taskId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
-    // Wrap EVERYTHING: a synchronous throw here (e.g. from the kill path) would
-    // otherwise never write a response and hang the socket, which reads on the
-    // dashboard as "Cancel did nothing / failed" with the agent stuck forever.
     const REASON = 'Cancelled by operator via dashboard';
     try {
-      const task = this.engine.getTask(taskId);
-      if (!task) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Agent task not found' }));
-        return;
-      }
-      const wasTerminal = task.status !== 'running' && task.status !== 'pending';
-      // Operator cancel is a DELIBERATE stop — mark it (on EVERY path, including an
-      // already-terminal one) so the Phase 3.1 re-offer sweep doesn't re-dispatch the
-      // work the operator just called off.
-      this.engine.updateAgentSchedulerFlags(taskId, { no_retry: true });
-      // Best-effort kill on EVERY path. A task can be 'interrupted' in the graph while
-      // its OS process is still alive (the exact stuck case) — so kill even when
-      // already terminal, not just when running/pending. cancelHeadless is safe on a
-      // terminal task: it kills the process (if any), releases the lease, and aborts
-      // approvals; the status flip inside it no-ops for a terminal task.
-      let killed = false;
-      try {
-        if (this.taskExecution) killed = this.taskExecution.cancelHeadless(taskId, REASON);
-      } catch (err) {
-        this.engine.logActionEvent({
-          description: `Agent cancel: kill path threw for ${taskId} — forcing terminal`,
-          event_type: 'instrumentation_warning', category: 'system', result_classification: 'failure',
-          linked_agent_task_id: taskId, details: { reason: 'cancel_kill_threw', error: err instanceof Error ? err.message : String(err) },
-        });
-      }
-      // Guarantee terminal: whether taskExecution is absent, the kill threw, or
-      // cancelHeadless didn't flip the status, force the task to 'interrupted' so a
-      // stuck agent is ALWAYS removable afterward.
-      const afterKill = this.engine.getTask(taskId);
-      if (afterKill && (afterKill.status === 'running' || afterKill.status === 'pending')) {
-        this.engine.updateAgentStatus(taskId, 'interrupted', REASON);
-      }
-      // Abort any lingering approval gate so it can't auto-fire on timeout and run a
-      // command for the agent we just killed. cancelHeadless does this, but the
-      // fallback (no taskExecution / kill threw) path above does not — so do it here
-      // unconditionally (aborting an already-aborted gate is a no-op).
-      try { this.engine.abortApprovalsForTask(taskId, REASON); } catch { /* best-effort */ }
-      const updated = this.engine.getTask(taskId);
+      const execution = this.agentLifecycleCommands.cancel(
+        taskId,
+        REASON,
+        { transport: 'dashboard' },
+      );
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ cancelled: true, already_terminal: wasTerminal, process_killed: killed, task: updated }));
-    } catch (err) {
-      // Last resort: still try to force the task terminal, then always respond.
-      try { this.engine.updateAgentStatus(taskId, 'interrupted', 'force-cancel after error'); } catch { /* best-effort */ }
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'cancel failed', detail: err instanceof Error ? err.message : String(err) }));
+      res.end(JSON.stringify({
+        ...execution.result,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    } catch (error) {
+      this.respondAgentLifecycleCommandFailure(res, error);
     }
   }
 
@@ -3411,46 +3044,22 @@ export class DashboardServer {
       if (!this.requireWritablePersistence(res)) return;
       try {
         const force = !!(body && typeof body === 'object' && (body as Record<string, unknown>).force === true);
-        const task = this.engine.getTask(taskId);
-        if (!task) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Agent task not found' }));
-          return;
-        }
-        const live = task.status === 'running' || task.status === 'pending';
-        if (live && !force) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: `Agent is ${task.status} — cancel it before dismissing (or pass force:true)` }));
-          return;
-        }
-        if (force) {
-          // Best-effort kill + guarantee terminal + abort approvals BEFORE removing —
-          // even for an already-terminal task, whose OS process may still be alive
-          // (the stuck case). Removing the card without killing would orphan a zombie.
-          const REASON = 'Force-removed by operator';
-          this.engine.updateAgentSchedulerFlags(taskId, { no_retry: true });
-          try { this.taskExecution?.cancelHeadless(taskId, REASON); } catch { /* fall through to force terminal */ }
-          const t = this.engine.getTask(taskId);
-          if (t && (t.status === 'running' || t.status === 'pending')) {
-            this.engine.updateAgentStatus(taskId, 'interrupted', REASON);
-          }
-          try { this.engine.abortApprovalsForTask(taskId, REASON); } catch { /* best-effort */ }
-        }
-        const dismissed = this.engine.dismissAgent(taskId);
-        if (!dismissed) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Failed to dismiss agent' }));
-          return;
-        }
+        const execution = this.agentLifecycleCommands.dismiss(
+          taskId,
+          force,
+          { transport: 'dashboard' },
+        );
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ dismissed: true, task_id: taskId, forced: force }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'dismiss failed', detail: err instanceof Error ? err.message : String(err) }));
+        res.end(JSON.stringify({
+          ...execution.result,
+          command_id: execution.command_id,
+          replayed: execution.replayed,
+        }));
+      } catch (error) {
+        this.respondAgentLifecycleCommandFailure(res, error);
       }
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    }).catch(error => {
+      this.respondAgentLifecycleCommandFailure(res, error);
     });
   }
 
@@ -3488,36 +3097,34 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: `Agent is ${task.status} — directives only apply to running or pending agents` }));
         return;
       }
-      const op: OperatorOp = {
-        op: 'directive',
+      const execution = this.agentLifecycleCommands.issueDirective({
         task_id: taskId,
-        agent_label: task.agent_label ?? task.agent_id,
         kind: kind as AgentDirectiveKind,
         node_ids: Array.isArray(b.node_ids) ? (b.node_ids as unknown[]).filter(x => typeof x === 'string') as string[] : undefined,
         frontier_types: Array.isArray(b.frontier_types) ? (b.frontier_types as unknown[]).filter(x => typeof x === 'string') as string[] : undefined,
         note: typeof b.note === 'string' ? b.note : undefined,
-      };
-      const results = executeOps(this.engine, [op], 'operator');
-      this.engine.logActionEvent({
-        description: `Operator directive: ${kind} → ${task.agent_label ?? task.agent_id}`,
-        event_type: 'operator_command',
-        category: 'system',
-        source_kind: 'dashboard',
-        result_classification: results[0]?.ok ? 'success' : 'failure',
-        linked_agent_task_id: taskId,
-        details: {
-          reason: 'operator_command',
-          source: 'dashboard',
-          command: `${kind} ${task.agent_label ?? task.agent_id}`,
-          results,
+        issued_by: 'operator',
+      }, { transport: 'dashboard' });
+      const results = [{
+        op: {
+          op: 'directive',
+          task_id: taskId,
+          agent_label: task.agent_label ?? task.agent_id,
+          kind,
         },
-      });
-      this.engine.persist();
+        ok: true,
+        message: `Directive ${kind} issued to ${task.agent_label ?? task.agent_id}`,
+      }];
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: results[0]?.ok ?? false, results }));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      res.end(JSON.stringify({
+        ok: true,
+        results,
+        directive: execution.result?.directive,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondAgentLifecycleCommandFailure(res, error);
     });
   }
 
@@ -3544,29 +3151,21 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'fleet instruct requires a non-empty note' }));
         return;
       }
-      const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
-      const targets = this.engine.getAgentTasks().filter(t =>
-        t.status === 'running' && (!campaignId || t.campaign_id === campaignId));
-      const ops: OperatorOp[] = targets.map(t => ({
-        op: 'directive', task_id: t.id, agent_label: t.agent_id, kind: kind as AgentDirectiveKind,
-        ...(kind === 'instruct' ? { note } : {}),
-      }));
-      const results = ops.length ? executeOps(this.engine, ops, 'operator') : [];
-      const ok = results.filter(r => r.ok).length;
-      this.engine.logActionEvent({
-        description: `Operator fleet directive: ${kind} → ${ok}/${targets.length} running agent(s)${campaignId ? ` in campaign ${campaignId}` : ''}`,
-        event_type: 'operator_command',
-        category: 'system',
-        source_kind: 'dashboard',
-        result_classification: results.every(r => r.ok) ? 'success' : ok === 0 ? 'failure' : 'partial',
-        details: { reason: 'operator_command', source: 'dashboard', command: `${kind} all${campaignId ? ` (campaign ${campaignId})` : ''}`, results },
-      });
-      this.engine.persist();
+      const execution = this.agentLifecycleCommands.issueDirectiveBatch({
+        kind,
+        note: kind === 'instruct' ? note : undefined,
+        campaign_id: typeof b.campaign_id === 'string'
+          ? b.campaign_id
+          : undefined,
+      }, { transport: 'dashboard' });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, applied: ok, total: targets.length, results }));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      res.end(JSON.stringify({
+        ...execution.result,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondAgentLifecycleCommandFailure(res, error);
     });
   }
 
@@ -3578,19 +3177,19 @@ export class DashboardServer {
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
       const b = (body ?? {}) as Record<string, unknown>;
-      const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
-      const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
-      const targets = this.engine.getAgentTasks().filter(t =>
-        TERMINAL.has(t.status) && (!campaignId || t.campaign_id === campaignId));
-      let dismissed = 0;
-      for (const t of targets) {
-        if (this.engine.dismissAgent(t.id)) dismissed++;
-      }
+      const execution = this.agentLifecycleCommands.dismissBatch({
+        campaign_id: typeof b.campaign_id === 'string'
+          ? b.campaign_id
+          : undefined,
+      }, { transport: 'dashboard' });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, dismissed, total: targets.length }));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      res.end(JSON.stringify({
+        ...execution.result,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondAgentLifecycleCommandFailure(res, error);
     });
   }
 
@@ -3662,31 +3261,20 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid campaign action', issues: parsed.error.issues }));
         return;
       }
-      const action = parsed.data.action;
-      const campaign = this.engine.getCampaign(campaignId);
-      if (!campaign) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Campaign not found' }));
-        return;
-      }
-      let result: import('../types.js').Campaign | null = null;
-      switch (action) {
-        case 'activate': result = this.engine.activateCampaign(campaignId); break;
-        case 'pause': result = this.engine.pauseCampaign(campaignId); break;
-        case 'resume': result = this.engine.resumeCampaign(campaignId); break;
-        case 'abort': result = this.engine.abortCampaign(campaignId); break;
-      }
-      if (!result) {
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Failed to ${action} campaign` }));
-        return;
-      }
-      const payload = CampaignActionResponseSchema.parse({ action, campaign: result });
+      const execution = this.campaignCommands.action(
+        campaignId,
+        parsed.data,
+        { transport: 'dashboard' },
+      );
+      const payload = CampaignActionResponseSchema.parse(execution.result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(payload));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      res.end(JSON.stringify({
+        ...payload,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondCampaignCommandFailure(res, error);
     });
   }
 
@@ -3700,22 +3288,21 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid campaign dispatch request', issues: parsed.error.issues }));
         return;
       }
-      const result = dispatchCampaignAgents(this.engine, campaignId, {
+      const execution = this.dispatchCommands.dispatchCampaign({
+        campaign_id: campaignId,
         max_agents: parsed.data.max_agents,
         hops: parsed.data.hops,
         skill: parsed.data.skill,
-      });
-      if (result.error) {
-        res.writeHead(result.error.includes('not found') ? 404 : 409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result));
-        return;
-      }
-      const payload = CampaignDispatchResponseSchema.parse(result);
+      }, { transport: 'dashboard' });
+      const payload = CampaignDispatchResponseSchema.parse(execution.result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(payload));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      res.end(JSON.stringify({
+        ...payload,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondDispatchCommandFailure(res, error);
     });
   }
 
@@ -3733,23 +3320,19 @@ export class DashboardServer {
         }));
         return;
       }
-      try {
-        const campaign = this.engine.createCampaign({
-          name: parsed.data.name,
-          strategy: parsed.data.strategy,
-          item_ids: parsed.data.item_ids,
-          abort_conditions: parsed.data.abort_conditions,
-        });
-        const payload = CampaignCreateResponseSchema.parse({ campaign });
-        res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(payload));
-      } catch (err: any) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      const execution = this.campaignCommands.create(
+        parsed.data,
+        { transport: 'dashboard' },
+      );
+      const payload = CampaignCreateResponseSchema.parse(execution.result);
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ...payload,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondCampaignCommandFailure(res, error);
     });
   }
 
@@ -3763,60 +3346,59 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid campaign update request', issues: parsed.error.issues }));
         return;
       }
-      try {
-        const campaign = this.engine.updateCampaign(campaignId, {
-          name: parsed.data.name,
-          abort_conditions: parsed.data.abort_conditions,
-          add_items: parsed.data.add_items,
-          remove_items: parsed.data.remove_items,
-        });
-        if (!campaign) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Campaign not found' }));
-          return;
-        }
-        const payload = CampaignUpdateResponseSchema.parse({ campaign });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(payload));
-      } catch (err: any) {
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      const execution = this.campaignCommands.update(
+        campaignId,
+        parsed.data,
+        { transport: 'dashboard' },
+      );
+      const payload = CampaignUpdateResponseSchema.parse(execution.result);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ...payload,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondCampaignCommandFailure(res, error);
     });
   }
 
   private handleCampaignDelete(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     try {
-      const deleted = this.engine.deleteCampaign(campaignId);
-      if (!deleted) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Campaign not found' }));
-        return;
-      }
-      const payload = CampaignDeleteResponseSchema.parse({ deleted: true });
+      const execution = this.campaignCommands.delete(
+        campaignId,
+        { transport: 'dashboard' },
+      );
+      const payload = CampaignDeleteResponseSchema.parse(execution.result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(payload));
-    } catch (err: any) {
-      res.writeHead(409, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message }));
+      res.end(JSON.stringify({
+        ...payload,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    } catch (error) {
+      this.respondCampaignCommandFailure(res, error);
     }
   }
 
   private handleCampaignClone(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
-    const campaign = this.engine.cloneCampaign(campaignId);
-    if (!campaign) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Campaign not found' }));
-      return;
+    try {
+      const execution = this.campaignCommands.clone(
+        campaignId,
+        { transport: 'dashboard' },
+      );
+      const payload = CampaignCloneResponseSchema.parse(execution.result);
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ...payload,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    } catch (error) {
+      this.respondCampaignCommandFailure(res, error);
     }
-    const payload = CampaignCloneResponseSchema.parse({ campaign });
-    res.writeHead(201, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(payload));
   }
 
   private async handleCampaignSplit(campaignId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -3830,29 +3412,20 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid campaign split request', issues: parsed.error.issues }));
         return;
       }
-      const parent = this.engine.getCampaign(campaignId);
-      if (!parent) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Campaign not found' }));
-        return;
-      }
-      if (parsed.data.count > parent.items.length) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Split count cannot exceed campaign item count' }));
-        return;
-      }
-      const children = this.engine.splitCampaign(campaignId, parsed.data.count);
-      if (!children) {
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Campaign cannot be split in its current state' }));
-        return;
-      }
-      const payload = CampaignSplitResponseSchema.parse({ parent_id: campaignId, children, count: children.length });
+      const execution = this.campaignCommands.split(
+        campaignId,
+        parsed.data.count,
+        { transport: 'dashboard' },
+      );
+      const payload = CampaignSplitResponseSchema.parse(execution.result);
       res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(payload));
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid request body' }));
+      res.end(JSON.stringify({
+        ...payload,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
+      }));
+    } catch (error) {
+      this.respondCampaignCommandFailure(res, error);
     }
   }
 
@@ -3974,6 +3547,314 @@ export class DashboardServer {
           : 503;
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: message, code: error.code }));
+  }
+
+  private respondDispatchCommandFailure(res: ServerResponse, error: unknown): void {
+    if (
+      error instanceof Error
+      && (error.message === 'Invalid JSON' || error.message === 'Body too large')
+    ) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    if (error instanceof z.ZodError) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.issues.map(issue => issue.message).join('; '),
+        code: 'VALIDATION_ERROR',
+      }));
+      return;
+    }
+    if (error instanceof ApplicationCommandConflictError) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        command_id: error.existing.command_id,
+      }));
+      return;
+    }
+    if (error instanceof DispatchCommandError) {
+      const { http_status: _status, ...details } = error.details;
+      const reason = error.code.toLowerCase();
+      const refusal = error.code === 'DISPATCH_CAP_EXCEEDED'
+        || error.code === 'DISPATCH_REFUSED';
+      res.writeHead(error.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ...(refusal ? { dispatched: false } : { error: error.message }),
+        reason,
+        code: error.code,
+        ...details,
+      }));
+      return;
+    }
+    this.respondMutationFailure(res, error);
+  }
+
+  private respondOperatorCommandFailure(res: ServerResponse, error: unknown): void {
+    if (error instanceof z.ZodError) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.issues.map(issue => issue.message).join('; '),
+        code: 'VALIDATION_ERROR',
+      }));
+      return;
+    }
+    if (error instanceof ApplicationCommandConflictError) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        command_id: error.existing.command_id,
+      }));
+      return;
+    }
+    if (error instanceof OperatorCommandError) {
+      res.writeHead(error.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        ...error.details,
+      }));
+      return;
+    }
+    this.respondMutationFailure(res, error);
+  }
+
+  private respondEngagementCommandFailure(
+    res: ServerResponse,
+    error: unknown,
+  ): void {
+    if (error instanceof z.ZodError) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.issues.map(issue => issue.message).join('; '),
+        code: 'VALIDATION_ERROR',
+      }));
+      return;
+    }
+    if (error instanceof ApplicationCommandConflictError) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        command_id: error.existing.command_id,
+      }));
+      return;
+    }
+    if (error instanceof EngagementCommandError) {
+      const recovery = this.engine.getPersistenceRecoveryStatus();
+      if (
+        error.http_status === 503
+        || recovery.config_recovery?.status === 'write_incomplete'
+        || recovery.config_recovery?.intent_present === true
+      ) {
+        this.respondMutationFailure(res, error);
+        return;
+      }
+      res.writeHead(error.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        ...error.details,
+      }));
+      return;
+    }
+    this.respondMutationFailure(res, error);
+  }
+
+  private respondRecoveryCommandFailure(
+    res: ServerResponse,
+    error: unknown,
+  ): void {
+    if (error instanceof z.ZodError) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.issues.map(issue => issue.message).join('; '),
+        code: 'VALIDATION_ERROR',
+      }));
+      return;
+    }
+    if (error instanceof ApplicationCommandConflictError) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        command_id: error.existing.command_id,
+      }));
+      return;
+    }
+    if (error instanceof RecoveryCommandError) {
+      res.writeHead(error.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+      }));
+      return;
+    }
+    console.error(
+      `[recovery] configuration reconciliation command failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+    );
+    this.respondMutationFailure(res, error, {
+      conflictWhen: message =>
+        /No active configuration divergence/i.test(message),
+    });
+  }
+
+  private respondGraphCorrectionCommandFailure(
+    res: ServerResponse,
+    error: unknown,
+  ): void {
+    if (error instanceof z.ZodError) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.issues.map(issue => issue.message).join('; '),
+        code: 'VALIDATION_ERROR',
+      }));
+      return;
+    }
+    if (error instanceof ApplicationCommandConflictError) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        command_id: error.existing.command_id,
+      }));
+      return;
+    }
+    if (error instanceof GraphCorrectionCommandError) {
+      if (error.http_status === 503) {
+        this.respondMutationFailure(res, error);
+        return;
+      }
+      res.writeHead(error.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+      }));
+      return;
+    }
+    this.respondMutationFailure(res, error);
+  }
+
+  private respondApprovalCommandFailure(res: ServerResponse, error: unknown): void {
+    if (error instanceof z.ZodError) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.issues.map(issue => issue.message).join('; '),
+        code: 'VALIDATION_ERROR',
+      }));
+      return;
+    }
+    if (error instanceof ApplicationCommandConflictError) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        command_id: error.existing.command_id,
+      }));
+      return;
+    }
+    if (error instanceof ApprovalCommandError) {
+      res.writeHead(error.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.code === 'APPROVAL_NOT_LIVE'
+          ? 'approval_not_live'
+          : error.message,
+        code: error.code,
+        ...error.details,
+      }));
+      return;
+    }
+    this.respondMutationFailure(res, error);
+  }
+
+  private respondAgentLifecycleCommandFailure(
+    res: ServerResponse,
+    error: unknown,
+  ): void {
+    if (
+      error instanceof Error
+      && (error.message === 'Invalid JSON' || error.message === 'Body too large')
+    ) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    if (error instanceof z.ZodError) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.issues.map(issue => issue.message).join('; '),
+        code: 'VALIDATION_ERROR',
+      }));
+      return;
+    }
+    if (error instanceof ApplicationCommandConflictError) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        command_id: error.existing.command_id,
+      }));
+      return;
+    }
+    if (error instanceof AgentLifecycleCommandError) {
+      res.writeHead(error.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        ...error.details,
+      }));
+      return;
+    }
+    this.respondMutationFailure(res, error);
+  }
+
+  private respondCampaignCommandFailure(
+    res: ServerResponse,
+    error: unknown,
+  ): void {
+    if (
+      error instanceof Error
+      && (error.message === 'Invalid JSON' || error.message === 'Body too large')
+    ) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    if (error instanceof z.ZodError) {
+      const invalidStrategy = error.issues.some(issue =>
+        issue.path.includes('strategy'));
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: invalidStrategy
+          ? 'Invalid strategy'
+          : 'Invalid campaign request',
+        issues: error.issues,
+        code: 'VALIDATION_ERROR',
+      }));
+      return;
+    }
+    if (error instanceof ApplicationCommandConflictError) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        command_id: error.existing.command_id,
+      }));
+      return;
+    }
+    if (error instanceof CampaignCommandError) {
+      res.writeHead(error.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        code: error.code,
+        ...error.details,
+      }));
+      return;
+    }
+    this.respondMutationFailure(res, error);
   }
 
   /**
@@ -4162,20 +4043,20 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      const queue = this.engine.getPendingActionQueue();
-      const result = queue.approve(actionId, body?.notes);
-      if (!result) {
-        const durable = this.getDashboardApprovalRecords({ includeResolvedRecent: true }).find(action => action.action_id === actionId);
-        res.writeHead(durable ? 409 : 404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: durable ? 'approval_not_live' : 'Action not found or already resolved' }));
-        return;
-      }
-      this.engine.resolveApprovalRequest(result);
+      const execution = this.approvalCommands.approve(
+        actionId,
+        typeof body?.notes === 'string' ? body.notes : undefined,
+        { transport: 'dashboard' },
+      );
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid request body' }));
+      res.end(JSON.stringify({
+        ...execution.result?.approval,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondApprovalCommandFailure(res, error);
     });
   }
 
@@ -4183,20 +4064,20 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      const queue = this.engine.getPendingActionQueue();
-      const result = queue.deny(actionId, body?.reason);
-      if (!result) {
-        const durable = this.getDashboardApprovalRecords({ includeResolvedRecent: true }).find(action => action.action_id === actionId);
-        res.writeHead(durable ? 409 : 404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: durable ? 'approval_not_live' : 'Action not found or already resolved' }));
-        return;
-      }
-      this.engine.resolveApprovalRequest(result);
+      const execution = this.approvalCommands.deny(
+        actionId,
+        typeof body?.reason === 'string' ? body.reason : undefined,
+        { transport: 'dashboard' },
+      );
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
-    }).catch(() => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid request body' }));
+      res.end(JSON.stringify({
+        ...execution.result?.approval,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      }));
+    }).catch(error => {
+      this.respondApprovalCommandFailure(res, error);
     });
   }
 
@@ -4216,11 +4097,23 @@ export class DashboardServer {
         return;
       }
       const notes = typeof b.notes === 'string' ? b.notes : undefined;
-      const queue = this.engine.getPendingActionQueue();
+      const invocation = getApplicationCommandInvocation();
+      const batchIdentity = invocation?.idempotency_key
+        ?? invocation?.request_id
+        ?? invocation?.command_id
+        ?? randomUUID();
       let resolved = 0;
-      for (const id of ids) {
-        const result = queue.approve(id, notes);
-        if (result) { this.engine.resolveApprovalRequest(result); resolved++; }
+      for (const [index, id] of ids.entries()) {
+        try {
+          this.approvalCommands.approve(id, notes, {
+            transport: 'dashboard',
+            command_id: randomUUID(),
+            idempotency_key: `${batchIdentity}:approve:${index}:${id}`,
+          });
+          resolved++;
+        } catch (error) {
+          if (!(error instanceof ApprovalCommandError)) throw error;
+        }
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, resolved, total: ids.length }));
@@ -4249,11 +4142,23 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'reason (non-empty) is required to deny' }));
         return;
       }
-      const queue = this.engine.getPendingActionQueue();
+      const invocation = getApplicationCommandInvocation();
+      const batchIdentity = invocation?.idempotency_key
+        ?? invocation?.request_id
+        ?? invocation?.command_id
+        ?? randomUUID();
       let resolved = 0;
-      for (const id of ids) {
-        const result = queue.deny(id, reason);
-        if (result) { this.engine.resolveApprovalRequest(result); resolved++; }
+      for (const [index, id] of ids.entries()) {
+        try {
+          this.approvalCommands.deny(id, reason, {
+            transport: 'dashboard',
+            command_id: randomUUID(),
+            idempotency_key: `${batchIdentity}:deny:${index}:${id}`,
+          });
+          resolved++;
+        } catch (error) {
+          if (!(error instanceof ApprovalCommandError)) throw error;
+        }
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, resolved, total: ids.length }));
@@ -4587,12 +4492,29 @@ export class DashboardServer {
       try {
         if (!this.requireWritablePersistence(res)) return;
         const activeEngagement = id === this.engine.getConfig().id;
-        if (activeEngagement) this.engine.updateConfig(update);
-        else this.engagementManager!.updateEngagement(id, update);
+        const execution = activeEngagement
+          ? this.engagementCommands.patchConfig(update, {
+              transport: 'dashboard',
+            })
+          : undefined;
+        if (!activeEngagement) {
+          this.engagementManager!.updateEngagement(id, update);
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ updated: true }));
+        res.end(JSON.stringify({
+          updated: true,
+          ...(execution
+            ? {
+                command_id: execution.command_id,
+                idempotency_key: execution.idempotency_key,
+                replayed: execution.replayed,
+              }
+            : {}),
+        }));
       } catch (error) {
-        if (id === this.engine.getConfig().id) this.respondMutationFailure(res, error);
+        if (id === this.engine.getConfig().id) {
+          this.respondEngagementCommandFailure(res, error);
+        }
         else this.respondEngagementManagerFailure(res, error);
       }
     }).catch(err => {
@@ -5082,13 +5004,18 @@ export class DashboardServer {
     try {
       const body = await this.readJsonBody(req);
       if (!this.requireWritablePersistence(res)) return;
-      const { reason, operations } = body;
-      if (!reason || !Array.isArray(operations) || operations.length === 0) {
+      const parsed = GraphCorrectionRequestSchema.safeParse(body);
+      if (!parsed.success) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'reason (string) and operations (array) are required' }));
+        res.end(JSON.stringify({
+          error: 'Invalid graph correction request',
+          issues: parsed.error.issues,
+        }));
         return;
       }
-      const result = this.engine.correctGraph(reason, operations, `console-${Date.now()}`);
+      const execution = this.graphCorrectionCommands.correct(parsed.data, {
+        transport: 'dashboard',
+      });
       // Broadcast full state update to all WS clients
       const state = this.buildFrontendState();
       const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
@@ -5097,10 +5024,16 @@ export class DashboardServer {
         timestamp: new Date().toISOString(),
         data: { state, graph, history_count: this.engine.getFullHistory().length },
       });
+      const payload = GraphCorrectionResultSchema.parse({
+        ...execution.result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
+      res.end(JSON.stringify(payload));
     } catch (error: unknown) {
-      this.respondMutationFailure(res, error);
+      this.respondGraphCorrectionCommandFailure(res, error);
     }
   }
 }

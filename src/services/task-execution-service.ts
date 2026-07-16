@@ -27,6 +27,7 @@ import { AgentWatchdog } from './agent-watchdog.js';
 import { DEFAULT_HEARTBEAT_TTL_SECONDS } from './agent-manager.js';
 import { HeadlessProcessRegistry } from './headless-process-registry.js';
 import { HeadlessMcpRunner, type HeadlessEndpoint, type HeadlessMcpRunnerOptions } from './headless-mcp-runner.js';
+import { ApplicationCommandService } from './application-command-service.js';
 
 /**
  * Resolve which backend should execute a task. Explicit `task.backend` wins;
@@ -337,6 +338,7 @@ export class TaskExecutionService {
     this.watchdog.stop();
     for (const t of this.timeoutTimers.values()) clearTimeout(t);
     this.timeoutTimers.clear();
+    this.interruptHeadlessTasks('task execution service stopped');
     // Best-effort, fire-and-forget (sync callers). Daemon shutdown should use
     // shutdown() to actually AWAIT termination.
     this.registry.killAll();
@@ -353,6 +355,7 @@ export class TaskExecutionService {
     this.watchdog.stop();
     for (const t of this.timeoutTimers.values()) clearTimeout(t);
     this.timeoutTimers.clear();
+    this.interruptHeadlessTasks('daemon shutdown');
     await this.registry.killAllAndWait();
   }
 
@@ -393,10 +396,53 @@ export class TaskExecutionService {
     if (task && (task.status === 'running' || task.status === 'pending')) {
       this.engine.updateAgentStatus(task_id, 'interrupted', reason);
     }
+    if (task?.application_command_id) {
+      const command = this.engine.getApplicationCommandById(task.application_command_id);
+      if (
+        command
+        && command.status !== 'succeeded'
+        && command.status !== 'failed'
+        && command.status !== 'interrupted'
+      ) {
+        new ApplicationCommandService(this.engine).transition(
+          task.application_command_id,
+          {
+            status: 'interrupted',
+            error: {
+              code: task.role === 'planner'
+                ? 'PLANNER_INTERRUPTED'
+                : 'AGENT_COMMAND_INTERRUPTED',
+              message: reason,
+            },
+            entity_refs: { planner_task_id: task.task_id ?? task.id },
+            result: {
+              phase: 'interrupted',
+              command_id: task.application_command_id,
+              planner_task_id: task.task_id ?? task.id,
+              reason,
+            },
+          },
+        );
+      }
+    }
     // Abort any approval gate this agent was blocked on, so it can't auto-fire on
     // timeout and execute a command for an agent we just killed.
     this.engine.abortApprovalsForTask(task_id, reason);
     return killed;
+  }
+
+  private interruptHeadlessTasks(reason: string): void {
+    for (const task of this.engine.getAgentTasks()) {
+      if (task.status !== 'running' && task.status !== 'pending') continue;
+      if (this.resolveBackend(task) !== 'headless_mcp') continue;
+      try {
+        this.cancelHeadless(task.id, reason);
+      } catch {
+        // Persistence may already be degraded during shutdown. Process cleanup
+        // must still proceed; durable recovery owns the unfinished task/command.
+        this.registry.kill(task.id);
+      }
+    }
   }
 
   /**

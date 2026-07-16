@@ -12,7 +12,49 @@ function register(mgr: Partial<EngagementManager>, engine: Partial<GraphEngine> 
       return { enable() {}, disable() {}, enabled: true };
     },
   } as any;
-  registerEngagementTools(server, engine as GraphEngine, mgr as EngagementManager);
+  const commands = {
+    addObjective(input: any) {
+      const objective = (engine as any).addObjective(input);
+      return {
+        command_id: 'test-objective-command',
+        idempotency_key: 'test-objective-idempotency',
+        replayed: false,
+        result: { created: true, objective },
+      };
+    },
+    updateOpsec(patch: any, reason: string) {
+      const before = { ...(engine as any).getConfig().opsec };
+      const next = { ...before, ...patch };
+      if (patch.time_window === null) next.time_window = undefined;
+      (engine as any).updateConfig({ opsec: next });
+      (engine as any).logActionEvent({
+        description: `OPSEC policy updated: ${reason}`,
+      });
+      return {
+        command_id: 'test-opsec-command',
+        idempotency_key: 'test-opsec-idempotency',
+        replayed: false,
+        result: {
+          applied: true,
+          reason,
+          before,
+          after: next,
+          weakening_warnings: [
+            ...(patch.enabled === false ? ['disabled'] : []),
+            ...(patch.approval_mode === 'auto-approve'
+              ? ['auto-approved']
+              : []),
+          ],
+        },
+      };
+    },
+  } as any;
+  registerEngagementTools(
+    server,
+    engine as GraphEngine,
+    mgr as EngagementManager,
+    commands,
+  );
   return handlers;
 }
 

@@ -6,6 +6,8 @@
 // Loopback needs no auth; remote uses a bearer token. A CLI sends no Origin
 // header, so the server's CSRF check never triggers.
 
+import { randomUUID } from 'node:crypto';
+
 export interface ClientOptions {
   url: string;
   token?: string;
@@ -35,9 +37,16 @@ export class ApiError extends Error {
 }
 
 async function request<T>(opts: ClientOptions, method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    'X-Overwatch-Client': 'cli',
+  };
   if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (body !== undefined) {
+    const commandId = randomUUID();
+    headers['Content-Type'] = 'application/json';
+    headers['X-Overwatch-Command-Id'] = commandId;
+    headers['Idempotency-Key'] = `cli:${method}:${path}:${commandId}`;
+  }
 
   let res: Response;
   try {

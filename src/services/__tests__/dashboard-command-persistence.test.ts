@@ -92,10 +92,13 @@ describe('dashboard command coordination persistence', () => {
       body: JSON.stringify({ confirm: true, plan_id: preview.plan_id }),
     });
     expect(duplicateResponse.status).toBe(200);
-    expect(await duplicateResponse.json()).toEqual({
+    expect(await duplicateResponse.json()).toMatchObject({
       executed: true,
       already_executed: true,
       results: confirmation.results,
+      command_id: expect.any(String),
+      idempotency_key: expect.any(String),
+      replayed: true,
     });
   });
 });

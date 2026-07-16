@@ -23,6 +23,7 @@ import { mkdirSync, writeFileSync, createWriteStream, unlinkSync, type WriteStre
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { GraphEngine } from './graph-engine.js';
+import { ApplicationCommandService } from './application-command-service.js';
 import type { ProcessTracker } from './process-tracker.js';
 import type { AgentTask } from '../types.js';
 import {
@@ -165,7 +166,17 @@ export class HeadlessMcpRunner {
       });
     } catch (error) {
       this.cleanupConfig(configPath);
+      this.failOwnedCommand(
+        task,
+        'PLANNER_RUNTIME_RESERVATION_FAILED',
+        `Planner runtime reservation failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
       if (this.mutationAllowed()) {
+        this.failOwnedCommand(
+          task,
+          'PLANNER_OWNERSHIP_SETUP_FAILED',
+          `Planner ownership setup failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
         try {
           this.engine.updateAgentStatus(
             task.id,
@@ -219,6 +230,11 @@ export class HeadlessMcpRunner {
       }
     } catch (err) {
       this.cleanupConfig(configPath);
+      this.failOwnedCommand(
+        task,
+        'PLANNER_SPAWN_FAILED',
+        `Planner spawn failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       try {
         this.engine.finalizeRuntimeRun({
           run_id: processId,
@@ -288,6 +304,7 @@ export class HeadlessMcpRunner {
         lifecycle: 'failed',
         recovery_warning: `Headless supervisor process error: ${err.message}`,
       });
+      this.failOwnedCommand(task, 'PLANNER_PROCESS_ERROR', `Planner process error: ${err.message}`);
       this.finalize(task.id, configPath, log, 'failed', `headless process error: ${err.message}`);
     });
 
@@ -358,6 +375,12 @@ export class HeadlessMcpRunner {
           : `headless agent exited without submitting a transcript (code=${targetCode ?? 'null'}, signal=${targetSignal ?? 'null'}) — work returned to the frontier`;
         this.engine.updateAgentStatus(task.id, 'interrupted', reason);
       }
+      this.finishOwnedCommandWithoutPlan(
+        task,
+        targetCode,
+        targetSignal,
+        current?.status,
+      );
     });
 
     if (!child.pid) {
@@ -375,6 +398,7 @@ export class HeadlessMcpRunner {
         recovery_warning: 'Headless supervisor spawn produced no pid.',
       });
       this.engine.updateAgentStatus(task.id, 'failed', 'headless spawn produced no pid');
+      this.failOwnedCommand(task, 'PLANNER_SPAWN_FAILED', 'Planner spawn produced no pid.');
       return null;
     }
 
@@ -393,6 +417,11 @@ export class HeadlessMcpRunner {
         reason: error instanceof Error ? error.message : String(error),
       });
       if (this.mutationAllowed()) {
+        this.failOwnedCommand(
+          task,
+          'PLANNER_OWNERSHIP_SETUP_FAILED',
+          `Planner ownership setup failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
         try {
           this.engine.updateAgentStatus(
             task.id,
@@ -446,6 +475,18 @@ export class HeadlessMcpRunner {
     };
     const publishTargetLaunch = (targetPid: number | undefined): void => {
       this.engine.markRuntimeRunLaunched(processId, targetPid);
+      if (task.application_command_id) {
+        new ApplicationCommandService(this.engine).transition(task.application_command_id, {
+          status: 'running',
+          entity_refs: { planner_task_id: task.task_id ?? task.id },
+          result: {
+            phase: 'planning_running',
+            command_id: task.application_command_id,
+            planner_task_id: task.task_id ?? task.id,
+            launched_at: this.engine.now(),
+          },
+        });
+      }
 
       this.engine.logActionEvent({
         description: `Headless sub-agent launched for task ${task.id}`,
@@ -668,6 +709,60 @@ export class HeadlessMcpRunner {
     const current = this.engine.getTask(task_id);
     if (current && current.status === 'running') {
       this.engine.updateAgentStatus(task_id, status, summary);
+    }
+  }
+
+  private failOwnedCommand(task: AgentTask, code: string, message: string): void {
+    if (!task.application_command_id || !this.mutationAllowed()) return;
+    try {
+      new ApplicationCommandService(this.engine).transition(task.application_command_id, {
+        status: 'failed',
+        error: { code, message },
+        result: {
+          phase: 'failed',
+          command_id: task.application_command_id,
+          planner_task_id: task.task_id ?? task.id,
+          reason: message,
+        },
+      });
+    } catch {
+      // Persistence recovery remains authoritative; never mask runtime cleanup.
+    }
+  }
+
+  private finishOwnedCommandWithoutPlan(
+    task: AgentTask,
+    exitCode: number | null,
+    signal: NodeJS.Signals | null,
+    taskStatus?: AgentTask['status'],
+  ): void {
+    if (!task.application_command_id || !this.mutationAllowed()) return;
+    const command = this.engine.getApplicationCommandById(task.application_command_id);
+    if (!command || command.status === 'succeeded' || command.status === 'failed' || command.status === 'interrupted') {
+      return;
+    }
+    const interrupted = taskStatus === 'interrupted';
+    const message = interrupted
+      ? 'Planner was interrupted before returning a plan.'
+      : exitCode === 0 && signal == null
+        ? 'Planner completed without returning a plan.'
+        : `Planner exited before returning a plan (code=${exitCode ?? 'null'}, signal=${signal ?? 'null'}).`;
+    try {
+      new ApplicationCommandService(this.engine).transition(task.application_command_id, {
+        status: interrupted ? 'interrupted' : 'failed',
+        error: {
+          code: interrupted ? 'PLANNER_INTERRUPTED' : 'PLANNER_NO_PLAN',
+          message,
+        },
+        result: {
+          phase: interrupted ? 'interrupted' : 'unanswerable',
+          command_id: task.application_command_id,
+          planner_task_id: task.task_id ?? task.id,
+          reason: message,
+        },
+      });
+    } catch {
+      // The unfinished durable command will be reconciled on restart.
     }
   }
 }

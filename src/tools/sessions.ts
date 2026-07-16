@@ -12,6 +12,11 @@ import { withErrorBoundary } from './error-boundary.js';
 import { isHostInScope as isScopedHostInScope, isIPv6, isIPv4 } from '../services/cidr.js';
 import { registerMockServiceCore } from './operator-infra.js';
 import { actionIdOrUuid } from '../services/deterministic-id.js';
+import {
+  SESSION_COMMAND_TERMINAL,
+  SessionCommandService,
+  buildSessionRequestFingerprint,
+} from '../services/session-command-service.js';
 
 const defaultValidationSchema = z.object({
   technique: z.string().min(1).describe('Technique label applied to every send_to_session call (e.g. "lateral_movement", "post_exploit").'),
@@ -46,7 +51,12 @@ function isHostInScope(host: string, engine: GraphEngine): boolean {
   return isScopedHostInScope(host, scope);
 }
 
-export function registerSessionTools(server: McpServer, sessionManager: SessionManager, engine: GraphEngine): void {
+export function registerSessionTools(
+  server: McpServer,
+  sessionManager: SessionManager,
+  engine: GraphEngine,
+  sessionCommands = new SessionCommandService(engine),
+): void {
 
   // ============================================================
   // Tool: open_session
@@ -490,6 +500,9 @@ Result fields include action_id, evidence_id, validation_result, plus completion
         target_node: z.string().optional().describe('Override target node for this command.'),
         allow_unverified_scope: z.boolean().optional().describe('Override allow_unverified_scope for this command.'),
         noise_estimate: z.number().optional().describe('Per-command noise estimate (records OPSEC noise; enforced only when OPSEC is enabled).'),
+        action_id: z.string().min(1).optional().describe('Stable action ID for this instrumented session command.'),
+        command_id: z.string().min(1).optional().describe('Stable application-command ID for status correlation and safe retries.'),
+        idempotency_key: z.string().min(1).optional().describe('Stable retry key. Identical retries return the original captured result without sending again.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -503,9 +516,47 @@ Result fields include action_id, evidence_id, validation_result, plus completion
         session_id, command, timeout_ms, idle_ms, wait_for, agent_id, force,
         technique: callTechnique, target_ip: callTargetIp, target_url: callTargetUrl,
         target_node: callTargetNode, allow_unverified_scope: callAllowUnverified,
-        noise_estimate,
+        noise_estimate, action_id, command_id, idempotency_key,
       } = params;
+      const actorResolution = agent_id
+        ? engine.resolveAgentTaskReference(agent_id)
+        : undefined;
+      const actorTaskId = actorResolution?.status === 'exact'
+        || actorResolution?.status === 'unique_legacy_label'
+        ? actorResolution.task.task_id ?? actorResolution.task.id
+        : null;
+      const descriptor = {
+        session_id,
+        action_id,
+        agent_id,
+        command_length: command.length,
+        request_fingerprint: buildSessionRequestFingerprint({
+          session_id,
+          command,
+          wait_for,
+          timeout_ms,
+          idle_ms,
+          force,
+          technique: callTechnique,
+          target_ip: callTargetIp,
+          target_url: callTargetUrl,
+          target_node: callTargetNode,
+          allow_unverified_scope: callAllowUnverified === true,
+          noise_estimate,
+        }),
+        timeout_ms,
+        idle_ms,
+        has_wait_for: wait_for !== undefined,
+        force,
+        technique: callTechnique,
+        target_ip: callTargetIp,
+        has_target_url: callTargetUrl !== undefined,
+        target_node: callTargetNode,
+        allow_unverified_scope: callAllowUnverified === true,
+        noise_estimate,
+      };
 
+      return sessionCommands.execute(descriptor, async (bindActionId) => {
       const session = sessionManager.getSession(session_id);
       if (!session) {
         return {
@@ -557,7 +608,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
 
       // Compute deterministic action_id when the engagement carries a nonce.
       const cfg = engine.getConfig();
-      const normalizedActionId = actionIdOrUuid(
+      const normalizedActionId = action_id || actionIdOrUuid(
         cfg.engagement_nonce
           ? {
             engagement_nonce: cfg.engagement_nonce,
@@ -568,6 +619,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
           }
           : null,
       );
+      bindActionId(normalizedActionId);
 
       // ---- 1. Validation ----
       const v = engine.validateAction({
@@ -597,7 +649,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
       });
 
       if (!v.valid) {
-        engine.logActionEvent({
+        const terminalActionInput: Parameters<GraphEngine['logActionEvent']>[0] = {
           description: `Refused to send to session: ${command}`,
           agent_id: effective.agent_id,
           action_id: normalizedActionId,
@@ -609,8 +661,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
           target_ips: targetIpsForEvent,
           result_classification: 'failure',
           details: { ...generationDetails, reason: 'validation_failed', validation_errors: v.errors },
-        });
-        engine.persist();
+        };
         return {
           content: [{
             type: 'text',
@@ -624,6 +675,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
             }, null, 2),
           }],
           isError: true,
+          [SESSION_COMMAND_TERMINAL]: terminalActionInput,
         };
       }
 
@@ -670,7 +722,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
         spawnErrorCode = err && typeof err === 'object' && 'code' in err
           ? String((err as { code?: unknown }).code ?? '')
           : undefined;
-        engine.logActionEvent({
+        const terminalActionInput: Parameters<GraphEngine['logActionEvent']>[0] = {
           description: `send_to_session failed: ${command}`,
           agent_id: effective.agent_id,
           action_id: normalizedActionId,
@@ -687,8 +739,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
             spawn_error: spawnError,
             ...(spawnErrorCode ? { code: spawnErrorCode } : {}),
           },
-        });
-        engine.persist();
+        };
         return {
           content: [{
             type: 'text',
@@ -701,6 +752,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
             }, null, 2),
           }],
           isError: true,
+          [SESSION_COMMAND_TERMINAL]: terminalActionInput,
         };
       }
 
@@ -728,7 +780,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
         connection_id: sendResult.connection_id,
         connection_generation: sendResult.connection_generation,
       };
-      engine.logActionEvent({
+      const terminalActionInput: Parameters<GraphEngine['logActionEvent']>[0] = {
         description: `send_to_session: ${command}`,
         agent_id: effective.agent_id,
         action_id: normalizedActionId,
@@ -751,8 +803,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
           reason: !succeeded ? terminalReason : undefined,
           invoking_tool: 'send_to_session',
         },
-      });
-      engine.persist();
+      };
 
       return {
         content: [{
@@ -765,7 +816,14 @@ Result fields include action_id, evidence_id, validation_result, plus completion
             warnings: v.warnings.length > 0 ? v.warnings : undefined,
           }, null, 2),
         }],
+        [SESSION_COMMAND_TERMINAL]: terminalActionInput,
       };
+      }, {
+        command_id,
+        idempotency_key,
+        actor_task_id: actorTaskId,
+        action_id,
+      });
     }),
   );
 

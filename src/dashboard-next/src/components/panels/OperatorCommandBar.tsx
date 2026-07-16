@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import * as api from '../../lib/api';
 import { cn } from '../../lib/utils';
 import { POLL } from '../../lib/polling';
+import { projectPlannerCommand } from '../../lib/planner-command-state';
 import { ActionButton } from '../shared/primitives';
 
 // Phase 3A NL operator cockpit: type a plain-English command → it becomes a
@@ -13,14 +14,20 @@ type Phase =
   | { kind: 'idle' }
   | { kind: 'previewing' }
   | { kind: 'preview'; planId: string; summary: string; ops: api.OperatorOp[] }
-  | { kind: 'planning' }
+  | {
+      kind: 'planning';
+      commandId: string;
+      plannerTaskId?: string;
+      phase: 'planning_queued' | 'planning_running';
+      cancelError?: string;
+    }
   | { kind: 'proposed'; plan: api.ProposedPlan }
   | { kind: 'executing' }
   | { kind: 'result'; ok: boolean; text: string }
   | { kind: 'answer'; answer: api.QueryAnswer }
   | { kind: 'error'; text: string };
 
-const POLL_MAX_TRIES = 45; // ~90s for a planner to return
+const ACTIVE_PLANNER_COMMAND_KEY = 'overwatch.dashboard.activePlannerCommand';
 
 function describeOp(op: api.OperatorOp): string {
   switch (op.op) {
@@ -36,33 +43,122 @@ function describeOp(op: api.OperatorOp): string {
 export function OperatorCommandBar() {
   const [command, setCommand] = useState('');
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollGenerationRef = useRef(0);
+  const pollAbortRef = useRef<AbortController | null>(null);
 
   const clearPoll = useCallback(() => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    pollGenerationRef.current += 1;
+    if (pollRef.current) {
+      clearTimeout(pollRef.current);
+      pollRef.current = null;
+    }
+    pollAbortRef.current?.abort();
+    pollAbortRef.current = null;
   }, []);
   useEffect(() => () => clearPoll(), [clearPoll]);
 
-  const startPolling = useCallback((plannerTaskId: string) => {
+  const clearStoredPlanner = useCallback(() => {
+    try { sessionStorage.removeItem(ACTIVE_PLANNER_COMMAND_KEY); } catch { /* storage can be unavailable */ }
+  }, []);
+
+  const startPolling = useCallback((commandId: string, plannerTaskId?: string) => {
     clearPoll();
-    let tries = 0;
-    pollRef.current = setInterval(() => {
-      tries += 1;
-      api.getProposedPlans().then(({ plans }) => {
-        // Correlate by the dispatched planner's task id: /api/plans returns ALL
-        // open plans (newest-first, 10-min TTL), so plans[0] could be a stale or
-        // another command's plan. Only latch the plan OUR planner produced.
-        const match = plans.find(p => p.source_task_id === plannerTaskId);
-        if (match) {
-          clearPoll();
-          setPhase({ kind: 'proposed', plan: match });
-        } else if (tries >= POLL_MAX_TRIES) {
-          clearPoll();
-          setPhase({ kind: 'error', text: 'The planner did not return a plan in time.' });
+    const generation = pollGenerationRef.current;
+    const controller = new AbortController();
+    pollAbortRef.current = controller;
+    try {
+      sessionStorage.setItem(
+        ACTIVE_PLANNER_COMMAND_KEY,
+        JSON.stringify({ commandId, plannerTaskId }),
+      );
+    } catch { /* the durable server record remains authoritative */ }
+    const schedule = () => {
+      if (pollGenerationRef.current !== generation) return;
+      pollRef.current = setTimeout(() => {
+        void reconcile();
+      }, POLL.PLAN_POLL_MS);
+    };
+    const reconcile = async () => {
+      const requestController = new AbortController();
+      const abortRequest = () => requestController.abort();
+      controller.signal.addEventListener('abort', abortRequest, { once: true });
+      const requestTimeout = setTimeout(() => requestController.abort(), 10_000);
+      try {
+        const { command: commandRecord } = await api.getApplicationCommand(
+          commandId,
+          requestController.signal,
+        );
+        if (pollGenerationRef.current !== generation) return;
+        const projected = projectPlannerCommand(commandRecord, plannerTaskId);
+        if (projected.kind === 'planning') {
+          setPhase(previous => ({
+            kind: 'planning',
+            commandId,
+            plannerTaskId: projected.plannerTaskId,
+            phase: projected.phase,
+            ...(previous.kind === 'planning'
+              && previous.commandId === commandId
+              && previous.cancelError
+              ? { cancelError: previous.cancelError }
+              : {}),
+          }));
+          schedule();
+          return;
         }
-      }).catch(() => { /* transient — keep polling */ });
-    }, POLL.PLAN_POLL_MS);
-  }, [clearPoll]);
+        if (projected.kind === 'proposed') {
+          clearPoll();
+          clearStoredPlanner();
+          setPhase({ kind: 'proposed', plan: projected.plan });
+          return;
+        }
+        clearPoll();
+        clearStoredPlanner();
+        setPhase(projected);
+      } catch (error) {
+        if (pollGenerationRef.current !== generation || controller.signal.aborted) return;
+        if (error instanceof api.DashboardApiError && error.status === 404) {
+          clearPoll();
+          clearStoredPlanner();
+          setPhase({
+            kind: 'error',
+            text: 'The saved planner command no longer exists. Send the command again.',
+          });
+          return;
+        }
+        if (
+          error instanceof api.DashboardApiError
+          && (error.status === 401 || error.status === 403)
+        ) {
+          clearPoll();
+          clearStoredPlanner();
+          setPhase({
+            kind: 'error',
+            text: 'Planner status authorization failed. Reopen the dashboard with a valid token.',
+          });
+          return;
+        }
+        schedule();
+      } finally {
+        clearTimeout(requestTimeout);
+        controller.signal.removeEventListener('abort', abortRequest);
+      }
+    };
+    void reconcile();
+  }, [clearPoll, clearStoredPlanner]);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(ACTIVE_PLANNER_COMMAND_KEY);
+      if (!raw) return;
+      const restored = JSON.parse(raw) as { commandId?: unknown; plannerTaskId?: unknown };
+      if (typeof restored.commandId !== 'string') return;
+      startPolling(
+        restored.commandId,
+        typeof restored.plannerTaskId === 'string' ? restored.plannerTaskId : undefined,
+      );
+    } catch { /* ignore malformed/unavailable transient browser storage */ }
+  }, [startPolling]);
 
   const submit = useCallback(async () => {
     const text = command.trim();
@@ -77,11 +173,20 @@ export function OperatorCommandBar() {
         setCommand('');
       } else if (res.plan_id && res.ops.length > 0) {
         setPhase({ kind: 'preview', planId: res.plan_id, summary: res.summary, ops: res.ops });
-      } else if (res.needs_planner && res.planner_task_id) {
-        // A planner was dispatched (planner_task_id is only set when the headless
-        // runtime is available) — poll for the plan it produces.
-        setPhase({ kind: 'planning' });
-        startPolling(res.planner_task_id);
+      } else if (res.needs_planner && res.planner_plan) {
+        clearStoredPlanner();
+        setPhase({ kind: 'proposed', plan: res.planner_plan });
+      } else if (res.needs_planner && res.command_id) {
+        // The durable command distinguishes queued, launched, plan-ready, and
+        // terminal failure. It survives navigation/restart and has no false
+        // wall-clock timeout while the planner is waiting for a runtime slot.
+        setPhase({
+          kind: 'planning',
+          commandId: res.command_id,
+          plannerTaskId: res.planner_task_id,
+          phase: res.planner_status === 'running' ? 'planning_running' : 'planning_queued',
+        });
+        startPolling(res.command_id, res.planner_task_id);
       } else if (res.needs_planner) {
         setPhase({ kind: 'error', text: 'Natural-language planning needs the headless runtime (daemon mode). Use a direct command, e.g. "pause <agent>" or "scan 10.0.0.0/24".' });
       } else {
@@ -90,7 +195,7 @@ export function OperatorCommandBar() {
     } catch (err) {
       setPhase({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
     }
-  }, [command, startPolling]);
+  }, [clearStoredPlanner, command, startPolling]);
 
   const confirm = useCallback(async (planId: string) => {
     setPhase({ kind: 'executing' });
@@ -111,6 +216,37 @@ export function OperatorCommandBar() {
     try { await api.denyCommandPlan(planId); } catch { /* best-effort */ }
     setPhase({ kind: 'idle' });
   }, []);
+
+  const cancelPlanning = useCallback(async (
+    commandId: string,
+    plannerTaskId: string | undefined,
+  ) => {
+    if (!plannerTaskId) {
+      setPhase(previous => previous.kind === 'planning'
+        && previous.commandId === commandId
+        ? {
+            ...previous,
+            cancelError: 'The planner task identity is not available yet; status tracking will continue.',
+          }
+        : previous);
+      return;
+    }
+    try {
+      await api.cancelAgent(plannerTaskId);
+      clearPoll();
+      clearStoredPlanner();
+      setPhase({ kind: 'idle' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setPhase(previous => previous.kind === 'planning'
+        && previous.commandId === commandId
+        ? {
+            ...previous,
+            cancelError: `Cancel failed: ${message}. Planner status tracking is still active.`,
+          }
+        : previous);
+    }
+  }, [clearPoll, clearStoredPlanner]);
 
   // Reconcile the transient "Confirm & run" card against server state: if this
   // plan was confirmed/dismissed elsewhere (e.g. from the persistent "Needs you"
@@ -133,7 +269,11 @@ export function OperatorCommandBar() {
     return () => clearInterval(timer);
   }, [phase]);
 
-  const reset = useCallback(() => { clearPoll(); setPhase({ kind: 'idle' }); }, [clearPoll]);
+  const reset = useCallback(() => {
+    clearPoll();
+    clearStoredPlanner();
+    setPhase({ kind: 'idle' });
+  }, [clearPoll, clearStoredPlanner]);
 
   const busy = phase.kind === 'previewing' || phase.kind === 'executing';
 
@@ -173,7 +313,23 @@ export function OperatorCommandBar() {
       )}
 
       {phase.kind === 'planning' && (
-        <div className="text-xs text-muted-foreground">Planner is reasoning over the graph… a proposed plan will appear here.</div>
+        <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+          <span>
+            {phase.phase === 'planning_queued'
+              ? 'Planner is queued and will start when an agent slot is available…'
+              : 'Planner is reasoning over the graph… a proposed plan will appear here.'}
+          </span>
+          <ActionButton
+            onClick={() => void cancelPlanning(phase.commandId, phase.plannerTaskId)}
+            variant="ghost"
+            size="xs"
+          >
+            Cancel
+          </ActionButton>
+          {phase.cancelError && (
+            <span className="text-[11px] text-destructive">{phase.cancelError}</span>
+          )}
+        </div>
       )}
 
       {phase.kind === 'proposed' && (

@@ -1,13 +1,16 @@
 import { z } from 'zod';
 import { FRONTIER_TYPES } from '../contracts/dashboard-v1.js';
-import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isIpInCidr } from '../services/cidr.js';
-import { recommendArchetype, isArchetypeId, type AgentArchetypeId, type RecommendInput } from '../services/agent-archetypes.js';
 import type { ActivityLogEntry } from '../services/engine-context.js';
 import type { AgentTask } from '../types.js';
+import {
+  DispatchCommandError,
+  DispatchCommandService,
+} from '../services/dispatch-command-service.js';
+import { AgentLifecycleCommandService } from '../services/agent-lifecycle-command-service.js';
 
 interface PriorActionOnScope {
   action_id?: string;
@@ -85,6 +88,8 @@ function buildPriorActionsForCidr(engine: GraphEngine, cidr: string | undefined)
 }
 
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
+  const dispatchCommands = new DispatchCommandService(engine);
+  const lifecycleCommands = new AgentLifecycleCommandService(engine);
 
   // ============================================================
   // Tool: register_agent
@@ -139,108 +144,36 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         };
       }
       const agent_id = agent_label ?? legacyAgentId!;
-      if (frontier_item_id) {
-        const existing = engine.getRunningTaskForFrontierItem(frontier_item_id);
-        if (existing) {
-          return {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                ...taskWireIdentity(existing),
-                status: existing.status,
-                skipped_existing: true,
-                message: `A running agent is already assigned to ${frontier_item_id}`,
-              }, null, 2)
-            }]
-          };
-        }
-      }
-
-      // Eagerly snapshot seed node IDs when caller omits them, so the scope
-      // survives frontier changes between registration and get_agent_context.
-      let resolvedNodeIds = subgraph_node_ids || [];
-      let scope_warning: string | undefined;
-      if (frontier_item_id && resolvedNodeIds.length === 0 && !frontier_item_id.startsWith('frontier-discovery-')) {
-        resolvedNodeIds = engine.computeSubgraphNodeIds(frontier_item_id, 2);
-        if (resolvedNodeIds.length === 0) {
-          scope_warning = `Frontier item ${frontier_item_id} resolved to zero seed nodes — the agent may lack graph context`;
-        }
-      }
-
-      const resolvedArchetype = resolveDispatchArchetype(engine, {
-        explicit: archetype,
-        frontierItem: frontier_item_id ? engine.getFrontierItem(frontier_item_id) : undefined,
-      });
-      const task = buildTask(agent_id, frontier_item_id, resolvedNodeIds, skill, undefined, resolvedArchetype);
-      const reg = engine.registerAgent(task);
-      if (reg.cap_exceeded) {
-        // Operator-policy dispatch cap: this subnet/target is at its concurrent
-        // target-facing agent limit. Deferral, not failure — retry when one frees.
-        const c = reg.cap_exceeded;
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              error: 'dispatch_cap_exceeded',
-              cap_scope: c.scope,
-              cap_key: c.key,
-              limit: c.limit,
-              current: c.current,
-              message: `Dispatch cap: ${c.current}/${c.limit} target-facing agents already on ${c.scope} ${c.key}. Wait for one to finish or raise the operator policy limit.`,
-            }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-      if (!reg.ok) {
-        // Two refusal modes. node_conflict: a same-archetype agent is already at this
-        // node (a node-scoped dispatch with no frontier item can't take a lease, so
-        // it's node-deduped). lease_conflict (P1.4): another task holds this frontier
-        // item's lease. Surface each accurately so the caller picks a different item/
-        // node rather than racing or seeing a bogus "frontier item undefined".
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify(reg.node_conflict
-              ? {
-                  ok: false,
-                  error: 'node_dispatch_conflict',
-                  node_id: reg.node_conflict.node_id,
-                  existing_task_id: reg.node_conflict.existing_task_id,
-                  existing_agent_id: reg.node_conflict.existing_agent_id,
-                  message: `Node ${reg.node_conflict.node_id} is already being worked by agent ${reg.node_conflict.existing_agent_id}. Pick a different node or wait for it to finish.`,
-                }
-              : {
-                  ok: false,
-                  error: 'frontier_lease_conflict',
-                  frontier_item_id,
-                  existing_task_id: reg.lease_conflict?.existing_task_id,
-                  existing_agent_id: reg.lease_conflict?.existing_agent_id,
-                  message: `Frontier item ${frontier_item_id} is already leased by task ${reg.lease_conflict?.existing_task_id}. Pick a different item.`,
-                }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-
-      const response: Record<string, unknown> = {
-        task_id: task.id,
+      const execution = dispatchCommands.register({
         agent_label: agent_id,
-        id: task.id,
-        agent_id,
-        status: 'running',
-        archetype: resolvedArchetype,
-        scope_node_count: resolvedNodeIds.length,
-        message: `Agent ${agent_id} registered${frontier_item_id ? ` for task ${frontier_item_id}` : ''} as ${resolvedArchetype}`,
-      };
-      if (scope_warning) response.scope_warning = scope_warning;
-
+        frontier_item_id,
+        target_node_ids: subgraph_node_ids,
+        skill,
+        archetype,
+      }, { transport: 'mcp' });
+      const body = execution.result!.body;
+      const task = body.task as AgentTask | undefined;
+      if (body.dispatched !== true || !task) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(body, null, 2) }],
+          isError: true,
+        };
+      }
       return {
         content: [{
-          type: 'text',
-          text: JSON.stringify(response, null, 2)
-        }]
+          type: 'text', text: JSON.stringify({
+            ...taskWireIdentity(task),
+            status: task.status,
+            archetype: task.archetype,
+            scope_node_count: task.subgraph_node_ids.length,
+            ...(body.skipped_existing === true
+              ? { skipped_existing: true }
+              : {}),
+            command_id: execution.command_id,
+            replayed: execution.replayed,
+            message: `Agent ${task.agent_label ?? task.agent_id} registered${frontier_item_id ? ` for task ${frontier_item_id}` : ''} as ${task.archetype}`,
+          }, null, 2),
+        }],
       };
     })
   );
@@ -274,108 +207,20 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
       }
     },
     withErrorBoundary('dispatch_agents', async ({ count, strategy, types, skill, archetype, hops }) => {
-      const frontier = engine.computeFrontier();
-      const { passed } = engine.filterFrontier(frontier);
-      const typeOrder = types && types.length > 0 ? types : [...FRONTIER_TYPES];
-      const allowedTypes = new Set(typeOrder);
-
-      let candidates = passed.filter((item) => allowedTypes.has(item.type as typeof FRONTIER_TYPES[number]));
-      if (strategy === 'by_type') {
-        const queues = new Map(typeOrder.map((type) => [type, candidates.filter((item) => item.type === type)]));
-        const ordered: typeof candidates = [];
-        let madeProgress = true;
-        while (madeProgress) {
-          madeProgress = false;
-          for (const type of typeOrder) {
-            const queue = queues.get(type);
-            if (queue && queue.length > 0) {
-              ordered.push(queue.shift()!);
-              madeProgress = true;
-            }
-          }
-        }
-        candidates = ordered;
-      }
-
-      const total_candidates = candidates.length;
-      const dispatched: Array<{ task_id: string; agent_label: string; id: string; agent_id: string; frontier_item_id: string; frontier_type: string; archetype: string; skill?: string }> = [];
-      const skipped_existing: Array<{ frontier_item_id: string; task_id: string; agent_label: string; id: string; agent_id: string }> = [];
-      const skipped_unscoped: Array<{ frontier_item_id: string; frontier_type: string }> = [];
-      const skipped_lease_conflict: Array<{ frontier_item_id: string; frontier_type: string; existing_task_id?: string; existing_agent_id?: string }> = [];
-      const skipped_dispatch_cap: Array<{ frontier_item_id: string; frontier_type: string; cap_scope: string; cap_key: string; limit: number; current: number }> = [];
-
-      for (const item of candidates) {
-        if (dispatched.length >= count) break;
-
-        const existing = engine.getRunningTaskForFrontierItem(item.id);
-        if (existing) {
-          skipped_existing.push({
-            frontier_item_id: item.id,
-            ...taskWireIdentity(existing),
-          });
-          continue;
-        }
-
-        const scope = engine.computeSubgraphNodeIds(item.id, hops);
-        if (scope.length === 0 && item.type !== 'network_discovery') {
-          skipped_unscoped.push({
-            frontier_item_id: item.id,
-            frontier_type: item.type,
-          });
-          continue;
-        }
-
-        const itemArchetype = resolveDispatchArchetype(engine, { explicit: archetype, frontierItem: item });
-        const agent_id = `agent-${item.type.replace(/[^a-z]/g, '').slice(0, 6)}-${uuidv4().slice(0, 8)}`;
-        const task = buildTask(agent_id, item.id, scope, skill, undefined, itemArchetype);
-        // F2: registerAgent may refuse the task if the frontier lease was
-        // grabbed by another caller in the same window. When that happens
-        // the task is NOT inserted, so we must NOT report it as dispatched.
-        const reg = engine.registerAgent(task);
-        if (reg.cap_exceeded) {
-          skipped_dispatch_cap.push({
-            frontier_item_id: item.id,
-            frontier_type: item.type,
-            cap_scope: reg.cap_exceeded.scope,
-            cap_key: reg.cap_exceeded.key,
-            limit: reg.cap_exceeded.limit,
-            current: reg.cap_exceeded.current,
-          });
-          continue;
-        }
-        if (!reg.ok) {
-          skipped_lease_conflict.push({
-            frontier_item_id: item.id,
-            frontier_type: item.type,
-            existing_task_id: reg.lease_conflict?.existing_task_id,
-            existing_agent_id: reg.lease_conflict?.existing_agent_id,
-          });
-          continue;
-        }
-        dispatched.push({
-          task_id: task.id,
-          agent_label: task.agent_id,
-          id: task.id,
-          agent_id: task.agent_id,
-          frontier_item_id: item.id,
-          frontier_type: item.type,
-          archetype: itemArchetype,
-          skill,
-        });
-      }
-
-      const result: Record<string, unknown> = {
-        requested: count,
+      const execution = dispatchCommands.dispatchFrontierBatch({
+        count,
         strategy,
-        types: [...typeOrder],
-        total_candidates,
-        dispatched,
-        skipped_existing,
-        skipped_unscoped,
-        skipped_lease_conflict,
-        skipped_dispatch_cap,
+        types,
+        skill,
+        archetype,
+        hops,
+      }, { transport: 'mcp' });
+      const result: Record<string, unknown> = {
+        ...execution.result,
+        command_id: execution.command_id,
+        replayed: execution.replayed,
       };
-      if (dispatched.length === 0) {
+      if (execution.result?.dispatched.length === 0) {
         result.warning = 'No agents dispatched — all candidates were skipped or filtered';
       }
 
@@ -549,12 +394,6 @@ Fields:
       },
     },
     withErrorBoundary('submit_agent_transcript', async ({ task_id, agent_id, summary, transcript_jsonl, key_thought_event_ids, key_finding_ids }) => {
-      // Resolve the target task. Historically this tool only accepted a
-      // parameter named `agent_id` but used it as a *task* ID, which
-      // tripped operators up since register_agent returns both. We now
-      // prefer `task_id`, accept `agent_id` as a legacy alias, and as a
-      // last resort resolve a legacy agent label only when it uniquely
-      // identifies one task. Duplicate labels are reported as ambiguous.
       const lookupId = task_id ?? agent_id;
       if (!lookupId) {
         return {
@@ -565,76 +404,20 @@ Fields:
           isError: true,
         };
       }
-      const resolution = engine.resolveAgentTaskReference(lookupId);
-      if (resolution.status === 'ambiguous_legacy_label') {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              error: `Agent label is ambiguous: ${lookupId}`,
-              candidate_task_ids: resolution.candidate_task_ids,
-              hint: 'Pass the exact task_id returned by register_agent.',
-            }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-      if (resolution.status === 'missing') {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({ error: `Agent task not found: ${lookupId}` }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-      const task = resolution.task;
-      const resolvedTaskId = task.task_id ?? task.id;
-      const resolvedAgentId = task.agent_label ?? task.agent_id;
-
-      let evidence_id: string | undefined;
-      let transcript_bytes = 0;
-      if (transcript_jsonl && transcript_jsonl.length > 0) {
-        evidence_id = engine.getEvidenceStore().store({
-          evidence_type: 'log',
-          filename: 'agent_transcript.jsonl',
-          content: transcript_jsonl,
-        });
-        transcript_bytes = transcript_jsonl.length;
-      }
-
-      const details: Record<string, unknown> = {
+      const execution = lifecycleCommands.submitTranscript({
+        task_reference: lookupId,
         summary,
-        transcript_bytes,
-      };
-      if (evidence_id) details.evidence_id = evidence_id;
-      if (key_thought_event_ids && key_thought_event_ids.length > 0) details.key_thought_event_ids = key_thought_event_ids;
-      if (key_finding_ids && key_finding_ids.length > 0) details.key_finding_ids = key_finding_ids;
-
-      const event = engine.logActionEvent({
-        description: `Agent ${resolvedAgentId} submitted transcript: ${summary.slice(0, 120)}${summary.length > 120 ? '…' : ''}`,
-        event_type: 'agent_transcript_submitted',
-        category: 'agent',
-        provenance: 'agent',
-        agent_id: resolvedAgentId,
-        linked_agent_task_id: resolvedTaskId,
-        linked_finding_ids: key_finding_ids,
-        details,
-      });
-      engine.persist();
-
+        transcript_jsonl,
+        key_thought_event_ids,
+        key_finding_ids,
+      }, { transport: 'mcp' });
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
-            task_id: resolvedTaskId,
-            agent_label: resolvedAgentId,
-            id: resolvedTaskId,
-            agent_id: resolvedAgentId,
-            event_id: event.event_id,
-            evidence_id,
-            transcript_bytes,
-            submitted: true,
+            ...execution.result,
+            command_id: execution.command_id,
+            replayed: execution.replayed,
           }, null, 2),
         }],
       };
@@ -663,73 +446,19 @@ Fields:
       }
     },
     withErrorBoundary('update_agent', async ({ task_id, status, summary }) => {
-      // F6: validate task existence BEFORE running the transcript-missing
-      // check. A typoed task_id used to pollute the activity log with a
-      // missing-transcript warning for a task that never existed.
-      const task = engine.getTask(task_id);
-      if (!task) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({ error: `Task not found: ${task_id}` }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-
-      // Visibility hook: warn (non-blocking) when an agent reaches a terminal
-      // state without first calling submit_agent_transcript. Exact task linkage
-      // wins; a legacy label-only event is accepted only when that label is
-      // unique, never across duplicate task labels.
-      let transcript_warning_emitted = false;
-      if (status === 'completed' || status === 'failed') {
-        const agentLabel = task.agent_label ?? task.agent_id;
-        const uniqueLabel = engine.getAgentTasks()
-          .filter(candidate => (candidate.agent_label ?? candidate.agent_id) === agentLabel).length === 1;
-        const history = engine.getFullHistory();
-        const submitted = history.some(e =>
-          e.event_type === 'agent_transcript_submitted'
-          && (
-            e.linked_agent_task_id === task_id
-            || e.agent_id === task_id
-            || (uniqueLabel && e.agent_id === agentLabel)
-          ),
-        );
-        if (!submitted) {
-          engine.logActionEvent({
-            description: `Agent ${task_id} closed with status "${status}" without calling submit_agent_transcript first`,
-            event_type: 'instrumentation_warning',
-            category: 'system',
-            provenance: 'system',
-            linked_agent_task_id: task_id,
-            details: { warning: 'missing_agent_transcript', task_id, status },
-          });
-          transcript_warning_emitted = true;
-        }
-      }
-
-      const updated = engine.updateAgentStatus(task_id, status, summary);
-      if (!updated) {
-        // updateAgentStatus can also reject (e.g. terminal-state idempotency).
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({ error: `Task not updated: ${task_id}` }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-      const response: Record<string, unknown> = {
-        ...taskWireIdentity(task),
+      const execution = lifecycleCommands.updateStatus({
+        task_id,
         status,
         summary,
-        updated: true,
-      };
-      if (transcript_warning_emitted) response.transcript_warning = 'Call submit_agent_transcript before update_agent on terminal status to keep the primary session in the loop.';
+      }, { transport: 'mcp' });
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify(response, null, 2)
+          text: JSON.stringify({
+            ...execution.result,
+            command_id: execution.command_id,
+            replayed: execution.replayed,
+          }, null, 2)
         }]
       };
     })
@@ -762,97 +491,35 @@ its CIDR as its scoped subgraph.`,
       }
     },
     withErrorBoundary('dispatch_subnet_agents', async ({ max_agents, skill, hops: _hops }) => {
-      const state = engine.getState();
-      const cidrs = state.config.scope.cidrs;
-      if (cidrs.length === 0) {
+      try {
+        const execution = dispatchCommands.dispatchSubnets({
+          max_agents,
+          skill,
+          hops: _hops,
+        }, { transport: 'mcp' });
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({ error: 'No CIDRs in engagement scope' }, null, 2)
+            text: JSON.stringify({
+              ...execution.result,
+              command_id: execution.command_id,
+              replayed: execution.replayed,
+            }, null, 2),
           }],
-          isError: true
+        };
+      } catch (error) {
+        if (!(error instanceof DispatchCommandError)) throw error;
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: error.message,
+              code: error.code,
+            }, null, 2),
+          }],
+          isError: true,
         };
       }
-
-      const rawFrontier = engine.computeFrontier();
-      const { passed: frontier, filtered } = engine.filterFrontier(rawFrontier);
-      const dispatched: Array<{ task_id: string; agent_label: string; id: string; agent_id: string; cidr: string; existing_nodes: number; skill: string }> = [];
-      const skipped: Array<{ cidr: string; reason: string }> = [];
-
-      const graphSnapshot = engine.exportGraph();
-
-      for (const cidr of cidrs) {
-        if (dispatched.length >= max_agents) break;
-
-        // Check if a network_discovery frontier item exists AND passed OPSEC filtering
-        const slug = cidr.replace(/[./]/g, '-');
-        const frontierItemId = `frontier-discovery-${slug}`;
-        const frontierItem = frontier.find(f => f.id === frontierItemId);
-
-        // Check if it was filtered (e.g. OPSEC veto)
-        if (!frontierItem && filtered.some(f => f.item.id === frontierItemId)) {
-          skipped.push({ cidr, reason: 'filtered_by_opsec' });
-          continue;
-        }
-
-        // Skip fully-discovered CIDRs (no frontier item means fully explored)
-        if (!frontierItem) {
-          skipped.push({ cidr, reason: 'fully_discovered' });
-          continue;
-        }
-
-        // Skip CIDRs with a running agent
-        const existing = engine.getRunningTaskForFrontierItem(frontierItemId);
-        if (existing) {
-          skipped.push({ cidr, reason: `running_agent: ${existing.agent_id}` });
-          continue;
-        }
-
-        // Collect already-discovered node IDs in this CIDR
-        const nodesInCidr: string[] = [];
-        for (const node of graphSnapshot.nodes) {
-          if (node.properties.type === 'host' && node.properties.ip && isIpInCidr(node.properties.ip, cidr)) {
-            nodesInCidr.push(node.id);
-          }
-        }
-
-        const subnetArchetype = resolveDispatchArchetype(engine, { frontierItem });
-        const agent_id = `agent-subnet-${slug}-${uuidv4().slice(0, 8)}`;
-        const task = buildTask(agent_id, frontierItemId, nodesInCidr, skill, undefined, subnetArchetype);
-        // F2: registerAgent may refuse on frontier-lease conflict.
-        const reg = engine.registerAgent(task);
-        if (!reg.ok) {
-          skipped.push({
-            cidr,
-            reason: reg.cap_exceeded
-              ? `dispatch_cap: ${reg.cap_exceeded.current}/${reg.cap_exceeded.limit} on ${reg.cap_exceeded.scope} ${reg.cap_exceeded.key}`
-              : `frontier_lease_conflict${reg.lease_conflict ? `: held by task ${reg.lease_conflict.existing_task_id}` : ''}`,
-          });
-          continue;
-        }
-
-        dispatched.push({
-          task_id: task.id,
-          agent_label: agent_id,
-          id: task.id,
-          agent_id,
-          cidr,
-          existing_nodes: nodesInCidr.length,
-          skill,
-        });
-      }
-
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            requested: max_agents,
-            total_cidrs: cidrs.length,
-            dispatched,
-            skipped,
-          }, null, 2)
-        }]
-      };
     })
   );
 
@@ -888,24 +555,38 @@ Skips items that already have a running agent.`,
       }
     },
     withErrorBoundary('dispatch_campaign_agents', async ({ campaign_id, max_agents, hops, skill, archetype }) => {
-      const result = dispatchCampaignAgents(engine, campaign_id, { max_agents, hops, skill, archetype });
-
-      if (result.error) {
+      try {
+        const execution = dispatchCommands.dispatchCampaign({
+          campaign_id,
+          max_agents,
+          hops,
+          skill,
+          archetype,
+        }, { transport: 'mcp' });
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({ error: result.error, campaign_id }, null, 2)
+            text: JSON.stringify({
+              ...execution.result,
+              command_id: execution.command_id,
+              replayed: execution.replayed,
+            }, null, 2),
           }],
-          isError: true
+        };
+      } catch (error) {
+        if (!(error instanceof DispatchCommandError)) throw error;
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: error.message,
+              campaign_id,
+              code: error.code,
+            }, null, 2),
+          }],
+          isError: true,
         };
       }
-
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify(result, null, 2)
-        }]
-      };
     })
   );
 
@@ -937,91 +618,17 @@ Returns the new heartbeat timestamp on success, or an error if the task is unkno
       },
     },
     withErrorBoundary('agent_heartbeat', async ({ task_id, acknowledged_query_id }) => {
-      const currentTask = engine.getTask(task_id);
-      if (!currentTask) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({ ok: false, error: `task not found: ${task_id}` }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-      if (acknowledged_query_id) {
-        const query = engine.getAgentQueryStore().get(acknowledged_query_id);
-        const ownerTaskId = query?.owner_task_id ?? query?.task_id;
-        if (!query || ownerTaskId !== task_id || query.status !== 'answered') {
-          return {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                ok: false,
-                error: `query answer not found for task ${task_id}: ${acknowledged_query_id}`,
-              }, null, 2),
-            }],
-            isError: true,
-          };
-        }
-      }
-      const ok = engine.agentHeartbeat(task_id);
-      if (!ok) {
-        const task = engine.getTask(task_id);
-        const reason = !task
-          ? `task not found: ${task_id}`
-          : `task is already in terminal state: ${task.status}`;
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({ ok: false, error: reason }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-      const task = engine.getTask(task_id)!;
-      const acknowledgedAnswer = acknowledged_query_id
-        ? engine.getAgentQueryStore().acknowledge(acknowledged_query_id, task_id)
-        : undefined;
-      if (acknowledged_query_id && !acknowledgedAnswer) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              error: `query answer not found for task ${task_id}: ${acknowledged_query_id}`,
-            }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-      // Deliver any pending operator steering directive on the heartbeat the
-      // agent already runs — zero extra round-trips. The agent must
-      // acknowledge_agent_directive and then act on it.
-      const pending = engine.getPendingAgentDirective(task_id);
-      // 3D: also deliver an answer to a question the agent asked via ask_operator.
-      // The agent waits by heartbeating; this PEEKS (at-least-once) so a dropped
-      // heartbeat self-heals on the next beat. The agent matches pending_answer.
-      // query_id to its ask_operator query_id and acts on it once.
-      const answered = engine.getAgentQueryStore().getAnswerForTask(task_id);
-      if (answered) {
-        engine.getAgentQueryStore().markDelivered(answered.query_id, task_id);
-      }
-      const pending_answer = answered
-        ? { query_id: answered.query_id, question: answered.question, answer: answered.answer }
-        : undefined;
+      const execution = lifecycleCommands.heartbeat({
+        task_id,
+        acknowledged_query_id,
+      }, { transport: 'mcp' });
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
-            ok: true,
-            task_id,
-            agent_label: task.agent_label ?? task.agent_id,
-            id: task.task_id ?? task.id,
-            agent_id: task.agent_label ?? task.agent_id,
-            heartbeat_at: task.heartbeat_at,
-            heartbeat_ttl_seconds: task.heartbeat_ttl_seconds ?? 120,
-            ...(acknowledged_query_id ? { acknowledged_query_id } : {}),
-            ...(pending ? { pending_directive: pending } : {}),
-            ...(pending_answer ? { pending_answer } : {}),
+            ...execution.result,
+            command_id: execution.command_id,
+            replayed: execution.replayed,
           }, null, 2),
         }],
       };
@@ -1049,46 +656,20 @@ After calling this, keep calling \`agent_heartbeat({ task_id })\`; when the oper
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     withErrorBoundary('ask_operator', async ({ task_id, agent_id, question, options }) => {
-      const task = engine.getTask(task_id);
-      if (!task) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `task not found: ${task_id}` }) }],
-          isError: true,
-        };
-      }
-      const taskLabel = task.agent_label ?? task.agent_id;
-      if (agent_id && agent_id !== taskLabel) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              error: `agent_id "${agent_id}" does not match task ${task_id} (${taskLabel})`,
-            }),
-          }],
-          isError: true,
-        };
-      }
-      const query = engine.getAgentQueryStore().add({
-        owner_task_id: task.task_id ?? task.id,
-        owner_agent_label: taskLabel,
+      const execution = lifecycleCommands.askQuestion({
+        task_id,
+        agent_label: agent_id,
         question,
         options,
-      });
-      engine.logActionEvent({
-        description: `Agent asked the operator: ${question}`,
-        event_type: 'agent_query',
-        category: 'agent',
-        result_classification: 'neutral',
-        agent_id: taskLabel,
-        linked_agent_task_id: task_id,
-        details: { reason: 'agent_query', query_id: query.query_id, question, options },
-      });
+      }, { transport: 'mcp' });
+      const query = execution.result!.query;
       return {
         content: [{ type: 'text', text: JSON.stringify({
           ok: true,
           query_id: query.query_id,
           status: 'open',
+          command_id: execution.command_id,
+          replayed: execution.replayed,
           note: 'Keep heartbeating; the answer arrives as pending_answer. After acting, acknowledge it with acknowledged_query_id on a later heartbeat.',
         }, null, 2) }],
       };
@@ -1126,23 +707,21 @@ A new directive supersedes any still-pending one for the task (latest instructio
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     withErrorBoundary('manage_agent_directive', async ({ task_id, kind, node_ids, frontier_types, note, issued_by }) => {
-      const task = engine.getTask(task_id);
-      if (!task) {
-        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `task not found: ${task_id}` }) }], isError: true };
-      }
-      // Directives are delivered on the agent's heartbeat, so only a running task
-      // can ever receive one. Reject otherwise (mirrors the dashboard guard) so
-      // we don't record directives that will never be delivered.
-      if (task.status !== 'running') {
-        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `task is not running (status: ${task.status}); directives are only delivered to running agents` }) }], isError: true };
-      }
-      const directive = engine.issueAgentDirective({ task_id, kind, node_ids, frontier_types, note, issued_by });
+      const execution = lifecycleCommands.issueDirective({
+        task_id,
+        kind,
+        node_ids,
+        frontier_types,
+        note,
+        issued_by,
+      }, { transport: 'mcp' });
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
-            ok: true,
-            directive,
+            ...execution.result,
+            command_id: execution.command_id,
+            replayed: execution.replayed,
             note: kind === 'stop'
               ? 'stop recorded — the task-execution service will kill the process and interrupt the task'
               : 'directive recorded — delivered to the agent on its next heartbeat',
@@ -1164,285 +743,54 @@ A new directive supersedes any still-pending one for the task (latest instructio
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     withErrorBoundary('acknowledge_agent_directive', async ({ task_id, directive_id }) => {
-      const directive = engine.acknowledgeAgentDirective(task_id, directive_id);
-      if (!directive) {
-        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'directive not found' }) }], isError: true };
-      }
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, directive }, null, 2) }] };
+      const execution = lifecycleCommands.acknowledgeDirective({
+        task_id,
+        directive_id,
+      }, { transport: 'mcp' });
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ...execution.result,
+            command_id: execution.command_id,
+            replayed: execution.replayed,
+          }, null, 2),
+        }],
+      };
     }),
   );
 }
 
-// ============================================================
-// Exported dispatch helper — used by both the MCP tool and the
-// dashboard REST endpoint so the logic lives in one place.
-// ============================================================
-
-export interface DispatchResult {
-  campaign_id: string;
-  strategy: string;
-  requested: number;
-  total_items: number;
-  dispatched: Array<{ task_id: string; agent_label: string; id: string; agent_id: string; frontier_item_id: string; scope_nodes: number; archetype: string; skill?: string }>;
-  skipped: Array<{ frontier_item_id: string; reason: string }>;
-  warning?: string;
+// Backward-compatible helper for internal callers/tests. The canonical
+// implementation lives in DispatchCommandService so every production adapter
+// receives durable idempotency and one agents+campaigns transaction.
+export type DispatchResult = import('../services/dispatch-command-service.js').CampaignAgentDispatchResponse & {
   error?: string;
-}
+};
 
 export function dispatchCampaignAgents(
   engine: GraphEngine,
   campaign_id: string,
   options: { max_agents?: number; hops?: number; skill?: string; archetype?: string } = {},
 ): DispatchResult {
-  const max_agents = options.max_agents ?? 8;
-  const hops = options.hops ?? 2;
-  const skill = options.skill;
-  const archetypeOverride = options.archetype;
-
-  const campaign = engine.getCampaign(campaign_id);
-  if (!campaign) {
-    return { campaign_id, strategy: '', requested: max_agents, total_items: 0, dispatched: [], skipped: [], error: `Campaign not found: ${campaign_id}` };
-  }
-
-  if (campaign.status === 'paused' || campaign.status === 'aborted' || campaign.status === 'completed') {
-    return { campaign_id, strategy: campaign.strategy, requested: max_agents, total_items: campaign.items.length, dispatched: [], skipped: [], error: `Campaign is ${campaign.status} — cannot dispatch agents` };
-  }
-
-  if (engine.getCampaignChildren(campaign_id).length > 0) {
+  try {
+    return new DispatchCommandService(engine).dispatchCampaign({
+      campaign_id,
+      max_agents: options.max_agents,
+      hops: options.hops,
+      skill: options.skill,
+      archetype: options.archetype,
+    }, { transport: 'system' }).result!;
+  } catch (error) {
+    const campaign = engine.getCampaign(campaign_id);
     return {
       campaign_id,
-      strategy: campaign.strategy,
-      requested: max_agents,
-      total_items: campaign.items.length,
+      strategy: campaign?.strategy ?? '',
+      requested: options.max_agents ?? 8,
+      total_items: campaign?.items.length ?? 0,
       dispatched: [],
       skipped: [],
-      error: 'Campaign has child campaigns — dispatch a child campaign instead',
+      error: error instanceof Error ? error.message : String(error),
     };
   }
-
-  // F5: defer draft activation until at least one agent has been
-  // successfully registered. Activating up front would mark the campaign
-  // 'active' even when every dispatch attempt is skipped or refused —
-  // operators then see a live campaign producing zero work.
-  const wasDraft = campaign.status === 'draft';
-
-  const dispatched: DispatchResult['dispatched'] = [];
-  const skipped: DispatchResult['skipped'] = [];
-
-  for (const itemId of campaign.items) {
-    if (dispatched.length >= max_agents) break;
-
-    // Skip items that already reached a terminal status in a prior dispatch.
-    // Without this guard, calling dispatch_campaign_agents twice on the same
-    // campaign re-issues completed work and can re-run scans / credential
-    // checks that an earlier agent already finished.
-    const itemStatus = campaign.item_status?.[itemId];
-    if (itemStatus === 'succeeded' || itemStatus === 'failed') {
-      skipped.push({ frontier_item_id: itemId, reason: `already_${itemStatus}` });
-      continue;
-    }
-
-    const existing = engine.getRunningTaskForFrontierItem(itemId);
-    if (existing) {
-      skipped.push({ frontier_item_id: itemId, reason: `running_agent: ${existing.agent_id}` });
-      continue;
-    }
-
-    const actionable = engine.getActionableFrontierItem(itemId);
-    if (!actionable) {
-      skipped.push({ frontier_item_id: itemId, reason: 'frontier_not_actionable' });
-      continue;
-    }
-
-    const scope = computeCampaignScope(engine, campaign.strategy, itemId, hops);
-    if (scope.length === 0 && actionable.type !== 'network_discovery') {
-      skipped.push({ frontier_item_id: itemId, reason: 'frontier_unscoped' });
-      continue;
-    }
-
-    const campaignArchetype = resolveDispatchArchetype(engine, {
-      explicit: archetypeOverride,
-      strategy: campaign.strategy,
-      frontierItem: actionable,
-    });
-    const agent_id = `agent-campaign-${campaign.strategy.replace(/[^a-z]/g, '').slice(0, 6)}-${uuidv4().slice(0, 8)}`;
-    const task = buildTask(agent_id, itemId, scope, skill, campaign_id, campaignArchetype);
-    // F2: respect lease conflicts and don't claim success when the
-    // task wasn't actually inserted.
-    const reg = engine.registerAgent(task);
-    if (!reg.ok) {
-      skipped.push({
-        frontier_item_id: itemId,
-        reason: reg.cap_exceeded
-          ? `dispatch_cap: ${reg.cap_exceeded.current}/${reg.cap_exceeded.limit} on ${reg.cap_exceeded.scope} ${reg.cap_exceeded.key}`
-          : `frontier_lease_conflict${reg.lease_conflict ? `: held by task ${reg.lease_conflict.existing_task_id}` : ''}`,
-      });
-      continue;
-    }
-
-    dispatched.push({
-      task_id: task.id,
-      agent_label: agent_id,
-      id: task.id,
-      agent_id,
-      frontier_item_id: itemId,
-      scope_nodes: scope.length,
-      archetype: campaignArchetype,
-      skill,
-    });
-  }
-
-  // F5: only activate the campaign once at least one agent is actually
-  // running. If the dispatch produced nothing usable the campaign stays
-  // 'draft' and the operator can investigate without a misleading
-  // status badge in the dashboard.
-  if (wasDraft && dispatched.length > 0) {
-    engine.activateCampaign(campaign_id);
-  }
-
-  const result: DispatchResult = {
-    campaign_id,
-    strategy: campaign.strategy,
-    requested: max_agents,
-    total_items: campaign.items.length,
-    dispatched,
-    skipped,
-  };
-  if (dispatched.length === 0) {
-    result.warning = 'No agents dispatched — all items were skipped';
-  }
-  return result;
-}
-
-function buildTask(agent_id: string, frontier_item_id: string | undefined, subgraph_node_ids: string[], skill?: string, campaign_id?: string, archetype?: string) {
-  return {
-    id: uuidv4(),
-    agent_id,
-    assigned_at: new Date().toISOString(),
-    status: 'running' as const,
-    frontier_item_id,
-    campaign_id,
-    subgraph_node_ids,
-    skill,
-    archetype,
-  };
-}
-
-// Campaign strategy → the archetype whose tool surface + mission fit that
-// strategy. (custom falls through to frontier-based recommendation.)
-const STRATEGY_ARCHETYPE: Record<string, AgentArchetypeId> = {
-  credential_spray: 'credential_operator',
-  post_exploitation: 'post_exploit',
-  enumeration: 'recon_scanner',
-  network_discovery: 'recon_scanner',
-};
-
-/** Best-effort node type for a frontier item's seed, to sharpen archetype choice.
- * Reads the item's own node/edge handles (public) — enough for the cases
- * recommendArchetype keys on (webapp/url → web_tester, credential, host/service);
- * network_discovery has no seed node and resolves on frontier type alone. */
-function frontierSeedNodeType(
-  engine: GraphEngine,
-  item?: { node_id?: string; target_node?: string; edge_target?: string; edge_source?: string } | null,
-): string | undefined {
-  const nodeId = item?.node_id || item?.target_node || item?.edge_target || item?.edge_source;
-  return nodeId ? engine.getNode(nodeId)?.type : undefined;
-}
-
-/**
- * Pick the archetype for a dispatched task so the sub-agent gets the right tool
- * surface + mission instead of the full `default` surface. Precedence: an
- * explicit operator/agent override (if a known archetype) → a campaign
- * strategy's archetype → `recommendArchetype` over the frontier item type +
- * seed node type. Never throws; resolves to `default` only when nothing more
- * specific is known. (Backend resolution is unaffected — credential_test items
- * still run on the scripted runner; this only shapes the headless surface.)
- */
-function resolveDispatchArchetype(engine: GraphEngine, opts: {
-  explicit?: string;
-  strategy?: string;
-  frontierItem?: { type?: string; node_id?: string; target_node?: string; edge_target?: string; edge_source?: string } | null;
-}): AgentArchetypeId {
-  if (opts.explicit && isArchetypeId(opts.explicit)) return opts.explicit;
-  if (opts.strategy && STRATEGY_ARCHETYPE[opts.strategy]) return STRATEGY_ARCHETYPE[opts.strategy];
-  const nodeType = frontierSeedNodeType(engine, opts.frontierItem);
-  return recommendArchetype({ frontierType: opts.frontierItem?.type as RecommendInput['frontierType'], nodeType });
-}
-
-/**
- * Compute subgraph scope for a campaign item using strategy-aware logic.
- */
-function computeCampaignScope(
-  engine: GraphEngine,
-  strategy: string,
-  frontierItemId: string,
-  hops: number,
-): string[] {
-  if (strategy === 'credential_spray') {
-    // Include the credential node, target service nodes, and their parent host nodes
-    return computeSprayScope(engine, frontierItemId);
-  }
-
-  if (strategy === 'post_exploitation') {
-    // Include the host and ALL directly connected nodes
-    return computePostExploitScope(engine, frontierItemId);
-  }
-
-  // enumeration, network_discovery, custom: standard N-hop BFS
-  return engine.computeSubgraphNodeIds(frontierItemId, hops);
-}
-
-function computeSprayScope(engine: GraphEngine, frontierItemId: string): string[] {
-  const scope = new Set<string>();
-  const graph = engine.exportGraph();
-
-  // Resolve frontier item to get the edge endpoints
-  // Spray targets are typically inferred_edge items (credential → service/host)
-  const seeds = engine.computeSubgraphNodeIds(frontierItemId, 0);
-  for (const s of seeds) scope.add(s);
-
-  // Walk 1-hop from seeds: collect credentials, services, and their parent hosts
-  for (const seed of seeds) {
-    const nodeMap = new Map(graph.nodes.map(n => [n.id, n]));
-    const node = nodeMap.get(seed);
-    if (!node) continue;
-
-    // Add the seed
-    scope.add(seed);
-
-    // Find edges involving this node
-    for (const edge of graph.edges) {
-      if (edge.source === seed || edge.target === seed) {
-        const neighbor = edge.source === seed ? edge.target : edge.source;
-        const neighborNode = nodeMap.get(neighbor);
-        if (!neighborNode) continue;
-        const ntype = neighborNode.properties.type;
-        if (ntype === 'credential' || ntype === 'service' || ntype === 'host' || ntype === 'user') {
-          scope.add(neighbor);
-          // If service, also include parent host
-          if (ntype === 'service') {
-            for (const e2 of graph.edges) {
-              if ((e2.source === neighbor || e2.target === neighbor) && e2.properties.type === 'RUNS') {
-                scope.add(e2.source === neighbor ? e2.target : e2.source);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return [...scope];
-}
-
-function computePostExploitScope(engine: GraphEngine, frontierItemId: string): string[] {
-  const scope = new Set<string>();
-  const seeds = engine.computeSubgraphNodeIds(frontierItemId, 0);
-  for (const s of seeds) scope.add(s);
-
-  // Get ALL direct neighbors (1-hop, no limit on type)
-  const allNodes = engine.computeSubgraphNodeIds(frontierItemId, 1);
-  for (const n of allNodes) scope.add(n);
-
-  return [...scope];
 }

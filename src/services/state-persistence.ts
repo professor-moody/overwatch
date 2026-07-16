@@ -1196,6 +1196,7 @@ export class StatePersistence {
       agentQueries: this.ctx.agentQueryStore.serialize(),
       commandPlans: Array.from(this.ctx.commandPlans.entries()),
       commandOutcomes: Array.from(this.ctx.commandOutcomes.entries()),
+      applicationCommands: Array.from(this.ctx.applicationCommands.entries()),
       coldStore: this.ctx.coldStore.export(),
       opsecTracker: this.ctx.opsecTracker.serialize(),
       frontierLinkage: this.ctx.frontierLinkage.serialize(),
@@ -2093,6 +2094,7 @@ export class StatePersistence {
       agentQueries: this.ctx.agentQueryStore.serialize(),
       commandPlans: Array.from(this.ctx.commandPlans.entries()),
       commandOutcomes: Array.from(this.ctx.commandOutcomes.entries()),
+      applicationCommands: Array.from(this.ctx.applicationCommands.entries()),
       coldStore: this.ctx.coldStore.export(),
       opsecTracker: this.ctx.opsecTracker.serialize(),
       frontierLinkage: this.ctx.frontierLinkage.serialize(),
@@ -2374,6 +2376,14 @@ export class StatePersistence {
         && typeof entry[1] === 'object'
         && typeof (entry[1] as { expires_at?: unknown }).expires_at === 'number'
         && (entry[1] as { expires_at: number }).expires_at > restoreNow),
+    );
+    this.ctx.applicationCommands = new Map(
+      (data.applicationCommands || []).filter((entry: unknown) =>
+        Array.isArray(entry)
+        && entry.length === 2
+        && typeof entry[0] === 'string'
+        && entry[1]
+        && typeof entry[1] === 'object'),
     );
     this.ctx.inferenceRules = [...builtinRules];
     if (data.inferenceRules) {
@@ -3455,6 +3465,7 @@ export class StatePersistence {
       'sessionDescriptors',
       'commandPlans',
       'commandOutcomes',
+      'applicationCommands',
       'coldStore',
       'chainCheckpoints',
       'recentFindingHashes',

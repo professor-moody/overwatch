@@ -12,6 +12,8 @@ import { PostgresSource, redactDsn } from '../services/postgres-source.js';
 import { nodeTypeSchema, NODE_TYPES } from '../types.js';
 import type { NodeType, Finding } from '../types.js';
 import { prepareFindingForIngest } from '../services/finding-validation.js';
+import { EngagementCommandService } from '../services/engagement-command-service.js';
+import { createHash } from 'node:crypto';
 
 // Per-engagement connection pool — keyed by engagement ID to support multi-engagement servers.
 const sourcesById = new Map<string, PostgresSource>();
@@ -23,6 +25,7 @@ function getSource(engagementId: string): PostgresSource {
 }
 
 export function registerPostgresTools(server: McpServer, engine: GraphEngine): void {
+  const engagementCommands = new EngagementCommandService(engine);
 
   // ---- connect_postgres ----
   server.registerTool(
@@ -74,19 +77,31 @@ Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
 
       // Record a redacted DSN in engagement config for display only.
       // Credentials are never stored — operators must reconnect after restart.
-      engine.updateConfig({ postgres_dsn: redactDsn(connection_string) });
+      const redactedDsn = redactDsn(connection_string);
+      const dsnIdentity = createHash('sha256')
+        .update(redactedDsn)
+        .digest('hex');
+      engagementCommands.patchConfig(
+        { postgres_dsn: redactedDsn },
+        {
+          command_id: `postgres-dsn:${dsnIdentity}`,
+          idempotency_key: `postgres-dsn:${dsnIdentity}`,
+          transport: 'system',
+          actor_task_id: null,
+        },
+      );
 
       const tables = await src.discoverTables(schema);
       const summary = tables.map(t => `${t.schema_name}.${t.table_name} (${t.columns.length} columns)`).join('\n');
 
-      engine.logActionEvent({ description: `Postgres connected: ${redactDsn(connection_string)} — ${tables.length} tables in schema "${schema}"`, event_type: 'system', category: 'system' });
+      engine.logActionEvent({ description: `Postgres connected: ${redactedDsn} — ${tables.length} tables in schema "${schema}"`, event_type: 'system', category: 'system' });
 
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
             connected: true,
-            dsn_redacted: redactDsn(connection_string),
+            dsn_redacted: redactedDsn,
             schema,
             table_count: tables.length,
             tables: summary,

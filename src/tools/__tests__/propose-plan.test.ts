@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { z } from 'zod';
 import { GraphEngine } from '../../services/graph-engine.js';
+import { ApplicationCommandService } from '../../services/application-command-service.js';
 import { recordProposedPlan, validateProposedOps } from '../propose-plan.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 import type { OperatorOp } from '../../services/command-interpreter.js';
@@ -58,6 +60,179 @@ describe('propose_plan — validation + recording', () => {
     });
     const events = engine.getFullHistory().filter(e => e.event_type === 'plan_proposed');
     expect(events).toHaveLength(1);
+  });
+
+  it('returns the original plan when one planner command proposes twice', () => {
+    engine.registerAgent(runningTask('task-1', 'a1'));
+    const commands = new ApplicationCommandService(engine);
+    commands.reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'pause a1' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: {
+        command_id: 'planner-command-1',
+        idempotency_key: 'planner-command-1',
+      },
+      reserve: () => ({
+        status: 'running',
+        result: { phase: 'planning_running', planner_task_id: 'planner-task' },
+      }),
+    });
+    engine.registerAgent({
+      ...runningTask('planner-task', 'planner-x'),
+      role: 'planner',
+      application_command_id: 'planner-command-1',
+    });
+    const args = {
+      task_id: 'planner-task',
+      command: 'pause a1',
+      summary: 'pause a1',
+      ops: [{ op: 'directive' as const, task_id: 'task-1', agent_label: 'a1', kind: 'pause' as const }],
+    };
+
+    const first = recordProposedPlan(engine, args);
+    const second = recordProposedPlan(engine, {
+      ...args,
+      summary: 'a conflicting duplicate summary',
+    });
+
+    expect(first.ok).toBe(true);
+    expect(second).toMatchObject({
+      ok: true,
+      plan_id: first.ok ? first.plan_id : '',
+      summary: 'pause a1',
+    });
+    expect(engine.getProposedPlanStore().getOpen()).toHaveLength(1);
+    expect(engine.getFullHistory().filter(event => event.event_type === 'plan_proposed')).toHaveLength(1);
+  });
+
+  it('infers exactly one matching command-owned planner when legacy input omits identity', () => {
+    engine.registerAgent(runningTask('task-1', 'a1'));
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'pause a1' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: {
+        command_id: 'planner-command-inferred',
+        idempotency_key: 'planner-command-inferred',
+      },
+      reserve: () => ({
+        status: 'running',
+        result: {
+          phase: 'planning_running',
+          planner_task_id: 'planner-inferred',
+        },
+      }),
+    });
+    engine.registerAgent({
+      ...runningTask('planner-inferred', 'planner-inferred'),
+      role: 'planner',
+      application_command_id: 'planner-command-inferred',
+      objective: 'OPERATOR COMMAND (free-form): "pause a1"',
+    });
+
+    const result = recordProposedPlan(engine, {
+      command: 'pause a1',
+      summary: 'pause a1',
+      ops: [{
+        op: 'directive',
+        task_id: 'task-1',
+        agent_label: 'a1',
+        kind: 'pause',
+      }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(engine.getProposedPlanStore().get(result.plan_id)).toMatchObject({
+        owner_task_id: 'planner-inferred',
+        command_id: 'planner-command-inferred',
+      });
+    }
+    expect(engine.getApplicationCommandById('planner-command-inferred')?.status)
+      .toBe('succeeded');
+  });
+
+  it('rejects ownerless proposals when multiple command-owned planners match', () => {
+    engine.registerAgent(runningTask('task-1', 'a1'));
+    for (const suffix of ['a', 'b']) {
+      const commandId = `planner-command-${suffix}`;
+      new ApplicationCommandService(engine).reserveSync({
+        command_kind: 'operator.plan',
+        input: { command: 'pause a1' },
+        schema: z.object({ command: z.string() }).strict(),
+        metadata: {
+          command_id: commandId,
+          idempotency_key: commandId,
+        },
+        reserve: () => ({
+          status: 'running',
+          result: {
+            phase: 'planning_running',
+            planner_task_id: `planner-${suffix}`,
+          },
+        }),
+      });
+      engine.registerAgent({
+        ...runningTask(`planner-${suffix}`, `planner-${suffix}`),
+        role: 'planner',
+        application_command_id: commandId,
+        objective: 'OPERATOR COMMAND (free-form): "pause a1"',
+      });
+    }
+    expect(recordProposedPlan(engine, {
+      command: 'pause a1',
+      summary: 'pause a1',
+      ops: [{
+        op: 'directive',
+        task_id: 'task-1',
+        agent_label: 'a1',
+        kind: 'pause',
+      }],
+    })).toEqual({
+      ok: false,
+      error: 'planner task identity is ambiguous; pass the exact task_id',
+    });
+  });
+
+  it('rejects a late proposal after its durable planner command failed', () => {
+    engine.registerAgent(runningTask('task-1', 'a1'));
+    const commands = new ApplicationCommandService(engine);
+    commands.reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'pause a1' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: {
+        command_id: 'planner-command-failed',
+        idempotency_key: 'planner-command-failed',
+      },
+      reserve: () => ({
+        status: 'accepted',
+        result: { phase: 'planning_queued', planner_task_id: 'planner-failed' },
+      }),
+    });
+    commands.transition('planner-command-failed', {
+      status: 'failed',
+      error: { code: 'PLANNER_NO_PLAN', message: 'planner failed' },
+    });
+    engine.registerAgent({
+      ...runningTask('planner-failed', 'planner-failed'),
+      role: 'planner',
+      application_command_id: 'planner-command-failed',
+    });
+
+    const result = recordProposedPlan(engine, {
+      task_id: 'planner-failed',
+      command: 'pause a1',
+      summary: 'late plan',
+      ops: [{ op: 'directive', task_id: 'task-1', agent_label: 'a1', kind: 'pause' }],
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'planner command planner-command-failed is already failed; no new plan can be attached',
+    });
+    expect(engine.getProposedPlanStore().getOpen()).toHaveLength(0);
   });
 
   it('attaches a scope-impact preview for a plan with a scope op', () => {

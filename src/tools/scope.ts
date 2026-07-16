@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
+import { EngagementCommandService } from '../services/engagement-command-service.js';
 import { withErrorBoundary } from './error-boundary.js';
 
 export function registerScopeTools(server: McpServer, engine: GraphEngine): void {
+  const commands = new EngagementCommandService(engine);
 
   // ============================================================
   // Tool: update_scope
@@ -91,19 +93,26 @@ Examples:
       }
 
       // Apply the scope change
-      const result = engine.updateScope({ ...changes, reason });
-
-      if (!result.applied) {
+      let execution;
+      try {
+        execution = commands.updateScope(
+          { ...changes, reason },
+          { transport: 'mcp' },
+        );
+      } catch (error) {
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
               mode: 'error',
-              errors: result.errors,
+              errors: [
+                error instanceof Error ? error.message : String(error),
+              ],
             }, null, 2),
           }],
         };
       }
+      const result = execution.result!;
 
       return {
         content: [{
@@ -114,6 +123,9 @@ Examples:
             before: result.before,
             after: result.after,
             affected_node_count: result.affected_node_count,
+            command_id: execution.command_id,
+            idempotency_key: execution.idempotency_key,
+            replayed: execution.replayed,
           }, null, 2),
         }],
       };

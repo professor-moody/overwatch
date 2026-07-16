@@ -88,12 +88,30 @@ export function getDashboardToken(storage?: Pick<Storage, 'getItem'>): string | 
   return memoryToken;
 }
 
+export function createDashboardCommandId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `dashboard-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 /** Fetch any protected dashboard resource with the shared Bearer credential. */
 export function dashboardFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(input instanceof Request ? input.headers : undefined);
   new Headers(init.headers).forEach((value, key) => headers.set(key, value));
   const token = getDashboardToken();
   if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+  const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+  if (!headers.has('X-Overwatch-Client')) headers.set('X-Overwatch-Client', 'dashboard');
+  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+    const commandId = headers.get('X-Overwatch-Command-Id') ?? createDashboardCommandId();
+    if (!headers.has('X-Overwatch-Command-Id')) {
+      headers.set('X-Overwatch-Command-Id', commandId);
+    }
+    if (!headers.has('Idempotency-Key')) {
+      headers.set('Idempotency-Key', `dashboard:${method}:${commandId}`);
+    }
+  }
   return globalThis.fetch(input, { ...init, headers });
 }
 

@@ -253,9 +253,15 @@ describe('POST /api/actions/:id/reparse', () => {
     });
   });
 
-  const reparse = (actionId: string, body: Record<string, unknown>) =>
+  const reparse = (
+    actionId: string,
+    body: Record<string, unknown>,
+    headers: Record<string, string> = {},
+  ) =>
     fetch(`${baseUrl}/api/actions/${actionId}/reparse`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(body),
     });
 
   it('previews a parse without ingesting (ingest:false)', async () => {
@@ -273,6 +279,45 @@ describe('POST /api/actions/:id/reparse', () => {
     const b = await res.json();
     expect(b.parse_status).toBe('ok');
     expect(b.ingested.new_nodes).toBeGreaterThan(0);
+  });
+
+  it('replays one dashboard parse command and rejects conflicting reuse', async () => {
+    const actionId = 'act_reparse_idempotent';
+    const evidenceId = engine.getEvidenceStore().store({
+      evidence_type: 'command_output',
+      raw_output: NMAP_XML,
+      action_id: actionId,
+    });
+    const headers = {
+      'X-Overwatch-Command-Id': 'dashboard-reparse-command',
+      'Idempotency-Key': 'dashboard-reparse-retry',
+    };
+    const request = {
+      tool_name: 'nmap',
+      evidence_id: evidenceId,
+      ingest: true,
+    };
+    const first = await reparse(actionId, request, headers);
+    const firstBody = await first.json();
+    const second = await reparse(actionId, request, headers);
+    const secondBody = await second.json();
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(secondBody).toEqual(firstBody);
+    expect(engine.getFullHistory().filter(event =>
+      event.action_id === actionId
+      && event.event_type === 'parse_output')).toHaveLength(1);
+
+    const conflict = await reparse(
+      actionId,
+      { ...request, ingest: false },
+      headers,
+    );
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
   });
 
   it('resolves the action stdout evidence when evidence_id is omitted', async () => {

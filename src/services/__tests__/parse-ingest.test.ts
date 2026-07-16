@@ -1,9 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { GraphEngine } from '../graph-engine.js';
 import { parseAndMaybeIngest } from '../parse-ingest.js';
+import {
+  ParseCommandService,
+  buildParseSourceFingerprint,
+} from '../parse-command-service.js';
 import { __registerParserForTest } from '../parsers/index.js';
 import type { EngagementConfig, Finding } from '../../types.js';
 
@@ -67,6 +71,165 @@ describe('parseAndMaybeIngest canonical outcomes', () => {
       isError: true, ingested: false,
     });
     expect(result.error).toContain('fixture parser exploded');
+  });
+
+  it('replays one atomic parse, ingest, audit, and command after an apply-boundary crash', async () => {
+    disposers.push(__registerParserForTest('atomic-parser', () => finding(
+      'finding-atomic-parser',
+      [{
+        id: 'host-atomic-parser',
+        type: 'host',
+        label: 'atomic parser host',
+        ip: '10.0.0.44',
+        discovered_at: '2026-01-01T00:00:00Z',
+        confidence: 1,
+      }],
+    )));
+    engine.flushNow();
+    const statePath = join(dir, 'state.json');
+    const descriptor = {
+      tool_name: 'atomic-parser',
+      source_kind: 'output' as const,
+      source_length: 7,
+      source_fingerprint: buildParseSourceFingerprint({
+        output: 'fixture',
+        context: {},
+      }),
+      context_keys: [],
+      action_id: 'action-atomic-parser',
+      ingest: true,
+    };
+    const metadata = {
+      command_id: 'parse-atomic-command',
+      idempotency_key: 'parse-atomic-retry',
+      action_id: 'action-atomic-parser',
+    };
+    const journal = (engine as any).ctx.mutationJournal;
+    const originalAppend = journal.appendTransaction.bind(journal);
+    let parses = 0;
+
+    await expect(new ParseCommandService(engine).execute(
+      descriptor,
+      completion => {
+        parses++;
+        vi.spyOn(journal, 'appendTransaction').mockImplementationOnce((draft: unknown) => {
+          originalAppend(draft);
+          throw new Error('synthetic parse apply-boundary crash');
+        });
+        return parseAndMaybeIngest(engine, {
+          tool_name: 'atomic-parser',
+          outputText: 'fixture',
+          action_id: 'action-atomic-parser',
+          ingest: true,
+          command_completion: completion,
+        });
+      },
+      metadata,
+    )).rejects.toThrow('synthetic parse apply-boundary crash');
+
+    vi.restoreAllMocks();
+    engine.dispose();
+    engine = new GraphEngine(config(), statePath);
+    const replay = await new ParseCommandService(engine).execute(
+      descriptor,
+      () => {
+        parses++;
+        throw new Error('must not parse again');
+      },
+      metadata,
+    );
+
+    expect(parses).toBe(1);
+    expect(replay).toMatchObject({
+      parse_outcome: 'ok',
+      finding_id: 'finding-atomic-parser',
+    });
+    expect(engine.getNode('host-10-0-0-44')).toMatchObject({ type: 'host' });
+    expect(engine.getApplicationCommandById(metadata.command_id)).toMatchObject({
+      status: 'succeeded',
+      action_id: 'action-atomic-parser',
+    });
+    expect(engine.getFullHistory().filter(event =>
+      event.event_type === 'parse_output'
+      && event.action_id === 'action-atomic-parser')).toHaveLength(1);
+  });
+
+  it('returns the same sanitized parser-exception response on live and replay paths', async () => {
+    disposers.push(__registerParserForTest('durable-throwing-parser', () => {
+      throw new Error('sensitive parser detail');
+    }));
+    const descriptor = {
+      tool_name: 'durable-throwing-parser',
+      source_kind: 'output' as const,
+      source_length: 7,
+      source_fingerprint: buildParseSourceFingerprint({
+        output: 'fixture',
+        context: {},
+      }),
+      context_keys: [],
+      action_id: 'action-durable-throw',
+      ingest: true,
+    };
+    const metadata = {
+      command_id: 'parse-throw-command',
+      idempotency_key: 'parse-throw-retry',
+      action_id: 'action-durable-throw',
+    };
+    const invoke = () => new ParseCommandService(engine).execute(
+      descriptor,
+      completion => parseAndMaybeIngest(engine, {
+        tool_name: descriptor.tool_name,
+        outputText: 'fixture',
+        action_id: descriptor.action_id,
+        ingest: true,
+        command_completion: completion,
+      }),
+      metadata,
+    );
+
+    const first = await invoke();
+    const replay = await invoke();
+    expect(replay).toEqual(first);
+    expect(first).toMatchObject({
+      parse_outcome: 'parser_exception',
+      error: 'Parser exception detail is available through the original input/evidence.',
+    });
+    expect(JSON.stringify(first)).not.toContain('sensitive parser detail');
+  });
+
+  it('rejects a retry key reused for different same-length parse content', async () => {
+    disposers.push(__registerParserForTest('content-fingerprint-parser', output =>
+      finding(`finding-${output}`, [])));
+    const service = new ParseCommandService(engine);
+    const metadata = {
+      command_id: 'parse-content-command',
+      idempotency_key: 'parse-content-retry',
+      action_id: 'action-parse-content',
+    };
+    const invoke = (output: string) => service.execute(
+      {
+        tool_name: 'content-fingerprint-parser',
+        source_kind: 'output',
+        source_length: Buffer.byteLength(output),
+        source_fingerprint: buildParseSourceFingerprint({ output, context: {} }),
+        context_keys: [],
+        action_id: 'action-parse-content',
+        ingest: true,
+      },
+      completion => parseAndMaybeIngest(engine, {
+        tool_name: 'content-fingerprint-parser',
+        outputText: output,
+        action_id: 'action-parse-content',
+        ingest: true,
+        command_completion: completion,
+      }),
+      metadata,
+    );
+
+    await invoke('foo');
+    await expect(invoke('bar')).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
   });
 
   it('links parser-ingested findings to unique frontier campaigns without duplicates', () => {

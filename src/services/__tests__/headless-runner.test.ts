@@ -8,6 +8,8 @@ import { ProcessTracker } from '../process-tracker.js';
 import { TaskExecutionService } from '../task-execution-service.js';
 import { HeadlessMcpRunner, allowedToolsFor } from '../headless-mcp-runner.js';
 import { HeadlessProcessRegistry } from '../headless-process-registry.js';
+import { ApplicationCommandService } from '../application-command-service.js';
+import { z } from 'zod';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 
 function makeConfig(): EngagementConfig {
@@ -723,6 +725,85 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(existsSync(cfgPath)).toBe(false);
   });
 
+  it('cancels a queued command-owned planner without leaving its command accepted forever', async () => {
+    svc = makeService({ maxConcurrentHeadless: 1 });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-capacity-blocker' }));
+    await settle();
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'inspect the queued target' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: {
+        command_id: 'queued-planner-command',
+        idempotency_key: 'queued-planner-command',
+      },
+      reserve: () => ({
+        status: 'accepted',
+        result: {
+          phase: 'planning_queued',
+          planner_task_id: 'h-queued-planner',
+        },
+      }),
+    });
+    engine.registerAgent(headlessTask({
+      id: 'h-queued-planner',
+      role: 'planner',
+      application_command_id: 'queued-planner-command',
+    }));
+    await settle();
+    expect(spawned).toHaveLength(1);
+
+    expect(svc.cancelHeadless('h-queued-planner', 'operator cancelled queued planner'))
+      .toBe(false);
+    expect(engine.getTask('h-queued-planner')?.status).toBe('interrupted');
+    expect(engine.getApplicationCommandById('queued-planner-command')).toMatchObject({
+      status: 'interrupted',
+      error: {
+        code: 'PLANNER_INTERRUPTED',
+        message: 'operator cancelled queued planner',
+      },
+    });
+  });
+
+  it('terminalizes a launched planner command even if the child never emits exit', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'inspect the live target' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: {
+        command_id: 'live-planner-command',
+        idempotency_key: 'live-planner-command',
+      },
+      reserve: () => ({
+        status: 'accepted',
+        result: {
+          phase: 'planning_queued',
+          planner_task_id: 'h-live-planner',
+        },
+      }),
+    });
+    engine.registerAgent(headlessTask({
+      id: 'h-live-planner',
+      role: 'planner',
+      application_command_id: 'live-planner-command',
+    }));
+    await settle();
+    expect(engine.getApplicationCommandById('live-planner-command')?.status)
+      .toBe('running');
+
+    expect(svc.cancelHeadless('h-live-planner', 'operator cancelled live planner'))
+      .toBe(true);
+    expect(engine.getApplicationCommandById('live-planner-command')).toMatchObject({
+      status: 'interrupted',
+      error: { code: 'PLANNER_INTERRUPTED' },
+    });
+  });
+
   it('watchdog reconcile kills an orphaned process AND aborts its pending approval after a reap', async () => {
     svc = makeService();
     svc.start();
@@ -842,7 +923,26 @@ describe('Headless runner mechanics (injected spawn)', () => {
     'fails closed and leaves restart truth clean when ownership setup fails after %s',
     (failureStage) => {
       const taskId = `h-unwind-${failureStage}`;
-      expect(engine.registerAgent(headlessTask({ id: taskId })).ok).toBe(true);
+      const commandId = `planner-command-${failureStage}`;
+      new ApplicationCommandService(engine).reserveSync({
+        command_kind: 'operator.plan',
+        input: { command: `plan after ${failureStage}` },
+        schema: z.object({ command: z.string() }).strict(),
+        metadata: {
+          command_id: commandId,
+          idempotency_key: commandId,
+          transport: 'dashboard',
+        },
+        reserve: () => ({
+          status: 'accepted',
+          result: { phase: 'planning_queued', planner_task_id: taskId },
+        }),
+      });
+      expect(engine.registerAgent(headlessTask({
+        id: taskId,
+        role: 'planner',
+        application_command_id: commandId,
+      })).ok).toBe(true);
 
       const registry = new HeadlessProcessRegistry();
       const tracker = new ProcessTracker();
@@ -900,6 +1000,13 @@ describe('Headless runner mechanics (injected spawn)', () => {
           recovery_warning: expect.stringContaining(`injected ${failureStage} failure`),
         }));
         expect(engine.getTask(taskId)?.status).toBe('failed');
+        expect(engine.getApplicationCommandById(commandId)).toMatchObject({
+          status: 'failed',
+          error: {
+            code: 'PLANNER_OWNERSHIP_SETUP_FAILED',
+            message: expect.stringContaining(`injected ${failureStage} failure`),
+          },
+        });
         expect(
           engine.getTask(taskId)?.heartbeat_ttl_seconds
           ?? 120,
@@ -927,6 +1034,10 @@ describe('Headless runner mechanics (injected spawn)', () => {
         engine = createEngine(makeConfig());
 
         expect(engine.getTask(taskId)?.status).toBe('failed');
+        expect(engine.getApplicationCommandById(commandId)).toMatchObject({
+          status: 'failed',
+          error: { code: 'PLANNER_OWNERSHIP_SETUP_FAILED' },
+        });
         expect(engine.getTrackedProcesses()).not.toContainEqual(
           expect.objectContaining({ id: `headless-${taskId}` }),
         );
@@ -1144,11 +1255,31 @@ describe('Headless runner mechanics (injected spawn)', () => {
     }
   });
 
-  it('killAll on writable stop() terminates children and retains exit finalization', async () => {
+  it('writable stop interrupts an active planner command instead of reporting PLANNER_NO_PLAN', async () => {
     svc = makeService();
     svc.start();
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
-    engine.registerAgent(headlessTask({ id: 'h-shutdown' }));
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'finish during shutdown' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: {
+        command_id: 'shutdown-planner-command',
+        idempotency_key: 'shutdown-planner-command',
+      },
+      reserve: () => ({
+        status: 'accepted',
+        result: {
+          phase: 'planning_queued',
+          planner_task_id: 'h-shutdown',
+        },
+      }),
+    });
+    engine.registerAgent(headlessTask({
+      id: 'h-shutdown',
+      role: 'planner',
+      application_command_id: 'shutdown-planner-command',
+    }));
     await settle();
     const child = spawned[0];
     svc.stop();
@@ -1157,6 +1288,13 @@ describe('Headless runner mechanics (injected spawn)', () => {
     child.simulateClose(1, 'SIGTERM');
     await settle();
     expect(engine.getTask('h-shutdown')?.status).toBe('interrupted');
+    expect(engine.getApplicationCommandById('shutdown-planner-command')).toMatchObject({
+      status: 'interrupted',
+      error: {
+        code: 'PLANNER_INTERRUPTED',
+        message: 'task execution service stopped',
+      },
+    });
     expect(engine.getFullHistory().some(event =>
       event.linked_agent_task_id === 'h-shutdown'
       && (event.details as { reason?: string })?.reason === 'headless_exited'
