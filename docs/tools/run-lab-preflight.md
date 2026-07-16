@@ -12,6 +12,7 @@ Runs a comprehensive read-only lab-readiness check for the current engagement. A
 - Offensive tool availability for the selected profile
 - Graph health summary
 - Persistence and restart-safety checks
+- Detached runtime ownership and unresolved orphan checks
 - Dashboard readiness
 - Current graph stage (empty, seeded, or mid-run)
 
@@ -50,3 +51,4 @@ A `LabPreflightReport` object:
 - Run before your first lab session to validate the environment
 - Run after major ingestion to confirm the graph is healthy
 - Run after restart to verify state persistence
+- Treat a `runtime_ownership` warning as a prompt to inspect `get_recovery_status` before starting more target work

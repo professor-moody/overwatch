@@ -9,7 +9,7 @@ active-configuration convergence.
 
 - At startup when Overwatch reports degraded or read-only operation
 - Before choosing file or durable-state authority for a config divergence
-- After a WAL/snapshot recovery, persistence write failure, or config write interruption
+- After a WAL/snapshot recovery, persistence write failure, config write interruption, or daemon restart with detached work
 - When startup reports a legacy migration backup or an unsupported newer format
 - To capture the exact hashes required by `resolve_config_divergence`
 
@@ -39,11 +39,19 @@ configuration status:
 | `journal` | Format version, path, read/attempted/applied/skipped/failed counts, and malformed/preserved flags |
 | `state_migration` | Supported/observed state and journal versions, migration status, backup path/checksum, and blocker |
 | `config_recovery` | File/runtime/state revisions, hashes, intent state, and allowed resolutions |
+| `runtime_ownership_warnings` | Runs whose original process identity could not be proven or safely reclaimed; includes run ID, PID, lifecycle, and reason |
 
 `config_recovery.status` is one of `unmanaged`, `in_sync`, `recovered`,
 `diverged`, or `write_incomplete`. A divergence exposes
 `allowed_resolutions`; an interrupted known write exposes no authority choice
 and must be completed by restart.
+
+Managed Overwatch launches are owned by a durable supervisor identity: PID,
+process start identity, and a per-run ownership token (plus the POSIX process
+group where available). Startup terminates a verified orphan process tree
+before accepting more target work. A missing or mismatched identity, reused
+PID, externally adopted PID, or signaling failure is never guessed or killed;
+the run becomes `unknown` and appears in `runtime_ownership_warnings`.
 
 ## Example
 

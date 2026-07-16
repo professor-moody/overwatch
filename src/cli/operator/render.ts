@@ -86,6 +86,7 @@ function renderPersistenceRecovery(recovery: PersistenceRecoveryStatus): string 
   if (
     recovery.consecutive_persistence_failures > 0
     || recovery.journal.preserved
+    || (recovery.runtime_ownership_warnings?.length ?? 0) > 0
     || (recovery.outcome === 'recovered' && recovery.source === 'snapshot')
   ) {
     return yellow(summary);
@@ -219,6 +220,15 @@ export function renderRecovery(data: RecoveryResponse): string {
   }
   if (recovery.state_migration) {
     out.push('', heading('State format'), renderStateMigrationStatus(recovery.state_migration));
+  }
+  if (recovery.runtime_ownership_warnings?.length) {
+    out.push('', heading('Runtime ownership warnings'));
+    out.push(recovery.runtime_ownership_warnings
+      .map(warning => {
+        const pid = warning.pid === undefined ? '' : ` · PID ${warning.pid}`;
+        return `  ${yellow('!')} ${warning.run_id}${pid} · ${warning.lifecycle}: ${warning.message}`;
+      })
+      .join('\n'));
   }
   if (recovery.coordination_warnings?.length) {
     out.push('', heading('Coordination recovery warnings'));

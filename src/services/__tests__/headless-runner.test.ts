@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
-import { existsSync, rmSync, mkdtempSync } from 'fs';
+import { chmodSync, existsSync, rmSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
@@ -891,9 +891,14 @@ describe('Headless runner mechanics (injected spawn)', () => {
         expect(engine.getTrackedProcesses()).not.toContainEqual(
           expect.objectContaining({ id: `headless-${taskId}` }),
         );
-        expect(engine.getRuntimeRuns()).not.toContainEqual(
-          expect.objectContaining({ run_id: `headless-${taskId}` }),
-        );
+        expect(engine.getRuntimeRuns()).toContainEqual(expect.objectContaining({
+          run_id: `headless-${taskId}`,
+          kind: 'headless_agent',
+          task_id: taskId,
+          lifecycle: 'failed',
+          finalization_status: 'failed',
+          recovery_warning: expect.stringContaining(`injected ${failureStage} failure`),
+        }));
         expect(engine.getTask(taskId)?.status).toBe('failed');
         expect(
           engine.getTask(taskId)?.heartbeat_ttl_seconds
@@ -925,15 +930,106 @@ describe('Headless runner mechanics (injected spawn)', () => {
         expect(engine.getTrackedProcesses()).not.toContainEqual(
           expect.objectContaining({ id: `headless-${taskId}` }),
         );
-        expect(engine.getRuntimeRuns()).not.toContainEqual(
-          expect.objectContaining({ run_id: `headless-${taskId}` }),
-        );
+        expect(engine.getRuntimeRuns()).toContainEqual(expect.objectContaining({
+          run_id: `headless-${taskId}`,
+          lifecycle: 'failed',
+          finalization_status: 'failed',
+          recovery_warning: expect.stringContaining(`injected ${failureStage} failure`),
+        }));
         expect(
           engine.getTask(taskId)?.heartbeat_ttl_seconds
           ?? 120,
         ).toBe(120);
       } finally {
         processKill?.mockRestore();
+        unsubscribe();
+      }
+    },
+  );
+
+  it('uses the managed supervisor handshake in the production headless path', async () => {
+    const fakeClaude = join(testDir, 'fake-claude.mjs');
+    writeFileSync(fakeClaude, [
+      '#!/usr/bin/env node',
+      'process.stdout.write(JSON.stringify({type:"result",result:"done"}) + "\\n");',
+    ].join('\n'));
+    chmodSync(fakeClaude, 0o755);
+    const taskId = 'h-managed-production';
+    expect(engine.registerAgent(headlessTask({ id: taskId })).ok).toBe(true);
+    const tracker = new ProcessTracker();
+    tracker.setMutationGuard(() => engine.assertPersistenceWritable());
+    const unsubscribe = tracker.onChange(() => engine.setTrackedProcesses(tracker.serialize()));
+    const runner = new HeadlessMcpRunner(
+      engine,
+      new HeadlessProcessRegistry(),
+      tracker,
+      { claudeBinary: fakeClaude, logDir },
+    );
+
+    try {
+      const child = runner.launch(
+        engine.getTask(taskId)!,
+        { url: 'http://127.0.0.1:9/mcp' },
+      );
+      expect(child).not.toBeNull();
+      await new Promise<void>(resolve => child!.once('close', () => resolve()));
+      await settle();
+
+      expect(engine.getRuntimeRuns()).toContainEqual(expect.objectContaining({
+        run_id: `headless-${taskId}`,
+        kind: 'headless_agent',
+        task_id: taskId,
+        pid: expect.any(Number),
+        process_group_id: expect.any(Number),
+        process_start_identity: expect.any(String),
+        ownership_token: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        target_pid: expect.any(Number),
+        lifecycle: 'interrupted',
+        finalization_status: 'interrupted',
+      }));
+      expect(engine.getTask(taskId)?.status).toBe('interrupted');
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'records the target signal rather than the supervisor wrapper exit',
+    async () => {
+      const fakeClaude = join(testDir, 'fake-claude-signal.mjs');
+      writeFileSync(fakeClaude, [
+        '#!/usr/bin/env node',
+        'process.kill(process.pid, "SIGTERM");',
+      ].join('\n'));
+      chmodSync(fakeClaude, 0o755);
+      const taskId = 'h-managed-signal';
+      expect(engine.registerAgent(headlessTask({ id: taskId })).ok).toBe(true);
+      const tracker = new ProcessTracker();
+      tracker.setMutationGuard(() => engine.assertPersistenceWritable());
+      const unsubscribe = tracker.onChange(() => engine.setTrackedProcesses(tracker.serialize()));
+      const runner = new HeadlessMcpRunner(
+        engine,
+        new HeadlessProcessRegistry(),
+        tracker,
+        { claudeBinary: fakeClaude, logDir },
+      );
+
+      try {
+        const child = runner.launch(
+          engine.getTask(taskId)!,
+          { url: 'http://127.0.0.1:9/mcp' },
+        );
+        expect(child).not.toBeNull();
+        await new Promise<void>(resolve => child!.once('close', () => resolve()));
+        await settle();
+
+        expect(engine.getRuntimeRuns()).toContainEqual(expect.objectContaining({
+          run_id: `headless-${taskId}`,
+          lifecycle: 'interrupted',
+          exit_code: null,
+          exit_signal: 'SIGTERM',
+        }));
+      } finally {
         unsubscribe();
       }
     },

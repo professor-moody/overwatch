@@ -2117,6 +2117,45 @@ describe('GraphEngine', () => {
       }));
     });
 
+    it.each([
+      ['completed', 'running'],
+      ['failed', 'unknown'],
+      ['interrupted', 'running'],
+      ['unknown', 'unknown'],
+    ] as const)(
+      'does not downgrade a prior %s RuntimeRun from a stale %s tracker projection',
+      (runtimeLifecycle, trackedStatus) => {
+        const engine = trackedEngine(makeConfig(), makeTempStateFile());
+        engine.setRuntimeRuns([{
+          run_id: 'proc-terminal',
+          kind: 'tracked_process',
+          daemon_owner: 'daemon-old',
+          command_fingerprint: 'a'.repeat(64),
+          started_at: '2026-03-21T00:00:00.000Z',
+          completed_at: '2026-03-21T00:02:00.000Z',
+          lifecycle: runtimeLifecycle,
+          finalization_status: runtimeLifecycle,
+        }]);
+        engine.setTrackedProcesses([{
+          id: 'proc-terminal',
+          pid: 12345,
+          command: 'nmap -sV',
+          description: 'stale tracker row',
+          started_at: '2026-03-21T00:00:00.000Z',
+          status: trackedStatus,
+          ...(trackedStatus === 'unknown'
+            ? { completed_at: '2026-03-21T00:03:00.000Z' }
+            : {}),
+        }]);
+
+        expect(engine.getRuntimeRuns()).toContainEqual(expect.objectContaining({
+          run_id: 'proc-terminal',
+          lifecycle: runtimeLifecycle,
+          completed_at: '2026-03-21T00:02:00.000Z',
+        }));
+      },
+    );
+
     it('reapplies persisted frontier weights immediately after snapshot rollback', () => {
       const engine = trackedEngine(makeConfig(), makeTempStateFile());
       (engine as any).ctx.lastSnapshotTime = Date.now();

@@ -73,6 +73,23 @@ describe('run_tool', () => {
     expect((started?.details as any)?.invoking_tool).toBe('run_tool');
     expect((started?.details as any)?.binary).toBe('echo');
     expect((started?.details as any)?.args).toEqual(['hello-from-tool', 'arg-2']);
+    expect(engine.getRuntimeRuns()).toContainEqual(expect.objectContaining({
+      run_id: expect.stringMatching(new RegExp(`^tool-${payload.action_id}-[0-9a-f-]{36}$`)),
+      kind: 'tracked_process',
+      action_id: payload.action_id,
+      lifecycle: 'completed',
+      finalization_status: 'completed',
+      pid: expect.any(Number),
+      process_group_id: expect.any(Number),
+      process_start_identity: expect.any(String),
+      ownership_token: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      target_pid: expect.any(Number),
+      daemon_owner: expect.stringMatching(/^daemon-/),
+      command_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      action_started_event_id: expect.any(String),
+      action_terminal_event_id: expect.any(String),
+      evidence_state: 'captured',
+    }));
   });
 
   it('preserves GitHub repository and branch context through inline run_tool parsing', async () => {

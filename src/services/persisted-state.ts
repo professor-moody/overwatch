@@ -167,16 +167,30 @@ export interface PersistedRuntimeRunV1 {
   task_id?: string;
   action_id?: string;
   agent_id?: string;
+  /** PID of the managed supervisor (the process-group owner). */
   pid?: number;
+  /** PID of the actual target child, informational only. */
+  target_pid?: number;
   process_group_id?: number;
   process_start_identity?: string;
+  ownership_token?: string;
   daemon_owner?: string;
   command_fingerprint?: string;
+  ownership_mode?: 'managed_supervisor' | 'external_adopted';
+  signal_scope?: 'process_group' | 'pid' | 'none';
   started_at: string;
+  identity_recorded_at?: string;
+  ownership_acknowledged_at?: string;
+  launched_at?: string;
   last_output_at?: string;
   completed_at?: string;
   lifecycle: 'reserved' | 'running' | 'completed' | 'failed' | 'unknown' | 'interrupted';
   evidence_state?: 'none' | 'pending' | 'captured' | 'failed';
+  exit_code?: number | null;
+  exit_signal?: string | null;
+  finalization_status?: 'completed' | 'failed' | 'interrupted' | 'unknown';
+  action_started_event_id?: string;
+  action_terminal_event_id?: string;
   recovery_warning?: string;
 }
 
@@ -774,24 +788,52 @@ function validateRuntimeRuns(value: unknown, path: string): void {
       throw new PersistedStateVersionError(`${path}[${index}].kind is invalid`, CURRENT_STATE_VERSION, 'invalid');
     }
     requireIsoDate(run.started_at, `${path}[${index}].started_at`);
-    if (run.last_output_at !== undefined) requireIsoDate(run.last_output_at, `${path}[${index}].last_output_at`);
-    if (run.completed_at !== undefined) requireIsoDate(run.completed_at, `${path}[${index}].completed_at`);
+    for (const field of [
+      'identity_recorded_at',
+      'ownership_acknowledged_at',
+      'launched_at',
+      'last_output_at',
+      'completed_at',
+    ] as const) {
+      if (run[field] !== undefined) requireIsoDate(run[field], `${path}[${index}].${field}`);
+    }
     for (const field of [
       'task_id',
       'action_id',
       'agent_id',
       'process_start_identity',
+      'ownership_token',
       'daemon_owner',
+      'ownership_mode',
+      'signal_scope',
+      'exit_signal',
+      'action_started_event_id',
+      'action_terminal_event_id',
       'recovery_warning',
     ] as const) {
-      if (run[field] !== undefined) requireString(run[field], `${path}[${index}].${field}`, field === 'recovery_warning');
+      if (run[field] !== undefined && run[field] !== null) {
+        requireString(run[field], `${path}[${index}].${field}`, field === 'recovery_warning');
+      }
     }
-    for (const field of ['pid', 'process_group_id'] as const) {
+    for (const field of ['pid', 'target_pid', 'process_group_id'] as const) {
       if (run[field] !== undefined) requireSafeInteger(run[field], `${path}[${index}].${field}`, 1);
+    }
+    if (run.exit_code !== undefined && run.exit_code !== null) {
+      requireSafeInteger(run.exit_code, `${path}[${index}].exit_code`);
     }
     if (run.command_fingerprint !== undefined
       && !/^[a-f0-9]{64}$/.test(requireString(run.command_fingerprint, `${path}[${index}].command_fingerprint`))) {
       throw new PersistedStateVersionError(`${path}[${index}].command_fingerprint must be a lowercase SHA-256 digest`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    if (run.ownership_mode !== undefined && !['managed_supervisor', 'external_adopted'].includes(
+      requireString(run.ownership_mode, `${path}[${index}].ownership_mode`),
+    )) {
+      throw new PersistedStateVersionError(`${path}[${index}].ownership_mode is invalid`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    if (run.signal_scope !== undefined && !['process_group', 'pid', 'none'].includes(
+      requireString(run.signal_scope, `${path}[${index}].signal_scope`),
+    )) {
+      throw new PersistedStateVersionError(`${path}[${index}].signal_scope is invalid`, CURRENT_STATE_VERSION, 'invalid');
     }
     if (!['reserved', 'running', 'completed', 'failed', 'unknown', 'interrupted'].includes(
       requireString(run.lifecycle, `${path}[${index}].lifecycle`),
@@ -802,6 +844,61 @@ function validateRuntimeRuns(value: unknown, path: string): void {
       requireString(run.evidence_state, `${path}[${index}].evidence_state`),
     )) {
       throw new PersistedStateVersionError(`${path}[${index}].evidence_state is invalid`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    if (run.finalization_status !== undefined && !['completed', 'failed', 'interrupted', 'unknown'].includes(
+      requireString(run.finalization_status, `${path}[${index}].finalization_status`),
+    )) {
+      throw new PersistedStateVersionError(`${path}[${index}].finalization_status is invalid`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    if (run.ownership_mode === 'external_adopted' && run.signal_scope !== 'none') {
+      throw new PersistedStateVersionError(
+        `${path}[${index}] external_adopted ownership requires signal_scope none`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (run.lifecycle === 'running' && run.ownership_mode === 'managed_supervisor') {
+      if (run.pid === undefined || run.ownership_acknowledged_at === undefined) {
+        throw new PersistedStateVersionError(
+          `${path}[${index}] running managed ownership requires an acknowledged pid`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      if (run.process_start_identity === undefined) {
+        throw new PersistedStateVersionError(
+          `${path}[${index}] running managed ownership requires a process start identity`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      if (run.ownership_token === undefined) {
+        throw new PersistedStateVersionError(
+          `${path}[${index}] running managed ownership requires an ownership token`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      if (
+        run.signal_scope === 'process_group'
+        && (run.process_group_id === undefined || run.process_group_id !== run.pid)
+      ) {
+        throw new PersistedStateVersionError(
+          `${path}[${index}] running group ownership requires a supervisor-owned process group`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+    }
+    if (
+      run.finalization_status !== undefined
+      && run.finalization_status !== run.lifecycle
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].finalization_status must match lifecycle`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
     }
   }
 }
@@ -968,6 +1065,76 @@ function validateTrackedProcesses(value: unknown, path: string): void {
     requireString(process.description, `${path}[${index}].description`, true);
     requireIsoDate(process.started_at, `${path}[${index}].started_at`);
     if (process.completed_at !== undefined) requireIsoDate(process.completed_at, `${path}[${index}].completed_at`);
+    for (const field of [
+      'task_id',
+      'action_id',
+      'agent_id',
+      'target_node',
+      'process_start_identity',
+      'ownership_token',
+      'daemon_owner',
+      'ownership_mode',
+      'signal_scope',
+      'recovery_warning',
+    ] as const) {
+      if (process[field] !== undefined) {
+        requireString(
+          process[field],
+          `${path}[${index}].${field}`,
+          field === 'recovery_warning',
+        );
+      }
+    }
+    if (process.process_group_id !== undefined) {
+      requireSafeInteger(process.process_group_id, `${path}[${index}].process_group_id`, 1);
+    }
+    if (process.command_fingerprint !== undefined
+      && !/^[a-f0-9]{64}$/.test(requireString(
+        process.command_fingerprint,
+        `${path}[${index}].command_fingerprint`,
+      ))) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].command_fingerprint must be a lowercase SHA-256 digest`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (process.ownership_mode !== undefined && !['managed_supervisor', 'external_adopted'].includes(
+      requireString(process.ownership_mode, `${path}[${index}].ownership_mode`),
+    )) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].ownership_mode is invalid`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (process.signal_scope !== undefined && !['process_group', 'pid', 'none'].includes(
+      requireString(process.signal_scope, `${path}[${index}].signal_scope`),
+    )) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}].signal_scope is invalid`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (process.ownership_mode === 'external_adopted' && process.signal_scope !== 'none') {
+      throw new PersistedStateVersionError(
+        `${path}[${index}] external_adopted ownership requires signal_scope none`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (
+      process.status === 'running'
+      && process.signal_scope === 'process_group'
+      && (process.process_group_id === undefined || process.process_group_id !== process.pid)
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}[${index}] running group ownership requires a supervisor-owned process group`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
     if (!['running', 'completed', 'failed', 'unknown'].includes(
       requireString(process.status, `${path}[${index}].status`),
     )) {

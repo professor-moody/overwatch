@@ -178,6 +178,9 @@ const ALLOWED_DURABLE_SCOPES = new Map<string, Set<string>>([
     'applyGraphCorrectedMutation',
     'applyScopeUpdatedMutation',
     'applyTrackedProcesses',
+    // Bounded retention helper invoked only from runtime finalization/recovery
+    // methods after their transactDurableSlices boundary is active.
+    'pruneTerminalRuntimeRuns',
     'applyRuntimeConfig',
     'restoreFindingDraftBaseline',
     'applyRestoredRuntimeProjections',

@@ -11,7 +11,7 @@ export function registerRecoveryTools(server: McpServer, engine: GraphEngine): v
     'get_recovery_status',
     {
       title: 'Get Recovery Status',
-      description: 'Inspect WAL/state recovery, persisted state/journal format migration, and active file/runtime/state configuration convergence. This remains available in degraded read-only mode.',
+      description: 'Inspect WAL/state recovery, persisted state/journal format migration, active file/runtime/state configuration convergence, and unresolved detached-process ownership. This remains available in degraded read-only mode.',
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },

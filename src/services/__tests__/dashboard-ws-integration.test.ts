@@ -209,6 +209,38 @@ describe('WS full_state push on connect', () => {
       conn.close();
     }
   }, 5_000);
+
+  it('includes unresolved runtime ownership in the initial full state', async () => {
+    engine.setRuntimeRuns([{
+      run_id: 'runtime-ws-warning',
+      kind: 'tracked_process',
+      daemon_owner: 'daemon-old',
+      command_fingerprint: 'a'.repeat(64),
+      started_at: NOW,
+      completed_at: NOW,
+      lifecycle: 'unknown',
+      finalization_status: 'unknown',
+      recovery_warning: 'PID identity could not be verified.',
+    }]);
+    const conn = await openWs();
+    try {
+      const msg = await conn.awaitMessage(m => m.type === 'full_state');
+      const state = msg.data.state as {
+        persistence_recovery?: {
+          runtime_ownership_warnings?: Array<{ run_id: string; message: string }>;
+        };
+      };
+      expect(state.persistence_recovery?.runtime_ownership_warnings).toEqual([
+        expect.objectContaining({
+          run_id: 'runtime-ws-warning',
+          message: 'PID identity could not be verified.',
+        }),
+      ]);
+    } finally {
+      conn.close();
+      engine.setRuntimeRuns([]);
+    }
+  }, 5_000);
 });
 
 // =============================================

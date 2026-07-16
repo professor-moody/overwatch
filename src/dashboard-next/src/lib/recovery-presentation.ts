@@ -69,5 +69,17 @@ export function recoveryPresentation(
     };
   }
 
+  if (recovery.runtime_ownership_warnings?.length) {
+    const count = recovery.runtime_ownership_warnings.length;
+    return {
+      tone: 'warning',
+      title: 'Runtime ownership needs review',
+      message: `${count} runtime run${count === 1 ? '' : 's'} could not be safely reclaimed. No unverifiable or reused process was signaled.`,
+      canUseFile: false,
+      canUseState: false,
+      restartRequired: false,
+    };
+  }
+
   return null;
 }

@@ -17,6 +17,7 @@
 // shell outside the Overwatch lifecycle.
 // ============================================================
 
+import { createHash } from 'crypto';
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { mkdirSync, writeFileSync, createWriteStream, unlinkSync, type WriteStream } from 'fs';
 import { tmpdir } from 'os';
@@ -29,6 +30,12 @@ import {
   killProcessTree,
 } from './headless-process-registry.js';
 import { DEFAULT_HEARTBEAT_TTL_SECONDS } from './agent-manager.js';
+import { spawnManagedRuntimeSupervisor } from './managed-runtime-supervisor.js';
+import {
+  currentDaemonOwner,
+  observeProcessIdentity,
+  type ProcessIdentity,
+} from './process-identity.js';
 
 export interface HeadlessEndpoint {
   /** Full MCP URL, e.g. http://127.0.0.1:3000/mcp */
@@ -50,7 +57,11 @@ export interface HeadlessMcpRunnerOptions {
   maxTurns?: number;
   /** Extra CLI args appended verbatim (escape hatch / tuning). */
   extraArgs?: string[];
-  /** Injectable spawn for tests. Defaults to child_process.spawn. */
+  /**
+   * Test-only direct target spawn. Production omits this and uses the managed
+   * supervisor handshake. Retained so existing lifecycle unit tests can inject
+   * deterministic fake children without emulating Node IPC.
+   */
   spawnFn?: SpawnFn;
   /** Injectable clock for deterministic timestamps in tests. */
   now?: () => string;
@@ -133,16 +144,88 @@ export class HeadlessMcpRunner {
     // Per-task binary override (eval-only) — lets a real primary dispatch children
     // that inherit the runner's (fake) default. Falls back to the runner default.
     const binary = task.claudeBinary ?? this.opts.claudeBinary;
-    let child: ChildProcess;
+    const processId = `headless-${task.id}`;
+    const useManagedSupervisor = this.opts.spawnFn === undefined;
+    const commandFingerprint = createHash('sha256')
+      .update(binary)
+      .update('\0')
+      .update(args.join('\0'))
+      .digest('hex');
     try {
-      child = this.spawnFn(binary, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // Own process group so killTree can reap grandchildren (POSIX).
-        detached: process.platform !== 'win32',
-        env: { ...process.env, OVERWATCH_TASK_ID: task.id },
+      this.engine.reserveRuntimeRun({
+        run_id: processId,
+        kind: 'headless_agent',
+        task_id: task.task_id ?? task.id,
+        agent_id: task.agent_label ?? task.agent_id,
+        daemon_owner: currentDaemonOwner(),
+        command_fingerprint: commandFingerprint,
+        ownership_mode: useManagedSupervisor ? 'managed_supervisor' : 'external_adopted',
+        signal_scope: useManagedSupervisor ? undefined : 'none',
+        evidence_state: 'none',
       });
+    } catch (error) {
+      this.cleanupConfig(configPath);
+      if (this.mutationAllowed()) {
+        try {
+          this.engine.updateAgentStatus(
+            task.id,
+            'failed',
+            `headless runtime reservation failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        } catch { /* persistence failure remains authoritative */ }
+      }
+      return null;
+    }
+
+    let onManagedSupervisorReady: (identity: ProcessIdentity) => void = () => {
+      throw new Error('managed supervisor ownership callback was not initialized');
+    };
+    let onManagedTargetLaunched: (targetPid: number | undefined) => void = () => {
+      throw new Error('managed target launch callback was not initialized');
+    };
+    let child: ChildProcess;
+    let managedReady: Promise<ProcessIdentity> | undefined;
+    let managedLaunched: Promise<number | undefined> | undefined;
+    let managedTargetExit:
+      | { exitCode: number | null; signal: NodeJS.Signals | null }
+      | undefined;
+    try {
+      if (useManagedSupervisor) {
+        const managed = spawnManagedRuntimeSupervisor(
+          {
+            binary,
+            args,
+            env: { ...process.env, OVERWATCH_TASK_ID: task.id },
+          },
+          {
+            onSupervisorReady: identity => onManagedSupervisorReady(identity),
+            onTargetLaunched: targetPid => onManagedTargetLaunched(targetPid),
+            onTargetExit: (exitCode, signal) => {
+              managedTargetExit = { exitCode, signal };
+            },
+          },
+        );
+        child = managed.child;
+        managedReady = managed.ready;
+        managedLaunched = managed.launched;
+      } else {
+        child = this.spawnFn(binary, args, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          // Test-only compatibility path. Production uses a detached managed
+          // supervisor whose process group owns the target and descendants.
+          detached: process.platform !== 'win32',
+          env: { ...process.env, OVERWATCH_TASK_ID: task.id },
+        });
+      }
     } catch (err) {
       this.cleanupConfig(configPath);
+      try {
+        this.engine.finalizeRuntimeRun({
+          run_id: processId,
+          lifecycle: 'failed',
+          recovery_warning: `Headless supervisor spawn failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      } catch { /* recovery will reconcile the reservation */ }
       this.engine.updateAgentStatus(task.id, 'failed', `headless spawn failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
@@ -200,6 +283,11 @@ export class HeadlessMcpRunner {
         linked_agent_task_id: task.id,
         details: { reason: 'headless_spawn_error', error: err.message },
       });
+      this.engine.finalizeRuntimeRun({
+        run_id: processId,
+        lifecycle: 'failed',
+        recovery_warning: `Headless supervisor process error: ${err.message}`,
+      });
       this.finalize(task.id, configPath, log, 'failed', `headless process error: ${err.message}`);
     });
 
@@ -226,16 +314,34 @@ export class HeadlessMcpRunner {
       this.cleanupConfig(configPath);
       if (launchAborted || !ownershipPublished) return;
       if (!this.mutationAllowed()) return;
-      const ok = code === 0;
+      const targetCode = managedTargetExit
+        ? managedTargetExit.exitCode
+        : code;
+      const targetSignal = managedTargetExit
+        ? managedTargetExit.signal
+        : signal;
+      const ok = targetCode === 0;
+      const current = this.engine.getTask(task.id);
+      const runtimeLifecycle = current?.status === 'running' || current?.status === 'interrupted'
+        ? 'interrupted' as const
+        : ok
+          ? 'completed' as const
+          : 'failed' as const;
+      this.engine.finalizeRuntimeRun({
+        run_id: processId,
+        lifecycle: runtimeLifecycle,
+        exit_code: targetCode,
+        exit_signal: targetSignal,
+      });
       this.processTracker.update(`headless-${task.id}`, ok ? 'completed' : 'failed');
       this.engine.logActionEvent({
-        description: `Headless sub-agent exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
+        description: `Headless sub-agent exited (code=${targetCode ?? 'null'}, signal=${targetSignal ?? 'null'})`,
         event_type: 'instrumentation_warning',
         category: 'system',
         result_classification: ok ? 'neutral' : 'failure',
         agent_id: task.agent_id,
         linked_agent_task_id: task.id,
-        details: { reason: 'headless_exited', exit_code: code, signal },
+        details: { reason: 'headless_exited', exit_code: targetCode, signal: targetSignal },
       });
       // Reconcile: the agent exited while still `running`, i.e. it never closed itself
       // out (no update_agent / submit_agent_transcript). That's abnormal however it
@@ -246,11 +352,10 @@ export class HeadlessMcpRunner {
       // success or reset the consecutive-failure counter. Its output is still salvaged
       // on 'close'. The reason line distinguishes HOW it ended so a clean exit (hit its
       // turn budget / ended its turn early) doesn't read to the operator like a crash.
-      const current = this.engine.getTask(task.id);
       if (current && current.status === 'running') {
-        const reason = code === 0 && signal == null
+        const reason = targetCode === 0 && targetSignal == null
           ? 'headless agent ended its turn without submitting a transcript (clean exit) — work returned to the frontier'
-          : `headless agent exited without submitting a transcript (code=${code ?? 'null'}, signal=${signal ?? 'null'}) — work returned to the frontier`;
+          : `headless agent exited without submitting a transcript (code=${targetCode ?? 'null'}, signal=${targetSignal ?? 'null'}) — work returned to the frontier`;
         this.engine.updateAgentStatus(task.id, 'interrupted', reason);
       }
     });
@@ -264,14 +369,44 @@ export class HeadlessMcpRunner {
       launchAborted = true;
       try { log?.end(); } catch { /* ignore */ }
       this.cleanupConfig(configPath);
+      this.engine.finalizeRuntimeRun({
+        run_id: processId,
+        lifecycle: 'failed',
+        recovery_warning: 'Headless supervisor spawn produced no pid.',
+      });
       this.engine.updateAgentStatus(task.id, 'failed', 'headless spawn produced no pid');
       return null;
     }
 
     let startupTtlAttempted = false;
-    try {
-      this.opts.onLaunchCheckpoint?.('spawned');
-      this.registry.register(task.id, child, configPath, this.now());
+    const failOwnershipSetup = (error: unknown): void => {
+      if (launchAborted) return;
+      launchAborted = true;
+      this.unwindFailedLaunch({
+        task,
+        child,
+        configPath,
+        log,
+        restoreHeartbeatTtl: startupTtlAttempted
+          ? task.heartbeat_ttl_seconds ?? DEFAULT_HEARTBEAT_TTL_SECONDS
+          : undefined,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      if (this.mutationAllowed()) {
+        try {
+          this.engine.updateAgentStatus(
+            task.id,
+            'failed',
+            `headless ownership setup failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        } catch {
+          // A durability failure may have closed the write gate. The killed
+          // supervisor and durable reservation are reconciled on restart.
+        }
+      }
+    };
+    const publishOwnership = (identity: ProcessIdentity): void => {
+      this.engine.acknowledgeRuntimeRunOwnership(processId, identity);
       // Cold-start grace: spawning claude + MCP bootstrap + the first tool call can
       // take longer than the default 120s heartbeat TTL, which would let the watchdog
       // reap a healthy agent before its first heartbeat. Give a launched agent with NO
@@ -290,13 +425,27 @@ export class HeadlessMcpRunner {
         this.opts.onLaunchCheckpoint?.('ttl_registered');
       }
       this.processTracker.register({
-        id: `headless-${task.id}`,
-        pid: child.pid,
+        id: processId,
+        pid: identity.pid,
         command: `${binary} -p (headless ${task.orchestrator ? 'primary' : 'sub-agent'} ${task.agent_id})`,
         description: `Headless sub-agent for task ${task.id}`,
+        task_id: task.id,
         agent_id: task.agent_id,
+        process_group_id: identity.process_group_id,
+        process_start_identity: identity.process_start_identity,
+        ownership_token: identity.ownership_token,
+        daemon_owner: currentDaemonOwner(),
+        command_fingerprint: createHash('sha256')
+          .update(`${binary}\0${args.join('\0')}`)
+          .digest('hex'),
+        ownership_mode: useManagedSupervisor ? 'managed_supervisor' : 'external_adopted',
+        signal_scope: useManagedSupervisor ? 'process_group' : 'none',
       });
       this.opts.onLaunchCheckpoint?.('process_registered');
+      ownershipPublished = true;
+    };
+    const publishTargetLaunch = (targetPid: number | undefined): void => {
+      this.engine.markRuntimeRunLaunched(processId, targetPid);
 
       this.engine.logActionEvent({
         description: `Headless sub-agent launched for task ${task.id}`,
@@ -305,34 +454,31 @@ export class HeadlessMcpRunner {
         result_classification: 'neutral',
         agent_id: task.agent_id,
         linked_agent_task_id: task.id,
-        details: { reason: 'headless_launched', pid: child.pid, backend: 'headless_mcp' },
+        details: {
+          reason: 'headless_launched',
+          supervisor_pid: child.pid,
+          target_pid: targetPid,
+          backend: 'headless_mcp',
+        },
       });
-      ownershipPublished = true;
+    };
+
+    try {
+      this.opts.onLaunchCheckpoint?.('spawned');
+      this.registry.register(task.id, child, configPath, this.now());
+      onManagedSupervisorReady = publishOwnership;
+      onManagedTargetLaunched = publishTargetLaunch;
+      if (useManagedSupervisor) {
+        void managedReady!.catch(failOwnershipSetup);
+        void managedLaunched!.catch(failOwnershipSetup);
+      } else {
+        const identity = observeProcessIdentity(child.pid);
+        publishOwnership(identity);
+        publishTargetLaunch(child.pid);
+      }
       return child;
     } catch (error) {
-      launchAborted = true;
-      this.unwindFailedLaunch({
-        task,
-        child,
-        configPath,
-        log,
-        restoreHeartbeatTtl: startupTtlAttempted
-          ? task.heartbeat_ttl_seconds ?? DEFAULT_HEARTBEAT_TTL_SECONDS
-          : undefined,
-      });
-      if (this.mutationAllowed()) {
-        try {
-          this.engine.updateAgentStatus(
-            task.id,
-            'failed',
-            `headless ownership setup failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        } catch {
-          // A durability failure may have closed the write gate. The killed
-          // process and any surviving durable reservation are reconciled on
-          // restart; never mutate memory-only lifecycle truth here.
-        }
-      }
+      failOwnershipSetup(error);
       return null;
     }
   }
@@ -345,6 +491,7 @@ export class HeadlessMcpRunner {
     configPath: string;
     log: WriteStream | null;
     restoreHeartbeatTtl?: number;
+    reason: string;
   }): void {
     const processId = `headless-${input.task.id}`;
 
@@ -371,18 +518,15 @@ export class HeadlessMcpRunner {
       // Restart reconciliation will verify the now-killed PID and mark the
       // durable reservation unknown instead of falsely completed.
     }
-    if (!this.processTracker.get(processId)) {
-      try {
-        const currentRuns = this.engine.getRuntimeRuns();
-        if (currentRuns.some(run => run.run_id === processId)) {
-          this.engine.setRuntimeRuns(
-            currentRuns.filter(run => run.run_id !== processId),
-          );
-        }
-      } catch {
-        // Keep any durable row when its removal cannot be journaled; recovery
-        // must see and reconcile it instead of accepting a memory-only delete.
-      }
+    try {
+      this.engine.finalizeRuntimeRun({
+        run_id: processId,
+        lifecycle: 'failed',
+        recovery_warning: `Managed headless launch failed before target acknowledgement: ${input.reason}`,
+      });
+    } catch {
+      // Keep the active durable reservation when its terminal update cannot be
+      // journaled; startup recovery will verify the supervisor identity.
     }
 
     if (input.restoreHeartbeatTtl !== undefined) {

@@ -203,6 +203,7 @@ export { GraphUpdateCallback };
 // Approval-mode strictness order — operator-policy rules may only escalate `mode`
 // to a stricter value (auto-approve < approve-critical < approve-all), never relax it.
 const APPROVAL_STRICTNESS: Record<string, number> = { 'auto-approve': 0, 'approve-critical': 1, 'approve-all': 2 };
+const MAX_TERMINAL_RUNTIME_RUNS = 1_000;
 
 export class GraphEngine {
   private ctx: EngineContext;
@@ -224,6 +225,7 @@ export class GraphEngine {
   private startupReconciliationDeferred = false;
   private recoveryMaintenanceInProgress = false;
   private deferredStartupRecoveryError?: string;
+  private runtimeOwnershipRecoveryHandler?: () => void;
   private coordinationStoreUnsubscribers: Array<() => void> = [];
   private rollbackCoordinator?: {
     beforeRollback(): void;
@@ -4639,6 +4641,33 @@ export class GraphEngine {
     const coordinationFields = coordination_warnings.length > 0
       ? { coordination_warnings }
       : {};
+    const runtimeWarningRuns = this.ctx.runtimeRuns
+      .filter(run =>
+        run.lifecycle === 'unknown'
+        && typeof run.recovery_warning === 'string'
+        && run.recovery_warning.length > 0)
+      .map(run => ({
+        run_id: run.run_id,
+        pid: run.pid,
+        lifecycle: run.lifecycle,
+        message: run.recovery_warning!,
+      }));
+    if (!this.isPersistenceWritable()) {
+      for (const run of this.ctx.runtimeRuns) {
+        if (run.lifecycle !== 'reserved' && run.lifecycle !== 'running') continue;
+        if (runtimeWarningRuns.some(warning => warning.run_id === run.run_id)) continue;
+        runtimeWarningRuns.push({
+          run_id: run.run_id,
+          pid: run.pid,
+          lifecycle: run.lifecycle,
+          message: 'Runtime ownership reconciliation is deferred while durable state is read-only.',
+        });
+      }
+    }
+    const runtime_ownership_warnings = runtimeWarningRuns;
+    const runtimeOwnershipFields = runtime_ownership_warnings.length > 0
+      ? { runtime_ownership_warnings: detached(runtime_ownership_warnings) }
+      : {};
     const state_recovery = {
       outcome: persistence.outcome,
       source: persistence.source,
@@ -4665,6 +4694,7 @@ export class GraphEngine {
       return {
         ...persistence,
         ...coordinationFields,
+        ...runtimeOwnershipFields,
         outcome: 'incomplete',
         complete: false,
         writable: false,
@@ -4680,6 +4710,7 @@ export class GraphEngine {
       return {
         ...persistence,
         ...coordinationFields,
+        ...runtimeOwnershipFields,
         state_recovery,
         config_recovery: configRecovery,
       };
@@ -4691,6 +4722,7 @@ export class GraphEngine {
     return {
       ...persistence,
       ...coordinationFields,
+      ...runtimeOwnershipFields,
       outcome: 'incomplete',
       complete: false,
       writable: false,
@@ -4761,6 +4793,7 @@ export class GraphEngine {
 
   private completeDeferredStartupReconciliation(): void {
     if (!this.startupReconciliationDeferred) return;
+    this.runtimeOwnershipRecoveryHandler?.();
     this.evaluateObjectives();
     this.reconcileSessionEdgesOnStartup();
     this.reconcileSessionDescriptorsOnStartup();
@@ -4771,6 +4804,10 @@ export class GraphEngine {
     this.warnIfOpsecInert();
     this.startupReconciliationDeferred = false;
     this.deferredStartupRecoveryError = undefined;
+  }
+
+  setRuntimeOwnershipRecoveryHandler(handler: (() => void) | undefined): void {
+    this.runtimeOwnershipRecoveryHandler = handler;
   }
 
   /** Whether a new durable mutation may be accepted right now. */
@@ -5153,6 +5190,370 @@ export class GraphEngine {
 
   getRuntimeRuns(): PersistedRuntimeRunV1[] {
     return detached(this.ctx.runtimeRuns);
+  }
+
+  private pruneTerminalRuntimeRuns(): void {
+    const terminal = this.ctx.runtimeRuns
+      .filter(run =>
+        run.lifecycle === 'completed'
+        || run.lifecycle === 'failed'
+        || run.lifecycle === 'interrupted'
+        || run.lifecycle === 'unknown')
+      .sort((left, right) =>
+        (left.completed_at ?? left.started_at)
+          .localeCompare(right.completed_at ?? right.started_at));
+    if (terminal.length <= MAX_TERMINAL_RUNTIME_RUNS) return;
+    const remove = new Set(
+      terminal
+        .slice(0, terminal.length - MAX_TERMINAL_RUNTIME_RUNS)
+        .map(run => run.run_id),
+    );
+    this.ctx.runtimeRuns = this.ctx.runtimeRuns.filter(run => !remove.has(run.run_id));
+  }
+
+  beginRuntimeAction(input: {
+    run: {
+      run_id: string;
+      kind: PersistedRuntimeRunV1['kind'];
+      task_id?: string;
+      action_id?: string;
+      agent_id?: string;
+      daemon_owner: string;
+      command_fingerprint: string;
+      ownership_mode?: PersistedRuntimeRunV1['ownership_mode'];
+      signal_scope?: PersistedRuntimeRunV1['signal_scope'];
+      evidence_state?: PersistedRuntimeRunV1['evidence_state'];
+      action_started_event_id?: string;
+      started_at?: string;
+    };
+    event: ActivityLogInput;
+    noise?: {
+      action_id?: string;
+      host_id?: string;
+      domain?: string;
+      campaign_id?: string;
+      agent_id?: string;
+      frontier_item_id?: string;
+      noise_estimate: number;
+      noise_actual?: number;
+    };
+  }): { run: PersistedRuntimeRunV1; event: ActivityLogEntry } {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'begin managed runtime action',
+        ['runtime_runs', 'activity', 'opsec'],
+        () => this.beginRuntimeAction(detached(input)),
+      );
+    }
+    this.assertPersistenceWritable();
+    const event = this.logActionEvent(input.event);
+    if (input.noise) this.recordOpsecNoise(input.noise);
+    const run = this.reserveRuntimeRun({
+      ...input.run,
+      action_started_event_id: event.event_id,
+    });
+    this.persist();
+    return { run, event };
+  }
+
+  finishRuntimeAction(input: {
+    run_id: string;
+    event: ActivityLogInput;
+    lifecycle: Extract<PersistedRuntimeRunV1['lifecycle'], 'completed' | 'failed' | 'interrupted'>;
+    evidence_state?: PersistedRuntimeRunV1['evidence_state'];
+    exit_code?: number | null;
+    exit_signal?: string | null;
+  }): { run: PersistedRuntimeRunV1 | null; event: ActivityLogEntry } {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'finish managed runtime action',
+        ['runtime_runs', 'activity'],
+        () => this.finishRuntimeAction(detached(input)),
+      );
+    }
+    this.assertPersistenceWritable();
+    const event = this.logActionEvent(input.event);
+    const run = this.finalizeRuntimeRun({
+      run_id: input.run_id,
+      lifecycle: input.lifecycle,
+      evidence_state: input.evidence_state,
+      exit_code: input.exit_code,
+      exit_signal: input.exit_signal,
+      action_terminal_event_id: event.event_id,
+    });
+    this.persist();
+    return { run, event };
+  }
+
+  reserveRuntimeRun(input: {
+    run_id: string;
+    kind: PersistedRuntimeRunV1['kind'];
+    task_id?: string;
+    action_id?: string;
+    agent_id?: string;
+    daemon_owner: string;
+    command_fingerprint: string;
+    ownership_mode?: PersistedRuntimeRunV1['ownership_mode'];
+    signal_scope?: PersistedRuntimeRunV1['signal_scope'];
+    evidence_state?: PersistedRuntimeRunV1['evidence_state'];
+    action_started_event_id?: string;
+    started_at?: string;
+  }): PersistedRuntimeRunV1 {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'reserve managed runtime run',
+        ['runtime_runs'],
+        () => this.reserveRuntimeRun(input),
+      );
+    }
+    this.assertPersistenceWritable();
+    if (this.ctx.runtimeRuns.some(run =>
+      run.run_id === input.run_id
+      && (run.lifecycle === 'reserved' || run.lifecycle === 'running'))) {
+      throw new Error(`Runtime run is already active: ${input.run_id}`);
+    }
+    const run: PersistedRuntimeRunV1 = {
+      run_id: input.run_id,
+      kind: input.kind,
+      task_id: input.task_id,
+      action_id: input.action_id,
+      agent_id: input.agent_id,
+      daemon_owner: input.daemon_owner,
+      command_fingerprint: input.command_fingerprint,
+      ownership_mode: input.ownership_mode ?? 'managed_supervisor',
+      signal_scope: input.signal_scope
+        ?? (process.platform === 'win32' ? 'pid' : 'process_group'),
+      started_at: input.started_at ?? this.ctx.nowIso(),
+      lifecycle: 'reserved',
+      evidence_state: input.evidence_state ?? 'none',
+      action_started_event_id: input.action_started_event_id,
+    };
+    this.ctx.runtimeRuns = [
+      ...this.ctx.runtimeRuns.filter(candidate => candidate.run_id !== input.run_id),
+      run,
+    ];
+    this.persist();
+    return detached(run);
+  }
+
+  acknowledgeRuntimeRunOwnership(
+    run_id: string,
+    identity: {
+      pid: number;
+      process_group_id?: number;
+      process_start_identity?: string;
+      ownership_token?: string;
+    },
+  ): PersistedRuntimeRunV1 {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'acknowledge managed runtime ownership',
+        ['runtime_runs'],
+        () => this.acknowledgeRuntimeRunOwnership(run_id, identity),
+      );
+    }
+    this.assertPersistenceWritable();
+    const run = this.ctx.runtimeRuns.find(candidate => candidate.run_id === run_id);
+    if (!run) throw new Error(`Runtime run not found: ${run_id}`);
+    if (run.lifecycle !== 'reserved') {
+      throw new Error(`Runtime run ${run_id} cannot acknowledge ownership from ${run.lifecycle}`);
+    }
+    if (!Number.isSafeInteger(identity.pid) || identity.pid <= 0) {
+      throw new Error(`Runtime run ${run_id} reported an invalid supervisor pid`);
+    }
+    if (
+      run.ownership_mode === 'managed_supervisor'
+      && run.signal_scope === 'process_group'
+      && process.platform !== 'win32'
+      && identity.process_group_id !== identity.pid
+    ) {
+      throw new Error(
+        `Runtime run ${run_id} did not report a supervisor-owned process group`,
+      );
+    }
+    if (
+      run.ownership_mode === 'managed_supervisor'
+      && !identity.process_start_identity
+    ) {
+      throw new Error(
+        `Runtime run ${run_id} did not report a verifiable process start identity`,
+      );
+    }
+    if (
+      run.ownership_mode === 'managed_supervisor'
+      && !identity.ownership_token
+    ) {
+      throw new Error(
+        `Runtime run ${run_id} did not report a verifiable ownership token`,
+      );
+    }
+    const now = this.ctx.nowIso();
+    run.pid = identity.pid;
+    run.process_group_id = identity.process_group_id;
+    run.process_start_identity = identity.process_start_identity;
+    run.ownership_token = identity.ownership_token;
+    run.identity_recorded_at = now;
+    run.ownership_acknowledged_at = now;
+    if (!identity.process_start_identity) {
+      run.recovery_warning = 'Supervisor ownership was acknowledged without a verifiable process start identity.';
+    } else {
+      delete run.recovery_warning;
+    }
+    this.persist();
+    return detached(run);
+  }
+
+  markRuntimeRunLaunched(run_id: string, target_pid?: number): PersistedRuntimeRunV1 {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'mark managed runtime launched',
+        ['runtime_runs'],
+        () => this.markRuntimeRunLaunched(run_id, target_pid),
+      );
+    }
+    this.assertPersistenceWritable();
+    const run = this.ctx.runtimeRuns.find(candidate => candidate.run_id === run_id);
+    if (!run) throw new Error(`Runtime run not found: ${run_id}`);
+    if (!run.ownership_acknowledged_at || !run.pid) {
+      throw new Error(`Runtime run ${run_id} has no acknowledged supervisor ownership`);
+    }
+    if (run.lifecycle !== 'reserved' && run.lifecycle !== 'running') {
+      throw new Error(`Runtime run ${run_id} cannot launch from ${run.lifecycle}`);
+    }
+    run.lifecycle = 'running';
+    run.target_pid = target_pid;
+    run.launched_at ??= this.ctx.nowIso();
+    this.persist();
+    return detached(run);
+  }
+
+  finalizeRuntimeRun(input: {
+    run_id: string;
+    lifecycle: Extract<PersistedRuntimeRunV1['lifecycle'], 'completed' | 'failed' | 'interrupted' | 'unknown'>;
+    evidence_state?: PersistedRuntimeRunV1['evidence_state'];
+    exit_code?: number | null;
+    exit_signal?: string | null;
+    action_terminal_event_id?: string;
+    recovery_warning?: string;
+  }): PersistedRuntimeRunV1 | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'finalize managed runtime run',
+        ['runtime_runs'],
+        () => this.finalizeRuntimeRun(input),
+      );
+    }
+    this.assertPersistenceWritable();
+    const run = this.ctx.runtimeRuns.find(candidate => candidate.run_id === input.run_id);
+    if (!run) return null;
+    if (
+      run.lifecycle === 'completed'
+      || run.lifecycle === 'failed'
+      || run.lifecycle === 'interrupted'
+      || run.lifecycle === 'unknown'
+    ) {
+      return detached(run);
+    }
+    run.lifecycle = input.lifecycle;
+    run.finalization_status = input.lifecycle;
+    run.completed_at = this.ctx.nowIso();
+    if (input.evidence_state !== undefined) run.evidence_state = input.evidence_state;
+    if (input.exit_code !== undefined) run.exit_code = input.exit_code;
+    if (input.exit_signal !== undefined) run.exit_signal = input.exit_signal;
+    if (input.action_terminal_event_id !== undefined) {
+      run.action_terminal_event_id = input.action_terminal_event_id;
+    }
+    if (input.recovery_warning !== undefined) run.recovery_warning = input.recovery_warning;
+    else if (input.lifecycle !== 'unknown') delete run.recovery_warning;
+    this.pruneTerminalRuntimeRuns();
+    this.persist();
+    return detached(run);
+  }
+
+  reconcileRuntimeRunOnStartup(input: {
+    run_id: string;
+    outcome: 'interrupted' | 'unknown';
+    reason: string;
+    recovery_warning?: string;
+  }): PersistedRuntimeRunV1 | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'reconcile managed runtime ownership on startup',
+        ['runtime_runs', 'tracked_processes', 'activity'],
+        () => this.reconcileRuntimeRunOnStartup(input),
+      );
+    }
+    this.assertPersistenceWritable();
+    const run = this.ctx.runtimeRuns.find(candidate => candidate.run_id === input.run_id);
+    if (!run) return null;
+    const alreadyTerminal = run.lifecycle === 'completed'
+      || run.lifecycle === 'failed'
+      || run.lifecycle === 'interrupted'
+      || run.lifecycle === 'unknown';
+    const startEventIndex = run.action_started_event_id
+      ? this.ctx.activityLog.findIndex(entry => entry.event_id === run.action_started_event_id)
+      : -1;
+    const actionEvents = startEventIndex >= 0
+      ? this.ctx.activityLog.slice(startEventIndex + 1)
+      : this.ctx.activityLog.filter(entry => entry.timestamp >= run.started_at);
+    const existingTerminal = run.action_id
+      ? actionEvents.filter(entry =>
+          entry.action_id === run.action_id
+          && (entry.event_type === 'action_completed' || entry.event_type === 'action_failed'))
+        .at(-1)
+      : undefined;
+    if (!alreadyTerminal) {
+      const terminalLifecycle = existingTerminal?.event_type === 'action_completed'
+        ? 'completed' as const
+        : existingTerminal?.event_type === 'action_failed'
+          ? existingTerminal.details?.reason === 'timeout'
+            ? 'interrupted' as const
+            : 'failed' as const
+          : input.outcome;
+      run.lifecycle = terminalLifecycle;
+      run.finalization_status = terminalLifecycle;
+      run.completed_at = existingTerminal?.timestamp ?? this.ctx.nowIso();
+    }
+    if (existingTerminal && run.lifecycle !== 'unknown') {
+      delete run.recovery_warning;
+    } else if (input.recovery_warning) {
+      run.recovery_warning = input.recovery_warning;
+    }
+    const tracked = this.ctx.trackedProcesses.find(process => process.id === run.run_id);
+    if (tracked?.status === 'running') {
+      tracked.status = run.lifecycle === 'completed'
+        ? 'completed'
+        : run.lifecycle === 'failed'
+          ? 'failed'
+          : 'unknown';
+      tracked.completed_at = run.completed_at ?? this.ctx.nowIso();
+      if (tracked.status !== 'unknown') delete tracked.recovery_warning;
+    }
+    if (existingTerminal) {
+      run.action_terminal_event_id = existingTerminal.event_id;
+    } else if (run.action_id && !run.action_terminal_event_id) {
+      const event = this.ctx.logEvent({
+        description: input.outcome === 'interrupted'
+          ? `Action interrupted during daemon restart: ${input.reason}`
+          : `Action ownership unknown after daemon restart: ${input.reason}`,
+        action_id: run.action_id,
+        agent_id: run.agent_id,
+        linked_agent_task_id: run.task_id,
+        event_type: 'action_failed',
+        category: 'system',
+        result_classification: 'failure',
+        details: {
+          reason: 'runtime_ownership_recovery',
+          runtime_run_id: run.run_id,
+          recovery_outcome: input.outcome,
+          recovery_reason: input.reason,
+        },
+      });
+      run.action_terminal_event_id = event.event_id;
+    }
+    this.pruneTerminalRuntimeRuns();
+    this.persist();
+    return detached(run);
   }
 
   setPlaybookRuns(runs: PersistedPlaybookRunV1[]): void {
@@ -5970,29 +6371,52 @@ export class GraphEngine {
     const nonTrackedRuns = this.ctx.runtimeRuns.filter(run => !derivedRunIds.has(run.run_id));
     const trackedRuns: PersistedRuntimeRunV1[] = processes.map(proc => {
       const prior = priorRuns.get(proc.id);
-      const lifecycle = proc.status === 'running'
+      const projectedLifecycle = proc.status === 'running'
         ? 'running' as const
         : proc.status === 'completed'
           ? 'completed' as const
           : proc.status === 'failed'
             ? 'failed' as const
             : 'unknown' as const;
+      const priorTerminal = prior?.lifecycle === 'completed'
+        || prior?.lifecycle === 'failed'
+        || prior?.lifecycle === 'interrupted'
+        || prior?.lifecycle === 'unknown';
+      const lifecycle = priorTerminal
+        ? prior.lifecycle
+        : projectedLifecycle;
       return {
         ...detached(prior ?? {}),
         run_id: proc.id,
         kind: prior?.kind
           ?? (proc.id.startsWith('headless-') ? 'headless_agent' : 'tracked_process'),
         task_id: prior?.task_id
+          ?? proc.task_id
           ?? (proc.id.startsWith('headless-') ? proc.id.slice('headless-'.length) : undefined),
+        action_id: prior?.action_id ?? proc.action_id,
         agent_id: proc.agent_id ?? prior?.agent_id,
         pid: proc.pid,
-        command_fingerprint: createHash('sha256').update(proc.command).digest('hex'),
+        process_group_id: proc.process_group_id ?? prior?.process_group_id,
+        process_start_identity: proc.process_start_identity ?? prior?.process_start_identity,
+        ownership_token: proc.ownership_token ?? prior?.ownership_token,
+        daemon_owner: proc.daemon_owner ?? prior?.daemon_owner,
+        command_fingerprint: proc.command_fingerprint
+          ?? prior?.command_fingerprint
+          ?? createHash('sha256').update(proc.command).digest('hex'),
+        ownership_mode: proc.ownership_mode ?? prior?.ownership_mode,
+        signal_scope: proc.signal_scope ?? prior?.signal_scope,
         started_at: proc.started_at,
-        completed_at: proc.completed_at,
+        completed_at: priorTerminal
+          ? prior.completed_at
+          : proc.completed_at ?? prior?.completed_at,
         lifecycle,
         evidence_state: prior?.evidence_state ?? 'none',
         ...(proc.status === 'unknown'
-          ? { recovery_warning: prior?.recovery_warning ?? 'Process liveness could not be verified after restart.' }
+          ? {
+              recovery_warning: proc.recovery_warning
+                ?? prior?.recovery_warning
+                ?? 'Process identity could not be verified after restart.',
+            }
           : prior?.recovery_warning
             ? { recovery_warning: prior.recovery_warning }
             : {}),

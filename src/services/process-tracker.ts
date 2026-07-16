@@ -3,6 +3,12 @@
 // Track long-running scans: PID, start time, command, status
 // ============================================================
 
+import {
+  defaultProcessIdentityObserver,
+  verifyRuntimeProcessIdentity,
+  type ProcessIdentityObserver,
+} from './process-identity.js';
+
 export interface TrackedProcess {
   id: string;
   pid: number;
@@ -11,8 +17,18 @@ export interface TrackedProcess {
   started_at: string;
   completed_at?: string;
   status: 'running' | 'completed' | 'failed' | 'unknown';
+  task_id?: string;
+  action_id?: string;
   agent_id?: string;
   target_node?: string;
+  process_group_id?: number;
+  process_start_identity?: string;
+  ownership_token?: string;
+  daemon_owner?: string;
+  command_fingerprint?: string;
+  ownership_mode?: 'managed_supervisor' | 'external_adopted';
+  signal_scope?: 'process_group' | 'pid' | 'none';
+  recovery_warning?: string;
 }
 
 const MAX_COMPLETED = 50;
@@ -21,6 +37,10 @@ export class ProcessTracker {
   private processes: Map<string, TrackedProcess> = new Map();
   private listeners = new Set<() => void>();
   private mutationGuard: (() => void) | undefined;
+
+  constructor(
+    private readonly identityObserver: ProcessIdentityObserver = defaultProcessIdentityObserver,
+  ) {}
 
   onChange(listener: () => void): () => void {
     this.listeners.add(listener);
@@ -66,15 +86,28 @@ export class ProcessTracker {
     }
   }
 
-  register(proc: Omit<TrackedProcess, 'status' | 'started_at'>): TrackedProcess {
+  register(
+    proc: Omit<TrackedProcess, 'status' | 'started_at' | 'completed_at'>,
+    options: {
+      status?: TrackedProcess['status'];
+      recovery_warning?: string;
+    } = {},
+  ): TrackedProcess {
     this.mutationGuard?.();
+    const status = options.status ?? 'running';
+    const now = new Date().toISOString();
     const tracked: TrackedProcess = {
       ...proc,
-      started_at: new Date().toISOString(),
-      status: 'running',
+      started_at: now,
+      status,
+      ...(status === 'running' ? {} : { completed_at: now }),
+      ...(options.recovery_warning
+        ? { recovery_warning: options.recovery_warning }
+        : {}),
     };
     const registered = this.mutateAndNotify(() => {
       this.processes.set(tracked.id, tracked);
+      if (status !== 'running') this.pruneCompleted();
       return tracked;
     });
     return { ...registered };
@@ -86,10 +119,10 @@ export class ProcessTracker {
     this.mutationGuard?.();
     return this.mutateAndNotify(() => {
       proc.status = status;
-      if (status === 'completed' || status === 'failed') {
+      if (status !== 'running') {
         proc.completed_at = new Date().toISOString();
       }
-      if (status === 'completed' || status === 'failed') {
+      if (status !== 'running') {
         this.pruneCompleted();
       }
       return true;
@@ -110,7 +143,7 @@ export class ProcessTracker {
 
   private pruneCompleted(): void {
     const completed = Array.from(this.processes.values())
-      .filter(p => p.status === 'completed' || p.status === 'failed')
+      .filter(p => p.status !== 'running')
       .sort((a, b) => (a.completed_at || '').localeCompare(b.completed_at || ''));
     while (completed.length > MAX_COMPLETED) {
       const oldest = completed.shift()!;
@@ -132,40 +165,38 @@ export class ProcessTracker {
   }
 
   /**
-   * Check if tracked PIDs are still alive and update status accordingly.
-   *
-   * P4.1: a missing PID is reported as `unknown`, not `completed`. From
-   * outside the process we can't distinguish a clean exit from a crash —
-   * `kill(pid, 0)` only tells us "no longer alive." Marking these as
-   * `completed` was wrong and made retrospective truth weaker. Callers
-   * with actual lifecycle visibility (e.g. spawn() exit handlers) should
-   * call `update(id, 'completed' | 'failed')` explicitly.
+   * Verify that a tracked PID still belongs to the process originally
+   * registered. PID existence alone is not ownership: operating systems reuse
+   * PIDs, so a matching start identity is required to keep reporting a run as
+   * live. Missing, dead, reused, or otherwise unverifiable identities resolve
+   * to `unknown`; callers with direct lifecycle visibility must explicitly
+   * report `completed` or `failed`.
    */
   refreshStatuses(): boolean {
     const transitioned = Array.from(this.processes.values())
-      .filter(proc => proc.status === 'running' && !this.isPidAlive(proc.pid));
+      .filter(proc => proc.status === 'running')
+      .map(proc => ({
+        proc,
+        verification: verifyRuntimeProcessIdentity(proc, this.identityObserver),
+      }))
+      .filter(({ verification }) => verification.status !== 'verified');
     if (transitioned.length === 0) return false;
 
     this.mutationGuard?.();
     return this.mutateAndNotify(() => {
       const completedAt = new Date().toISOString();
-      for (const proc of transitioned) {
+      for (const { proc, verification } of transitioned) {
         proc.status = 'unknown';
         proc.completed_at = completedAt;
+        proc.recovery_warning = verification.status === 'pid_reused'
+          ? 'Tracked PID was reused by a different process; ownership was not assumed.'
+          : verification.status === 'not_running'
+            ? 'Tracked process is no longer running; its terminal outcome is unknown.'
+            : 'Tracked process identity could not be verified; ownership was not assumed.';
       }
       this.pruneCompleted();
       return true;
     });
-  }
-
-  private isPidAlive(pid: number): boolean {
-    try {
-      // signal 0 doesn't kill — just checks if process exists
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   /**
@@ -206,8 +237,11 @@ export class ProcessTracker {
     this.restore(data, options);
   }
 
-  static deserialize(data: TrackedProcess[]): ProcessTracker {
-    const tracker = new ProcessTracker();
+  static deserialize(
+    data: TrackedProcess[],
+    identityObserver: ProcessIdentityObserver = defaultProcessIdentityObserver,
+  ): ProcessTracker {
+    const tracker = new ProcessTracker(identityObserver);
     tracker.replaceWithoutNotification(data);
     return tracker;
   }

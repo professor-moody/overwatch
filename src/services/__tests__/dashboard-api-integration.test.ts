@@ -409,6 +409,37 @@ describe('GET /api/readiness', () => {
       getStateSpy.mockRestore();
     }
   });
+
+  it('raises a readiness warning for unresolved runtime ownership', async () => {
+    const getState = engine.getState.bind(engine);
+    const getStateSpy = vi.spyOn(engine, 'getState').mockImplementation(options => {
+      const state = getState(options);
+      return {
+        ...state,
+        persistence_recovery: {
+          ...state.persistence_recovery!,
+          runtime_ownership_warnings: [{
+            run_id: 'runtime-readiness-warning',
+            pid: 4242,
+            lifecycle: 'unknown',
+            message: 'PID identity could not be verified.',
+          }],
+        },
+      };
+    });
+
+    try {
+      const { status, body } = await getJson<Record<string, any>>('/api/readiness');
+      expect(status).toBe(200);
+      expect(['warning', 'critical']).toContain(body.status);
+      expect(body.persistence.recovery.runtime_ownership_warnings).toEqual([
+        expect.objectContaining({ run_id: 'runtime-readiness-warning' }),
+      ]);
+      expect(body.issues).toContainEqual(expect.stringContaining('unresolved process ownership'));
+    } finally {
+      getStateSpy.mockRestore();
+    }
+  });
 });
 
 describe('degraded persistence gate', () => {

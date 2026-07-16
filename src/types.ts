@@ -1378,6 +1378,13 @@ export interface PersistenceRecoveryStatus {
   };
   /** State-envelope migration/forward-compatibility status for this boot. */
   state_migration?: StateMigrationStatus;
+  /** Managed runtime ownership that could not be safely reclaimed on startup. */
+  runtime_ownership_warnings?: Array<{
+    run_id: string;
+    pid?: number;
+    lifecycle: string;
+    message: string;
+  }>;
   /** File/runtime/state configuration convergence for the active engagement. */
   config_recovery?: ConfigRecoveryStatus;
   /** Ambiguous or missing legacy agent relationships retained without guessing. */

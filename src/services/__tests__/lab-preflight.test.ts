@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
-import { runLabPreflight, summarizeInlineLabReadiness } from '../lab-preflight.js';
+import {
+  assessPersistenceRecovery,
+  runLabPreflight,
+  summarizeInlineLabReadiness,
+} from '../lab-preflight.js';
 import { parseBloodHoundFile } from '../bloodhound-ingest.js';
 import { parseNmapXml, parseNxc, parseSecretsdump } from '../parsers/index.js';
 import type { EngagementConfig } from '../../types.js';
@@ -139,6 +143,42 @@ describe('lab preflight', () => {
     expect(report.status).toBe('ready');
     expect(report.graph_stage).toBe('mid_run');
     expect(report.checks.find(check => check.name === 'graph_health')?.status).toBe('pass');
+  });
+
+  it('warns when detached runtime ownership could not be safely reclaimed', () => {
+    const engine = createTestEngine(makeConfig({ profile: 'single_host' as const }));
+    const persistence = engine.getPersistenceRecoveryStatus();
+    const runtimeWarning = {
+      run_id: 'run-unresolved',
+      pid: 4242,
+      lifecycle: 'unknown',
+      message: 'PID identity could not be verified.',
+    };
+    vi.spyOn(engine, 'getPersistenceRecoveryStatus').mockReturnValue({
+      ...persistence,
+      runtime_ownership_warnings: [runtimeWarning],
+    });
+
+    expect(assessPersistenceRecovery({
+      ...persistence,
+      runtime_ownership_warnings: [runtimeWarning],
+    })).toMatchObject({
+      status: 'warning',
+      message: expect.stringContaining('unresolved process ownership'),
+    });
+
+    const report = runLabPreflight(engine, {
+      profile: 'single_host',
+      toolStatuses: installedTools(['nmap']),
+      dashboard: { enabled: true, running: true },
+    });
+    expect(report.checks.find(check => check.name === 'runtime_ownership')).toMatchObject({
+      status: 'warning',
+      message: expect.stringContaining('could not be safely reclaimed'),
+    });
+    expect(report.recommended_next_steps).toContain(
+      'Review unresolved runtime ownership in recovery status before starting more target work.',
+    );
   });
 
   it('auto-resolves GOAD-style BH+nmap split hosts via FQDN short-name matching', () => {

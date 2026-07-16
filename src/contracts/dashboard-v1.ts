@@ -574,6 +574,12 @@ export const RecoveryStatusDtoSchema = z.object({
   }).passthrough(),
   state_migration: StateMigrationStatusSchema.optional(),
   config_recovery: ConfigRecoveryStatusSchema.optional(),
+  runtime_ownership_warnings: z.array(z.object({
+    run_id: z.string(),
+    pid: z.number().int().positive().optional(),
+    lifecycle: z.string(),
+    message: z.string(),
+  }).passthrough()).optional(),
   coordination_warnings: z.array(z.object({
     warning_id: z.string(),
     relationship: z.string(),
