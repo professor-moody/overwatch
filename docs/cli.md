@@ -35,7 +35,7 @@ overwatch <command> [options]
 | Command | Shows |
 |---|---|
 | `overwatch status` | Engagement snapshot: graph, objectives, access, agents, approvals, top frontier, readiness |
-| `overwatch recovery` | WAL/state recovery plus active file/runtime/state config convergence and exact reconciliation hashes |
+| `overwatch recovery` | WAL/state recovery, active config convergence, exact reconciliation hashes, and unresolved runtime ownership |
 | `overwatch state migrate --check [--state-file PATH] [--config-file PATH]` | Side-effect-free local V0/V1, WAL, snapshot, and config migration readiness |
 | `overwatch frontier [--max N] [--type TYPE]` | Candidate next actions (the deterministic frontier) |
 | `overwatch findings [--severity S]` | Classified findings + severity summary |
@@ -66,7 +66,9 @@ dispatch report the new task + agent id).
 the server in read-only mode. It reports the base, contiguous-applied, on-disk,
 and allocated WAL checkpoints; explicit preserved/malformed flags; the last
 persistence error and durable-write failure streak; and the active config's
-file/runtime/state revisions and hashes.
+file/runtime/state revisions and hashes. A separate **Runtime ownership
+warnings** section lists any run whose original process identity could not be
+verified or safely reclaimed.
 
 The CLI presents the combined write gate separately from **state/WAL health**.
 A config-only divergence therefore reads as a paused/read-only combined status

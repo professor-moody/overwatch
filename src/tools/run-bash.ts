@@ -38,8 +38,11 @@ Overwatch will automatically:
 Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_evidence).
 
 For interactive or long-lived shells use \`open_session\` + \`send_to_session\`.
-For background scans you intend to poll, run a one-shot here that backgrounds the
-process and pair with \`track_process\`.`,
+Managed one-shot commands may not request backgrounding or daemonization.
+Known detach forms are rejected before launch, and descendants left in the
+managed process group are terminated with a precise failure. Tools that
+internally self-daemonize are unsupported: launch them through your operator
+terminal, then register the PID with \`track_process\`.`,
       inputSchema: {
         command: z.string().min(1).describe('Shell command to execute via `bash -c`'),
         cwd: z.string().optional().describe('Working directory for the command'),

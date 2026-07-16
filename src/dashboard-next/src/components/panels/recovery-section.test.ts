@@ -84,4 +84,23 @@ describe('RecoverySection', () => {
     expect(html).toContain('/tmp/.migration-backups/state-v0-to-v1');
     expect(html).toContain('aaaaaaaaaaaa…aaaaaaaa');
   });
+
+  it('renders each unresolved runtime run with its PID and recovery reason', () => {
+    const html = render(recovery({
+      outcome: 'clean',
+      complete: true,
+      writable: true,
+      runtime_ownership_warnings: [{
+        run_id: 'run-reused',
+        pid: 4242,
+        lifecycle: 'unknown',
+        message: 'The recorded PID belongs to a different process.',
+      }],
+    }));
+
+    expect(html).toContain('Runtime ownership needs review');
+    expect(html).toContain('run-reused');
+    expect(html).toContain('PID 4242');
+    expect(html).toContain('belongs to a different process');
+  });
 });

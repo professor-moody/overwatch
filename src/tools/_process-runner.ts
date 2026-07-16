@@ -11,11 +11,17 @@
 // Everything tool-agnostic lives here.
 // ============================================================
 
-import { spawn } from 'child_process';
+import { createHash, randomUUID } from 'crypto';
+import { execFileSync } from 'child_process';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { isAcceptableParserExit } from '../services/parsers/index.js';
 import { parseAndMaybeIngest, type ParseIngestResult } from '../services/parse-ingest.js';
 import { actionIdOrUuid } from '../services/deterministic-id.js';
+import {
+  spawnManagedRuntimeSupervisor,
+  type ManagedRuntimeSupervisorHooks,
+} from '../services/managed-runtime-supervisor.js';
+import { currentDaemonOwner } from '../services/process-identity.js';
 import type { ParseContext } from '../types.js';
 
 // F3: argv/command target extraction.
@@ -720,10 +726,109 @@ interface ProcessResult {
   spawn_error?: string;
 }
 
+const EXPLICIT_DAEMONIZER_BINARIES = new Set([
+  'daemon',
+  'daemonize',
+  'nohup',
+  'setsid',
+  'start-stop-daemon',
+]);
+
+function hasUnquotedBackgroundOperator(command: string): boolean {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < command.length; i += 1) {
+    const current = command[i];
+    if (quote) {
+      if (current === '\\' && quote === '"' && i + 1 < command.length) {
+        i += 1;
+      } else if (current === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (current === '\\' && i + 1 < command.length) {
+      i += 1;
+      continue;
+    }
+    if (current === '"' || current === "'") {
+      quote = current;
+      continue;
+    }
+    if (current !== '&') continue;
+    const previous = command[i - 1];
+    const next = command[i + 1];
+    if (previous === '&' || next === '&' || previous === '>' || previous === '<' || next === '>') {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+function shellUsesExplicitDaemonizer(command: string): boolean {
+  for (const segment of splitShellSegments(command)) {
+    const tokens = tokenizeCommandLike(segment.trim());
+    let index = 0;
+    while (index < tokens.length && LEADING_ASSIGNMENT_RE.test(tokens[index])) index += 1;
+    if (index >= tokens.length) continue;
+    const lead = basename(tokens[index]).toLowerCase();
+    if (EXPLICIT_DAEMONIZER_BINARIES.has(lead)) return true;
+    if (
+      COMMAND_WRAPPERS.has(lead)
+      && tokens.slice(index + 1).some(token =>
+        EXPLICIT_DAEMONIZER_BINARIES.has(basename(token).toLowerCase()))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function unsupportedDaemonizationReason(binary: string, args: string[]): string | undefined {
+  const base = basename(binary).toLowerCase();
+  if (EXPLICIT_DAEMONIZER_BINARIES.has(base)) {
+    return `explicit daemonizer binary ${base}`;
+  }
+
+  const shellIndex = ['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(base)
+    ? args.findIndex(argument => argument === '-c' || argument === '-lc')
+    : -1;
+  if (shellIndex >= 0 && args[shellIndex + 1] !== undefined) {
+    const command = args[shellIndex + 1];
+    if (hasUnquotedBackgroundOperator(command)) {
+      return 'unquoted shell background operator';
+    }
+    if (shellUsesExplicitDaemonizer(command)) {
+      return 'explicit shell daemonizer';
+    }
+  }
+
+  const inlineSource = args.join('\n');
+  if (/(?:\[\s*)?["']?detached["']?(?:\s*\])?\s*:\s*true\b/.test(inlineSource)) {
+    return 'detached child-process option';
+  }
+  if (
+    /\bstart_new_session\s*=\s*True\b/.test(inlineSource)
+    || /\bpreexec_fn\s*=\s*(?:os\.)?setsid\b/.test(inlineSource)
+    || /\bos\.setsid\s*\(/.test(inlineSource)
+    || /\bPOSIX::setsid\b/.test(inlineSource)
+    || /\bProcess\.(?:daemon|setsid)\b/.test(inlineSource)
+    || /\bposix_setsid\s*\(/.test(inlineSource)
+    || /\bSysProcAttr\b[\s\S]*\bSetsid\s*:\s*true\b/.test(inlineSource)
+    || /\bcreationflags\s*=\s*[^,\n]*(?:CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS|CREATE_BREAKAWAY_FROM_JOB)/.test(inlineSource)
+  ) {
+    return 'new-session child-process option';
+  }
+  return undefined;
+}
+
 export function runProcess(binary: string, args: string[], opts: {
   cwd?: string;
   env?: Record<string, string>;
   timeout_ms: number;
+  /** SIGTERM-to-SIGKILL grace for the managed group. Primarily injectable for
+   * deterministic crash/descendant tests; production defaults to five seconds. */
+  kill_grace_ms?: number;
   /** Optional streaming sinks. Receive every byte of stdout/stderr regardless of inline cap. */
   stdoutSink?: { write: (chunk: Buffer) => void };
   stderrSink?: { write: (chunk: Buffer) => void };
@@ -734,7 +839,24 @@ export function runProcess(binary: string, args: string[], opts: {
    *  (SIGTERM → SIGKILL). Previously abort only cancelled the pre-spawn approval wait,
    *  so a cancelled scan kept running to completion. */
   signal?: AbortSignal;
+  /** Durable ownership callbacks. The supervisor will not launch the target
+   * until onSupervisorReady returns successfully. */
+  runtime?: ManagedRuntimeSupervisorHooks;
 }): Promise<ProcessResult> {
+  const unsupportedDaemonization = unsupportedDaemonizationReason(binary, args);
+  if (unsupportedDaemonization) {
+    return Promise.resolve({
+      exit_code: null,
+      signal: null,
+      stdout: new BoundedStreamBuffer(),
+      stderr: new BoundedStreamBuffer(),
+      duration_ms: 0,
+      timed_out: false,
+      spawn_error:
+        `Managed one-shot execution rejected ${unsupportedDaemonization}. `
+        + 'Launch long-lived work from an external operator terminal and register its PID with track_process.',
+    });
+  }
   return new Promise((resolve) => {
     const start = Date.now();
     const stdout = new BoundedStreamBuffer();
@@ -747,18 +869,39 @@ export function runProcess(binary: string, args: string[], opts: {
     let killTimer: ReturnType<typeof setTimeout> | null = null;
 
     let child;
+    let targetSpawnError: string | undefined;
     try {
-      child = spawn(binary, args, {
-        cwd: opts.cwd,
-        env: buildChildEnv(opts.env),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // R2-1: put the child in its own process group on POSIX so the
-        // timeout path can signal the entire descendant tree via -pid.
-        // Without this, bash -c 'tool & wait' style invocations leave
-        // grandchildren running after Overwatch reports the action killed.
-        // No-op on Windows (where spawn ignores `detached:true` for
-        // signaling purposes); we document the gap rather than fake it.
-        detached: process.platform !== 'win32',
+      const managed = spawnManagedRuntimeSupervisor(
+        {
+          binary,
+          args,
+          cwd: opts.cwd,
+          env: buildChildEnv(opts.env),
+        },
+        {
+          onSupervisorReady: identity => opts.runtime?.onSupervisorReady(identity),
+          onTargetLaunched: pid => opts.runtime?.onTargetLaunched?.(pid),
+          onTargetExit: (code, signal) => opts.runtime?.onTargetExit?.(code, signal),
+          onTargetError: message => {
+            targetSpawnError = message;
+            opts.runtime?.onTargetError?.(message);
+          },
+        },
+      );
+      child = managed.child;
+      void managed.ready.catch(error => {
+        targetSpawnError = error.message;
+      });
+      void managed.targetExit.then(({ exitCode, signal }) => {
+        finish({
+          exit_code: exitCode,
+          signal,
+          stdout,
+          stderr,
+          duration_ms: Date.now() - start,
+          timed_out: timedOut,
+          ...(targetSpawnError ? { spawn_error: targetSpawnError } : {}),
+        });
       });
     } catch (err) {
       resolve({
@@ -777,6 +920,18 @@ export function runProcess(binary: string, args: string[], opts: {
     // child (Windows). Returns whether the group-kill path was used.
     const killTree = (sig: NodeJS.Signals): boolean => {
       const pid = child!.pid;
+      if (pid && process.platform === 'win32') {
+        try {
+          execFileSync(
+            'taskkill.exe',
+            ['/PID', String(pid), '/T', '/F'],
+            { timeout: 5_000, stdio: 'ignore' },
+          );
+          return true;
+        } catch {
+          // Fall through to the direct child handle.
+        }
+      }
       if (pid && process.platform !== 'win32') {
         try {
           // Negative PID targets the process group.
@@ -794,7 +949,10 @@ export function runProcess(binary: string, args: string[], opts: {
     // `finish()` can cancel it once the child is gone (avoids signalling a reused pid).
     const escalateKill = (): void => {
       if (killTimer) return;
-      killTimer = setTimeout(() => { killTree('SIGKILL'); }, 5000);
+      killTimer = setTimeout(
+        () => { killTree('SIGKILL'); },
+        opts.kill_grace_ms ?? 5_000,
+      );
       killTimer.unref();
     };
 
@@ -838,28 +996,6 @@ export function runProcess(binary: string, args: string[], opts: {
       try { opts.onStderr?.(c); } catch { /* tee errors must not kill the process */ }
     });
 
-    child.on('error', (err) => {
-      finish({
-        exit_code: null,
-        signal: null,
-        stdout,
-        stderr,
-        duration_ms: Date.now() - start,
-        timed_out: timedOut,
-        spawn_error: err.message,
-      });
-    });
-
-    child.on('close', (code, signal) => {
-      finish({
-        exit_code: code,
-        signal,
-        stdout,
-        stderr,
-        duration_ms: Date.now() - start,
-        timed_out: timedOut,
-      });
-    });
   });
 }
 
@@ -1525,43 +1661,62 @@ export async function runInstrumentedProcess(
   if (!engine.isPersistenceWritable()) {
     return persistenceInterruptedResponse(engine, normalizedActionId);
   }
+  const runtimeRunId = `tool-${normalizedActionId}-${randomUUID()}`;
+  const commandFingerprint = createHash('sha256')
+    .update(binary)
+    .update('\0')
+    .update(args.join('\0'))
+    .digest('hex');
   try {
-    engine.logActionEvent({
-      description: resolvedDescription,
-      agent_id,
-      linked_agent_task_id: ownerTaskId,
-      action_id: normalizedActionId,
-      event_type: 'action_started',
-      category: 'frontier',
-      frontier_type: frontierType,
-      tool_name,
-      technique,
-      command_repr,
-      target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
-      target_ips: targetIpsForEvents(),
-      target_cidrs: targetCidrsForEvents(),
-      frontier_item_id,
-      noise_estimate: noiseEstimate,
-      details: {
-        command: command_repr,
-        binary,
-        args: loggedArgs,
-        cwd,
-        timeout_ms: effectiveTimeout,
-        invoking_tool: opts.invoking_tool,
-        operator_infra: operator_infra || undefined,
-      },
-    });
-    if (noiseEstimate !== undefined) {
-      engine.recordOpsecNoise({
+    engine.beginRuntimeAction({
+      run: {
+        run_id: runtimeRunId,
+        kind: 'tracked_process',
+        task_id: ownerTaskId,
         action_id: normalizedActionId,
-        host_id: allTargetNodeIds[0],
+        agent_id: ownerAgentLabel,
+        daemon_owner: currentDaemonOwner(),
+        command_fingerprint: commandFingerprint,
+        evidence_state: 'pending',
+      },
+      event: {
+        description: resolvedDescription,
         agent_id,
+        linked_agent_task_id: ownerTaskId,
+        action_id: normalizedActionId,
+        event_type: 'action_started',
+        category: 'frontier',
+        frontier_type: frontierType,
+        tool_name,
+        technique,
+        command_repr,
+        target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
+        target_ips: targetIpsForEvents(),
+        target_cidrs: targetCidrsForEvents(),
         frontier_item_id,
         noise_estimate: noiseEstimate,
-      });
-    }
-    engine.persist();
+        details: {
+          command: command_repr,
+          binary,
+          args: loggedArgs,
+          cwd,
+          timeout_ms: effectiveTimeout,
+          invoking_tool: opts.invoking_tool,
+          operator_infra: operator_infra || undefined,
+        },
+      },
+      ...(noiseEstimate !== undefined
+        ? {
+            noise: {
+              action_id: normalizedActionId,
+              host_id: allTargetNodeIds[0],
+              agent_id,
+              frontier_item_id,
+              noise_estimate: noiseEstimate,
+            },
+          }
+        : {}),
+    });
   } catch (error) {
     if (!engine.isPersistenceWritable()) {
       return persistenceInterruptedResponse(engine, normalizedActionId);
@@ -1626,6 +1781,14 @@ export async function runInstrumentedProcess(
       // residual — the persisted response/parser paths scrub the full text).
       onStdout: (c) => liveOutput.append(normalizedActionId, 'stdout', redact_secrets?.length ? scrubSecretsFromText(c.toString('utf8'), redact_secrets) : c),
       onStderr: (c) => liveOutput.append(normalizedActionId, 'stderr', redact_secrets?.length ? scrubSecretsFromText(c.toString('utf8'), redact_secrets) : c),
+      runtime: {
+        onSupervisorReady: identity => {
+          engine.acknowledgeRuntimeRunOwnership(runtimeRunId, identity);
+        },
+        onTargetLaunched: targetPid => {
+          engine.markRuntimeRunLaunched(runtimeRunId, targetPid);
+        },
+      },
     });
   } finally {
     stopAgentKeepalive();
@@ -1719,48 +1882,62 @@ export async function runInstrumentedProcess(
         ? 'nonzero_exit'
         : undefined;
 
-  engine.logActionEvent({
-    description: resolvedDescription,
-    agent_id,
-    linked_agent_task_id: ownerTaskId,
-    action_id: normalizedActionId,
-    event_type: terminalEventType,
-    category: 'frontier',
-    frontier_type: frontierType,
-    tool_name,
-    technique,
-    command_repr,
-    target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
-    target_ips: targetIpsForEvents(),
-    target_cidrs: targetCidrsForEvents(),
-    frontier_item_id,
-    result_classification: succeeded ? 'success' : 'failure',
-    details: {
-      exit_code: result.exit_code,
-      signal: result.signal,
-      duration_ms: result.duration_ms,
-      timed_out: result.timed_out,
-      stdout_evidence_id,
-      stderr_evidence_id,
-      stdout_truncated: stdoutInfo.truncated,
-      stderr_truncated: stderrInfo.truncated,
-      stdout_total_bytes: stdoutInfo.total,
-      stderr_total_bytes: stderrInfo.total,
-      stdout_dropped_bytes: result.stdout.dropped_bytes || undefined,
-      stderr_dropped_bytes: result.stderr.dropped_bytes || undefined,
-      evidence_capture_error: stdoutCaptureError || stderrCaptureError
-        ? { stdout: stdoutCaptureError, stderr: stderrCaptureError }
-        : undefined,
-      spawn_error: result.spawn_error,
-      reason: failureReason,
-      command: command_repr,
-      binary,
-      args: loggedArgs,
-      invoking_tool: opts.invoking_tool,
-      operator_infra: operator_infra || undefined,
+  engine.finishRuntimeAction({
+    run_id: runtimeRunId,
+    lifecycle: result.timed_out || abortSignal?.aborted
+      ? 'interrupted'
+      : succeeded
+        ? 'completed'
+        : 'failed',
+    evidence_state: stdoutCaptureError || stderrCaptureError
+      ? 'failed'
+      : stdoutInfo.total > 0 || stderrInfo.total > 0
+        ? 'captured'
+        : 'none',
+    exit_code: result.exit_code,
+    exit_signal: result.signal,
+    event: {
+      description: resolvedDescription,
+      agent_id,
+      linked_agent_task_id: ownerTaskId,
+      action_id: normalizedActionId,
+      event_type: terminalEventType,
+      category: 'frontier',
+      frontier_type: frontierType,
+      tool_name,
+      technique,
+      command_repr,
+      target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
+      target_ips: targetIpsForEvents(),
+      target_cidrs: targetCidrsForEvents(),
+      frontier_item_id,
+      result_classification: succeeded ? 'success' : 'failure',
+      details: {
+        exit_code: result.exit_code,
+        signal: result.signal,
+        duration_ms: result.duration_ms,
+        timed_out: result.timed_out,
+        stdout_evidence_id,
+        stderr_evidence_id,
+        stdout_truncated: stdoutInfo.truncated,
+        stderr_truncated: stderrInfo.truncated,
+        stdout_total_bytes: stdoutInfo.total,
+        stderr_total_bytes: stderrInfo.total,
+        stdout_dropped_bytes: result.stdout.dropped_bytes || undefined,
+        stderr_dropped_bytes: result.stderr.dropped_bytes || undefined,
+        evidence_capture_error: stdoutCaptureError || stderrCaptureError
+          ? { stdout: stdoutCaptureError, stderr: stderrCaptureError }
+          : undefined,
+        spawn_error: result.spawn_error,
+        reason: failureReason,
+        command: command_repr,
+        binary,
+        args: loggedArgs,
+        invoking_tool: opts.invoking_tool,
+        operator_infra: operator_infra || undefined,
+      },
     },
   });
-  engine.persist();
   // Live stream is finished now that the terminal event + evidence are
   // persisted; connected viewers get `action_done` and fall back to the
   // durable evidence route. The buffer self-evicts shortly after.

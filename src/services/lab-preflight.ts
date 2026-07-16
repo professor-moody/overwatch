@@ -140,6 +140,12 @@ export function runLabPreflight(engine: GraphEngine, options: LabPreflightOption
   const persistenceCheck = evaluatePersistence(engine);
   checks.push(persistenceCheck);
   checks.push(evaluateConfigConsistency(engine));
+  const runtimeOwnershipCheck = evaluateRuntimeOwnership(engine);
+  checks.push(runtimeOwnershipCheck);
+  if (runtimeOwnershipCheck.status === 'warning') {
+    warnings.push(runtimeOwnershipCheck.message);
+    recommendedNextSteps.push('Review unresolved runtime ownership in recovery status before starting more target work.');
+  }
 
   const processCheck = evaluateProcessTracker(engine);
   checks.push(processCheck);
@@ -519,9 +525,12 @@ export function assessPersistenceRecovery(recovery: PersistenceRecoveryStatus): 
   const recoveryWarning = (recovery.outcome === 'recovered' && recovery.source === 'snapshot')
     || recovery.consecutive_persistence_failures > 0
     || recovery.journal.preserved
+    || (recovery.runtime_ownership_warnings?.length ?? 0) > 0
     || (recovery.coordination_warnings?.length ?? 0) > 0;
   if (recoveryWarning) {
-    const message = (recovery.coordination_warnings?.length ?? 0) > 0
+    const message = (recovery.runtime_ownership_warnings?.length ?? 0) > 0
+      ? `${recovery.runtime_ownership_warnings!.length} runtime run(s) have unresolved process ownership; review recovery status before target execution.`
+      : (recovery.coordination_warnings?.length ?? 0) > 0
       ? `${recovery.coordination_warnings!.length} legacy coordination relationship(s) could not be linked without guessing.`
       : recovery.consecutive_persistence_failures > 0
       ? `Persistence has ${recovery.consecutive_persistence_failures} consecutive write failure(s)${reasonSuffix}.`
@@ -554,6 +563,23 @@ function evaluateProcessTracker(engine: GraphEngine): LabReadinessCheck {
       message: `Tracked process state is not restart-safe: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+function evaluateRuntimeOwnership(engine: GraphEngine): LabReadinessCheck {
+  const warnings = engine.getPersistenceRecoveryStatus().runtime_ownership_warnings ?? [];
+  if (warnings.length === 0) {
+    return {
+      name: 'runtime_ownership',
+      status: 'pass',
+      message: 'No unresolved detached-process ownership was found.',
+    };
+  }
+  return {
+    name: 'runtime_ownership',
+    status: 'warning',
+    message: `${warnings.length} runtime run(s) could not be safely reclaimed; inspect recovery status before target execution.`,
+    details: { warnings },
+  };
 }
 
 function evaluateDashboard(dashboard: DashboardStatus): LabReadinessCheck {

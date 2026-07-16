@@ -125,9 +125,10 @@ Click any panel header to collapse/expand it. Panel state is persisted in `local
 ### Recovery status
 
 Every main dashboard view shows a global recovery banner when persistence is not
-fully writable. The banner distinguishes an active-config divergence from an
-underlying WAL/state failure, so selecting file/state authority never appears
-to repair an unrelated journal problem.
+fully writable or detached runtime ownership needs review. The banner
+distinguishes active-config divergence, underlying WAL/state failure, and
+unresolved process identity, so selecting file/state authority never appears
+to repair an unrelated journal or runtime problem.
 
 Open **Settings → Recovery** for the full outcome, contiguous/on-disk
 checkpoints, observed/supported state and journal format versions, migration
@@ -138,6 +139,12 @@ and **Use state** submit the exact current hashes behind the abbreviated values
 confirmation and refresh status after success, conflict, or failure. They are
 not offered for an incomplete known write or a simultaneous persistence
 failure.
+
+Runtime ownership warnings list the run ID, PID, and reason. Verified managed
+orphan process trees are reclaimed during startup only after the process start
+identity and per-run ownership token match. Reused, unverifiable, legacy, and
+externally adopted PIDs are never signaled; they remain visible as `unknown`
+for operator review.
 
 While recovery is read-only, inspection routes remain available but durable
 dashboard mutations return HTTP 503 with code `PERSISTENCE_READ_ONLY` and the

@@ -316,6 +316,12 @@ describe('renderers', () => {
         highest_contiguous_applied_seq: 1,
         consecutive_persistence_failures: 0,
         journal: { enabled: true, path: '/tmp/state.wal.jsonl', read: 0, attempted: 0, applied: 0, skipped: 0, failed: 0, malformed: false, preserved: true },
+        runtime_ownership_warnings: [{
+          run_id: 'run-reused',
+          pid: 4242,
+          lifecycle: 'unknown',
+          message: 'The recorded PID belongs to a different process.',
+        }],
         config_recovery: {
           status: 'diverged',
           resolution_required: true,
@@ -347,6 +353,10 @@ describe('renderers', () => {
     expect(out).toContain('last persistence error');
     expect(out).toContain('fsync failed before restart');
     expect(out).toContain('/tmp/state.wal.jsonl');
+    expect(out).toContain('Runtime ownership warnings');
+    expect(out).toContain('run-reused');
+    expect(out).toContain('PID 4242');
+    expect(out).toContain('belongs to a different process');
   });
 
   it('renderRecovery identifies a config-only write gate without blaming state or WAL recovery', () => {

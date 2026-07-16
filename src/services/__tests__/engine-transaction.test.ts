@@ -95,6 +95,128 @@ describe('EngineTransaction v2 coordination boundary', () => {
     });
   });
 
+  it('commits action start and runtime reservation in one crash-recoverable transaction', () => {
+    const first = open();
+    first.flushNow();
+    const base = checkpoint(statePath);
+
+    first.beginRuntimeAction({
+      run: {
+        run_id: 'runtime-begin',
+        kind: 'tracked_process',
+        action_id: 'action-begin',
+        daemon_owner: 'daemon-a',
+        command_fingerprint: 'a'.repeat(64),
+        evidence_state: 'pending',
+      },
+      event: {
+        action_id: 'action-begin',
+        description: 'begin runtime action',
+        event_type: 'action_started',
+      },
+      noise: {
+        action_id: 'action-begin',
+        noise_estimate: 0.1,
+      },
+    });
+
+    const transactions = new MutationJournal(statePath).readTransactionsSince(base);
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0]).toMatchObject({
+      operations: [{
+        type: 'state_patch',
+        payload: {
+          slices: {
+            runtime_runs: expect.anything(),
+            activity: expect.anything(),
+            opsec: expect.anything(),
+          },
+        },
+      }],
+    });
+    crash(first);
+
+    const second = open();
+    const run = second.getRuntimeRuns()[0];
+    expect(run).toMatchObject({
+      run_id: 'runtime-begin',
+      action_id: 'action-begin',
+      lifecycle: 'reserved',
+      action_started_event_id: expect.any(String),
+    });
+    expect(second.getFullHistory()).toContainEqual(expect.objectContaining({
+      event_id: run.action_started_event_id,
+      action_id: 'action-begin',
+      event_type: 'action_started',
+    }));
+  });
+
+  it('commits terminal activity and RuntimeRun finalization in one transaction', () => {
+    const first = open();
+    first.beginRuntimeAction({
+      run: {
+        run_id: 'runtime-finish',
+        kind: 'tracked_process',
+        action_id: 'action-finish',
+        daemon_owner: 'daemon-a',
+        command_fingerprint: 'b'.repeat(64),
+      },
+      event: {
+        action_id: 'action-finish',
+        description: 'begin runtime action',
+        event_type: 'action_started',
+      },
+    });
+    first.flushNow();
+    const base = checkpoint(statePath);
+
+    first.finishRuntimeAction({
+      run_id: 'runtime-finish',
+      lifecycle: 'completed',
+      evidence_state: 'captured',
+      exit_code: 0,
+      exit_signal: null,
+      event: {
+        action_id: 'action-finish',
+        description: 'finish runtime action',
+        event_type: 'action_completed',
+        result_classification: 'success',
+      },
+    });
+
+    const transactions = new MutationJournal(statePath).readTransactionsSince(base);
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0]).toMatchObject({
+      operations: [{
+        type: 'state_patch',
+        payload: {
+          slices: {
+            runtime_runs: expect.anything(),
+            activity: expect.anything(),
+          },
+        },
+      }],
+    });
+    crash(first);
+
+    const second = open();
+    const run = second.getRuntimeRuns()[0];
+    expect(run).toMatchObject({
+      lifecycle: 'completed',
+      finalization_status: 'completed',
+      evidence_state: 'captured',
+      exit_code: 0,
+      action_terminal_event_id: expect.any(String),
+    });
+    expect(second.getFullHistory().filter(event =>
+      event.action_id === 'action-finish'
+      && (event.event_type === 'action_completed' || event.event_type === 'action_failed')))
+      .toEqual([expect.objectContaining({
+        event_id: run.action_terminal_event_id,
+        event_type: 'action_completed',
+      })]);
+  });
+
   it('commits config, OPSEC, objective graph, and audit effects as one transaction', () => {
     const first = open();
     first.flushNow();

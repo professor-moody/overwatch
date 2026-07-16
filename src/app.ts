@@ -83,6 +83,7 @@ import type { ToolEntry } from './services/prompt-generator.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
 import { setTelemetry, getTelemetry } from './tools/error-boundary.js';
 import { InProcessTapeController, type TapeStartSource } from './services/in-process-tape.js';
+import { reconcileRuntimeOwnershipOnStartup } from './services/runtime-ownership-recovery.js';
 
 type DashboardStatusProvider = () => {
   enabled: boolean;
@@ -679,6 +680,16 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   // inline archetype methodology from the SAME loaded skills (not a per-call
   // `new SkillIndex()` that depends on cwd).
   engine.setSkillIndex(skills);
+
+  // Managed process ownership must be reconciled before tools, transports, or
+  // task execution can accept new target mutations. Only identity-verified
+  // orphan groups are signaled; reused or unverifiable PIDs remain untouched
+  // and surface through recovery status.
+  const reconcileRuntimeOwnership = () => {
+    reconcileRuntimeOwnershipOnStartup(engine);
+  };
+  engine.setRuntimeOwnershipRecoveryHandler(reconcileRuntimeOwnership);
+  reconcileRuntimeOwnership();
 
   const savedProcesses = engine.getTrackedProcesses();
   const processTracker = savedProcesses.length > 0

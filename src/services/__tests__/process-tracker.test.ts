@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ProcessTracker } from '../process-tracker.js';
+import type { ProcessIdentityObserver } from '../process-identity.js';
 
 describe('ProcessTracker', () => {
   let tracker: ProcessTracker;
@@ -78,6 +79,79 @@ describe('ProcessTracker', () => {
   });
 
   describe('refreshStatuses', () => {
+    it('keeps a running process active only when its physical identity matches', () => {
+      const observer: ProcessIdentityObserver = {
+        isAlive: vi.fn(() => true),
+        observe: vi.fn(pid => ({
+          pid,
+          process_group_id: 41,
+          process_start_identity: 'started-once',
+        })),
+      };
+      tracker = new ProcessTracker(observer);
+      tracker.register({
+        id: 'p-owned',
+        pid: 1234,
+        command: 'nmap',
+        description: 'owned scan',
+        process_group_id: 41,
+        process_start_identity: 'started-once',
+      });
+
+      expect(tracker.refreshStatuses()).toBe(false);
+      expect(tracker.get('p-owned')?.status).toBe('running');
+    });
+
+    it('does not mistake a reused PID for the originally tracked process', () => {
+      const observer: ProcessIdentityObserver = {
+        isAlive: vi.fn(() => true),
+        observe: vi.fn(pid => ({
+          pid,
+          process_group_id: 42,
+          process_start_identity: 'replacement-process',
+        })),
+      };
+      tracker = new ProcessTracker(observer);
+      tracker.register({
+        id: 'p-reused',
+        pid: 1234,
+        command: 'nmap',
+        description: 'owned scan',
+        process_group_id: 41,
+        process_start_identity: 'original-process',
+      });
+
+      expect(tracker.refreshStatuses()).toBe(true);
+      expect(tracker.get('p-reused')).toMatchObject({
+        status: 'unknown',
+        recovery_warning: expect.stringContaining('reused'),
+      });
+    });
+
+    it('resolves legacy PID-only records to unknown instead of assuming ownership', () => {
+      const observer: ProcessIdentityObserver = {
+        isAlive: vi.fn(() => true),
+        observe: vi.fn(pid => ({
+          pid,
+          process_group_id: 41,
+          process_start_identity: 'some-live-process',
+        })),
+      };
+      tracker = new ProcessTracker(observer);
+      tracker.register({
+        id: 'p-legacy',
+        pid: 1234,
+        command: 'nmap',
+        description: 'legacy scan',
+      });
+
+      tracker.refreshStatuses();
+      expect(tracker.get('p-legacy')).toMatchObject({
+        status: 'unknown',
+        recovery_warning: expect.stringContaining('could not be verified'),
+      });
+    });
+
     it('transitions running process to unknown when PID is dead (P4.1)', () => {
       // Use a PID that definitely does not exist. P4.1: this used to mark
       // the process as "completed" (implying clean exit), but from outside
@@ -99,8 +173,9 @@ describe('ProcessTracker', () => {
       // All PIDs are dead — refreshStatuses should transition all and then prune
       tracker.refreshStatuses();
       const all = tracker.listAll();
-      const completed = all.filter(p => p.status === 'completed');
-      expect(completed.length).toBeLessThanOrEqual(50);
+      const terminal = all.filter(p => p.status !== 'running');
+      expect(terminal.length).toBeLessThanOrEqual(50);
+      expect(all).toHaveLength(50);
     });
 
     it('does not touch already completed processes', () => {
@@ -141,7 +216,21 @@ describe('ProcessTracker', () => {
 
   describe('serialize / deserialize', () => {
     it('round-trips all processes', () => {
-      tracker.register({ id: 'p1', pid: 1, command: 'nmap', description: 'scan' });
+      tracker.register({
+        id: 'p1',
+        pid: 1,
+        command: 'nmap',
+        description: 'scan',
+        task_id: 'task-1',
+        action_id: 'act-1',
+        process_group_id: 12,
+        process_start_identity: 'start-1',
+        ownership_token: 'token-1',
+        daemon_owner: 'daemon-1',
+        command_fingerprint: 'a'.repeat(64),
+        ownership_mode: 'managed_supervisor',
+        signal_scope: 'process_group',
+      });
       tracker.register({ id: 'p2', pid: 2, command: 'responder', description: 'relay' });
       tracker.update('p1', 'completed');
 
@@ -151,6 +240,17 @@ describe('ProcessTracker', () => {
       expect(restored.listAll().length).toBe(2);
       expect(restored.get('p1')!.status).toBe('completed');
       expect(restored.get('p1')!.completed_at).toBeDefined();
+      expect(restored.get('p1')).toMatchObject({
+        task_id: 'task-1',
+        action_id: 'act-1',
+        process_group_id: 12,
+        process_start_identity: 'start-1',
+        ownership_token: 'token-1',
+        daemon_owner: 'daemon-1',
+        command_fingerprint: 'a'.repeat(64),
+        ownership_mode: 'managed_supervisor',
+        signal_scope: 'process_group',
+      });
       expect(restored.get('p2')!.status).toBe('running');
     });
 

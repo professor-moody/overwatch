@@ -435,6 +435,69 @@ describe('PersistedStateV1 and migration', () => {
     malformedRuntime.runtimeRuns[0].pid = 'not-a-pid';
     expect(() => validatePersistedStateV1(malformedRuntime)).toThrow(/pid/);
 
+    const enrichedRuntime = structuredClone(base);
+    enrichedRuntime.runtimeRuns = [{
+      run_id: 'runtime-managed',
+      kind: 'headless_agent',
+      task_id: 'task-1',
+      action_id: 'action-1',
+      pid: 4242,
+      target_pid: 4243,
+      process_group_id: 4242,
+      process_start_identity: 'physical-start',
+      ownership_token: 'ownership-token',
+      daemon_owner: 'daemon-1',
+      command_fingerprint: 'a'.repeat(64),
+      ownership_mode: 'managed_supervisor',
+      signal_scope: 'process_group',
+      started_at: NOW,
+      identity_recorded_at: NOW,
+      ownership_acknowledged_at: NOW,
+      launched_at: NOW,
+      lifecycle: 'running',
+      evidence_state: 'pending',
+      action_started_event_id: 'event-start',
+    }];
+    enrichedRuntime.trackedProcesses = [{
+      id: 'runtime-managed',
+      pid: 4242,
+      command: 'claude -p',
+      description: 'managed agent',
+      started_at: NOW,
+      status: 'running',
+      task_id: 'task-1',
+      action_id: 'action-1',
+      process_group_id: 4242,
+      process_start_identity: 'physical-start',
+      ownership_token: 'ownership-token',
+      daemon_owner: 'daemon-1',
+      command_fingerprint: 'a'.repeat(64),
+      ownership_mode: 'managed_supervisor',
+      signal_scope: 'process_group',
+    }];
+    expect(() => validatePersistedStateV1(enrichedRuntime)).not.toThrow();
+
+    const signalableExternal = structuredClone(enrichedRuntime);
+    signalableExternal.runtimeRuns[0].ownership_mode = 'external_adopted';
+    expect(() => validatePersistedStateV1(signalableExternal)).toThrow(/signal_scope none/);
+
+    const missingManagedGroup = structuredClone(enrichedRuntime);
+    delete missingManagedGroup.runtimeRuns[0].process_group_id;
+    expect(() => validatePersistedStateV1(missingManagedGroup)).toThrow(/supervisor-owned process group/);
+
+    const missingManagedToken = structuredClone(enrichedRuntime);
+    delete missingManagedToken.runtimeRuns[0].ownership_token;
+    expect(() => validatePersistedStateV1(missingManagedToken)).toThrow(/ownership token/);
+
+    const mismatchedFinalization = structuredClone(enrichedRuntime);
+    mismatchedFinalization.runtimeRuns[0].lifecycle = 'completed';
+    mismatchedFinalization.runtimeRuns[0].finalization_status = 'failed';
+    expect(() => validatePersistedStateV1(mismatchedFinalization)).toThrow(/must match lifecycle/);
+
+    const invalidTrackedOwnership = structuredClone(enrichedRuntime);
+    invalidTrackedOwnership.trackedProcesses[0].ownership_mode = 'external_adopted';
+    expect(() => validatePersistedStateV1(invalidTrackedOwnership)).toThrow(/signal_scope none/);
+
     const wrongManifestKind = structuredClone(base);
     wrongManifestKind.artifactReferences.evidence_manifest = {
       kind: 'bundle',

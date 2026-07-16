@@ -15,3 +15,4 @@ Use `run_tool` when no shell features are needed. It avoids shell parsing and is
 - Provide the executable and arguments separately.
 - Provide `technique` and explicit target metadata for target-facing commands.
 - Use `parse_with` for supported raw output formats.
+- Managed execution is one-shot. Explicit daemonizers and recognizable detached child-process options are rejected before launch. Tools that internally self-daemonize are unsupported; launch them externally and register the PID with [`track_process`](track-process.md).

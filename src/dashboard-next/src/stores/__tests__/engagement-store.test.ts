@@ -184,6 +184,12 @@ describe('engagement store hydration', () => {
         resolution_required: true,
         intent_present: false,
       },
+      runtime_ownership_warnings: [{
+        run_id: 'runtime-store-warning',
+        pid: 4242,
+        lifecycle: 'unknown',
+        message: 'PID identity could not be verified.',
+      }],
     };
     useEngagementStore.getState().loadFullState({
       state: { persistence_recovery: initialRecovery },
@@ -191,6 +197,8 @@ describe('engagement store hydration', () => {
       history_count: 0,
     } as FullStateData);
     expect(useEngagementStore.getState().persistenceRecovery).toEqual(initialRecovery);
+    expect(useEngagementStore.getState().persistenceRecovery?.runtime_ownership_warnings)
+      .toEqual([expect.objectContaining({ run_id: 'runtime-store-warning' })]);
 
     const deltaBase = {
       state: {}, history_count: 0, detail: {},

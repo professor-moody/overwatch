@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -162,6 +162,43 @@ describe('run_bash tool', () => {
     expect(failed).toBeTruthy();
     expect((failed!.details as any).reason).toBe('timeout');
   }, 10_000);
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects shell backgrounding before it can leave an unowned scan',
+    async () => {
+      const started = Date.now();
+      const marker = join(testDir, 'background-ran');
+      const result = await handlers.run_bash({
+        command: `sleep 10 & echo ran > ${JSON.stringify(marker)}`,
+        timeout_ms: 5_000,
+        validate: false,
+      });
+      const payload = parseTextResult(result);
+
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(result.isError).toBe(true);
+      expect(payload.timed_out).toBe(false);
+      expect(payload.spawn_error).toContain('background operator');
+      expect(payload.stdout).toBe('');
+      expect(existsSync(marker)).toBe(false);
+      expect(engine.getRuntimeRuns()).toContainEqual(expect.objectContaining({
+        action_id: payload.action_id,
+        lifecycle: 'failed',
+      }));
+    },
+    10_000,
+  );
+
+  it('does not confuse a quoted ampersand with shell backgrounding', async () => {
+    const result = await handlers.run_bash({
+      command: 'printf "%s" "rock & roll"',
+      validate: false,
+    });
+    const payload = parseTextResult(result);
+
+    expect(result.isError).toBeFalsy();
+    expect(payload.stdout).toBe('rock & roll');
+  });
 
   it('blocks execution when target_ip is out of scope', async () => {
     const result = await handlers.run_bash({

@@ -90,4 +90,21 @@ describe('recovery presentation', () => {
     expect(view).toMatchObject({ canUseFile: false, canUseState: false });
     expect(view?.blockedReason).toContain('hashes');
   });
+
+  it('shows unresolved runtime ownership without claiming durable writes are blocked', () => {
+    const view = recoveryPresentation(recovery({
+      runtime_ownership_warnings: [{
+        run_id: 'run-unknown',
+        pid: 4242,
+        lifecycle: 'unknown',
+        message: 'PID was reused.',
+      }],
+    }));
+    expect(view).toMatchObject({
+      tone: 'warning',
+      title: 'Runtime ownership needs review',
+      restartRequired: false,
+    });
+    expect(view?.message).toContain('could not be safely reclaimed');
+  });
 });

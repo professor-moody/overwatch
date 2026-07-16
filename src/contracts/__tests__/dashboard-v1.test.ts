@@ -128,6 +128,13 @@ describe('dashboard v1 contracts', () => {
           reason: 'future state version',
           future_migration_field: 'additive',
         },
+        runtime_ownership_warnings: [{
+          run_id: 'run-unresolved',
+          pid: 4242,
+          lifecycle: 'unknown',
+          message: 'PID identity could not be verified.',
+          future_runtime_field: 'additive',
+        }],
         config_recovery: {
           status: 'diverged',
           resolution_required: true,
@@ -155,6 +162,11 @@ describe('dashboard v1 contracts', () => {
     });
     expect(parsed.recovery.config_recovery?.future_config_field).toBe('additive');
     expect(parsed.recovery.state_migration?.future_migration_field).toBe('additive');
+    expect(parsed.recovery.runtime_ownership_warnings?.[0]).toMatchObject({
+      run_id: 'run-unresolved',
+      pid: 4242,
+      future_runtime_field: 'additive',
+    });
     expect(parsed.recovery.config_recovery?.conflicted_intent?.future_conflict_field).toBe('additive');
     expect(parsed.recovery.future_recovery_field).toBe('additive');
     expect(parsed.recovery).toMatchObject({

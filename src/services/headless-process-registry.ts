@@ -7,7 +7,7 @@
 // _process-runner.ts so killing a child also reaps any grandchildren it spawned.
 // ============================================================
 
-import type { ChildProcess } from 'child_process';
+import { execFileSync, type ChildProcess } from 'child_process';
 import { unlinkSync } from 'fs';
 
 const DEFAULT_GRACE_MS = 5_000;
@@ -30,6 +30,18 @@ export interface HeadlessProcessEntry {
  */
 export function killProcessTree(child: ChildProcess, sig: NodeJS.Signals): boolean {
   const pid = child.pid;
+  if (pid && process.platform === 'win32') {
+    try {
+      execFileSync(
+        'taskkill.exe',
+        ['/PID', String(pid), '/T', '/F'],
+        { timeout: 5_000, stdio: 'ignore' },
+      );
+      return true;
+    } catch {
+      // Fall through to the direct-child path.
+    }
+  }
   if (pid && process.platform !== 'win32') {
     try {
       process.kill(-pid, sig); // negative PID → process group

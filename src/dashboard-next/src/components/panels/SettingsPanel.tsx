@@ -279,6 +279,20 @@ export function RecoverySection({
           {config?.last_resolution && (
             <div className="mt-1 text-xs text-muted-foreground">Last resolution: {config.last_resolution}</div>
           )}
+          {recovery.runtime_ownership_warnings?.length ? (
+            <div className="mt-3 rounded border border-warning/20 bg-warning/5 px-3 py-2 text-xs text-warning">
+              <div className="font-medium">Runtime ownership needs review</div>
+              <ul className="mt-1 space-y-1">
+                {recovery.runtime_ownership_warnings.map(warning => (
+                  <li key={warning.run_id}>
+                    <code>{warning.run_id}</code>
+                    {warning.pid !== undefined ? ` · PID ${warning.pid}` : ''}
+                    {` · ${warning.message}`}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           {config?.status === 'diverged' && view && (
             <div className="mt-4 flex flex-wrap gap-2">
