@@ -2,19 +2,41 @@
 // A.3 — CI/CD OIDC playbook (expand_oidc_capture).
 // ============================================================
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { cloudIdentityId } from '../services/parser-utils.js';
+import { GraphEngine } from '../services/graph-engine.js';
+import { cleanupTestPersistence } from './helpers/cleanup-test-persistence.js';
+
+const STATE_PATHS = [
+  './state-test-oidc-playbook.json',
+  './state-test-oidc-playbook-2.json',
+] as const;
+const liveEngines = new Set<GraphEngine>();
+
+function openEngine(config: ConstructorParameters<typeof GraphEngine>[0], path: string): GraphEngine {
+  const engine = new GraphEngine(config, path);
+  liveEngines.add(engine);
+  return engine;
+}
+
+function cleanup(): void {
+  for (const engine of liveEngines) engine.dispose();
+  liveEngines.clear();
+  for (const path of STATE_PATHS) cleanupTestPersistence(path);
+}
+
+beforeEach(cleanup);
+afterEach(cleanup);
 
 describe('expand_oidc_capture plan shape', () => {
   it('emits one step per inferred-federation cloud_identity target', async () => {
-    const { GraphEngine } = await import('../services/graph-engine.js');
     const config = {
       id: 'oidc-test', name: 'test', created_at: '2026-01-01T00:00:00Z',
       scope: { cidrs: [], domains: [], exclusions: [] },
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = new GraphEngine(config, './state-test-oidc-playbook.json');
+    const engine = openEngine(config, './state-test-oidc-playbook.json');
 
     // Captured OIDC token from a CI workflow.
     engine.addNode({
@@ -91,14 +113,13 @@ describe('expand_oidc_capture plan shape', () => {
   });
 
   it('returns no_targets hint when no idp_application matches the credential audience', async () => {
-    const { GraphEngine } = await import('../services/graph-engine.js');
     const config = {
       id: 'oidc-test-2', name: 'test', created_at: '2026-01-01T00:00:00Z',
       scope: { cidrs: [], domains: [], exclusions: [] },
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = new GraphEngine(config, './state-test-oidc-playbook-2.json');
+    const engine = openEngine(config, './state-test-oidc-playbook-2.json');
     engine.addNode({
       id: 'cred-oidc-x',
       type: 'credential',

@@ -2,13 +2,36 @@
 // A.4 — Entra/Azure playbook + msgraph parsers.
 // ============================================================
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { parseMsGraphUsers } from '../services/parsers/msgraph-users.js';
 import { parseMsGraphApplications } from '../services/parsers/msgraph-applications.js';
 import { parseMsGraphServicePrincipals } from '../services/parsers/msgraph-serviceprincipals.js';
 import { parseMsGraphGroups } from '../services/parsers/msgraph-groups.js';
+import { GraphEngine } from '../services/graph-engine.js';
+import { cleanupTestPersistence } from './helpers/cleanup-test-persistence.js';
 
 const TENANT = 'acme.onmicrosoft.com';
+const STATE_PATHS = [
+  './state-test-entra-refresh.json',
+  './state-test-entra-expand.json',
+  './state-test-entra-expand-nogroups.json',
+] as const;
+const liveEngines = new Set<GraphEngine>();
+
+function openEngine(config: ConstructorParameters<typeof GraphEngine>[0], path: string): GraphEngine {
+  const engine = new GraphEngine(config, path);
+  liveEngines.add(engine);
+  return engine;
+}
+
+function cleanup(): void {
+  for (const engine of liveEngines) engine.dispose();
+  liveEngines.clear();
+  for (const path of STATE_PATHS) cleanupTestPersistence(path);
+}
+
+beforeEach(cleanup);
+afterEach(cleanup);
 
 describe('parseMsGraphUsers', () => {
   it('emits idp_principal per user with UPN/oid', () => {
@@ -115,14 +138,13 @@ describe('parseMsGraphGroups', () => {
 
 describe('exchange_refresh_token', () => {
   it('returns a curl command targeting the configured tenant', async () => {
-    const { GraphEngine } = await import('../services/graph-engine.js');
     const config = {
       id: 'entra-test', name: 'test', created_at: '2026-01-01T00:00:00Z',
       scope: { cidrs: [], domains: [], exclusions: [] },
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = new GraphEngine(config, './state-test-entra-refresh.json');
+    const engine = openEngine(config, './state-test-entra-refresh.json');
     engine.addNode({
       id: 'cred-rt-1',
       type: 'credential',
@@ -161,14 +183,13 @@ describe('exchange_refresh_token', () => {
 
 describe('expand_entra_credential', () => {
   it('emits a 5-step plan covering me/users/applications/servicePrincipals/groups', async () => {
-    const { GraphEngine } = await import('../services/graph-engine.js');
     const config = {
       id: 'entra-test-2', name: 'test', created_at: '2026-01-01T00:00:00Z',
       scope: { cidrs: [], domains: [], exclusions: [] },
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = new GraphEngine(config, './state-test-entra-expand.json');
+    const engine = openEngine(config, './state-test-entra-expand.json');
     engine.addNode({
       id: 'cred-at-1',
       type: 'credential',
@@ -206,14 +227,13 @@ describe('expand_entra_credential', () => {
   });
 
   it('skips groups step when include_groups is false', async () => {
-    const { GraphEngine } = await import('../services/graph-engine.js');
     const config = {
       id: 'entra-test-3', name: 'test', created_at: '2026-01-01T00:00:00Z',
       scope: { cidrs: [], domains: [], exclusions: [] },
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = new GraphEngine(config, './state-test-entra-expand-nogroups.json');
+    const engine = openEngine(config, './state-test-entra-expand-nogroups.json');
     engine.addNode({
       id: 'cred-at-2',
       type: 'credential',

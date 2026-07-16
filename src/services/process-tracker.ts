@@ -45,6 +45,27 @@ export class ProcessTracker {
     if (firstError !== undefined) throw firstError;
   }
 
+  private snapshotProcesses(): Map<string, TrackedProcess> {
+    return new Map(
+      Array.from(this.processes, ([id, proc]) => [id, { ...proc }]),
+    );
+  }
+
+  private mutateAndNotify<T>(mutation: () => T): T {
+    const before = this.snapshotProcesses();
+    try {
+      const result = mutation();
+      this.notifyChange();
+      return result;
+    } catch (error) {
+      // The engine's change listener is the durable transaction boundary for
+      // process ownership. If journaling rejects the update, keep the live
+      // projection aligned with the state callers were told remained durable.
+      this.processes = before;
+      throw error;
+    }
+  }
+
   register(proc: Omit<TrackedProcess, 'status' | 'started_at'>): TrackedProcess {
     this.mutationGuard?.();
     const tracked: TrackedProcess = {
@@ -52,22 +73,39 @@ export class ProcessTracker {
       started_at: new Date().toISOString(),
       status: 'running',
     };
-    this.processes.set(tracked.id, tracked);
-    this.notifyChange();
-    return tracked;
+    const registered = this.mutateAndNotify(() => {
+      this.processes.set(tracked.id, tracked);
+      return tracked;
+    });
+    return { ...registered };
   }
 
   update(id: string, status: TrackedProcess['status']): boolean {
     const proc = this.processes.get(id);
     if (!proc) return false;
     this.mutationGuard?.();
-    proc.status = status;
-    if (status === 'completed' || status === 'failed') {
-      proc.completed_at = new Date().toISOString();
-      this.pruneCompleted();
-    }
-    this.notifyChange();
-    return true;
+    return this.mutateAndNotify(() => {
+      proc.status = status;
+      if (status === 'completed' || status === 'failed') {
+        proc.completed_at = new Date().toISOString();
+      }
+      if (status === 'completed' || status === 'failed') {
+        this.pruneCompleted();
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Remove a process reservation that never became a successfully-owned run.
+   * Used by fail-closed launch setup: if a child was spawned but a later
+   * registry/TTL/ownership transaction fails, no durable process row may remain
+   * claiming that the killed child is still supervised.
+   */
+  remove(id: string): boolean {
+    if (!this.processes.has(id)) return false;
+    this.mutationGuard?.();
+    return this.mutateAndNotify(() => this.processes.delete(id));
   }
 
   private pruneCompleted(): void {
@@ -81,11 +119,12 @@ export class ProcessTracker {
   }
 
   get(id: string): TrackedProcess | null {
-    return this.processes.get(id) || null;
+    const process = this.processes.get(id);
+    return process ? { ...process } : null;
   }
 
   listAll(): TrackedProcess[] {
-    return Array.from(this.processes.values());
+    return Array.from(this.processes.values(), process => ({ ...process }));
   }
 
   listActive(): TrackedProcess[] {
@@ -108,13 +147,15 @@ export class ProcessTracker {
     if (transitioned.length === 0) return false;
 
     this.mutationGuard?.();
-    for (const proc of transitioned) {
-      proc.status = 'unknown';
-      proc.completed_at = new Date().toISOString();
-    }
-    this.pruneCompleted();
-    this.notifyChange();
-    return true;
+    return this.mutateAndNotify(() => {
+      const completedAt = new Date().toISOString();
+      for (const proc of transitioned) {
+        proc.status = 'unknown';
+        proc.completed_at = completedAt;
+      }
+      this.pruneCompleted();
+      return true;
+    });
   }
 
   private isPidAlive(pid: number): boolean {
@@ -151,8 +192,13 @@ export class ProcessTracker {
    */
   restore(data: TrackedProcess[], options: { notify?: boolean } = {}): void {
     this.mutationGuard?.();
-    this.replaceWithoutNotification(data);
-    if (options.notify !== false) this.notifyChange();
+    if (options.notify === false) {
+      this.replaceWithoutNotification(data);
+      return;
+    }
+    this.mutateAndNotify(() => {
+      this.replaceWithoutNotification(data);
+    });
   }
 
   /** Explicit empty-or-replace alias for lifecycle coordinators. */

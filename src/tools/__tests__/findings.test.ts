@@ -1,11 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync, readFileSync } from 'fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerFindingTools } from '../findings.js';
 import type { EngagementConfig } from '../../types.js';
 
-const TEST_STATE_FILE = './state-test-findings.json';
+let testDir: string;
+let testStateFile: string;
 
 function makeConfig(): EngagementConfig {
   return {
@@ -22,19 +25,14 @@ function makeConfig(): EngagementConfig {
   };
 }
 
-function cleanup(): void {
-  try {
-    if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-  } catch {}
-}
-
 describe('finding tools', () => {
   let engine: GraphEngine;
   let handlers: Record<string, (args: any) => Promise<any>>;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-findings-'));
+    testStateFile = join(testDir, 'state.json');
+    engine = new GraphEngine(makeConfig(), testStateFile);
     handlers = {};
 
     const fakeServer = {
@@ -47,7 +45,8 @@ describe('finding tools', () => {
   });
 
   afterEach(() => {
-    cleanup();
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('report_finding with a simple host node returns finding_id and counts', async () => {
@@ -83,6 +82,30 @@ describe('finding tools', () => {
     const payload = JSON.parse(result.content[0].text);
     expect(payload.finding_id).toBeDefined();
     expect(payload.evidence_id).toBeDefined();
+  });
+
+  it('keeps blob-first evidence orphaned but does not commit a finding reference when ingest fails', async () => {
+    vi.spyOn(engine, 'ingestFinding').mockImplementationOnce(() => {
+      throw new Error('synthetic ingest failure');
+    });
+
+    const result = await handlers.report_finding({
+      agent_id: 'agent-failed-ingest',
+      action_id: 'action-failed-ingest',
+      tool_name: 'manual',
+      nodes: [
+        { id: 'host-failed-ingest', type: 'host', label: 'failed ingest', properties: { ip: '10.10.10.44' } },
+      ],
+      edges: [],
+      evidence: { type: 'command_output', content: 'durable orphan candidate' },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(engine.getEvidenceStore().list({ action_id: 'action-failed-ingest' })).toHaveLength(1);
+    expect(engine.getFullHistory().filter(entry =>
+      entry.action_id === 'action-failed-ingest'
+      && entry.event_type === 'finding_reported'
+    )).toHaveLength(0);
   });
 
   it('get_evidence with valid ID returns content', async () => {
@@ -135,7 +158,7 @@ describe('finding tools', () => {
       nodes: [{ id: 'host-durable-1', type: 'host', label: '10.10.10.9', properties: { ip: '10.10.10.9' } }],
       edges: [],
     });
-    const onDisk = readFileSync(TEST_STATE_FILE, 'utf8');
+    const onDisk = readFileSync(testStateFile, 'utf8');
     expect(onDisk).toContain('host-durable-1');
   });
 });

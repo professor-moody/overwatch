@@ -39,6 +39,11 @@ function buildHost(graph: OverwatchGraph, config: any) {
   const ctx = new EngineContext(graph, config, './test-state-eight.json');
   return {
     ctx,
+    addNode: (props: NodeProperties) => {
+      if (graph.hasNode(props.id)) graph.replaceNodeAttributes(props.id, props);
+      else graph.addNode(props.id, props);
+      return props.id;
+    },
     addEdge: (src: string, tgt: string, props: EdgeProperties) => {
       const existing = graph.edges(src, tgt).find(eid => graph.getEdgeAttributes(eid).type === props.type);
       if (existing) return { id: existing, isNew: false };

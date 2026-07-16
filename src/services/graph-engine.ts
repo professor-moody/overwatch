@@ -9,7 +9,7 @@ import { createOverwatchGraph } from './graphology-types.js';
 import { existsSync } from 'fs';
 import { isIpInCidr, isUrlInScope, isCloudResourceInScope, isHostExcluded, isHostInScope as isScopedHostInScope, isCidrInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
-import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
+import type { ActivityLogEntry, ActivityLogInput, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { AgentManager } from './agent-manager.js';
@@ -89,6 +89,7 @@ import {
   canonicalJson,
   computeConfigHash,
   type ConfigApplyContext,
+  type ConfigCommitEvent,
   type ResolveConfigDivergenceInput,
   type ResolveConfigDivergenceResult,
 } from './engagement-config-service.js';
@@ -100,10 +101,14 @@ import type {
   ScopeUpdatedMutationPayloadV1,
 } from './mutation-journal.js';
 import { MutationJournal } from './mutation-journal.js';
+import type {
+  DurableStatePatchV1,
+  DurableStateSliceKey,
+} from './durable-state-patch.js';
+import type { EngineOperation } from './engine-transaction.js';
 import {
   evaluateObjectives as _evaluateObjectives,
   recomputeObjectives as _recomputeObjectives,
-  syncObjectiveNodes as _syncObjectiveNodes,
   getPhaseStatuses as _getPhaseStatuses,
   getCurrentPhaseId as _getCurrentPhaseId,
   getCurrentPhase as _getCurrentPhase,
@@ -149,6 +154,21 @@ export interface RecentOutcome {
   technique?: string;
   action_id?: string;
 }
+
+type FindingIngestResult = {
+  new_nodes: string[];
+  new_edges: string[];
+  updated_nodes: string[];
+  updated_edges: string[];
+  inferred_edges: string[];
+  deduplicated?: boolean;
+  campaign_id?: string;
+};
+
+type FindingDraftResult = {
+  result: Omit<FindingIngestResult, 'deduplicated' | 'campaign_id'>;
+  campaign_id?: string;
+};
 
 type ExactGraphDelta = Pick<IdentityRewriteMutationPayloadV1, 'node_changes' | 'edge_changes'>;
 
@@ -223,6 +243,8 @@ export class GraphEngine {
       assertWriteAllowed: () => this.persistence.assertMigrationWriteAllowed(),
       withWriteGuard: operation => this.persistence.withMigrationWriteGuard(operation),
       applyRuntimeConfig: (next, context) => this.applyRuntimeConfig(next, context),
+      commitRuntimeConfig: (next, context, event) =>
+        this.commitRuntimeConfigTransaction(next, context, event),
       persistRuntimeState: () => this.persistence.persistImmediate(),
       recordConfigEvent: ({ description, result, details }) => {
         this.ctx.logEvent({
@@ -264,7 +286,7 @@ export class GraphEngine {
     let seededFromConfig = false;
     if (restore.status === 'seed_required') {
       try {
-        this.seedFromConfig();
+        this.publishConfigSeedBase(hadPersistedBase);
       } catch (seedErr) {
         this.persistence.dispose();
         throw new Error(
@@ -273,31 +295,6 @@ export class GraphEngine {
         );
       }
       seededFromConfig = true;
-      this.persistence.markConfigInitialization(hadPersistedBase);
-      // P2.2: pin the construction-time timestamp to `created_at` so the
-      // initial log event is deterministic across replays. Without this,
-      // wall-clock leaks into the activity-log digest and breaks the
-      // golden-master determinism guarantee.
-      const seedAt = this.ctx.config.created_at;
-      if (seedAt) {
-        this.ctx.withClock(seedAt, () => {
-          this.log(
-            hadPersistedBase
-              ? 'Engagement re-initialized from config after invalid persisted state'
-              : 'Engagement initialized from config',
-            undefined,
-            { category: 'system', event_type: 'system' },
-          );
-        });
-      } else {
-        this.log(
-          hadPersistedBase
-            ? 'Engagement re-initialized from config after invalid persisted state'
-            : 'Engagement initialized from config',
-          undefined,
-          { category: 'system', event_type: 'system' },
-        );
-      }
     }
 
     this.applyRestoredRuntimeProjections();
@@ -352,7 +349,10 @@ export class GraphEngine {
           { category: 'system', event_type: 'system' },
         );
       }
-      this.syncObjectiveNodes();
+      // Catch up objective/config truth after WAL replay. A crash can occur
+      // after a finding transaction commits but before its intentionally
+      // separate revisioned objective/config write-through.
+      this.evaluateObjectives();
 
       // Reconcile runtime-dependent state on startup only when the resulting
       // mutations can be durably checkpointed.
@@ -360,11 +360,16 @@ export class GraphEngine {
       this.reconcileSessionDescriptorsOnStartup();
       this.agentMgr.reconcileOnStartup();
       this.reconcilePendingApprovalsOnStartup();
-      // Do not rotate a corrupt primary into the snapshot set when config was
-      // the only usable initialization source.
-      if (seededFromConfig && hadPersistedBase) this.ctx.lastSnapshotTime = Date.now(); // clock-ok: snapshot rotation is wall-clock I/O scheduling, not durable deterministic state
       try {
-        this.persistence.persistImmediate();
+        // The checkpoint-zero bootstrap base was published earlier in this
+        // constructor. Suppress rotation for this one follow-up checkpoint so
+        // the just-created base is not immediately snapshotted. Do not advance
+        // lastSnapshotTime: the next explicit/ordinary checkpoint retains the
+        // established opportunity to rotate and compact the bootstrap WAL.
+        this.persistence.persistImmediate(
+          {},
+          seededFromConfig ? { rotateExisting: false } : {},
+        );
       } catch (error) {
         // StatePersistence retains the dirty state and owns the 250ms/1s/5s/
         // 30s retry schedule. The engine stays observable; its write gate
@@ -421,14 +426,138 @@ export class GraphEngine {
     _seedFromConfig(this.configHost);
   }
 
+  /**
+   * Publish the first valid recovery base before any WAL mutation is allowed.
+   *
+   * A fresh engine used to seed through ordinary guarded mutators. A crash
+   * after the first append but before the constructor's later state write left
+   * a nonempty WAL with no base, which recovery must (correctly) keep degraded
+   * forever rather than guess at an empty engagement. Build the deterministic
+   * seed in memory with journaling temporarily detached, restore the same
+   * journal owner, and atomically publish checkpoint zero before startup can
+   * perform any ordinary durable work.
+   */
+  private publishConfigSeedBase(hadPersistedBase: boolean): void {
+    const journal = this.ctx.mutationJournal;
+    if (!journal) {
+      throw new Error('fresh engagement bootstrap requires an initialized mutation journal');
+    }
+
+    this.ctx.mutationJournal = null;
+    try {
+      this.seedFromConfig();
+      this.persistence.markConfigInitialization(hadPersistedBase);
+
+      // P2.2: pin the construction-time timestamp to `created_at` so the
+      // initial log event is deterministic across replays. Without this,
+      // wall-clock leaks into the activity-log digest and breaks the
+      // golden-master determinism guarantee.
+      const seedAt = this.ctx.config.created_at;
+      const logInitialization = () => {
+        this.log(
+          hadPersistedBase
+            ? 'Engagement re-initialized from config after invalid persisted state'
+            : 'Engagement initialized from config',
+          undefined,
+          { category: 'system', event_type: 'system' },
+        );
+      };
+      if (seedAt) this.ctx.withClock(seedAt, logInitialization);
+      else logInitialization();
+    } finally {
+      this.ctx.mutationJournal = journal;
+    }
+
+    // Keep the journal attached for this write so the shared state-writer
+    // mutex and caught-up check reject any concurrent WAL head that appeared
+    // after recovery. A failed bootstrap publication is fatal; it must never
+    // expose seeded memory as a writable engagement.
+    this.persistence.persistBootstrapBase();
+  }
+
   private installCoordinationStorePersistence(): void {
     const guard = () => this.assertPersistenceWritable();
+    this.ctx.activityTransactionRunner = event =>
+      this.appendStandaloneActivityEvent(event);
     this.ctx.proposedPlanStore.setMutationGuard(guard);
     this.ctx.agentQueryStore.setMutationGuard(guard);
+    this.ctx.proposedPlanStore.setMutationRunner(
+      (reason, mutation) => this.transactAttachedCoordinationStore(reason, mutation),
+    );
+    this.ctx.agentQueryStore.setMutationRunner(
+      (reason, mutation) => this.transactAttachedCoordinationStore(reason, mutation),
+    );
     this.coordinationStoreUnsubscribers.push(
       this.ctx.proposedPlanStore.onChange(() => this.persist()),
       this.ctx.agentQueryStore.onChange(() => this.persist()),
+      () => this.ctx.proposedPlanStore.setMutationRunner(undefined),
+      () => this.ctx.agentQueryStore.setMutationRunner(undefined),
+      () => { this.ctx.activityTransactionRunner = undefined; },
     );
+  }
+
+  private appendStandaloneActivityEvent(event: ActivityLogInput): ActivityLogEntry {
+    const prepared = this.ctx.prepareActivityAppend(event);
+    this.ctx.applyEngineTransaction(
+      {
+        operations: [{
+          type: 'activity_append',
+          payload: prepared.payload as unknown as Record<string, unknown>,
+        }],
+      },
+      () => this.ctx.applyActivityAppend(prepared.payload),
+      'activity append',
+    );
+    this.persist();
+    return prepared.result;
+  }
+
+  private transactAttachedCoordinationStore<T>(
+    reason: string,
+    mutation: () => T,
+  ): T {
+    if (this.ctx.isDraftingTransaction()) return mutation();
+    const baseline = this.ctx.captureDurableStateSlices(['plans_questions']);
+    let result!: T;
+    let after!: ReturnType<EngineContext['captureDurableStateSlices']>;
+    try {
+      this.ctx.withTransactionDraft(() => {
+        result = mutation();
+        after = this.ctx.captureDurableStateSlices(['plans_questions']);
+      });
+    } catch (error) {
+      this.ctx.applyDurableStatePatch(baseline);
+      throw error;
+    }
+    const detachedResult = structuredClone(result);
+    this.ctx.applyDurableStatePatch(baseline);
+    if (JSON.stringify(after) === JSON.stringify(baseline)) return detachedResult;
+    const payload: DurableStatePatchV1 = {
+      payload_version: 1,
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      reason,
+      slices: after,
+    };
+    try {
+      this.ctx.applyEngineTransaction(
+        {
+          operations: [{
+            type: 'state_patch',
+            payload: payload as unknown as Record<string, unknown>,
+          }],
+        },
+        () => this.applyStatePatchMutation(payload, false),
+        'coordination state patch',
+      );
+    } catch (error) {
+      this.ctx.applyDurableStatePatch(baseline);
+      this.applyRestoredRuntimeProjections();
+      this.invalidateAllCaches();
+      throw error;
+    }
+    this.persist();
+    return detachedResult;
   }
 
   // =============================================
@@ -533,13 +662,24 @@ export class GraphEngine {
       const confirmedRule = attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0
         ? attrs.inferred_by_rule
         : undefined;
-      if (confirmedRule) effectiveProps = { ...props, confirmed_at: this.ctx.nowIso() };
+      if (confirmedRule) {
+        effectiveProps = {
+          ...props,
+          confirmed_at: props.confirmed_at ?? this.ctx.nowIso(),
+        };
+      }
       return this.ctx.applyJournaledMutation(
         'add_edge',
         { source, target, props: effectiveProps, edge_id: edgeId },
         () => {
-          if (confirmedRule && !this.ctx.suppressMutationEvents) {
-            this.log(`Confirmed inferred edge [${confirmedRule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
+          if (confirmedRule) {
+            // This event is a deterministic derived effect of the journaled
+            // confirmation. Replay normally suppresses incidental mutator
+            // events, but suppressing this one would recover the graph while
+            // silently losing its audit/hash-chain/frontier state.
+            this.ctx.withClock(effectiveProps.confirmed_at!, () => {
+              this.log(`Confirmed inferred edge [${confirmedRule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
+            });
           }
           this.ctx.graph.mergeEdgeAttributes(edgeId, effectiveProps as Partial<EdgeProperties>);
           this.invalidateHealthReport();
@@ -591,6 +731,23 @@ export class GraphEngine {
       this.invalidateAllCaches();
     });
     return edgeId;
+  }
+
+  mergeEdgeAttributesDurable(
+    edgeId: string,
+    props: Record<string, unknown>,
+  ): void {
+    if (!this.ctx.graph.hasEdge(edgeId)) {
+      throw new Error(`Cannot merge attributes into missing edge: ${edgeId}`);
+    }
+    this.ctx.applyJournaledMutation(
+      'merge_edge_attrs',
+      { edge_id: edgeId, props },
+      () => {
+        this.ctx.graph.mergeEdgeAttributes(edgeId, props);
+        this.invalidateAllCaches();
+      },
+    );
   }
 
   dropNodeDurable(
@@ -939,14 +1096,14 @@ export class GraphEngine {
 
   getNode(id: string): NodeProperties | null {
     if (!this.ctx.graph.hasNode(id)) return null;
-    return detached(this.ctx.graph.getNodeAttributes(id));
+    return this.projectNodeProperties(id, this.ctx.graph.getNodeAttributes(id));
   }
 
   getNodesByType(type: NodeType): NodeProperties[] {
     const results: NodeProperties[] = [];
-    this.ctx.graph.forEachNode((_id, attrs) => {
+    this.ctx.graph.forEachNode((id, attrs) => {
       if (attrs.type === type && attrs.identity_status !== 'superseded') {
-        results.push(detached(attrs));
+        results.push(this.projectNodeProperties(id, attrs));
       }
     });
     return results;
@@ -958,17 +1115,19 @@ export class GraphEngine {
 
   private static readonly DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
-  ingestFinding(finding: Finding): { new_nodes: string[]; new_edges: string[]; updated_nodes: string[]; updated_edges: string[]; inferred_edges: string[]; deduplicated?: boolean } {
+  ingestFinding(finding: Finding): FindingIngestResult {
     this.assertPersistenceWritable();
     // --- Finding Deduplication (7.8) ---
     const now = Date.now(); // clock-ok: dedup-window elapsed-time check (transient cache; not a stored timestamp)
 
-    // Prune stale entries outside the dedup window
-    for (const [hash, ts] of this.ctx.recentFindingHashes) {
-      if (now - ts > GraphEngine.DEDUP_WINDOW_MS) {
-        this.ctx.recentFindingHashes.delete(hash);
-      }
-    }
+    // Plan stale-entry pruning without mutating the live durable map. The
+    // pruned map is installed inside the same transaction as the duplicate or
+    // first-ingest outcome, so an append refusal cannot leak cleanup state.
+    const activeFindingHashes = new Map(
+      [...this.ctx.recentFindingHashes.entries()].filter(
+        ([, ts]) => now - ts <= GraphEngine.DEDUP_WINDOW_MS,
+      ),
+    );
 
     // Compute content hash: tool_name + sorted node signatures + sorted edge keys + raw_output prefix
     // Node signatures include properties (excluding volatile fields) so that
@@ -993,8 +1152,7 @@ export class GraphEngine {
     const hashInput = `${finding.tool_name || ''}|${sortedNodeSigs}|${sortedEdgeKeys}|${rawPrefix}`;
     const contentHash = createHash('sha256').update(hashInput).digest('hex');
 
-    if (this.ctx.recentFindingHashes.has(contentHash)) {
-      this.ctx.dedupCount++;
+    if (activeFindingHashes.has(contentHash)) {
       // P3.4: when dedup hits, the graph topology stays unchanged (same
       // evidence) but we still merge new attribution onto affected nodes
       // so we don't lose the fact that a second agent / action observed
@@ -1004,6 +1162,7 @@ export class GraphEngine {
       // identity-resolution first so we land on the canonical graph node
       // ID (e.g. an IP-keyed host, not the raw label the finding used).
       const updatedNodes: string[] = [];
+      const attributionUpdates: NodeProperties[] = [];
       const ingestedNodeIds = new Set(
         (finding.target_node_ids ?? []).filter(nodeId => this.ctx.graph.hasNode(nodeId)),
       );
@@ -1024,75 +1183,271 @@ export class GraphEngine {
           const existing = this.ctx.graph.getNodeAttributes(canonicalId) as NodeProperties;
           const existingSources = Array.isArray(existing.sources) ? existing.sources : [];
           if (!existingSources.includes(finding.agent_id)) {
-            // Route through the guarded addNode (merge branch) so the new attribution is
-            // JOURNALED (merge_node_attrs) + cache-invalidated — a raw graph merge here
-            // was neither journaled nor persisted, so the cross-agent source vanished on
-            // restart (a crash before the debounced snapshot dropped it entirely).
-            this.addNode({ ...existing, sources: [...existingSources, finding.agent_id], last_seen_at: finding.timestamp });
+            attributionUpdates.push({
+              ...existing,
+              sources: [...existingSources, finding.agent_id],
+              last_seen_at: finding.timestamp,
+            });
             updatedNodes.push(canonicalId);
           }
         }
       }
-      // A duplicate-content parse still has its own finding ID and evidence
-      // lineage. Emit the same canonical reference event as a normal ingest so
-      // campaign detail and audit views do not degrade to a generic parse row.
-      this.logActionEvent({
-        description: 'Finding ingested: duplicate content matched existing graph data',
-        agent_id: finding.agent_id,
-        action_id: finding.action_id,
-        event_type: 'finding_ingested',
-        category: 'finding',
-        tool_name: finding.tool_name,
-        target_node_ids: [...ingestedNodeIds],
-        frontier_item_id: finding.frontier_item_id,
-        linked_finding_ids: [finding.id],
-        result_classification: 'neutral',
-        details: {
+
+      const stateKeys = ['finding_counters', 'activity', 'frontier', 'campaigns'] as const;
+      const baselineSlices = this.ctx.captureDurableStateSlices(stateKeys);
+      const draft = this.ctx.draftDurableStateSlices(stateKeys, () => {
+        this.ctx.recentFindingHashes = new Map(activeFindingHashes);
+        this.ctx.dedupCount++;
+        // A duplicate-content parse still has its own finding ID and evidence
+        // lineage. Emit the same canonical reference event as a normal ingest so
+        // campaign detail and audit views do not degrade to a generic parse row.
+        this.logActionEvent({
+          description: 'Finding ingested: duplicate content matched existing graph data',
+          agent_id: finding.agent_id,
+          action_id: finding.action_id,
+          event_type: 'finding_ingested',
+          category: 'finding',
+          tool_name: finding.tool_name,
+          target_node_ids: [...ingestedNodeIds],
+          frontier_item_id: finding.frontier_item_id,
+          linked_finding_ids: [finding.id],
+          result_classification: 'neutral',
+          details: {
+            finding_id: finding.id,
+            deduplicated: true,
+            new_nodes: 0,
+            new_edges: 0,
+            updated_nodes: updatedNodes.length,
+            updated_edges: 0,
+            inferred_edges: 0,
+            ingested_node_ids: [...ingestedNodeIds],
+          },
+        });
+        return this.linkFindingToCampaign({
           finding_id: finding.id,
-          deduplicated: true,
-          new_nodes: 0,
-          new_edges: 0,
-          updated_nodes: updatedNodes.length,
-          updated_edges: 0,
-          inferred_edges: 0,
-          ingested_node_ids: [...ingestedNodeIds],
+          frontier_item_id: finding.frontier_item_id,
+          agent_id: finding.agent_id,
+          action_id: finding.action_id,
+        });
+      });
+      const statePatch: DurableStatePatchV1 = {
+        payload_version: 1,
+        operation_id: uuidv4(),
+        occurred_at: this.ctx.nowIso(),
+        reason: 'record duplicate finding',
+        slices: draft.slices,
+      };
+      const operations: EngineOperation[] = [
+        ...attributionUpdates.map(props => ({
+          type: 'merge_node_attrs' as const,
+          payload: { props },
+        })),
+        {
+          type: 'state_patch',
+          payload: statePatch as unknown as Record<string, unknown>,
         },
-      });
-      // Persist both the merged attribution (when any) and the duplicate's
-      // audit event. On WAL engagements the guarded mutations are journaled.
+      ];
+      const nodeBaseline = attributionUpdates.map(props =>
+        detached(this.ctx.graph.getNodeAttributes(props.id) as NodeProperties),
+      );
+      try {
+        this.ctx.applyEngineTransaction(
+          {
+            operations,
+            source_action_id: finding.action_id,
+            update_detail: { updated_nodes: updatedNodes },
+          },
+          () => {
+            for (const props of attributionUpdates) this.addNode(props);
+            return this.applyStatePatchMutation(statePatch, false);
+          },
+          'duplicate finding ingest',
+        );
+      } catch (error) {
+        this.restoreWebChainAnnotationBaseline(nodeBaseline);
+        this.ctx.applyDurableStatePatch(baselineSlices);
+        this.applyRestoredRuntimeProjections();
+        throw error;
+      }
       this.persist({ updated_nodes: updatedNodes });
-      return { new_nodes: [], new_edges: [], updated_nodes: updatedNodes, updated_edges: [], inferred_edges: [], deduplicated: true };
+      // A prior first-ingest may have committed immediately before its
+      // objective/config follow-up. A truthful retry is deduplicated, but still
+      // completes that deferred evaluation boundary.
+      this.evaluateObjectives();
+      return {
+        new_nodes: [],
+        new_edges: [],
+        updated_nodes: updatedNodes,
+        updated_edges: [],
+        inferred_edges: [],
+        deduplicated: true,
+        ...(draft.result ? { campaign_id: draft.result } : {}),
+      };
     }
 
-    this.ctx.recentFindingHashes.set(contentHash, now);
-    const result = ingestFindingImpl(this.findingIngestionHost, finding);
+    const stateKeys = ['activity', 'frontier', 'finding_counters', 'campaigns', 'phase'] as const;
+    const graphBaseline = detached(this.ctx.graph.export());
+    const coldBaseline = detached(this.ctx.coldStore.export());
+    const sliceBaseline = this.ctx.captureDurableStateSlices(stateKeys);
+    const cacheBaseline = {
+      pathGraphCache: new Map(this.ctx.pathGraphCache),
+      communityCache: this.ctx.communityCache ? new Map(this.ctx.communityCache) : null,
+      frontierCache: this.frontierCache ? detached(this.frontierCache) : null,
+      healthReportCache: this.healthReportCache ? detached(this.healthReportCache) : null,
+    };
+    const restoreBaseline = () => {
+      this.restoreFindingDraftBaseline(graphBaseline, coldBaseline, sliceBaseline);
+      this.ctx.pathGraphCache = new Map(cacheBaseline.pathGraphCache);
+      this.ctx.communityCache = cacheBaseline.communityCache
+        ? new Map(cacheBaseline.communityCache)
+        : null;
+      this.frontierCache = cacheBaseline.frontierCache
+        ? detached(cacheBaseline.frontierCache)
+        : null;
+      this.healthReportCache = cacheBaseline.healthReportCache
+        ? detached(cacheBaseline.healthReportCache)
+        : null;
+    };
 
-    // Phase 3 (enterprise): cross-tier correlation + inference. Run after
-    // each ingest so newly-ingested webapps / cloud_resources / idp_apps /
-    // credentials get linked to their cross-tier counterparts.
+    let captured!: { result: FindingDraftResult; operations: EngineOperation[] };
+    let graphAfter!: ReturnType<OverwatchGraph['export']>;
+    let coldAfter!: ReturnType<EngineContext['coldStore']['export']>;
+    let slicesAfter!: ReturnType<EngineContext['captureDurableStateSlices']>;
     try {
-      _runCrossTierCorrelator({
-        ctx: this.ctx,
-        addEdge: this.addEdge.bind(this),
-        log: this.log.bind(this),
+      captured = this.ctx.captureEngineOperations(() => {
+        this.ctx.recentFindingHashes = new Map(activeFindingHashes);
+        const result = ingestFindingImpl(
+          this.findingIngestionHost,
+          finding,
+          { evaluateObjectives: false },
+        );
+
+        // Phase 3 (enterprise): cross-tier correlation + inference is part of
+        // the same immutable finding draft as the parser-produced graph data.
+        try {
+          _runCrossTierCorrelator({
+            ctx: this.ctx,
+            addEdge: this.addEdge.bind(this),
+            log: this.log.bind(this),
+          });
+          _runCrossTierInference({
+            ctx: this.ctx,
+            addNode: this.addNode.bind(this),
+            addEdge: this.addEdge.bind(this),
+            log: this.log.bind(this),
+          });
+        } catch (err) {
+          // Cross-tier inference must never fail the ingest. Its failure event
+          // is still captured in the finding's durable activity after-state.
+          this.log(`Cross-tier inference error: ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
+        }
+
+        if (result.new_nodes.length >= GraphEngine.HEALTH_AUTO_CHECK_THRESHOLD) {
+          this.runAutoHealthCheck(`large ingest: ${result.new_nodes.length} new nodes`);
+        }
+
+        this.ctx.recentFindingHashes.set(contentHash, now);
+        const campaignId = this.linkFindingToCampaign({
+          finding_id: finding.id,
+          frontier_item_id: finding.frontier_item_id,
+          agent_id: finding.agent_id,
+          action_id: finding.action_id,
+        });
+        return { result, ...(campaignId ? { campaign_id: campaignId } : {}) };
       });
-      _runCrossTierInference({
-        ctx: this.ctx,
-        addNode: this.addNode.bind(this),
-        addEdge: this.addEdge.bind(this),
-        log: this.log.bind(this),
-      });
-    } catch (err) {
-      // Cross-tier inference must never fail the ingest. Log and continue.
-      this.log(`Cross-tier inference error: ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
+      captured = detached(captured);
+      graphAfter = detached(this.ctx.graph.export());
+      coldAfter = detached(this.ctx.coldStore.export());
+      slicesAfter = this.ctx.captureDurableStateSlices(stateKeys);
+    } finally {
+      restoreBaseline();
     }
 
-    // 7.7: Auto health check after large ingests
-    if (result.new_nodes.length >= GraphEngine.HEALTH_AUTO_CHECK_THRESHOLD) {
-      this.runAutoHealthCheck(`large ingest: ${result.new_nodes.length} new nodes`);
+    const detail = this.deriveGraphUpdateDetail(
+      graphBaseline,
+      graphAfter,
+      captured.result.result.inferred_edges,
+    );
+    const statePatch: DurableStatePatchV1 = {
+      payload_version: 1,
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      reason: 'ingest finding',
+      slices: slicesAfter,
+    };
+    const operations: EngineOperation[] = [
+      ...captured.operations,
+      {
+        type: 'state_patch',
+        payload: statePatch as unknown as Record<string, unknown>,
+      },
+    ];
+    const transactionDraft = {
+      operations,
+      source_action_id: finding.action_id,
+      update_detail: detail,
+    };
+
+    // Prove the frozen operations reproduce the speculative after-state before
+    // any WAL bytes are appended. This catches an uncaptured raw mutation or a
+    // replay/live semantic drift without publishing a partial transaction.
+    try {
+      const replayed = this.persistence.applyTransactionDraft(transactionDraft, this);
+      if (replayed.status === 'skipped') {
+        throw new Error(`Finding operation draft could not replay: ${replayed.reason}`);
+      }
+      const replayGraph = detached(this.ctx.graph.export());
+      const replayCold = detached(this.ctx.coldStore.export());
+      const replaySlices = this.ctx.captureDurableStateSlices(stateKeys);
+      if (
+        canonicalJson({
+          graph: replayGraph,
+          cold_store: replayCold,
+          slices: replaySlices,
+        })
+        !== canonicalJson({
+          graph: graphAfter,
+          cold_store: coldAfter,
+          slices: slicesAfter,
+        })
+      ) {
+        throw new Error('Finding operation draft replay did not reproduce its captured after-state.');
+      }
+    } finally {
+      restoreBaseline();
     }
 
-    return result;
+    try {
+      this.ctx.applyEngineTransaction(
+        transactionDraft,
+        () => {
+          const applied = this.persistence.applyTransactionDraft(transactionDraft, this);
+          if (applied.status === 'applied') {
+            this.invalidatePathGraph();
+            this.invalidateAllCaches();
+            this.inference.invalidateCaches();
+          }
+          return applied;
+        },
+        'finding ingest',
+      );
+    } catch (error) {
+      restoreBaseline();
+      throw error;
+    }
+    this.persist(detail);
+
+    // Objective completion updates revisioned configuration and, for managed
+    // engagements, engagement.json. It intentionally follows the committed
+    // finding transaction as the remaining PR4-owned write-through boundary.
+    // Startup and duplicate-ingest catch-up run the same evaluator if a crash
+    // occurs in this narrow post-commit window.
+    this.evaluateObjectives();
+
+    return {
+      ...captured.result.result,
+      ...(captured.result.campaign_id ? { campaign_id: captured.result.campaign_id } : {}),
+    };
   }
 
   // =============================================
@@ -1100,6 +1455,14 @@ export class GraphEngine {
   // =============================================
 
   addInferenceRule(rule: InferenceRule): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'add or update inference rule',
+        ['inference_rules', 'activity', 'frontier'],
+        () => this.addInferenceRule(rule),
+      );
+      return;
+    }
     this.assertPersistenceWritable();
     this.inference.addRule(rule);
     this.persist();
@@ -1233,7 +1596,11 @@ export class GraphEngine {
 
       // Generate campaigns from frontier + chain groups (phase-aware)
       const campaigns = this.persistence.isWritable()
-        ? this.campaignPlanner.generateCampaigns(all, chainGroups, this.getCurrentPhaseId())
+        ? this.transactDurableSlices(
+          'generate frontier campaigns',
+          ['campaigns'],
+          () => this.campaignPlanner.generateCampaigns(all, chainGroups, this.getCurrentPhaseId()),
+        )
         : Array.from(this.ctx.campaigns.values());
 
       const { passed, filtered } = this.filterFrontier(all);
@@ -1285,6 +1652,13 @@ export class GraphEngine {
   }
 
   pauseCampaign(id: string): import('../types.js').Campaign | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'pause campaign',
+        ['campaigns'],
+        () => this.pauseCampaign(id),
+      );
+    }
     this.assertPersistenceWritable();
     const c = this.campaignPlanner.pauseCampaign(id);
     if (c) this.persist();
@@ -1292,6 +1666,13 @@ export class GraphEngine {
   }
 
   resumeCampaign(id: string): import('../types.js').Campaign | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'resume campaign',
+        ['campaigns'],
+        () => this.resumeCampaign(id),
+      );
+    }
     this.assertPersistenceWritable();
     const c = this.campaignPlanner.resumeCampaign(id);
     if (c) this.persist();
@@ -1322,6 +1703,13 @@ export class GraphEngine {
   }
 
   abortCampaign(id: string): import('../types.js').Campaign | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'abort campaign',
+        ['campaigns', 'agents', 'plans_questions', 'activity', 'frontier'],
+        () => this.abortCampaign(id),
+      );
+    }
     this.assertPersistenceWritable();
     const c = this.campaignPlanner.abortCampaign(id);
     if (c) {
@@ -1337,6 +1725,13 @@ export class GraphEngine {
   }
 
   activateCampaign(id: string): import('../types.js').Campaign | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'activate campaign',
+        ['campaigns'],
+        () => this.activateCampaign(id),
+      );
+    }
     this.assertPersistenceWritable();
     const c = this.campaignPlanner.activateCampaign(id);
     if (c) this.persist();
@@ -1344,6 +1739,13 @@ export class GraphEngine {
   }
 
   createCampaign(params: import('../services/campaign-planner.js').CreateCampaignParams): import('../types.js').Campaign {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'create campaign',
+        ['campaigns'],
+        () => this.createCampaign(params),
+      );
+    }
     this.assertPersistenceWritable();
     const c = this.campaignPlanner.createCampaign(params);
     this.persist();
@@ -1351,6 +1753,13 @@ export class GraphEngine {
   }
 
   updateCampaign(id: string, patch: import('../services/campaign-planner.js').UpdateCampaignParams): import('../types.js').Campaign | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'update campaign',
+        ['campaigns'],
+        () => this.updateCampaign(id, patch),
+      );
+    }
     this.assertPersistenceWritable();
     const c = this.campaignPlanner.updateCampaign(id, patch);
     if (c) this.persist();
@@ -1358,6 +1767,13 @@ export class GraphEngine {
   }
 
   deleteCampaign(id: string): boolean {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'delete campaign',
+        ['campaigns'],
+        () => this.deleteCampaign(id),
+      );
+    }
     this.assertPersistenceWritable();
     const ok = this.campaignPlanner.deleteCampaign(id);
     if (ok) this.persist();
@@ -1365,6 +1781,13 @@ export class GraphEngine {
   }
 
   cloneCampaign(id: string): import('../types.js').Campaign | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'clone campaign',
+        ['campaigns'],
+        () => this.cloneCampaign(id),
+      );
+    }
     this.assertPersistenceWritable();
     const c = this.campaignPlanner.cloneCampaign(id);
     if (c) this.persist();
@@ -1374,6 +1797,13 @@ export class GraphEngine {
   updateCampaignProgress(
     campaignId: string, frontierItemId: string, result: 'success' | 'failure', findingId?: string,
   ): import('../types.js').Campaign | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'update campaign progress',
+        ['campaigns'],
+        () => this.updateCampaignProgress(campaignId, frontierItemId, result, findingId),
+      );
+    }
     this.assertPersistenceWritable();
     const c = this.campaignPlanner.updateCampaignProgress(campaignId, frontierItemId, result, findingId);
     if (c) this.persist();
@@ -1400,6 +1830,13 @@ export class GraphEngine {
     agent_id?: string;
     action_id?: string;
   }): string | undefined {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'link finding to campaign',
+        ['campaigns'],
+        () => this.linkFindingToCampaign(params),
+      );
+    }
     this.assertPersistenceWritable();
 
     let task = params.task_id ? this.agentMgr.getTask(params.task_id) : null;
@@ -1431,6 +1868,13 @@ export class GraphEngine {
   }
 
   splitCampaign(id: string, count?: number): import('../types.js').Campaign[] | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'split campaign',
+        ['campaigns', 'agents'],
+        () => this.splitCampaign(id, count),
+      );
+    }
     this.assertPersistenceWritable();
     const cs = this.campaignPlanner.splitCampaign(id, count);
     if (cs) {
@@ -1468,6 +1912,13 @@ export class GraphEngine {
     note?: string;
     issued_by?: string;
   }): import('../types.js').AgentDirective {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'issue agent directive',
+        ['directives', 'activity', 'frontier'],
+        () => this.issueAgentDirective(params),
+      );
+    }
     this.assertPersistenceWritable();
     const list = this.ctx.agentDirectives.get(params.task_id) ?? [];
     for (const d of list) {
@@ -1529,6 +1980,13 @@ export class GraphEngine {
   }
 
   acknowledgeAgentDirective(task_id: string, directive_id: string): import('../types.js').AgentDirective | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'acknowledge agent directive',
+        ['directives', 'activity', 'frontier'],
+        () => this.acknowledgeAgentDirective(task_id, directive_id),
+      );
+    }
     this.assertPersistenceWritable();
     const list = this.ctx.agentDirectives.get(task_id);
     if (!list) return null;
@@ -1612,12 +2070,47 @@ export class GraphEngine {
     const enricher = new WebChainEnricher(this.ctx);
     const chains = enricher.matchChainTemplates();
     if (chains.length > 0) {
-      // Annotate frontier-relevant nodes with chain_template info
+      // Annotate frontier-relevant nodes through one committed transaction.
+      // The previous raw setNodeAttribute loop could leave some annotations
+      // live but unrecoverable after a crash-before-snapshot.
+      const updates = new Map<string, NodeProperties>();
       for (const chain of chains) {
         const lastNode = chain.node_path[chain.node_path.length - 1];
         if (this.ctx.graph.hasNode(lastNode)) {
-          this.ctx.graph.setNodeAttribute(lastNode, 'chain_template', chain.template_id);
+          const current = updates.get(lastNode)
+            ?? detached(this.ctx.graph.getNodeAttributes(lastNode) as NodeProperties);
+          updates.set(lastNode, {
+            ...current,
+            chain_template: chain.template_id,
+          });
         }
+      }
+      const changed = [...updates.values()].filter((props) =>
+        this.ctx.graph.getNodeAttribute(props.id, 'chain_template') !== props.chain_template,
+      );
+      if (changed.length > 0) {
+        const updatedNodes = changed.map(props => props.id);
+        const baseline = changed.map(props =>
+          detached(this.ctx.graph.getNodeAttributes(props.id) as NodeProperties),
+        );
+        const operations: EngineOperation[] = changed.map(props => ({
+          type: 'merge_node_attrs',
+          payload: { props },
+        }));
+        const detail: GraphUpdateDetail = { updated_nodes: updatedNodes };
+        try {
+          this.ctx.applyEngineTransaction(
+            { operations, update_detail: detail },
+            () => {
+              for (const props of changed) this.addNode(props);
+            },
+            'web chain enrichment',
+          );
+        } catch (error) {
+          this.restoreWebChainAnnotationBaseline(baseline);
+          throw error;
+        }
+        this.persist(detail);
       }
       this.ctx.log(`Web chain enrichment: ${chains.length} chains matched (${chains.filter(c => c.completion === 1.0).length} complete)`, undefined, { category: 'system' });
     }
@@ -1634,16 +2127,6 @@ export class GraphEngine {
       resolution: this.ctx.config.community_resolution,
     });
     this.ctx.communityCache = communities;
-    // Writing presentation metadata onto graph nodes is still an in-memory
-    // mutation. Preserve the compatibility behavior during normal operation,
-    // but never alter the recovered graph through a degraded read surface.
-    if (this.isPersistenceWritable()) {
-      for (const [nodeId, cid] of communities) {
-        if (this.ctx.graph.hasNode(nodeId)) {
-          this.ctx.graph.setNodeAttribute(nodeId, 'community_id', cid);
-        }
-      }
-    }
     return communities;
   }
 
@@ -2251,12 +2734,57 @@ export class GraphEngine {
     _onSessionClosed(this.sessionHost, _sessionId, targetNode, principalNode);
   }
 
+  closeSessionDurably(
+    metadata: SessionMetadata,
+    description: string,
+    options: { preserve_descriptor?: boolean } = {},
+  ): void {
+    const preserveDescriptor = options.preserve_descriptor === true;
+    this.runAtomicGraphCommand(
+      'close session lifecycle',
+      metadata.action_id,
+      () => {
+        this.logActionEvent({
+          event_type: 'session_closed',
+          description,
+          agent_id: metadata.agent_id,
+          action_id: metadata.action_id,
+          frontier_item_id: metadata.frontier_item_id,
+          category: 'system',
+          details: {
+            session_id: metadata.id,
+            session_kind: metadata.kind,
+            session_state: metadata.state,
+          },
+        });
+        _onSessionClosed(
+          this.sessionHost,
+          metadata.id,
+          metadata.target_node,
+          metadata.principal_node,
+        );
+        if (!preserveDescriptor) {
+          this.recordSessionDescriptor(metadata);
+        }
+      },
+      preserveDescriptor ? [] : ['session_descriptors'],
+    );
+  }
+
   reconcileSessionEdgesOnStartup(): void {
     this.assertPersistenceWritable();
     _reconcileSessionEdgesOnStartup(this.sessionHost);
   }
 
   private reconcileSessionDescriptorsOnStartup(): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'reconcile session descriptors on startup',
+        ['session_descriptors'],
+        () => this.reconcileSessionDescriptorsOnStartup(),
+      );
+      return;
+    }
     const interruptedAt = this.ctx.nowIso();
     let changed = false;
     this.ctx.sessionDescriptors = this.ctx.sessionDescriptors.map(descriptor => {
@@ -2301,6 +2829,16 @@ export class GraphEngine {
     const currentId = this.getCurrentPhaseId();
     const previousId = this.ctx.lastKnownPhaseId;
     if (currentId === previousId) return;
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'record phase transition',
+        ['activity', 'frontier', 'phase'],
+        () => this.recordPhaseTransitionsIfAny(),
+        {},
+        ['frontier'],
+      );
+      return;
+    }
     if (previousId) {
       this.logActionEvent({
         description: `Phase exited: ${previousId}`,
@@ -2755,6 +3293,13 @@ export class GraphEngine {
     node_conflict?: { existing_task_id: string; existing_agent_id: string; node_id: string };
     cap_exceeded?: { scope: 'subnet' | 'target'; key: string; limit: number; current: number };
   } {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'register agent',
+        ['agents', 'activity', 'frontier'],
+        () => this.registerAgent(detached(task)),
+      );
+    }
     this.assertPersistenceWritable();
     // Operator-policy dispatch cap: refuse (don't register) when a target-facing
     // agent would exceed the per-subnet / per-target limit. Checked BEFORE
@@ -2845,6 +3390,13 @@ export class GraphEngine {
    * that bypass `register_agent` still surface on the dashboard.
    */
   ensureRunningAgent(agentId: string | undefined): AgentTask | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'ensure running agent',
+        ['agents', 'activity', 'frontier'],
+        () => this.ensureRunningAgent(agentId),
+      );
+    }
     this.assertPersistenceWritable();
     const task = this.agentMgr.ensureRunningAgent(agentId, this.ctx.nowIso());
     if (task) this.persist();
@@ -2873,16 +3425,36 @@ export class GraphEngine {
    * counter. Caller passes the value into `deterministicActionId(...)`.
    */
   nextDeterministicSeq(): number {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'allocate deterministic sequence',
+        ['activity'],
+        () => this.nextDeterministicSeq(),
+      );
+    }
     this.assertPersistenceWritable();
     return this.ctx.nextDeterministicSeq();
   }
 
-  /** P0.3: heartbeat + watchdog passthrough. A `silent` keepalive (supervisor-driven
-   *  liveness for the orchestrator / queued sub-agents) updates the in-memory beat +
-   *  frontier lease but skips the activity event AND the disk write: the reaper reads
-   *  memory, and on restart the startup sweep interrupts running headless tasks anyway,
-   *  so a persisted keepalive beat is moot. */
+  /** P0.3: heartbeat + watchdog passthrough. Silent keepalives omit the
+   * activity event, but the task/lease projection still crosses the canonical
+   * durable state boundary. */
   agentHeartbeat(taskId: string, now?: string, opts?: { silent?: boolean }): boolean {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'record agent heartbeat',
+        ['agents', 'activity', 'frontier'],
+        () => this.applyAgentHeartbeat(taskId, now, opts),
+      );
+    }
+    return this.applyAgentHeartbeat(taskId, now, opts);
+  }
+
+  private applyAgentHeartbeat(
+    taskId: string,
+    now?: string,
+    opts?: { silent?: boolean },
+  ): boolean {
     this.assertPersistenceWritable();
     const ok = this.agentMgr.heartbeat(taskId, now, opts);
     if (ok && !opts?.silent) this.persist();
@@ -2895,6 +3467,13 @@ export class GraphEngine {
    * MCP bootstrap + first heartbeat complete. Returns false for an unknown task.
    */
   setAgentHeartbeatTtl(taskId: string, seconds: number): boolean {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'set agent heartbeat TTL',
+        ['agents'],
+        () => this.setAgentHeartbeatTtl(taskId, seconds),
+      );
+    }
     this.assertPersistenceWritable();
     const task = this.agentMgr.getTask(taskId);
     if (!task) return false;
@@ -2907,6 +3486,13 @@ export class GraphEngine {
    * These fields are intentionally narrow: lifecycle transitions continue to
    * go through updateAgentStatus(), which enforces terminal monotonicity. */
   updateAgentSchedulerFlags(taskId: string, patch: { no_retry?: boolean; reoffered?: boolean }): boolean {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'update agent scheduler flags',
+        ['agents'],
+        () => this.updateAgentSchedulerFlags(taskId, patch),
+      );
+    }
     this.assertPersistenceWritable();
     const task = this.agentMgr.getTask(taskId);
     if (!task) return false;
@@ -2917,6 +3503,13 @@ export class GraphEngine {
   }
 
   reapStaleAgents(now?: string): number {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'reap stale agents',
+        ['agents', 'activity', 'frontier'],
+        () => this.reapStaleAgents(now),
+      );
+    }
     this.assertPersistenceWritable();
     const reaped = this.agentMgr.reapStaleHeartbeats(now);
     if (reaped > 0) this.persist();
@@ -2930,6 +3523,13 @@ export class GraphEngine {
    * 'interrupted' and release the frontier leases they held.
    */
   reconcileAgentsOnStartup(): number {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'reconcile agents on startup',
+        ['agents', 'activity', 'frontier'],
+        () => this.reconcileAgentsOnStartup(),
+      );
+    }
     this.assertPersistenceWritable();
     const count = this.agentMgr.reconcileOnStartup();
     if (count > 0) this.persist();
@@ -2958,6 +3558,13 @@ export class GraphEngine {
    * watchdog. Returns the dropped frontier_item_ids.
    */
   reapExpiredFrontierLeases(now?: string): string[] {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'reap expired frontier leases',
+        ['agents'],
+        () => this.reapExpiredFrontierLeases(now),
+      );
+    }
     this.assertPersistenceWritable();
     return this.ctx.frontierLeases.reapExpired(now ?? this.ctx.nowIso());
   }
@@ -3110,6 +3717,13 @@ export class GraphEngine {
   }
 
   updateAgentStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'update agent lifecycle',
+        ['agents', 'campaigns', 'plans_questions', 'activity', 'frontier'],
+        () => this.updateAgentStatus(taskId, status, summary),
+      );
+    }
     this.assertPersistenceWritable();
     const task = this.agentMgr.getTask(taskId);
     const ok = this.agentMgr.updateStatus(taskId, status, summary);
@@ -3138,6 +3752,13 @@ export class GraphEngine {
    * a snapshot so the removal survives a restart (agent tasks aren't WAL-replayed).
    */
   dismissAgent(taskId: string): boolean {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'dismiss agent',
+        ['agents', 'activity', 'frontier'],
+        () => this.dismissAgent(taskId),
+      );
+    }
     this.assertPersistenceWritable();
     const ok = this.agentMgr.dismiss(taskId);
     if (ok) this.persist();
@@ -3369,6 +3990,8 @@ export class GraphEngine {
       ctx: this.ctx,
       logActionEvent: this.logActionEvent.bind(this),
       log: this.log.bind(this),
+      addEdge: this.addEdge.bind(this),
+      mergeEdgeAttributes: this.mergeEdgeAttributesDurable.bind(this),
       persist: (() => this.persist()) as () => void,
       invalidateFrontierCache: this.invalidateFrontierCache.bind(this),
       invalidatePathGraph: this.invalidatePathGraph.bind(this),
@@ -3379,6 +4002,7 @@ export class GraphEngine {
     return {
       ctx: this.ctx,
       getNode: this.getNode.bind(this),
+      addNode: this.addNode.bind(this),
       getNodesByType: this.getNodesByType.bind(this),
       queryGraph: this.queryGraph.bind(this),
       persist: (() => this.persist()) as () => void,
@@ -3835,9 +4459,88 @@ export class GraphEngine {
   // =============================================
 
   persist(detail: GraphUpdateDetail = {}): void {
+    if (this.ctx.isDraftingTransaction()) return;
     // Callers (addNode, addEdge, dropEdge, patchNodeProperties) already
     // invalidate the appropriate caches before calling persist.
     this.persistence.persist(detail);
+  }
+
+  private transactDurableSlices<T>(
+    reason: string,
+    keys: readonly DurableStateSliceKey[],
+    mutate: () => T,
+    detail: GraphUpdateDetail = {},
+    includeUnchangedKeys: readonly DurableStateSliceKey[] = [],
+  ): T {
+    if (this.ctx.isDraftingTransaction()) return mutate();
+    const baseline = this.ctx.captureDurableStateSlices(keys);
+    let draft!: { result: T; slices: DurableStatePatchV1['slices'] };
+    try {
+      draft = this.ctx.draftDurableStateSlices(keys, mutate);
+    } finally {
+      // CampaignPlanner owns derived reverse indexes outside EngineContext.
+      // Draft mutations may have changed them, so restore the live baseline
+      // indexes even when draft construction throws.
+      this.applyRestoredRuntimeProjections();
+    }
+    const slices = { ...draft.slices };
+    for (const key of includeUnchangedKeys) {
+      if (slices[key] === undefined && baseline[key] !== undefined) {
+        slices[key] = baseline[key];
+      }
+    }
+    if (Object.keys(slices).length === 0) return draft.result;
+    const payload: DurableStatePatchV1 = {
+      payload_version: 1,
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      reason,
+      slices,
+    };
+    try {
+      this.ctx.applyEngineTransaction(
+        {
+          operations: [{
+            type: 'state_patch',
+            payload: payload as unknown as Record<string, unknown>,
+          }],
+          update_detail: detail,
+        },
+        () => this.applyStatePatchMutation(payload, false),
+        'state patch',
+      );
+    } catch (error) {
+      // The transaction is already durable and the engine is fail-stopped by
+      // EngineContext. Restore the selected live slices so callers cannot
+      // observe a partially-applied after-state while recovery is required.
+      this.ctx.applyDurableStatePatch(baseline);
+      this.applyRestoredRuntimeProjections();
+      this.invalidateAllCaches();
+      throw error;
+    }
+    this.persist(detail);
+    return draft.result;
+  }
+
+  applyStatePatchMutation(
+    payload: DurableStatePatchV1,
+    _recovery = true,
+  ): MutationApplyResult {
+    if (payload.payload_version !== 1) {
+      return {
+        status: 'skipped',
+        reason: `unsupported state_patch payload version: ${String(payload.payload_version)}`,
+      };
+    }
+    this.ctx.applyDurableStatePatch(payload.slices);
+    this.campaignPlanner.reindex();
+    this.frontierComputer.resetWeightsToDefaults();
+    if (this.ctx.frontierWeights) {
+      this.frontierComputer.setFanOutEstimates(this.ctx.frontierWeights.fan_out);
+      this.frontierComputer.setNoiseEstimates(this.ctx.frontierWeights.noise);
+    }
+    this.invalidateAllCaches();
+    return { status: 'applied' };
   }
 
   /**
@@ -3873,6 +4576,7 @@ export class GraphEngine {
    * Use when you need to guarantee state is persisted before proceeding.
    */
   flushNow(): void {
+    if (this.ctx.isDraftingTransaction()) return;
     this.persistence.flushNow();
   }
 
@@ -3900,6 +4604,17 @@ export class GraphEngine {
       complete: persistence.complete,
       writable: persistence.writable,
       ...(persistence.reason ? { reason: persistence.reason } : {}),
+      highest_allocated_logical_seq:
+        persistence.highest_allocated_logical_seq ?? persistence.highest_allocated_seq,
+      ...(persistence.highest_allocated_frame_seq !== undefined
+        ? { highest_allocated_frame_seq: persistence.highest_allocated_frame_seq }
+        : {}),
+      ...(persistence.highest_physical_frame_seq !== undefined
+        ? { highest_physical_frame_seq: persistence.highest_physical_frame_seq }
+        : {}),
+      highest_contiguous_applied_logical_seq:
+        persistence.highest_contiguous_applied_logical_seq
+        ?? persistence.highest_contiguous_applied_seq,
     };
     const configRecovery = this.configService.getStatus();
     if (!configRecovery.resolution_required && this.startupReconciliationDeferred) {
@@ -3998,7 +4713,7 @@ export class GraphEngine {
 
   private completeDeferredStartupReconciliation(): void {
     if (!this.startupReconciliationDeferred) return;
-    this.syncObjectiveNodes();
+    this.evaluateObjectives();
     this.reconcileSessionEdgesOnStartup();
     this.reconcileSessionDescriptorsOnStartup();
     this.agentMgr.reconcileOnStartup();
@@ -4050,6 +4765,14 @@ export class GraphEngine {
   // =============================================
 
   recordOpsecNoise(opts: { action_id?: string; host_id?: string; domain?: string; campaign_id?: string; agent_id?: string; frontier_item_id?: string; noise_estimate: number; noise_actual?: number }): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'record OPSEC noise',
+        ['opsec'],
+        () => this.recordOpsecNoise(opts),
+      );
+      return;
+    }
     this.assertPersistenceWritable();
     // Per-campaign noise aggregation: callers in the action lifecycle carry an
     // agent_id and/or frontier_item_id but not the campaign directly. Resolve
@@ -4092,6 +4815,14 @@ export class GraphEngine {
   }
 
   recordDefensiveSignal(signal: import('./opsec-tracker.js').DefensiveSignal): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'record defensive signal',
+        ['opsec'],
+        () => this.recordDefensiveSignal(signal),
+      );
+      return;
+    }
     this.assertPersistenceWritable();
     this.ctx.opsecTracker.recordDefensiveSignal(signal);
   }
@@ -4140,6 +4871,14 @@ export class GraphEngine {
   }
 
   private pruneCommandCoordination(now?: number): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'prune command coordination',
+        ['command_state'],
+        () => this.pruneCommandCoordination(now),
+      );
+      return;
+    }
     const effectiveNow = now ?? Date.parse(this.ctx.nowIso());
     const expiredPlans = [...this.ctx.commandPlans.entries()]
       .filter(([, plan]) => plan.expires_at <= effectiveNow)
@@ -4160,6 +4899,13 @@ export class GraphEngine {
     now?: number;
     ttlMs?: number;
   }): string {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'create command plan',
+        ['command_state'],
+        () => this.createCommandPlan(input),
+      );
+    }
     this.assertPersistenceWritable();
     const now = input.now ?? Date.parse(this.ctx.nowIso());
     this.pruneCommandCoordination(now);
@@ -4185,6 +4931,13 @@ export class GraphEngine {
   }
 
   deleteCommandPlan(planId: string): boolean {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'delete command plan',
+        ['command_state'],
+        () => this.deleteCommandPlan(planId),
+      );
+    }
     this.assertPersistenceWritable();
     const deleted = this.ctx.commandPlans.delete(planId);
     if (deleted) this.persist();
@@ -4197,6 +4950,14 @@ export class GraphEngine {
     now?: number,
     ttlMs: number = 10 * 60_000,
   ): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'record command outcome',
+        ['command_state'],
+        () => this.recordCommandOutcome(planId, results, now, ttlMs),
+      );
+      return;
+    }
     this.assertPersistenceWritable();
     const effectiveNow = now ?? Date.parse(this.ctx.nowIso());
     this.pruneCommandCoordination(effectiveNow);
@@ -4223,6 +4984,13 @@ export class GraphEngine {
   }
 
   recordSessionDescriptor(metadata: SessionMetadata): PersistedSessionDescriptorV1 {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'record session descriptor',
+        ['session_descriptors'],
+        () => this.recordSessionDescriptor(metadata),
+      );
+    }
     this.assertPersistenceWritable();
     if (metadata.id.length === 0) throw new Error('Session id must not be empty.');
     if (metadata.transport.length === 0) throw new Error('Session transport must not be empty.');
@@ -4316,6 +5084,14 @@ export class GraphEngine {
   }
 
   setRuntimeRuns(runs: PersistedRuntimeRunV1[]): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'replace runtime runs',
+        ['runtime_runs'],
+        () => this.setRuntimeRuns(runs),
+      );
+      return;
+    }
     this.assertPersistenceWritable();
     this.ctx.runtimeRuns = detached(runs);
     this.persist();
@@ -4326,6 +5102,14 @@ export class GraphEngine {
   }
 
   setPlaybookRuns(runs: PersistedPlaybookRunV1[]): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'replace playbook runs',
+        ['playbook_runs'],
+        () => this.setPlaybookRuns(runs),
+      );
+      return;
+    }
     this.assertPersistenceWritable();
     this.ctx.playbookRuns = new Map(runs.map(run => [run.run_id, detached(run)]));
     this.persist();
@@ -4336,6 +5120,13 @@ export class GraphEngine {
   }
 
   recordApprovalRequest(action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>): DurableApprovalRecord {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'record approval request',
+        ['approvals'],
+        () => this.recordApprovalRequest(action),
+      );
+    }
     this.assertPersistenceWritable();
     const now = new Date(); // clock-ok: approval submitted_at/timeout_at is real-time (approval records aren't in the graph hash)
     const timeoutMs = this.ctx.config.opsec.approval_timeout_ms ?? 300_000;
@@ -4352,6 +5143,13 @@ export class GraphEngine {
   }
 
   resolveApprovalRequest(resolution: ActionResolution): DurableApprovalRecord | null {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'resolve approval request',
+        ['approvals'],
+        () => this.resolveApprovalRequest(resolution),
+      );
+    }
     this.assertPersistenceWritable();
     const existing = this.ctx.approvalRequests.get(resolution.action_id);
     if (!existing) return null;
@@ -4379,6 +5177,14 @@ export class GraphEngine {
    * resolved records are pruned first.
    */
   private pruneResolvedApprovals(): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'prune resolved approvals',
+        ['approvals'],
+        () => this.pruneResolvedApprovals(),
+      );
+      return;
+    }
     const MAX_RESOLVED_APPROVAL_RECORDS = 200;
     const resolved = [...this.ctx.approvalRequests.entries()].filter(([, r]) => r.status !== 'pending');
     const overflow = resolved.length - MAX_RESOLVED_APPROVAL_RECORDS;
@@ -4411,6 +5217,13 @@ export class GraphEngine {
    * into a live, awaiting tool call). Mirrors `reconcileOnStartup` for agents.
    */
   reconcilePendingApprovalsOnStartup(): number {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'reconcile pending approvals on startup',
+        ['approvals'],
+        () => this.reconcilePendingApprovalsOnStartup(),
+      );
+    }
     this.assertPersistenceWritable();
     let count = 0;
     const now = new Date().toISOString(); // clock-ok: startup reconciliation timestamp (daemon restart; not on the replay path)
@@ -4460,10 +5273,17 @@ export class GraphEngine {
     this.assertPersistenceWritable();
     this.rollbackCoordinator?.beforeRollback();
     try {
-      const restored = this.persistence.rollbackToSnapshot(
-        snapshotName,
-        BUILTIN_RULES,
-        { deferAuthorityRelease: true },
+      // The selected snapshot temporarily replaces runtime config before the
+      // revisioned config owner adopts it. Suppress ordinary state-patch
+      // writers during that known rollback window: they would target the
+      // superseded WAL and misclassify the intentional config transition as
+      // external divergence.
+      const restored = this.ctx.withTransactionDraft(() =>
+        this.persistence.rollbackToSnapshot(
+          snapshotName,
+          BUILTIN_RULES,
+          { deferAuthorityRelease: true },
+        ),
       );
       if (!restored) return false;
       this.applyRestoredRuntimeProjections();
@@ -4508,7 +5328,50 @@ export class GraphEngine {
 
   /** Frontier linkage tracker: lifecycle status of every surfaced frontier item. */
   getFrontierLinkage(): import('./frontier-linkage.js').FrontierLinkageTracker {
-    return this.ctx.frontierLinkage;
+    return FrontierLinkageTracker.deserialize(this.ctx.frontierLinkage.serialize());
+  }
+
+  /**
+   * Record one next_task emission and any newly-dropped candidates as a
+   * single durable frontier/activity patch.
+   */
+  recordFrontierEmission(frontierItemIds: string[]): {
+    summary: import('./frontier-linkage.js').LinkageStatusSummary;
+    dropped: import('./frontier-linkage.js').FrontierLinkageRecord[];
+  } {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        'record surfaced frontier items',
+        ['frontier', 'activity'],
+        () => this.recordFrontierEmission(frontierItemIds),
+      );
+    }
+    this.assertPersistenceWritable();
+    const tracker = this.ctx.frontierLinkage;
+    tracker.recordEmitted([...new Set(frontierItemIds)]);
+    const dropped = tracker.sweepDropped();
+    const currentCallIndex = tracker.callIndex();
+    for (const record of dropped) {
+      this.logActionEvent({
+        description: `Frontier item dropped without being pursued: ${record.frontier_item_id}`,
+        event_type: 'frontier_item_dropped',
+        category: 'frontier',
+        provenance: 'system',
+        frontier_item_id: record.frontier_item_id,
+        result_classification: 'neutral',
+        details: {
+          emitted_at: record.emitted_at,
+          emitted_call_index: record.emitted_call_index,
+          last_seen_call_index: record.last_seen_call_index,
+          current_call_index: currentCallIndex,
+        },
+      });
+    }
+    this.persist();
+    return detached({
+      summary: tracker.summary(),
+      dropped,
+    });
   }
 
   /**
@@ -4537,6 +5400,236 @@ export class GraphEngine {
 
   getConfig(): EngagementConfig {
     return detached(this.ctx.config);
+  }
+
+  private recordConfigCommitEvent(event: ConfigCommitEvent): void {
+    this.ctx.logEvent({
+      description: event.description,
+      event_type: event.result === 'success' ? 'config_updated' : 'instrumentation_warning',
+      category: 'system',
+      result_classification: event.result,
+      details: event.details,
+    });
+  }
+
+  /**
+   * Commit a synchronous high-level graph command as one immutable transaction.
+   * The callback may use the ordinary guarded node/edge and activity helpers;
+   * their operations are captured, replay-proven, and then applied through the
+   * same applier used at startup.
+   */
+  runAtomicGraphCommand<T>(
+    reason: string,
+    sourceActionId: string | undefined,
+    mutation: () => T,
+    additionalStateKeys: readonly DurableStateSliceKey[] = [],
+  ): T {
+    if (this.ctx.isDraftingTransaction()) return mutation();
+
+    const stateKeys = [
+      ...new Set<DurableStateSliceKey>([
+        'activity',
+        'frontier',
+        ...additionalStateKeys,
+      ]),
+    ];
+    const graphBaseline = detached(this.ctx.graph.export());
+    const coldBaseline = detached(this.ctx.coldStore.export());
+    const sliceBaseline = this.ctx.captureDurableStateSlices(stateKeys);
+    const cacheBaseline = {
+      pathGraphCache: new Map(this.ctx.pathGraphCache),
+      communityCache: this.ctx.communityCache ? new Map(this.ctx.communityCache) : null,
+      frontierCache: this.frontierCache ? detached(this.frontierCache) : null,
+      healthReportCache: this.healthReportCache ? detached(this.healthReportCache) : null,
+    };
+    const restoreBaseline = () => {
+      this.restoreFindingDraftBaseline(graphBaseline, coldBaseline, sliceBaseline);
+      this.ctx.pathGraphCache = new Map(cacheBaseline.pathGraphCache);
+      this.ctx.communityCache = cacheBaseline.communityCache
+        ? new Map(cacheBaseline.communityCache)
+        : null;
+      this.frontierCache = cacheBaseline.frontierCache
+        ? detached(cacheBaseline.frontierCache)
+        : null;
+      this.healthReportCache = cacheBaseline.healthReportCache
+        ? detached(cacheBaseline.healthReportCache)
+        : null;
+    };
+
+    let captured!: { result: T; operations: EngineOperation[] };
+    let graphAfter!: ReturnType<OverwatchGraph['export']>;
+    let coldAfter!: ReturnType<EngineContext['coldStore']['export']>;
+    let slicesAfter!: ReturnType<EngineContext['captureDurableStateSlices']>;
+    try {
+      captured = this.ctx.captureEngineOperations(mutation);
+      captured = detached(captured);
+      graphAfter = detached(this.ctx.graph.export());
+      coldAfter = detached(this.ctx.coldStore.export());
+      slicesAfter = this.ctx.captureDurableStateSlices(stateKeys);
+    } finally {
+      restoreBaseline();
+    }
+
+    const detail = this.deriveGraphUpdateDetail(graphBaseline, graphAfter, []);
+    const statePatch: DurableStatePatchV1 = {
+      payload_version: 1,
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      reason,
+      slices: slicesAfter,
+    };
+    const operations: EngineOperation[] = [
+      ...captured.operations,
+      {
+        type: 'state_patch',
+        payload: statePatch as unknown as Record<string, unknown>,
+      },
+    ];
+    const transactionDraft = {
+      operations,
+      ...(sourceActionId ? { source_action_id: sourceActionId } : {}),
+      update_detail: detail,
+    };
+
+    try {
+      const replayed = this.persistence.applyTransactionDraft(transactionDraft, this);
+      if (replayed.status === 'skipped') {
+        throw new Error(`${reason} operation draft could not replay: ${replayed.reason}`);
+      }
+      if (
+        canonicalJson({
+          graph: this.ctx.graph.export(),
+          cold_store: this.ctx.coldStore.export(),
+          slices: this.ctx.captureDurableStateSlices(stateKeys),
+        })
+        !== canonicalJson({
+          graph: graphAfter,
+          cold_store: coldAfter,
+          slices: slicesAfter,
+        })
+      ) {
+        throw new Error(`${reason} operation draft replay did not reproduce its captured after-state.`);
+      }
+    } finally {
+      restoreBaseline();
+    }
+
+    try {
+      this.ctx.applyEngineTransaction(
+        transactionDraft,
+        () => this.persistence.applyTransactionDraft(transactionDraft, this),
+        reason,
+      );
+    } catch (error) {
+      restoreBaseline();
+      throw error;
+    }
+    this.persist(detail);
+    return captured.result;
+  }
+
+  private commitRuntimeConfigTransaction(
+    next: EngagementConfig,
+    context: ConfigApplyContext,
+    event?: ConfigCommitEvent,
+  ): void {
+    if (this.ctx.isDraftingTransaction()) {
+      this.applyRuntimeConfig(next, context);
+      if (event) this.recordConfigCommitEvent(event);
+      return;
+    }
+
+    const stateKeys = ['config', 'activity', 'frontier'] as const;
+    const graphBaseline = detached(this.ctx.graph.export());
+    const coldBaseline = detached(this.ctx.coldStore.export());
+    const sliceBaseline = this.ctx.captureDurableStateSlices(stateKeys);
+    const cacheBaseline = {
+      pathGraphCache: new Map(this.ctx.pathGraphCache),
+      communityCache: this.ctx.communityCache ? new Map(this.ctx.communityCache) : null,
+      frontierCache: this.frontierCache ? detached(this.frontierCache) : null,
+      healthReportCache: this.healthReportCache ? detached(this.healthReportCache) : null,
+    };
+    const restoreBaseline = () => {
+      this.restoreFindingDraftBaseline(graphBaseline, coldBaseline, sliceBaseline);
+      this.ctx.pathGraphCache = new Map(cacheBaseline.pathGraphCache);
+      this.ctx.communityCache = cacheBaseline.communityCache
+        ? new Map(cacheBaseline.communityCache)
+        : null;
+      this.frontierCache = cacheBaseline.frontierCache
+        ? detached(cacheBaseline.frontierCache)
+        : null;
+      this.healthReportCache = cacheBaseline.healthReportCache
+        ? detached(cacheBaseline.healthReportCache)
+        : null;
+    };
+
+    let captured!: { result: void; operations: EngineOperation[] };
+    let graphAfter!: ReturnType<OverwatchGraph['export']>;
+    let coldAfter!: ReturnType<EngineContext['coldStore']['export']>;
+    let slicesAfter!: ReturnType<EngineContext['captureDurableStateSlices']>;
+    try {
+      captured = this.ctx.captureEngineOperations(() => {
+        this.applyRuntimeConfig(next, context);
+        if (event) this.recordConfigCommitEvent(event);
+      });
+      graphAfter = detached(this.ctx.graph.export());
+      coldAfter = detached(this.ctx.coldStore.export());
+      slicesAfter = this.ctx.captureDurableStateSlices(stateKeys);
+    } finally {
+      restoreBaseline();
+    }
+
+    const detail = this.deriveGraphUpdateDetail(graphBaseline, graphAfter, []);
+    const statePatch: DurableStatePatchV1 = {
+      payload_version: 1,
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      reason: `commit runtime configuration (${context.source})`,
+      slices: slicesAfter,
+    };
+    const operations: EngineOperation[] = [
+      ...captured.operations,
+      {
+        type: 'state_patch',
+        payload: statePatch as unknown as Record<string, unknown>,
+      },
+    ];
+    const transactionDraft = { operations, update_detail: detail };
+
+    try {
+      const replayed = this.persistence.applyTransactionDraft(transactionDraft, this);
+      if (replayed.status === 'skipped') {
+        throw new Error(`Configuration operation draft could not replay: ${replayed.reason}`);
+      }
+      if (
+        canonicalJson({
+          graph: this.ctx.graph.export(),
+          cold_store: this.ctx.coldStore.export(),
+          slices: this.ctx.captureDurableStateSlices(stateKeys),
+        })
+        !== canonicalJson({
+          graph: graphAfter,
+          cold_store: coldAfter,
+          slices: slicesAfter,
+        })
+      ) {
+        throw new Error('Configuration operation draft replay did not reproduce its captured after-state.');
+      }
+    } finally {
+      restoreBaseline();
+    }
+
+    try {
+      this.ctx.applyEngineTransaction(
+        transactionDraft,
+        () => this.persistence.applyTransactionDraft(transactionDraft, this),
+        'runtime configuration commit',
+      );
+    } catch (error) {
+      restoreBaseline();
+      throw error;
+    }
+    this.persist(detail);
   }
 
   private applyRuntimeConfig(next: EngagementConfig, context: ConfigApplyContext): void {
@@ -4571,7 +5664,9 @@ export class GraphEngine {
     for (const objective of previous.objectives) {
       const nodeId = `obj-${objective.id}`;
       if (!nextIds.has(nodeId) && this.ctx.graph.hasNode(nodeId)) {
-        this.ctx.graph.dropNode(nodeId);
+        this.dropNodeDurable(nodeId, {
+          reason: `Objective removed by configuration update (${context.source})`,
+        });
       }
     }
     const now = this.ctx.nowIso();
@@ -4591,14 +5686,14 @@ export class GraphEngine {
       };
       if (this.ctx.graph.hasNode(nodeId)) {
         const existing = this.ctx.graph.getNodeAttributes(nodeId) as NodeProperties;
-        this.ctx.graph.replaceNodeAttributes(nodeId, {
+        this.addNode({
           ...existing,
           ...properties,
           discovered_at: existing.discovered_at,
           first_seen_at: existing.first_seen_at,
         });
       } else {
-        this.ctx.graph.addNode(nodeId, properties);
+        this.addNode(properties);
       }
     }
   }
@@ -4705,6 +5800,14 @@ export class GraphEngine {
   }
 
   setFrontierWeights(weights: { fan_out?: Record<string, number>; noise?: Record<string, number> }): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'update frontier weights',
+        ['frontier'],
+        () => this.setFrontierWeights(weights),
+      );
+      return;
+    }
     this.assertPersistenceWritable();
     if (weights.fan_out) this.frontierComputer.setFanOutEstimates(weights.fan_out);
     if (weights.noise) this.frontierComputer.setNoiseEstimates(weights.noise);
@@ -4714,6 +5817,14 @@ export class GraphEngine {
   }
 
   resetFrontierWeights(): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'reset frontier weights',
+        ['frontier'],
+        () => this.resetFrontierWeights(),
+      );
+      return;
+    }
     this.assertPersistenceWritable();
     this.frontierComputer.resetWeightsToDefaults();
     this.ctx.frontierWeights = this.getFrontierWeights();
@@ -4721,8 +5832,7 @@ export class GraphEngine {
     this.persist();
   }
 
-  logActionEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry {
-    this.assertPersistenceWritable();
+  logActionEvent(event: ActivityLogInput): ActivityLogEntry {
     return this.ctx.logEvent(event);
   }
 
@@ -4805,6 +5915,14 @@ export class GraphEngine {
   }
 
   setTrackedProcesses(processes: import('./process-tracker.js').TrackedProcess[]): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'replace tracked process state',
+        ['tracked_processes', 'runtime_runs'],
+        () => this.setTrackedProcesses(processes),
+      );
+      return;
+    }
     this.assertPersistenceWritable();
     this.applyTrackedProcesses(processes);
     this.persist();
@@ -4813,13 +5931,31 @@ export class GraphEngine {
   reconcileTrackedProcessesOnStartup(
     processes: import('./process-tracker.js').TrackedProcess[],
   ): void {
+    if (!this.ctx.isDraftingTransaction() && this.isPersistenceWritable()) {
+      this.transactDurableSlices(
+        'reconcile tracked process state on startup',
+        ['tracked_processes', 'runtime_runs'],
+        () => this.reconcileTrackedProcessesOnStartup(processes),
+      );
+      return;
+    }
     this.applyTrackedProcesses(processes);
     if (this.isPersistenceWritable()) this.persist();
   }
 
-  exportGraph(options?: { includeSuperseded?: boolean; includeCold?: boolean; sourceTrust?: boolean }): ExportedGraph {
+  exportGraph(options?: {
+    includeSuperseded?: boolean;
+    includeCold?: boolean;
+    sourceTrust?: boolean;
+    includeDerivedCommunities?: boolean;
+  }): ExportedGraph {
     const includeSuperseded = options?.includeSuperseded ?? false;
     const includeCold = options?.includeCold ?? true;
+    // Public graph exports historically exposed community_id. Keep that wire
+    // contract while deriving the value outside the durable graph; callers
+    // that need the canonical persistence shape can opt out explicitly.
+    const withCommunities = options?.includeDerivedCommunities ?? true;
+    if (withCommunities) this.getCommunities();
     // Opt-in: derive source_trust (observed/asserted/inferred) onto a shallow copy of
     // each element's properties. OFF by default so the canonical export (and the
     // golden-master replay hash that pins it) is unaffected by this presentation label —
@@ -4830,7 +5966,7 @@ export class GraphEngine {
 
     this.ctx.graph.forEachNode((id, attrs) => {
       if (!includeSuperseded && attrs.identity_status === 'superseded') return;
-      const properties = detached(attrs);
+      const properties = this.projectNodeProperties(id, attrs, withCommunities);
       if (withTrust) properties.source_trust = sourceTrust(attrs);
       nodes.push({ id, properties });
     });
@@ -4892,6 +6028,99 @@ export class GraphEngine {
     this.frontierCache = null;
   }
 
+  private projectNodeProperties(
+    id: string,
+    attrs: NodeProperties,
+    includeDerivedCommunity = true,
+  ): NodeProperties {
+    const properties = detached(attrs);
+    // community_id is a topology-derived presentation field. Strip any
+    // legacy materialized value and project the current cached assignment.
+    delete properties.community_id;
+    if (includeDerivedCommunity) {
+      const communityId = this.ctx.communityCache?.get(id);
+      if (communityId !== undefined) properties.community_id = communityId;
+    }
+    return properties;
+  }
+
+  private restoreWebChainAnnotationBaseline(baseline: NodeProperties[]): void {
+    for (const props of baseline) {
+      if (!this.ctx.graph.hasNode(props.id)) continue;
+      this.ctx.graph.replaceNodeAttributes(props.id, detached(props));
+    }
+    this.invalidateAllCaches();
+  }
+
+  private restoreFindingDraftBaseline(
+    graph: ReturnType<OverwatchGraph['export']>,
+    coldStore: ReturnType<EngineContext['coldStore']['export']>,
+    slices: ReturnType<EngineContext['captureDurableStateSlices']>,
+  ): void {
+    this.ctx.graph.clear();
+    // Graphology and ColdStore may retain imported attribute/record objects.
+    // Clone on every restore so a later scratch replay cannot mutate the
+    // authoritative rollback snapshot by reference.
+    this.ctx.graph.import(detached(graph));
+    this.ctx.coldStore.import(detached(coldStore));
+    this.ctx.applyDurableStatePatch(slices);
+    this.applyRestoredRuntimeProjections();
+    this.inference.invalidateCaches();
+  }
+
+  private deriveGraphUpdateDetail(
+    before: ReturnType<OverwatchGraph['export']>,
+    after: ReturnType<OverwatchGraph['export']>,
+    inferredEdgeIds: string[],
+  ): GraphUpdateDetail {
+    const beforeNodes = new Map(before.nodes.map(node => [String(node.key), node.attributes]));
+    const afterNodes = new Map(after.nodes.map(node => [String(node.key), node.attributes]));
+    const beforeEdges = new Map(before.edges.map(edge => [String(edge.key), edge]));
+    const afterEdges = new Map(after.edges.map(edge => [String(edge.key), edge]));
+    const newNodes = [...afterNodes.keys()]
+      .filter(id => !beforeNodes.has(id))
+      .sort();
+    const removedNodes = [...beforeNodes.keys()]
+      .filter(id => !afterNodes.has(id))
+      .sort();
+    const updatedNodes = [...afterNodes.keys()]
+      .filter(id =>
+        beforeNodes.has(id)
+        && canonicalJson(beforeNodes.get(id)) !== canonicalJson(afterNodes.get(id)),
+      )
+      .sort();
+    const newEdges = [...afterEdges.keys()]
+      .filter(id => !beforeEdges.has(id))
+      .sort();
+    const removedEdges = [...beforeEdges.keys()]
+      .filter(id => !afterEdges.has(id))
+      .sort();
+    const updatedEdges = [...afterEdges.keys()]
+      .filter(id => {
+        const prior = beforeEdges.get(id);
+        const next = afterEdges.get(id);
+        return prior !== undefined
+          && (
+            prior.source !== next?.source
+            || prior.target !== next?.target
+            || canonicalJson(prior.attributes) !== canonicalJson(next?.attributes)
+          );
+      })
+      .sort();
+    const inferredEdges = [...new Set(inferredEdgeIds)]
+      .filter(id => afterEdges.has(id))
+      .sort();
+    return {
+      ...(newNodes.length > 0 ? { new_nodes: newNodes } : {}),
+      ...(newEdges.length > 0 ? { new_edges: newEdges } : {}),
+      ...(updatedNodes.length > 0 ? { updated_nodes: updatedNodes } : {}),
+      ...(updatedEdges.length > 0 ? { updated_edges: updatedEdges } : {}),
+      ...(inferredEdges.length > 0 ? { inferred_edges: inferredEdges } : {}),
+      ...(removedNodes.length > 0 ? { removed_nodes: removedNodes } : {}),
+      ...(removedEdges.length > 0 ? { removed_edges: removedEdges } : {}),
+    };
+  }
+
   invalidateFrontierCache(): void {
     this.frontierCache = null;
   }
@@ -4899,10 +6128,6 @@ export class GraphEngine {
   // =============================================
   // Helpers
   // =============================================
-
-  private syncObjectiveNodes(): void {
-    _syncObjectiveNodes(this.objectiveHost);
-  }
 
   private propertiesChanged(oldProps: NodeProperties, newProps: NodeProperties): boolean {
     const ignoreKeys = new Set(['discovered_at', 'discovered_by', 'last_seen_at', 'first_seen_at', 'sources']);

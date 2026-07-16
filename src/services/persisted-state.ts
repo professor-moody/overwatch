@@ -25,11 +25,16 @@ import type { OperatorOp } from './command-interpreter.js';
 
 export const CURRENT_STATE_VERSION = 1 as const;
 export const LEGACY_STATE_VERSION = 0 as const;
-export const CURRENT_JOURNAL_VERSION = 1 as const;
+export const LEGACY_JOURNAL_VERSION = 1 as const;
+export const CURRENT_JOURNAL_VERSION = 2 as const;
 
 export type SupportedStateVersion =
   | typeof LEGACY_STATE_VERSION
   | typeof CURRENT_STATE_VERSION;
+
+export type SupportedJournalVersion =
+  | typeof LEGACY_JOURNAL_VERSION
+  | typeof CURRENT_JOURNAL_VERSION;
 
 export class PersistedStateVersionError extends Error {
   constructor(
@@ -92,11 +97,11 @@ export function detectStateVersion(value: unknown): SupportedStateVersion {
 export function detectJournalVersion(
   value: unknown,
   stateVersion: SupportedStateVersion = detectStateVersion(value),
-): typeof CURRENT_JOURNAL_VERSION {
+): SupportedJournalVersion {
   const record = recordOf(value);
   if (stateVersion === LEGACY_STATE_VERSION) {
     if (!Object.prototype.hasOwnProperty.call(record, 'journal_version')) {
-      return CURRENT_JOURNAL_VERSION;
+      return LEGACY_JOURNAL_VERSION;
     }
   }
   const observed = record.journal_version;
@@ -107,14 +112,14 @@ export function detectJournalVersion(
       'invalid',
     );
   }
-  if (observed !== CURRENT_JOURNAL_VERSION) {
+  if (observed !== LEGACY_JOURNAL_VERSION && observed !== CURRENT_JOURNAL_VERSION) {
     throw new PersistedJournalVersionError(
-      `persisted journal version ${String(observed)} is unsupported by this binary (supports ${CURRENT_JOURNAL_VERSION})`,
+      `persisted journal version ${String(observed)} is unsupported by this binary (supports ${LEGACY_JOURNAL_VERSION} and ${CURRENT_JOURNAL_VERSION})`,
       observed,
       'unsupported',
     );
   }
-  return CURRENT_JOURNAL_VERSION;
+  return observed as SupportedJournalVersion;
 }
 
 export interface PersistedSessionResumeIntentV1 {
@@ -215,7 +220,7 @@ export interface PersistedCommandOutcomeV1 {
  */
 export interface PersistedStateV1 {
   state_version: typeof CURRENT_STATE_VERSION;
-  journal_version: typeof CURRENT_JOURNAL_VERSION;
+  journal_version: SupportedJournalVersion;
   config: EngagementConfig;
   graph: unknown;
   activityLog: ActivityLogEntry[];

@@ -7,10 +7,22 @@ import { loadEngagementConfigFile } from '../../config.js';
 import { checkPromptAffordances, REQUIRED_SUBAGENT_AFFORDANCES } from '../eval-rubric.js';
 import { EVAL_SCENARIOS } from '../../test-support/eval-scenarios.js';
 import type { AgentTask } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const config = loadEngagementConfigFile(resolve('./engagement.example.json'));
 const STATE = './state-test-prompt-affordances.json';
-const cleanup = () => { if (existsSync(STATE)) unlinkSync(STATE); };
+const liveEngines = new Set<GraphEngine>();
+const openEngine = (): GraphEngine => {
+  const engine = new GraphEngine(config, STATE);
+  liveEngines.add(engine);
+  return engine;
+};
+const cleanup = () => {
+  for (const engine of liveEngines) engine.dispose();
+  liveEngines.clear();
+  cleanupTestPersistence(STATE);
+  if (existsSync(STATE)) unlinkSync(STATE);
+};
 
 const TOOLS: ToolEntry[] = [
   { name: 'get_agent_context', description: 'scoped view for sub-agents' },
@@ -31,7 +43,7 @@ describe('sub_agent prompt affordances (Tier-1 structural guard)', () => {
 
   for (const scenario of EVAL_SCENARIOS) {
     it(`${scenario.id}: generated sub_agent prompt keeps the load-bearing affordances + fits budget`, () => {
-      const engine = new GraphEngine(config, STATE);
+      const engine = openEngine();
       const agentId = `agent-${scenario.id}`;
       engine.registerAgent({
         id: `task-${scenario.id}`,
@@ -68,7 +80,7 @@ describe('lean variant (step b) — context-first restructure', () => {
   afterEach(cleanup);
 
   const genFor = (archetype: string, variant: 'control' | 'lean') => {
-    const engine = new GraphEngine(config, STATE);
+    const engine = openEngine();
     const agentId = `agent-${archetype}`;
     engine.registerAgent({
       id: `task-${archetype}`, agent_id: agentId, assigned_at: new Date().toISOString(),

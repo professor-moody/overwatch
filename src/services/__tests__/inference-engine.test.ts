@@ -55,8 +55,13 @@ function buildEngine(graph: OverwatchGraph, rules: InferenceRule[]) {
     const id = graph.addEdge(source, target, props);
     return { id, isNew: true };
   };
+  const addNodeFn = (props: NodeProperties): string => {
+    if (graph.hasNode(props.id)) graph.replaceNodeAttributes(props.id, props);
+    else graph.addNode(props.id, props);
+    return props.id;
+  };
 
-  return new InferenceEngine(ctx, addEdgeFn, getNode, getNodesByType as any);
+  return new InferenceEngine(ctx, addEdgeFn, getNode, getNodesByType as any, addNodeFn);
 }
 
 // Individual rule definitions for isolated testing
@@ -532,7 +537,13 @@ describe('InferenceEngine', () => {
     it('deduplicates rules by name', () => {
       const graph = makeGraph();
       const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
-      const engine = new InferenceEngine(ctx, (() => ({ id: '', isNew: true })) as any, () => null, (() => []) as any);
+      const engine = new InferenceEngine(
+        ctx,
+        (() => ({ id: '', isNew: true })) as any,
+        () => null,
+        (() => []) as any,
+        props => props.id,
+      );
 
       const rule1: InferenceRule = {
         id: 'custom-rule-1',
@@ -561,7 +572,13 @@ describe('InferenceEngine', () => {
     it('deduplicates rules by ID', () => {
       const graph = makeGraph();
       const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
-      const engine = new InferenceEngine(ctx, (() => ({ id: '', isNew: true })) as any, () => null, (() => []) as any);
+      const engine = new InferenceEngine(
+        ctx,
+        (() => ({ id: '', isNew: true })) as any,
+        () => null,
+        (() => []) as any,
+        props => props.id,
+      );
 
       const rule: InferenceRule = {
         id: 'custom-rule-1',

@@ -29,15 +29,27 @@
 //     graph; it's a typed stream.
 // ============================================================
 
-import { existsSync, openSync, fsyncSync, closeSync, writeSync, readFileSync, renameSync, unlinkSync } from 'fs';
-import { dirname, join, basename } from 'path';
+import { existsSync, openSync, fsyncSync, closeSync, writeSync, readFileSync, renameSync, statSync, unlinkSync } from 'fs';
+import { dirname, join, basename, resolve } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
 import { decodeUtf8Fatal } from './durable-json.js';
 import {
+  acquireStateMigrationWriteGuard,
   assertStateMigrationWriteAllowed,
+  getStateWriterLockDepth,
   withStateMigrationWriteGuard,
 } from './state-migration-lock.js';
+import {
+  CURRENT_JOURNAL_VERSION,
+  LEGACY_JOURNAL_VERSION,
+} from './persisted-state.js';
+import type {
+  EngineOperation,
+  EngineTransaction,
+  EngineTransactionApplier,
+  EngineTransactionDraft,
+} from './engine-transaction.js';
 import type {
   ConfigIntentConflict,
   EdgeProperties,
@@ -46,6 +58,11 @@ import type {
   NodeProperties,
 } from '../types.js';
 import type { ColdNodeRecord } from './cold-store.js';
+import {
+  DURABLE_STATE_SLICE_KEYS,
+  type DurableStatePatchV1,
+} from './durable-state-patch.js';
+import type { ActivityAppendPayloadV1 } from './activity-append.js';
 
 type WriteSyncLike = (
   fd: number,
@@ -57,6 +74,14 @@ type WriteSyncLike = (
 
 const defaultWriteSync: WriteSyncLike = (fd, buffer, offset, length, position) =>
   writeSync(fd, buffer, offset, length, position);
+
+interface RetainedWriterOwner {
+  token: string;
+  busy: number;
+  release: () => void;
+}
+
+const retainedWriterOwners = new Map<string, RetainedWriterOwner>();
 
 /**
  * `fs.writeSync` is permitted to return a short byte count.  WAL writes are
@@ -104,7 +129,52 @@ export type MutationType =
   | 'log_event'
   | 'scope_updated'
   | 'identity_rewrite'
-  | 'graph_corrected';
+  | 'graph_corrected'
+  | 'activity_append'
+  | 'state_patch';
+
+export const JOURNAL_V2_CHUNK_BYTES = 64 * 1024;
+export const JOURNAL_V2_MAX_TRANSACTION_BYTES = 64 * 1024 * 1024;
+export const JOURNAL_V2_MAX_OPERATIONS = 10_000;
+
+interface JournalV2BeginRecord {
+  journal_version: typeof CURRENT_JOURNAL_VERSION;
+  record_type: 'tx_begin';
+  tx_version: 2;
+  frame_seq: number;
+  tx_seq: number;
+  tx_id: string;
+  ts: string;
+  operation_count: number;
+  payload_bytes: number;
+  chunk_count: number;
+  payload_sha256: string;
+  source_action_id?: string;
+}
+
+interface JournalV2ChunkRecord {
+  journal_version: typeof CURRENT_JOURNAL_VERSION;
+  record_type: 'tx_chunk';
+  frame_seq: number;
+  tx_seq: number;
+  tx_id: string;
+  chunk_index: number;
+  chunk_sha256: string;
+  data: string;
+}
+
+interface JournalV2CommitRecord {
+  journal_version: typeof CURRENT_JOURNAL_VERSION;
+  record_type: 'tx_commit';
+  frame_seq: number;
+  tx_seq: number;
+  tx_id: string;
+  operation_count: number;
+  payload_bytes: number;
+  chunk_count: number;
+  payload_sha256: string;
+  commit_checksum: string;
+}
 
 export interface ScopeUpdatedMutationPayloadV1 {
   payload_version: 1;
@@ -240,6 +310,8 @@ const REPLAYABLE_MUTATION_TYPES = new Set<string>([
   'scope_updated',
   'identity_rewrite',
   'graph_corrected',
+  'activity_append',
+  'state_patch',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -566,6 +638,123 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
       }
       break;
     }
+    case 'state_patch': {
+      const patch = payload as unknown as DurableStatePatchV1;
+      if (patch.payload_version !== 1) {
+        return { ok: false, reason: 'state_patch payload.payload_version must be 1' };
+      }
+      if (
+        !nonEmptyString(patch.operation_id)
+        || !nonEmptyString(patch.reason)
+        || !nonEmptyString(patch.occurred_at)
+        || !Number.isFinite(Date.parse(patch.occurred_at))
+        || !isRecord(patch.slices)
+      ) {
+        return {
+          ok: false,
+          reason: 'state_patch requires operation_id, reason, occurred_at, and object slices',
+        };
+      }
+      const sliceKeys = Object.keys(patch.slices);
+      if (sliceKeys.length === 0) {
+        return { ok: false, reason: 'state_patch payload.slices must not be empty' };
+      }
+      const allowed = new Set<string>(DURABLE_STATE_SLICE_KEYS);
+      const unsupported = sliceKeys.find(key => !allowed.has(key));
+      if (unsupported) {
+        return { ok: false, reason: `state_patch contains unsupported slice: ${unsupported}` };
+      }
+      break;
+    }
+    case 'activity_append': {
+      const append = payload as unknown as ActivityAppendPayloadV1;
+      if (append.payload_version !== 1) {
+        return { ok: false, reason: 'activity_append payload.payload_version must be 1' };
+      }
+      if (
+        !Array.isArray(append.items)
+        || append.items.length === 0
+        || append.items.length > 16
+      ) {
+        return { ok: false, reason: 'activity_append payload.items must contain 1 through 16 events' };
+      }
+      const eventIds = new Set<string>();
+      for (const item of append.items) {
+        if (
+          !isRecord(item)
+          || !isRecord(item.entry)
+          || !nonEmptyString(item.entry.event_id)
+          || eventIds.has(item.entry.event_id)
+          || !nonEmptyString(item.entry.timestamp)
+          || !Number.isFinite(Date.parse(item.entry.timestamp))
+          || !nonEmptyString(item.entry.description)
+        ) {
+          return { ok: false, reason: 'activity_append contains an invalid or duplicate event entry' };
+        }
+        eventIds.add(item.entry.event_id);
+        if (item.checkpoint !== undefined) {
+          const checkpoint = item.checkpoint;
+          if (
+            !isRecord(checkpoint)
+            || checkpoint.event_id !== item.entry.event_id
+            || !Number.isSafeInteger(checkpoint.event_index)
+            || (checkpoint.event_index as number) < 0
+            || !nonEmptyString(checkpoint.event_hash)
+            || checkpoint.event_hash !== item.entry.event_hash
+            || !Number.isSafeInteger(checkpoint.events_since_previous)
+            || (checkpoint.events_since_previous as number) <= 0
+            || !nonEmptyString(checkpoint.emitted_at)
+            || !Number.isFinite(Date.parse(checkpoint.emitted_at))
+          ) {
+            return { ok: false, reason: 'activity_append contains an invalid checkpoint' };
+          }
+        }
+      }
+      if (!nonEmptyString(append.result_event_id) || !eventIds.has(append.result_event_id)) {
+        return { ok: false, reason: 'activity_append result_event_id must reference an appended event' };
+      }
+      const validContinuity = (
+        value: unknown,
+        includeWindow: boolean,
+      ): value is Record<string, unknown> => {
+        if (!isRecord(value)) return false;
+        if (
+          !/^[0-9a-f]{64}$/i.test(String(value.last_chain_hash ?? ''))
+          || !Number.isSafeInteger(value.chain_events_since_checkpoint)
+          || (value.chain_events_since_checkpoint as number) < 0
+          || !Number.isSafeInteger(value.deterministic_seq)
+          || (value.deterministic_seq as number) < 0
+        ) {
+          return false;
+        }
+        if (!includeWindow) return true;
+        return Number.isSafeInteger(value.activity_length)
+          && (value.activity_length as number) >= 0
+          && (value.activity_tail_event_id === null || nonEmptyString(value.activity_tail_event_id))
+          && Number.isSafeInteger(value.checkpoint_count)
+          && (value.checkpoint_count as number) >= 0
+          && (value.checkpoint_tail_event_id === null || nonEmptyString(value.checkpoint_tail_event_id));
+      };
+      if (!validContinuity(append.expected, true) || !validContinuity(append.final, false)) {
+        return { ok: false, reason: 'activity_append continuity metadata is invalid' };
+      }
+      const update = append.action_frontier_update;
+      if (update !== undefined) {
+        const validMapping = (value: unknown): boolean => isRecord(value)
+          && nonEmptyString(value.frontier_item_id)
+          && (value.agent_id === undefined || nonEmptyString(value.agent_id))
+          && (value.frontier_type === undefined || nonEmptyString(value.frontier_type));
+        if (
+          !isRecord(update)
+          || !nonEmptyString(update.action_id)
+          || (update.before !== null && !validMapping(update.before))
+          || !validMapping(update.after)
+        ) {
+          return { ok: false, reason: 'activity_append action_frontier_update is invalid' };
+        }
+      }
+      break;
+    }
     case 'add_edge': {
       if (!nonEmptyString(payload.source) || !nonEmptyString(payload.target)) {
         return { ok: false, reason: 'add_edge payload.source and payload.target must be non-empty strings' };
@@ -765,17 +954,175 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
   return { ok: true, entry: value as unknown as MutationEntry };
 }
 
-interface ScannedMutationRecord {
-  entry: MutationEntry;
+function validateEngineOperation(
+  operation: unknown,
+  seq: number,
+  ts: string,
+): { ok: true; operation: EngineOperation } | { ok: false; reason: string } {
+  if (!isRecord(operation) || !nonEmptyString(operation.type) || !isRecord(operation.payload)) {
+    return { ok: false, reason: 'transaction operations require a non-empty type and object payload' };
+  }
+  const validation = validateMutationEntry({
+    seq,
+    ts,
+    type: operation.type,
+    payload: operation.payload,
+  });
+  if (!validation.ok) return validation;
+  return {
+    ok: true,
+    operation: {
+      type: validation.entry.type,
+      payload: validation.entry.payload,
+    },
+  };
+}
+
+function transactionPayload(
+  draft: EngineTransactionDraft,
+): Buffer {
+  const payload = {
+    operations: draft.operations,
+    ...(draft.update_detail === undefined ? {} : { update_detail: draft.update_detail }),
+  };
+  return Buffer.from(JSON.stringify(payload), 'utf-8');
+}
+
+function transactionCommitChecksum(
+  begin: JournalV2BeginRecord,
+  chunkHashes: string[],
+): string {
+  return createHash('sha256').update(JSON.stringify([
+    begin.journal_version,
+    begin.record_type,
+    begin.tx_version,
+    begin.frame_seq,
+    begin.tx_seq,
+    begin.tx_id,
+    begin.ts,
+    begin.operation_count,
+    begin.payload_bytes,
+    begin.chunk_count,
+    begin.payload_sha256,
+    begin.source_action_id ?? null,
+    chunkHashes,
+  ])).digest('hex');
+}
+
+function encodeTransactionFrames(transaction: EngineTransaction): Buffer {
+  if (!Array.isArray(transaction.operations) || transaction.operations.length === 0) {
+    throw new Error('Refusing to append an empty engine transaction');
+  }
+  if (transaction.operations.length > JOURNAL_V2_MAX_OPERATIONS) {
+    throw new Error(
+      `Refusing to append engine transaction with ${transaction.operations.length} operations; maximum is ${JOURNAL_V2_MAX_OPERATIONS}`,
+    );
+  }
+  if (!nonEmptyString(transaction.tx_id)) {
+    throw new Error('Refusing to append engine transaction without tx_id');
+  }
+  if (!Number.isSafeInteger(transaction.seq) || transaction.seq <= 0) {
+    throw new Error('Refusing to append engine transaction with invalid seq');
+  }
+  if (
+    !Number.isSafeInteger(transaction.begin_frame_seq)
+    || transaction.begin_frame_seq <= 0
+    || !Number.isSafeInteger(transaction.commit_frame_seq)
+    || transaction.commit_frame_seq < transaction.begin_frame_seq + 2
+  ) {
+    throw new Error('Refusing to append engine transaction with invalid physical frame range');
+  }
+  if (!nonEmptyString(transaction.ts) || !Number.isFinite(Date.parse(transaction.ts))) {
+    throw new Error('Refusing to append engine transaction with invalid timestamp');
+  }
+  if (transaction.source_action_id !== undefined && !nonEmptyString(transaction.source_action_id)) {
+    throw new Error('Refusing to append engine transaction with invalid source_action_id');
+  }
+  for (const [index, operation] of transaction.operations.entries()) {
+    const validation = validateEngineOperation(operation, transaction.seq, transaction.ts);
+    if (!validation.ok) {
+      throw new Error(
+        `Refusing to append malformed engine transaction operation ${index}: ${validation.reason}`,
+      );
+    }
+  }
+
+  const payload = transactionPayload(transaction);
+  if (payload.length > JOURNAL_V2_MAX_TRANSACTION_BYTES) {
+    throw new Error(
+      `Refusing to append ${payload.length}-byte engine transaction; maximum is ${JOURNAL_V2_MAX_TRANSACTION_BYTES}`,
+    );
+  }
+  const chunks: Buffer[] = [];
+  for (let offset = 0; offset < payload.length; offset += JOURNAL_V2_CHUNK_BYTES) {
+    chunks.push(payload.subarray(offset, Math.min(offset + JOURNAL_V2_CHUNK_BYTES, payload.length)));
+  }
+  if (chunks.length === 0) chunks.push(Buffer.alloc(0));
+  if (transaction.commit_frame_seq !== transaction.begin_frame_seq + chunks.length + 1) {
+    throw new Error('Refusing to append engine transaction whose frame range does not match its chunk count');
+  }
+  const payloadSha256 = createHash('sha256').update(payload).digest('hex');
+  const begin: JournalV2BeginRecord = {
+    journal_version: CURRENT_JOURNAL_VERSION,
+    record_type: 'tx_begin',
+    tx_version: 2,
+    frame_seq: transaction.begin_frame_seq,
+    tx_seq: transaction.seq,
+    tx_id: transaction.tx_id,
+    ts: transaction.ts,
+    operation_count: transaction.operations.length,
+    payload_bytes: payload.length,
+    chunk_count: chunks.length,
+    payload_sha256: payloadSha256,
+    ...(transaction.source_action_id
+      ? { source_action_id: transaction.source_action_id }
+      : {}),
+  };
+  const chunkRecords: JournalV2ChunkRecord[] = chunks.map((chunk, chunkIndex) => ({
+    journal_version: CURRENT_JOURNAL_VERSION,
+    record_type: 'tx_chunk',
+    frame_seq: transaction.begin_frame_seq + chunkIndex + 1,
+    tx_seq: transaction.seq,
+    tx_id: transaction.tx_id,
+    chunk_index: chunkIndex,
+    chunk_sha256: createHash('sha256').update(chunk).digest('hex'),
+    data: chunk.toString('base64'),
+  }));
+  const commit: JournalV2CommitRecord = {
+    journal_version: CURRENT_JOURNAL_VERSION,
+    record_type: 'tx_commit',
+    frame_seq: transaction.commit_frame_seq,
+    tx_seq: transaction.seq,
+    tx_id: transaction.tx_id,
+    operation_count: transaction.operations.length,
+    payload_bytes: payload.length,
+    chunk_count: chunks.length,
+    payload_sha256: payloadSha256,
+    commit_checksum: transactionCommitChecksum(
+      begin,
+      chunkRecords.map(record => record.chunk_sha256),
+    ),
+  };
+  return Buffer.from(
+    [begin, ...chunkRecords, commit].map(record => JSON.stringify(record)).join('\n') + '\n',
+    'utf-8',
+  );
+}
+
+interface ScannedEngineTransaction {
+  transaction: EngineTransaction;
   line: number;
   byte_offset: number;
   byte_end: number;
+  format_version: typeof LEGACY_JOURNAL_VERSION | typeof CURRENT_JOURNAL_VERSION;
+  frame_count: number;
 }
 
-interface MutationScanResult {
+interface EngineTransactionScanResult {
   raw: Buffer;
-  records: ScannedMutationRecord[];
+  transactions: ScannedEngineTransaction[];
   issue?: MutationReadIssue;
+  format_version?: typeof LEGACY_JOURNAL_VERSION | typeof CURRENT_JOURNAL_VERSION;
 }
 
 export interface MutationEntry {
@@ -803,6 +1150,10 @@ export interface MutationReplayResult {
   complete: boolean;
   highest_on_disk_seq: number;
   highest_contiguous_applied_seq: number;
+  highest_physical_frame_seq?: number;
+  frames_read?: number;
+  committed_transactions?: number;
+  incomplete_transactions?: number;
   stopped_at_seq?: number;
   read_issue?: MutationReadIssue;
   skipped_reasons: Array<{ seq: number; type: string; reason: string }>;
@@ -810,12 +1161,22 @@ export interface MutationReplayResult {
 }
 
 export interface MutationReadIssue {
-  kind: 'malformed_entry' | 'sequence_gap' | 'unknown_type' | 'ambiguous_checkpoint';
+  kind:
+    | 'malformed_entry'
+    | 'sequence_gap'
+    | 'unknown_type'
+    | 'ambiguous_checkpoint'
+    | 'incomplete_transaction'
+    | 'checksum_mismatch'
+    | 'unsupported_journal_version'
+    | 'interleaved_transaction';
   line: number;
   byte_offset: number;
   reason: string;
   expected_seq?: number;
   actual_seq?: number;
+  frame_seq?: number;
+  tx_id?: string;
   /** True when the offending record is present in the entries returned for
    * replay. Physical scan gaps stop before the offending frame, while an
    * unknown type and a candidate-specific first-newer gap include it. */
@@ -826,6 +1187,15 @@ export interface MutationReadIssue {
 export type MutationCompactionResult =
   | { kept: number; dropped: number }
   | { kept: 0; dropped: 0; preserved: true; reason: string };
+
+export type IncompleteTransactionRepairResult =
+  | { repaired: false }
+  | {
+      repaired: true;
+      quarantine_path: string;
+      dropped_bytes: number;
+      committed_transactions: number;
+    };
 
 export interface MutationApplier {
   apply(entry: MutationEntry): MutationApplyResult;
@@ -845,10 +1215,22 @@ export class MutationJournal {
   private stateFilePath: string;
   private journalPath: string;
   private nextSeq: number = 0;
+  private nextFrameSeq: number = 0;
   private appliedThroughSeq: number = 0;
   private lastReadIssue: MutationReadIssue | undefined;
   private appendBlockedReason: string | undefined;
   private migrationOwnerToken: string | undefined;
+  private observedJournalHead?: {
+    fingerprint: string | null;
+    logicalSeq: number;
+    physicalFrameSeq: number;
+  };
+  private observedStateCheckpoint?: {
+    fingerprint: string | null;
+    checkpoint: number;
+  };
+  private readonly writerInstanceToken = randomUUID();
+  private retainedWriterRelease?: () => void;
 
   constructor(stateFilePath: string) {
     this.stateFilePath = stateFilePath;
@@ -865,11 +1247,92 @@ export class MutationJournal {
   }
 
   private withMigrationWriteGuard<T>(operation: () => T): T {
+    const absoluteStatePath = resolve(this.stateFilePath);
+    if (this.retainedWriterRelease) {
+      const retainedOwner = retainedWriterOwners.get(absoluteStatePath);
+      if (retainedOwner?.token !== this.writerInstanceToken) {
+        throw new Error(`state writer lock ownership was lost for ${absoluteStatePath}`);
+      }
+      retainedOwner.busy++;
+      try {
+        this.assertMigrationWriteAllowed();
+        return operation();
+      } finally {
+        retainedOwner.busy--;
+      }
+    }
+    this.releaseIdleCompetingWriter(absoluteStatePath);
+    const retainedOwner = retainedWriterOwners.get(absoluteStatePath);
+    if (retainedOwner && retainedOwner.token !== this.writerInstanceToken) {
+      throw new Error(`state writer lock is already owned for ${absoluteStatePath}`);
+    }
     return withStateMigrationWriteGuard(
       this.stateFilePath,
       this.migrationOwnerToken,
       operation,
     );
+  }
+
+  private retainMigrationWriteGuard(): void {
+    if (this.retainedWriterRelease) return;
+    const absoluteStatePath = resolve(this.stateFilePath);
+    this.releaseIdleCompetingWriter(absoluteStatePath);
+    const retainedOwner = retainedWriterOwners.get(absoluteStatePath);
+    if (retainedOwner && retainedOwner.token !== this.writerInstanceToken) {
+      throw new Error(`state writer lock is already owned for ${absoluteStatePath}`);
+    }
+    const release = acquireStateMigrationWriteGuard(
+      this.stateFilePath,
+      this.migrationOwnerToken,
+    );
+    const owner: RetainedWriterOwner = {
+      token: this.writerInstanceToken,
+      busy: 0,
+      release: () => {},
+    };
+    const releaseRetained = () => {
+      if (owner.busy > 0 || getStateWriterLockDepth(absoluteStatePath) !== 1) {
+        throw new Error(`state writer lock is busy for ${absoluteStatePath}`);
+      }
+      release();
+      if (retainedWriterOwners.get(absoluteStatePath) === owner) {
+        retainedWriterOwners.delete(absoluteStatePath);
+      }
+      if (this.retainedWriterRelease === releaseRetained) {
+        this.retainedWriterRelease = undefined;
+      }
+    };
+    owner.release = releaseRetained;
+    retainedWriterOwners.set(absoluteStatePath, owner);
+    this.retainedWriterRelease = releaseRetained;
+  }
+
+  private releaseIdleCompetingWriter(absoluteStatePath: string): void {
+    const retainedOwner = retainedWriterOwners.get(absoluteStatePath);
+    if (!retainedOwner || retainedOwner.token === this.writerInstanceToken) return;
+    if (retainedOwner.busy > 0) {
+      throw new Error(`state writer lock is already owned for ${absoluteStatePath}`);
+    }
+    if (getStateWriterLockDepth(absoluteStatePath) !== 1) {
+      throw new Error(`state writer lock is already owned for ${absoluteStatePath}`);
+    }
+    retainedOwner.release();
+  }
+
+  dispose(): void {
+    this.retainedWriterRelease?.();
+  }
+
+  private fileFingerprint(path: string): string | null {
+    if (!existsSync(path)) return null;
+    const stat = statSync(path);
+    return [
+      stat.dev,
+      stat.ino,
+      stat.size,
+      stat.mtimeMs,
+      stat.ctimeMs,
+    ].join(':');
   }
 
   /** Resolve the WAL path without creating directories or opening the file. */
@@ -899,9 +1362,17 @@ export class MutationJournal {
    */
   setNextSeq(
     seq: number,
-    options: { preserveAllocated?: boolean; appliedThroughSeq?: number } = {},
+    options: {
+      preserveAllocated?: boolean;
+      appliedThroughSeq?: number;
+      physicalFrameSeq?: number;
+    } = {},
   ): void {
     this.nextSeq = options.preserveAllocated ? Math.max(this.nextSeq, seq) : seq;
+    const physical = options.physicalFrameSeq ?? seq;
+    this.nextFrameSeq = options.preserveAllocated
+      ? Math.max(this.nextFrameSeq, physical)
+      : physical;
     this.appliedThroughSeq = options.appliedThroughSeq ?? seq;
   }
 
@@ -920,14 +1391,94 @@ export class MutationJournal {
     return this.nextSeq;
   }
 
+  /** Highest physical frame sequence allocated by this process. */
+  getHighestAllocatedFrameSeq(): number {
+    return this.nextFrameSeq;
+  }
+
   /** Highest parseable sequence physically present in the WAL. */
   getHighestPhysicalSeq(): number {
     return this.highestSeqOnDisk();
   }
 
+  /** Highest parseable physical frame sequence present in the WAL. Journal v1
+   * records use their logical seq as the frame sequence. */
+  getHighestPhysicalFrameSeq(): number {
+    return this.highestPhysicalFrameSeqOnDisk();
+  }
+
+  /**
+   * Best-effort observed on-disk journal format. This is deliberately distinct
+   * from the current writer version so degraded recovery can truthfully report
+   * a legacy or future WAL without implying that this binary wrote it.
+   */
+  getObservedFormatVersion(): number | undefined {
+    if (!existsSync(this.journalPath)) return undefined;
+    const raw = readFileSync(this.journalPath);
+    let observed: number | undefined;
+    let byteOffset = 0;
+    while (byteOffset < raw.length) {
+      const newlineOffset = raw.indexOf(0x0a, byteOffset);
+      const byteEnd = newlineOffset < 0 ? raw.length : newlineOffset;
+      const frame = raw.subarray(byteOffset, byteEnd);
+      byteOffset = newlineOffset < 0 ? raw.length : newlineOffset + 1;
+      if (frame.length === 0) continue;
+      try {
+        const record = JSON.parse(decodeUtf8Fatal(frame)) as Record<string, unknown>;
+        if (
+          Number.isSafeInteger(record.journal_version)
+          && (record.journal_version as number) > 0
+        ) {
+          observed = record.journal_version as number;
+        } else if (
+          observed === undefined
+          && Number.isSafeInteger(record.seq)
+          && typeof record.type === 'string'
+          && isRecord(record.payload)
+        ) {
+          observed = LEGACY_JOURNAL_VERSION;
+        }
+      } catch {
+        // Format reporting is best effort. Recovery still performs strict
+        // validation and surfaces malformed bytes independently.
+      }
+    }
+    return observed;
+  }
+
   /** Highest sequence known to have been applied contiguously in memory. */
   getAppliedThroughSeq(): number {
     return this.appliedThroughSeq;
+  }
+
+  /**
+   * Verify that this process still owns the current durable transaction head
+   * before it replaces the primary state file. The caller must hold the shared
+   * state-writer mutex so another cooperating process cannot append or replace
+   * state between this check and the atomic rename.
+   */
+  assertCaughtUpForStateWrite(stateCheckpoint: number): void {
+    if (!Number.isSafeInteger(stateCheckpoint) || stateCheckpoint < 0) {
+      throw new Error('durable state checkpoint must be a non-negative safe integer');
+    }
+    const scan = this.scanTransactions();
+    const issue = this.resolveTransactionReplayIssue(
+      scan,
+      stateCheckpoint,
+      { trustedContiguousCheckpoint: true },
+    );
+    if (issue) {
+      throw new Error(
+        `journal integrity check failed before state write at line ${issue.line}: ${issue.reason}`,
+      );
+    }
+    const walHead = scan.transactions.at(-1)?.transaction.seq ?? 0;
+    const durableHead = Math.max(walHead, stateCheckpoint);
+    if (durableHead !== this.appliedThroughSeq) {
+      throw new Error(
+        `writer is stale: durable transaction head ${durableHead} does not match local applied checkpoint ${this.appliedThroughSeq}`,
+      );
+    }
   }
 
   /** Mark a just-appended live mutation (or replayed entry) as applied. */
@@ -953,9 +1504,195 @@ export class MutationJournal {
   }
 
   /**
+   * Append one journal-v2 transaction. The complete begin/chunk/commit frame
+   * set is serialized and validated before the logical sequence is allocated,
+   * then written with one append descriptor and one fsync. A crash may leave an
+   * incomplete physical tail, but recovery will never expose it as committed.
+   */
+  appendTransaction(draft: EngineTransactionDraft & { ts?: string }): EngineTransaction {
+    const retainedBefore = this.retainedWriterRelease !== undefined;
+    if (
+      draft.operations.length === 1
+      && draft.operations[0]?.type === 'activity_append'
+    ) {
+      this.retainMigrationWriteGuard();
+    }
+    try {
+      return this.withMigrationWriteGuard(() => this.appendTransactionUnlocked(draft));
+    } catch (error) {
+      if (!retainedBefore) this.retainedWriterRelease?.();
+      throw error;
+    }
+  }
+
+  private appendTransactionUnlocked(
+    draft: EngineTransactionDraft & { ts?: string },
+  ): EngineTransaction {
+    if (this.appendBlockedReason) {
+      throw new Error(`Mutation journal is read-only: ${this.appendBlockedReason}`);
+    }
+    this.assertMigrationWriteAllowed();
+    const journalFingerprint = this.fileFingerprint(this.journalPath);
+    let walHead: number;
+    let physicalFrameHead: number;
+    let scan: EngineTransactionScanResult | undefined;
+    if (
+      this.observedJournalHead
+      && this.observedJournalHead.fingerprint === journalFingerprint
+    ) {
+      walHead = this.observedJournalHead.logicalSeq;
+      physicalFrameHead = this.observedJournalHead.physicalFrameSeq;
+    } else {
+      scan = this.scanTransactions();
+      if (scan.issue) {
+        this.blockAppends(
+          `journal integrity check failed before append at line ${scan.issue.line}: ${scan.issue.reason}`,
+        );
+        throw new Error(`Mutation journal is read-only: ${this.appendBlockedReason}`);
+      }
+      const lastTransaction = scan.transactions.at(-1)?.transaction;
+      walHead = lastTransaction?.seq ?? 0;
+      physicalFrameHead = lastTransaction?.commit_frame_seq ?? 0;
+      this.observedJournalHead = {
+        fingerprint: journalFingerprint,
+        logicalSeq: walHead,
+        physicalFrameSeq: physicalFrameHead,
+      };
+    }
+    const stateFingerprint = this.fileFingerprint(this.stateFilePath);
+    let stateCheckpoint: number;
+    if (
+      this.observedStateCheckpoint
+      && this.observedStateCheckpoint.fingerprint === stateFingerprint
+    ) {
+      stateCheckpoint = this.observedStateCheckpoint.checkpoint;
+    } else if (stateFingerprint !== null) {
+      let state: unknown;
+      try {
+        state = JSON.parse(decodeUtf8Fatal(readFileSync(this.stateFilePath)));
+      } catch (error) {
+        this.blockAppends(
+          `state checkpoint could not be read before WAL append: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        throw new Error(`Mutation journal is read-only: ${this.appendBlockedReason}`);
+      }
+      if (isRecord(state) && state.journalSnapshotSeq !== undefined) {
+        if (
+          !Number.isSafeInteger(state.journalSnapshotSeq)
+          || (state.journalSnapshotSeq as number) < 0
+        ) {
+          this.blockAppends('state checkpoint is invalid before WAL append');
+          throw new Error(`Mutation journal is read-only: ${this.appendBlockedReason}`);
+        }
+        stateCheckpoint = state.journalSnapshotSeq as number;
+      } else {
+        stateCheckpoint = 0;
+      }
+      this.observedStateCheckpoint = {
+        fingerprint: stateFingerprint,
+        checkpoint: stateCheckpoint,
+      };
+    } else {
+      stateCheckpoint = 0;
+      this.observedStateCheckpoint = {
+        fingerprint: null,
+        checkpoint: 0,
+      };
+    }
+    if (scan) {
+      const replayIssue = this.resolveTransactionReplayIssue(
+        scan,
+        stateCheckpoint,
+        { trustedContiguousCheckpoint: true },
+      );
+      if (replayIssue) {
+        this.blockAppends(
+          `journal integrity check failed before append at line ${replayIssue.line}: ${replayIssue.reason}`,
+        );
+        throw new Error(`Mutation journal is read-only: ${this.appendBlockedReason}`);
+      }
+    }
+    const durableHead = Math.max(walHead, stateCheckpoint);
+    if (durableHead !== this.appliedThroughSeq) {
+      this.blockAppends(
+        `writer is stale: durable transaction head ${durableHead} does not match local applied checkpoint ${this.appliedThroughSeq}`,
+      );
+      throw new Error(`Mutation journal is read-only: ${this.appendBlockedReason}`);
+    }
+    const seq = this.nextSeq + 1;
+    const payloadBytes = transactionPayload(draft).length;
+    const chunkCount = Math.max(1, Math.ceil(payloadBytes / JOURNAL_V2_CHUNK_BYTES));
+    const beginFrameSeq = Math.max(this.nextFrameSeq, physicalFrameHead) + 1;
+    const commitFrameSeq = beginFrameSeq + chunkCount + 1;
+    const transaction: EngineTransaction = {
+      version: CURRENT_JOURNAL_VERSION,
+      tx_id: randomUUID(),
+      seq,
+      begin_frame_seq: beginFrameSeq,
+      commit_frame_seq: commitFrameSeq,
+      ts: draft.ts ?? new Date().toISOString(),
+      operations: draft.operations,
+      ...(draft.source_action_id ? { source_action_id: draft.source_action_id } : {}),
+      ...(draft.update_detail === undefined ? {} : { update_detail: draft.update_detail }),
+    };
+    const bytes = encodeTransactionFrames(transaction);
+
+    // Once I/O begins the logical sequence is allocated even if the caller
+    // cannot determine how many frames reached the file.
+    this.nextSeq = seq;
+    this.nextFrameSeq = commitFrameSeq;
+    const stateDir = dirname(this.journalPath);
+    if (!existsSync(stateDir)) mkdirDurable(stateDir);
+    const existed = existsSync(this.journalPath);
+    let fd: number | undefined;
+    try {
+      fd = openSync(this.journalPath, 'a');
+      writeAllSync(fd, bytes);
+      fsyncSync(fd);
+    } catch (error) {
+      this.blockAppends(`append of allocated transaction seq ${seq} failed`);
+      throw error;
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch (error) {
+          this.blockAppends(`close after append of allocated transaction seq ${seq} failed`);
+          throw error;
+        }
+      }
+    }
+    if (!existed) {
+      try {
+        fsyncDirectory(stateDir);
+      } catch (error) {
+        this.blockAppends(`directory fsync for allocated transaction seq ${seq} failed`);
+        throw error;
+      }
+    }
+    try {
+      this.observedJournalHead = {
+        fingerprint: this.fileFingerprint(this.journalPath),
+        logicalSeq: seq,
+        physicalFrameSeq: commitFrameSeq,
+      };
+    } catch {
+      // The append is already durable. A missing cache only makes the next
+      // append rescan; it must not retroactively turn a committed write into a
+      // reported failure.
+      this.observedJournalHead = undefined;
+    }
+    return transaction;
+  }
+
+  /**
    * Append a mutation entry. Synchronously fsyncs the file before
    * returning. Throws on write failure — callers MUST treat that as
    * "the mutation is not durable, do not apply it in memory."
+   *
+   * This is the legacy journal-v1 writer retained for migration fixtures and
+   * backward-compatibility tests. Production engine writes use
+   * appendTransaction().
    */
   append(entry: Omit<MutationEntry, 'seq' | 'ts'> & { ts?: string }): MutationEntry {
     return this.withMigrationWriteGuard(() => this.appendUnlocked(entry));
@@ -985,6 +1722,7 @@ export class MutationJournal {
     // begins, retain the allocated sequence even on ambiguity and block later
     // appends until restart/recovery resolves the physical bytes.
     this.nextSeq = seq;
+    this.nextFrameSeq = Math.max(this.nextFrameSeq, seq);
 
     // Open-append-fsync-close: simple and bulletproof; the bulkier
     // engagements that justify a long-lived stream can land later.
@@ -1044,10 +1782,14 @@ export class MutationJournal {
    * pruned, or compacted. Filesystem errors intentionally propagate so the
    * persistence owner can enter inspectable degraded mode. */
   inspectIntegrity(afterCheckpoint?: number): MutationReadIssue | undefined {
-    const scan = this.scanJournal();
+    const scan = this.scanTransactions();
     const issue = afterCheckpoint === undefined
       ? scan.issue
-      : this.resolveReplayIssue(scan, afterCheckpoint, { trustedContiguousCheckpoint: true });
+      : this.resolveTransactionReplayIssue(
+          scan,
+          afterCheckpoint,
+          { trustedContiguousCheckpoint: true },
+        );
     return issue ? { ...issue } : undefined;
   }
 
@@ -1057,7 +1799,11 @@ export class MutationJournal {
     fromSeq: number,
     options: MutationReplayOptions = {},
   ): MutationReadIssue | undefined {
-    const issue = this.resolveReplayIssue(this.scanJournal(), fromSeq, options);
+    const issue = this.resolveTransactionReplayIssue(
+      this.scanTransactions(),
+      fromSeq,
+      options,
+    );
     return issue ? { ...issue } : undefined;
   }
 
@@ -1081,169 +1827,658 @@ export class MutationJournal {
       byteOffset = newlineOffset < 0 ? raw.length : newlineOffset + 1;
       if (frame.length === 0) continue;
       try {
-        const e = JSON.parse(decodeUtf8Fatal(frame)) as MutationEntry;
-        if (typeof e.seq === 'number' && e.seq > max) max = e.seq;
+        const e = JSON.parse(decodeUtf8Fatal(frame)) as {
+          seq?: unknown;
+          tx_seq?: unknown;
+        };
+        const logical = Number.isSafeInteger(e.tx_seq)
+          ? e.tx_seq as number
+          : Number.isSafeInteger(e.seq)
+            ? e.seq as number
+            : 0;
+        if (logical > max) max = logical;
       } catch { /* skip malformed */ }
     }
     return max;
   }
 
-  private scanJournal(): MutationScanResult {
-    if (!existsSync(this.journalPath)) return { raw: Buffer.alloc(0), records: [] };
+  private highestPhysicalFrameSeqOnDisk(): number {
+    if (!existsSync(this.journalPath)) return 0;
     const raw = readFileSync(this.journalPath);
-    if (raw.length === 0) return { raw, records: [] };
-
-    const records: ScannedMutationRecord[] = [];
+    let max = 0;
     let byteOffset = 0;
-    let line = 1;
-    let previousSeq: number | undefined;
     while (byteOffset < raw.length) {
       const newlineOffset = raw.indexOf(0x0a, byteOffset);
+      const byteEnd = newlineOffset < 0 ? raw.length : newlineOffset;
+      const frame = raw.subarray(byteOffset, byteEnd);
+      byteOffset = newlineOffset < 0 ? raw.length : newlineOffset + 1;
+      if (frame.length === 0) continue;
+      try {
+        const record = JSON.parse(decodeUtf8Fatal(frame)) as {
+          seq?: unknown;
+          frame_seq?: unknown;
+        };
+        const physical = Number.isSafeInteger(record.frame_seq)
+          ? record.frame_seq as number
+          : Number.isSafeInteger(record.seq)
+            ? record.seq as number
+            : 0;
+        if (physical > max) max = physical;
+      } catch { /* skip malformed */ }
+    }
+    return max;
+  }
+
+  /**
+   * Scan legacy primitive records and journal-v2 transactions into one logical
+   * transaction stream. A legacy prefix followed by v2 is supported so old
+   * snapshots can continue replaying through the upgrade boundary. Once a v2
+   * frame appears, a later v1 record is rejected.
+   */
+  private scanTransactions(): EngineTransactionScanResult {
+    if (!existsSync(this.journalPath)) {
+      return { raw: Buffer.alloc(0), transactions: [] };
+    }
+    const raw = readFileSync(this.journalPath);
+    if (raw.length === 0) return { raw, transactions: [] };
+
+    const transactions: ScannedEngineTransaction[] = [];
+    let byteOffset = 0;
+    let line = 1;
+    let previousTxSeq: number | undefined;
+    let previousFrameSeq: number | undefined;
+    let formatVersion: typeof LEGACY_JOURNAL_VERSION | typeof CURRENT_JOURNAL_VERSION | undefined;
+
+    const issue = (
+      kind: MutationReadIssue['kind'],
+      atLine: number,
+      atOffset: number,
+      reason: string,
+      extra: Partial<MutationReadIssue> = {},
+    ): EngineTransactionScanResult => ({
+      raw,
+      transactions,
+      format_version: formatVersion,
+      issue: {
+        kind,
+        line: atLine,
+        byte_offset: atOffset,
+        reason,
+        ...extra,
+      },
+    });
+
+    const parseFrame = (
+      offset: number,
+      frameLine: number,
+    ):
+      | { ok: true; value: unknown; bytes: Buffer; byte_end: number }
+      | { ok: false; result: EngineTransactionScanResult } => {
+      if (offset >= raw.length) {
+        return {
+          ok: false,
+          result: issue(
+            'incomplete_transaction',
+            frameLine,
+            offset,
+            'transaction ended before every declared frame and tx_commit were present',
+          ),
+        };
+      }
+      const newlineOffset = raw.indexOf(0x0a, offset);
       if (newlineOffset < 0) {
         return {
-          raw,
-          records,
-          issue: {
-            kind: 'malformed_entry',
-            line,
-            byte_offset: byteOffset,
-            reason: 'unterminated journal frame at physical EOF (missing newline commit marker)',
-            unterminated_eof_fragment: true,
-          },
+          ok: false,
+          result: issue(
+            'malformed_entry',
+            frameLine,
+            offset,
+            'unterminated journal frame at physical EOF (missing newline commit marker)',
+            { unterminated_eof_fragment: true },
+          ),
         };
       }
-
-      const frame = raw.subarray(byteOffset, newlineOffset);
-      const byteEnd = newlineOffset + 1;
-      if (frame.length === 0) {
+      const bytes = raw.subarray(offset, newlineOffset);
+      if (bytes.length === 0) {
         return {
-          raw,
-          records,
-          issue: {
-            kind: 'malformed_entry',
-            line,
-            byte_offset: byteOffset,
-            reason: 'empty journal frame',
-          },
+          ok: false,
+          result: issue('malformed_entry', frameLine, offset, 'empty journal frame'),
         };
       }
-
-      let parsed: unknown;
       try {
-        parsed = JSON.parse(decodeUtf8Fatal(frame));
+        return {
+          ok: true,
+          value: JSON.parse(decodeUtf8Fatal(bytes)),
+          bytes,
+          byte_end: newlineOffset + 1,
+        };
       } catch (error) {
         return {
-          raw,
-          records,
-          issue: {
-            kind: 'malformed_entry',
-            line,
-            byte_offset: byteOffset,
-            reason: error instanceof Error ? error.message : String(error),
-          },
+          ok: false,
+          result: issue(
+            'malformed_entry',
+            frameLine,
+            offset,
+            error instanceof Error ? error.message : String(error),
+          ),
         };
       }
+    };
 
-      const validation = validateMutationEntry(parsed);
-      if (!validation.ok) {
-        return {
-          raw,
-          records,
-          issue: {
-            kind: 'malformed_entry',
-            line,
-            byte_offset: byteOffset,
-            reason: validation.reason,
-          },
-        };
+    while (byteOffset < raw.length) {
+      const firstOffset = byteOffset;
+      const firstLine = line;
+      const first = parseFrame(byteOffset, line);
+      if (!first.ok) return first.result;
+      if (!isRecord(first.value)) {
+        return issue('malformed_entry', line, byteOffset, 'journal frame must be an object');
       }
 
-      const entry = validation.entry;
-      if (previousSeq !== undefined && entry.seq !== previousSeq + 1) {
-        return {
-          raw,
-          records,
-          issue: {
-            kind: 'sequence_gap',
+      const value = first.value;
+      const looksLikeV2 = value.record_type !== undefined || value.journal_version !== undefined;
+      if (!looksLikeV2) {
+        if (formatVersion === CURRENT_JOURNAL_VERSION) {
+          return issue(
+            'unsupported_journal_version',
             line,
-            byte_offset: byteOffset,
-            reason: `journal sequence discontinuity: expected ${previousSeq + 1}, found ${entry.seq}`,
-            expected_seq: previousSeq + 1,
-            actual_seq: entry.seq,
+            byteOffset,
+            'legacy journal-v1 record appears after journal-v2 frames',
+          );
+        }
+        formatVersion = LEGACY_JOURNAL_VERSION;
+        const validation = validateMutationEntry(value);
+        if (!validation.ok) {
+          return issue('malformed_entry', line, byteOffset, validation.reason);
+        }
+        const entry = validation.entry;
+        if (previousTxSeq !== undefined && entry.seq !== previousTxSeq + 1) {
+          return issue(
+            'sequence_gap',
+            line,
+            byteOffset,
+            `journal transaction sequence discontinuity: expected ${previousTxSeq + 1}, found ${entry.seq}`,
+            {
+              expected_seq: previousTxSeq + 1,
+              actual_seq: entry.seq,
+              offending_record_included: false,
+            },
+          );
+        }
+        if (previousFrameSeq !== undefined && entry.seq !== previousFrameSeq + 1) {
+          return issue(
+            'sequence_gap',
+            line,
+            byteOffset,
+            `journal physical frame sequence discontinuity: expected ${previousFrameSeq + 1}, found ${entry.seq}`,
+            {
+              expected_seq: previousFrameSeq + 1,
+              actual_seq: entry.seq,
+              frame_seq: entry.seq,
+              offending_record_included: false,
+            },
+          );
+        }
+        const transaction: EngineTransaction = {
+          version: CURRENT_JOURNAL_VERSION,
+          tx_id: `legacy-v1-${entry.seq}`,
+          seq: entry.seq,
+          begin_frame_seq: entry.seq,
+          commit_frame_seq: entry.seq,
+          ts: entry.ts,
+          operations: [{ type: entry.type, payload: entry.payload }],
+          ...(entry.source_action_id ? { source_action_id: entry.source_action_id } : {}),
+        };
+        transactions.push({
+          transaction,
+          line,
+          byte_offset: byteOffset,
+          byte_end: first.byte_end,
+          format_version: LEGACY_JOURNAL_VERSION,
+          frame_count: 1,
+        });
+        previousTxSeq = entry.seq;
+        previousFrameSeq = entry.seq;
+        byteOffset = first.byte_end;
+        line++;
+        if (!REPLAYABLE_MUTATION_TYPES.has(entry.type)) {
+          return issue(
+            'unknown_type',
+            firstLine,
+            firstOffset,
+            `unsupported journal mutation type: ${entry.type}`,
+            {
+              actual_seq: entry.seq,
+              frame_seq: entry.seq,
+              tx_id: transaction.tx_id,
+              offending_record_included: true,
+            },
+          );
+        }
+        continue;
+      }
+
+      if (value.journal_version !== CURRENT_JOURNAL_VERSION) {
+        return issue(
+          'unsupported_journal_version',
+          line,
+          byteOffset,
+          `unsupported journal frame version: ${String(value.journal_version)}`,
+        );
+      }
+      if (value.record_type !== 'tx_begin') {
+        return issue(
+          'interleaved_transaction',
+          line,
+          byteOffset,
+          `expected tx_begin, found ${String(value.record_type)}`,
+          {
+            frame_seq: Number.isSafeInteger(value.frame_seq) ? value.frame_seq as number : undefined,
+            tx_id: nonEmptyString(value.tx_id) ? value.tx_id : undefined,
+          },
+        );
+      }
+      formatVersion = CURRENT_JOURNAL_VERSION;
+      const begin = value as unknown as JournalV2BeginRecord;
+      if (
+        begin.tx_version !== 2
+        || !Number.isSafeInteger(begin.frame_seq)
+        || begin.frame_seq <= 0
+        || !Number.isSafeInteger(begin.tx_seq)
+        || begin.tx_seq <= 0
+        || !nonEmptyString(begin.tx_id)
+        || !nonEmptyString(begin.ts)
+        || !Number.isFinite(Date.parse(begin.ts))
+        || !Number.isSafeInteger(begin.operation_count)
+        || begin.operation_count <= 0
+        || begin.operation_count > JOURNAL_V2_MAX_OPERATIONS
+        || !Number.isSafeInteger(begin.payload_bytes)
+        || begin.payload_bytes < 0
+        || begin.payload_bytes > JOURNAL_V2_MAX_TRANSACTION_BYTES
+        || !Number.isSafeInteger(begin.chunk_count)
+        || begin.chunk_count <= 0
+        || begin.chunk_count !== Math.max(1, Math.ceil(begin.payload_bytes / JOURNAL_V2_CHUNK_BYTES))
+        || typeof begin.payload_sha256 !== 'string'
+        || !/^[a-f0-9]{64}$/.test(begin.payload_sha256)
+        || (begin.source_action_id !== undefined && !nonEmptyString(begin.source_action_id))
+      ) {
+        return issue('malformed_entry', line, byteOffset, 'invalid tx_begin frame');
+      }
+      if (previousTxSeq !== undefined && begin.tx_seq !== previousTxSeq + 1) {
+        return issue(
+          'sequence_gap',
+          line,
+          byteOffset,
+          `journal transaction sequence discontinuity: expected ${previousTxSeq + 1}, found ${begin.tx_seq}`,
+          {
+            expected_seq: previousTxSeq + 1,
+            actual_seq: begin.tx_seq,
+            frame_seq: begin.frame_seq,
+            tx_id: begin.tx_id,
             offending_record_included: false,
           },
-        };
+        );
+      }
+      if (previousFrameSeq !== undefined && begin.frame_seq !== previousFrameSeq + 1) {
+        return issue(
+          'sequence_gap',
+          line,
+          byteOffset,
+          `journal physical frame sequence discontinuity: expected ${previousFrameSeq + 1}, found ${begin.frame_seq}`,
+          {
+            expected_seq: previousFrameSeq + 1,
+            actual_seq: begin.frame_seq,
+            frame_seq: begin.frame_seq,
+            tx_id: begin.tx_id,
+            offending_record_included: false,
+          },
+        );
       }
 
-      records.push({ entry, line, byte_offset: byteOffset, byte_end: byteEnd });
-      if (!REPLAYABLE_MUTATION_TYPES.has(entry.type)) {
-        return {
-          raw,
-          records,
-          issue: {
-            kind: 'unknown_type',
+      byteOffset = first.byte_end;
+      line++;
+      const chunkBuffers: Buffer[] = [];
+      const chunkHashes: string[] = [];
+      let lastFrameSeq = begin.frame_seq;
+      for (let chunkIndex = 0; chunkIndex < begin.chunk_count; chunkIndex++) {
+        if (byteOffset >= raw.length) {
+          return issue(
+            'incomplete_transaction',
+            firstLine,
+            firstOffset,
+            `transaction ${begin.tx_id} ended before chunk ${chunkIndex}`,
+            {
+              actual_seq: begin.tx_seq,
+              frame_seq: lastFrameSeq,
+              tx_id: begin.tx_id,
+            },
+          );
+        }
+        const parsed = parseFrame(byteOffset, line);
+        if (!parsed.ok) {
+          if (parsed.result.issue?.kind === 'incomplete_transaction') {
+            return issue(
+              'incomplete_transaction',
+              firstLine,
+              firstOffset,
+              `transaction ${begin.tx_id} ended before chunk ${chunkIndex}`,
+              {
+                actual_seq: begin.tx_seq,
+                frame_seq: lastFrameSeq,
+                tx_id: begin.tx_id,
+              },
+            );
+          }
+          return parsed.result;
+        }
+        const chunk = parsed.value;
+        if (
+          !isRecord(chunk)
+          || chunk.journal_version !== CURRENT_JOURNAL_VERSION
+          || chunk.record_type !== 'tx_chunk'
+          || chunk.tx_seq !== begin.tx_seq
+          || chunk.tx_id !== begin.tx_id
+          || chunk.chunk_index !== chunkIndex
+          || chunk.frame_seq !== lastFrameSeq + 1
+          || typeof chunk.chunk_sha256 !== 'string'
+          || !/^[a-f0-9]{64}$/.test(chunk.chunk_sha256)
+          || typeof chunk.data !== 'string'
+        ) {
+          return issue(
+            'interleaved_transaction',
             line,
-            byte_offset: byteOffset,
-            reason: `unsupported journal mutation type: ${entry.type}`,
-            actual_seq: entry.seq,
+            byteOffset,
+            `invalid or interleaved tx_chunk ${chunkIndex} for transaction ${begin.tx_id}`,
+            {
+              actual_seq: begin.tx_seq,
+              frame_seq: isRecord(chunk) && Number.isSafeInteger(chunk.frame_seq)
+                ? chunk.frame_seq as number
+                : undefined,
+              tx_id: begin.tx_id,
+            },
+          );
+        }
+        const decoded = Buffer.from(chunk.data, 'base64');
+        if (decoded.toString('base64') !== chunk.data) {
+          return issue(
+            'malformed_entry',
+            line,
+            byteOffset,
+            `transaction ${begin.tx_id} chunk ${chunkIndex} is not canonical base64`,
+            { actual_seq: begin.tx_seq, frame_seq: chunk.frame_seq as number, tx_id: begin.tx_id },
+          );
+        }
+        const chunkHash = createHash('sha256').update(decoded).digest('hex');
+        if (chunkHash !== chunk.chunk_sha256) {
+          return issue(
+            'checksum_mismatch',
+            line,
+            byteOffset,
+            `transaction ${begin.tx_id} chunk ${chunkIndex} checksum mismatch`,
+            { actual_seq: begin.tx_seq, frame_seq: chunk.frame_seq as number, tx_id: begin.tx_id },
+          );
+        }
+        chunkBuffers.push(decoded);
+        chunkHashes.push(chunkHash);
+        lastFrameSeq = chunk.frame_seq as number;
+        byteOffset = parsed.byte_end;
+        line++;
+      }
+
+      if (byteOffset >= raw.length) {
+        return issue(
+          'incomplete_transaction',
+          firstLine,
+          firstOffset,
+          `transaction ${begin.tx_id} has no tx_commit`,
+          {
+            actual_seq: begin.tx_seq,
+            frame_seq: lastFrameSeq,
+            tx_id: begin.tx_id,
+          },
+        );
+      }
+      const parsedCommit = parseFrame(byteOffset, line);
+      if (!parsedCommit.ok) return parsedCommit.result;
+      const commit = parsedCommit.value;
+      if (
+        !isRecord(commit)
+        || commit.journal_version !== CURRENT_JOURNAL_VERSION
+        || commit.record_type !== 'tx_commit'
+        || commit.tx_seq !== begin.tx_seq
+        || commit.tx_id !== begin.tx_id
+        || commit.frame_seq !== lastFrameSeq + 1
+        || commit.operation_count !== begin.operation_count
+        || commit.payload_bytes !== begin.payload_bytes
+        || commit.chunk_count !== begin.chunk_count
+        || commit.payload_sha256 !== begin.payload_sha256
+        || typeof commit.commit_checksum !== 'string'
+        || !/^[a-f0-9]{64}$/.test(commit.commit_checksum)
+      ) {
+        return issue(
+          'interleaved_transaction',
+          line,
+          byteOffset,
+          `invalid or interleaved tx_commit for transaction ${begin.tx_id}`,
+          {
+            actual_seq: begin.tx_seq,
+            frame_seq: isRecord(commit) && Number.isSafeInteger(commit.frame_seq)
+              ? commit.frame_seq as number
+              : undefined,
+            tx_id: begin.tx_id,
+          },
+        );
+      }
+      const expectedCommitChecksum = transactionCommitChecksum(begin, chunkHashes);
+      if (commit.commit_checksum !== expectedCommitChecksum) {
+        return issue(
+          'checksum_mismatch',
+          line,
+          byteOffset,
+          `transaction ${begin.tx_id} commit checksum mismatch`,
+          {
+            actual_seq: begin.tx_seq,
+            frame_seq: commit.frame_seq as number,
+            tx_id: begin.tx_id,
+          },
+        );
+      }
+      const payload = Buffer.concat(chunkBuffers);
+      if (payload.length !== begin.payload_bytes) {
+        return issue(
+          'checksum_mismatch',
+          line,
+          byteOffset,
+          `transaction ${begin.tx_id} payload length mismatch`,
+          {
+            actual_seq: begin.tx_seq,
+            frame_seq: commit.frame_seq as number,
+            tx_id: begin.tx_id,
+          },
+        );
+      }
+      if (createHash('sha256').update(payload).digest('hex') !== begin.payload_sha256) {
+        return issue(
+          'checksum_mismatch',
+          line,
+          byteOffset,
+          `transaction ${begin.tx_id} payload checksum mismatch`,
+          {
+            actual_seq: begin.tx_seq,
+            frame_seq: commit.frame_seq as number,
+            tx_id: begin.tx_id,
+          },
+        );
+      }
+
+      let decodedPayload: unknown;
+      try {
+        decodedPayload = JSON.parse(decodeUtf8Fatal(payload));
+      } catch (error) {
+        return issue(
+          'malformed_entry',
+          firstLine,
+          firstOffset,
+          `transaction ${begin.tx_id} payload is invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+          {
+            actual_seq: begin.tx_seq,
+            frame_seq: commit.frame_seq as number,
+            tx_id: begin.tx_id,
+          },
+        );
+      }
+      if (
+        !isRecord(decodedPayload)
+        || !Array.isArray(decodedPayload.operations)
+        || decodedPayload.operations.length !== begin.operation_count
+        || (decodedPayload.update_detail !== undefined && !isRecord(decodedPayload.update_detail))
+      ) {
+        return issue(
+          'malformed_entry',
+          firstLine,
+          firstOffset,
+          `transaction ${begin.tx_id} payload shape does not match tx_begin`,
+          {
+            actual_seq: begin.tx_seq,
+            frame_seq: commit.frame_seq as number,
+            tx_id: begin.tx_id,
+          },
+        );
+      }
+      const operations: EngineOperation[] = [];
+      let unknownOperation: EngineOperation | undefined;
+      for (const [index, operation] of decodedPayload.operations.entries()) {
+        const validation = validateEngineOperation(operation, begin.tx_seq, begin.ts);
+        if (!validation.ok) {
+          return issue(
+            'malformed_entry',
+            firstLine,
+            firstOffset,
+            `transaction ${begin.tx_id} operation ${index} is invalid: ${validation.reason}`,
+            {
+              actual_seq: begin.tx_seq,
+              frame_seq: commit.frame_seq as number,
+              tx_id: begin.tx_id,
+            },
+          );
+        }
+        operations.push(validation.operation);
+        if (!REPLAYABLE_MUTATION_TYPES.has(validation.operation.type)) {
+          unknownOperation ??= validation.operation;
+        }
+      }
+      const transaction: EngineTransaction = {
+        version: CURRENT_JOURNAL_VERSION,
+        tx_id: begin.tx_id,
+        seq: begin.tx_seq,
+        begin_frame_seq: begin.frame_seq,
+        commit_frame_seq: commit.frame_seq as number,
+        ts: begin.ts,
+        operations,
+        ...(begin.source_action_id ? { source_action_id: begin.source_action_id } : {}),
+        ...(decodedPayload.update_detail === undefined
+          ? {}
+          : { update_detail: decodedPayload.update_detail }),
+      };
+      transactions.push({
+        transaction,
+        line: firstLine,
+        byte_offset: firstOffset,
+        byte_end: parsedCommit.byte_end,
+        format_version: CURRENT_JOURNAL_VERSION,
+        frame_count: begin.chunk_count + 2,
+      });
+      previousTxSeq = begin.tx_seq;
+      previousFrameSeq = commit.frame_seq as number;
+      byteOffset = parsedCommit.byte_end;
+      line++;
+      if (unknownOperation) {
+        return issue(
+          'unknown_type',
+          firstLine,
+          firstOffset,
+          `unsupported journal mutation type: ${unknownOperation.type}`,
+          {
+            actual_seq: begin.tx_seq,
+            frame_seq: commit.frame_seq as number,
+            tx_id: begin.tx_id,
             offending_record_included: true,
           },
-        };
+        );
       }
-      previousSeq = entry.seq;
-      byteOffset = byteEnd;
-      line++;
     }
-    return { raw, records };
+    return {
+      raw,
+      transactions,
+      format_version: formatVersion,
+    };
   }
 
   private readForReplay(
     fromSeq: number,
     options: MutationReplayOptions = {},
   ): MutationEntry[] {
-    const scan = this.scanJournal();
-    const replayRecords = scan.records.filter(record => record.entry.seq > fromSeq);
-    const issue = this.resolveReplayIssue(scan, fromSeq, options);
+    const scan = this.scanTransactions();
+    const replayTransactions = scan.transactions.filter(record => record.transaction.seq > fromSeq);
+    const issue = this.resolveTransactionReplayIssue(scan, fromSeq, options);
     this.lastReadIssue = issue;
-    return replayRecords.map(record => record.entry);
+    return replayTransactions.flatMap(record =>
+      record.transaction.operations.map(operation => ({
+        seq: record.transaction.seq,
+        ts: record.transaction.ts,
+        type: operation.type,
+        payload: operation.payload,
+        ...(record.transaction.source_action_id
+          ? { source_action_id: record.transaction.source_action_id }
+          : {}),
+      })),
+    );
   }
 
-  private resolveReplayIssue(
-    scan: MutationScanResult,
+  private readTransactionsForReplay(
+    fromSeq: number,
+    options: MutationReplayOptions = {},
+  ): EngineTransaction[] {
+    const scan = this.scanTransactions();
+    const issue = this.resolveTransactionReplayIssue(scan, fromSeq, options);
+    this.lastReadIssue = issue;
+    return scan.transactions
+      .filter(record => record.transaction.seq > fromSeq)
+      .map(record => record.transaction);
+  }
+
+  private resolveTransactionReplayIssue(
+    scan: EngineTransactionScanResult,
     fromSeq: number,
     options: MutationReplayOptions,
   ): MutationReadIssue | undefined {
-    // Candidate-specific legacy ambiguity takes precedence over any later
-    // physical issue. Otherwise a valid retained record at/below an untrusted
-    // checkpoint could be applied or skipped based on a claim we do not know is
-    // contiguous merely because an unknown/malformed tail was also present.
     const ambiguous = options.trustedContiguousCheckpoint === false && fromSeq > 0
-      ? scan.records.find(record => record.entry.seq <= fromSeq)
+      ? scan.transactions.find(record => record.transaction.seq <= fromSeq)
       : undefined;
     if (ambiguous) {
       return {
         kind: 'ambiguous_checkpoint',
         line: ambiguous.line,
         byte_offset: ambiguous.byte_offset,
-        reason: `legacy base checkpoint ${fromSeq} may hide retained WAL seq ${ambiguous.entry.seq}`,
+        reason: `legacy base checkpoint ${fromSeq} may hide retained WAL transaction seq ${ambiguous.transaction.seq}`,
         expected_seq: fromSeq + 1,
-        actual_seq: ambiguous.entry.seq,
+        actual_seq: ambiguous.transaction.seq,
+        frame_seq: ambiguous.transaction.begin_frame_seq,
+        tx_id: ambiguous.transaction.tx_id,
       };
     }
-    const firstNewer = scan.records.find(record => record.entry.seq > fromSeq);
-    if (firstNewer && firstNewer.entry.seq !== fromSeq + 1) {
+    const firstNewer = scan.transactions.find(record => record.transaction.seq > fromSeq);
+    if (firstNewer && firstNewer.transaction.seq !== fromSeq + 1) {
       const gap: MutationReadIssue = {
         kind: 'sequence_gap',
         line: firstNewer.line,
         byte_offset: firstNewer.byte_offset,
-        reason: `expected seq ${fromSeq + 1}, found ${firstNewer.entry.seq}`,
+        reason: `expected transaction seq ${fromSeq + 1}, found ${firstNewer.transaction.seq}`,
         expected_seq: fromSeq + 1,
-        actual_seq: firstNewer.entry.seq,
+        actual_seq: firstNewer.transaction.seq,
+        frame_seq: firstNewer.transaction.begin_frame_seq,
+        tx_id: firstNewer.transaction.tx_id,
         offending_record_included: true,
       };
-      // Recovery stops at the first physical boundary it cannot justify. A
-      // later unknown/malformed frame must not hide an earlier base-to-WAL
-      // sequence gap and allow the post-gap prefix to reach the applier.
       if (!scan.issue || gap.byte_offset <= scan.issue.byte_offset) return gap;
     }
     return scan.issue;
@@ -1251,6 +2486,13 @@ export class MutationJournal {
 
   readSince(fromSeq: number): MutationEntry[] {
     return this.readForReplay(fromSeq, { trustedContiguousCheckpoint: true });
+  }
+
+  readTransactionsSince(fromSeq: number): EngineTransaction[] {
+    return this.readTransactionsForReplay(
+      fromSeq,
+      { trustedContiguousCheckpoint: true },
+    );
   }
 
   /**
@@ -1266,7 +2508,7 @@ export class MutationJournal {
 
   private compactUpToUnlocked(upTo: number): MutationCompactionResult {
     this.assertMigrationWriteAllowed();
-    const scan = this.scanJournal();
+    const scan = this.scanTransactions();
     if (scan.raw.length === 0) return { kept: 0, dropped: 0 };
     if (scan.issue) {
       return {
@@ -1276,20 +2518,9 @@ export class MutationJournal {
         reason: `journal scan failed at line ${scan.issue.line}: ${scan.issue.reason}`,
       };
     }
-    for (const { entry } of scan.records) {
-      if (!REPLAYABLE_MUTATION_TYPES.has(entry.type)) {
-        return {
-          kept: 0,
-          dropped: 0,
-          preserved: true,
-          reason: `unsupported journal mutation type: ${entry.type}`,
-        };
-      }
-    }
-
-    const keptRecords = scan.records.filter(record => record.entry.seq > upTo);
+    const keptRecords = scan.transactions.filter(record => record.transaction.seq > upTo);
     const kept = keptRecords.length;
-    const dropped = scan.records.length - kept;
+    const dropped = scan.transactions.length - kept;
     if (kept === 0) {
       this.truncate();
       return { kept, dropped };
@@ -1366,22 +2597,67 @@ export class MutationJournal {
   }
 
   /**
-   * Replay every entry in the journal through the supplied applier.
-   * Returns detailed counts so callers can decide whether to truncate —
-   * truncation should be skipped when entries failed or were skipped
-   * unexpectedly, so the evidence is preserved for manual inspection (P2).
+   * Repair only the one WAL tail shape journal v2 can prove was never
+   * committed: complete newline-framed tx_begin/tx_chunk records followed by
+   * physical EOF before tx_commit. The original complete WAL is quarantined
+   * first; the active path is then replaced by the exact committed prefix.
+   *
+   * Partial frames, checksum failures, gaps, unknown operations, and
+   * interleaving are deliberately not repairable here.
    */
-  replay(
-    applier: MutationApplier,
+  repairIncompleteTransactionTail(): IncompleteTransactionRepairResult {
+    return this.withMigrationWriteGuard(() => {
+      this.assertMigrationWriteAllowed();
+      const scan = this.scanTransactions();
+      if (scan.issue?.kind !== 'incomplete_transaction') return { repaired: false };
+      const quarantinePath = this.quarantineUnlocked();
+      if (!quarantinePath) {
+        throw new Error('incomplete transaction WAL could not be quarantined');
+      }
+      const committedEnd = scan.transactions.at(-1)?.byte_end ?? 0;
+      const committedPrefix = scan.raw.subarray(0, committedEnd);
+      const droppedBytes = scan.raw.length - committedEnd;
+      if (droppedBytes <= 0) {
+        throw new Error('incomplete transaction repair found no uncommitted tail bytes');
+      }
+
+      if (committedPrefix.length === 0) {
+        this.truncateUnlocked();
+      } else {
+        const tmp = `${this.journalPath}.repair-${process.pid}-${randomUUID()}`;
+        const fd = openSync(tmp, 'w');
+        try {
+          writeAllSync(fd, committedPrefix);
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+        renameSync(tmp, this.journalPath);
+        fsyncDirectory(dirname(this.journalPath));
+      }
+
+      const highestCommitted = scan.transactions.at(-1)?.transaction.seq ?? 0;
+      const highestFrame = scan.transactions.at(-1)?.transaction.commit_frame_seq ?? 0;
+      this.nextSeq = Math.max(this.appliedThroughSeq, highestCommitted);
+      this.nextFrameSeq = highestFrame;
+      this.lastReadIssue = undefined;
+      return {
+        repaired: true,
+        quarantine_path: quarantinePath,
+        dropped_bytes: droppedBytes,
+        committed_transactions: scan.transactions.length,
+      };
+    });
+  }
+
+  replayTransactions(
+    applier: EngineTransactionApplier,
     fromSeq: number,
     options: MutationReplayOptions = {},
   ): MutationReplayResult {
-    const entries = this.readForReplay(fromSeq, options);
+    const transactions = this.readTransactionsForReplay(fromSeq, options);
     const readIssue = this.getLastReadIssue();
     if (options.trustedContiguousCheckpoint === false && readIssue === undefined) {
-      // A complete physical scan found no retained record that contradicts the
-      // legacy base claim, so it is a usable replay cursor. Ambiguous claims
-      // intentionally retain the caller-provided known-applied floor instead.
       this.appliedThroughSeq = fromSeq;
     }
     let applied = 0;
@@ -1391,60 +2667,52 @@ export class MutationJournal {
     let stoppedAtSeq: number | undefined;
     const skipped_reasons: MutationReplayResult['skipped_reasons'] = [];
     const failed_reasons: MutationReplayResult['failed_reasons'] = [];
-    // Every fully framed, schema-valid record before the first physical issue
-    // is still a committed mutation. Apply that prefix, then stop before the
-    // malformed/unknown/gapped record and preserve the complete WAL. A legacy
-    // checkpoint ambiguity is different: it is candidate-specific and gives us
-    // no proof that *any* retained record after the claimed checkpoint is safe
-    // to apply, so its replayable prefix is deliberately empty.
     const issueSeq = readIssue?.actual_seq;
     const excludeIncludedIssue = readIssue?.kind === 'unknown_type'
       || (
         readIssue?.kind === 'sequence_gap'
         && readIssue.offending_record_included === true
       );
-    const replayableEntries = readIssue?.kind === 'ambiguous_checkpoint'
+    const replayableTransactions = readIssue?.kind === 'ambiguous_checkpoint'
       ? []
       : excludeIncludedIssue && issueSeq !== undefined
-        ? entries.filter(entry => entry.seq < issueSeq)
-        : entries;
+        ? transactions.filter(transaction => transaction.seq < issueSeq)
+        : transactions;
     const checkpointIsProven = fromSeq === 0
       || options.trustedContiguousCheckpoint !== false
       || readIssue === undefined;
-    for (const entry of replayableEntries) {
+    for (const transaction of replayableTransactions) {
       attempted++;
+      const type = transaction.operations.length === 1
+        ? transaction.operations[0]!.type
+        : 'engine_transaction';
       try {
-        const result = applier.apply(entry);
+        const result = applier.applyTransaction(transaction);
         if (result.status === 'skipped') {
           skipped++;
-          skipped_reasons.push({ seq: entry.seq, type: entry.type, reason: result.reason });
-          stoppedAtSeq = entry.seq;
+          skipped_reasons.push({ seq: transaction.seq, type, reason: result.reason });
+          stoppedAtSeq = transaction.seq;
           break;
         } else {
           applied++;
-          // A legacy base without an explicit contiguous-checkpoint marker is
-          // only promoted after a complete scan. During incomplete recovery we
-          // still expose every committed, ordered prefix mutation, but do not
-          // claim that it closes the unknown base-to-WAL interval.
-          if (checkpointIsProven) this.markApplied(entry.seq);
+          if (checkpointIsProven) this.markApplied(transaction.seq);
         }
       } catch (err) {
         failed++;
-        stoppedAtSeq = entry.seq;
+        stoppedAtSeq = transaction.seq;
         const reason = err instanceof Error ? err.message : String(err);
-        failed_reasons.push({ seq: entry.seq, type: entry.type, reason });
+        failed_reasons.push({ seq: transaction.seq, type, reason });
         // eslint-disable-next-line no-console
-        console.warn(`[mutation-journal] apply failed for seq=${entry.seq} type=${entry.type}: ${reason}`);
+        console.warn(`[mutation-journal] apply failed for tx_seq=${transaction.seq} tx_id=${transaction.tx_id}: ${reason}`);
         break;
       }
     }
     const highestOnDisk = this.highestSeqOnDisk();
+    const highestPhysicalFrameSeq = this.highestPhysicalFrameSeqOnDisk();
     this.nextSeq = Math.max(this.nextSeq, highestOnDisk, fromSeq);
+    this.nextFrameSeq = Math.max(this.nextFrameSeq, highestPhysicalFrameSeq);
     const truncated = readIssue !== undefined;
     if (readIssue) {
-      // The orphaned tail past the malformed line stays in the (preserved)
-      // journal, so advance nextSeq above the HIGHEST seq on disk — otherwise a
-      // fresh append could reuse a seq that still lives orphaned in the file.
       // eslint-disable-next-line no-console
       console.warn(`[mutation-journal] replay stopped at journal line ${readIssue.line}: ${readIssue.reason}`);
     }
@@ -1460,9 +2728,9 @@ export class MutationJournal {
     const complete = !readIssue
       && skipped === 0
       && failed === 0
-      && attempted === entries.length;
+      && attempted === transactions.length;
     return {
-      read: entries.length,
+      read: transactions.length,
       attempted,
       applied,
       skipped,
@@ -1471,11 +2739,48 @@ export class MutationJournal {
       complete,
       highest_on_disk_seq: highestOnDisk,
       highest_contiguous_applied_seq: this.appliedThroughSeq,
+      highest_physical_frame_seq: highestPhysicalFrameSeq,
+      frames_read: replayableTransactions.reduce(
+        (count, transaction) =>
+          count + (transaction.commit_frame_seq - transaction.begin_frame_seq + 1),
+        0,
+      ),
+      committed_transactions: transactions.length,
+      incomplete_transactions: readIssue?.kind === 'incomplete_transaction' ? 1 : 0,
       ...(stoppedAtSeq !== undefined ? { stopped_at_seq: stoppedAtSeq } : {}),
       ...(readIssue ? { read_issue: readIssue } : {}),
       skipped_reasons,
       failed_reasons,
     };
+  }
+
+  /**
+   * Legacy per-operation replay adapter. Production recovery uses
+   * replayTransactions(); this remains for primitive-journal compatibility and
+   * focused tests.
+   */
+  replay(
+    applier: MutationApplier,
+    fromSeq: number,
+    options: MutationReplayOptions = {},
+  ): MutationReplayResult {
+    return this.replayTransactions({
+      applyTransaction(transaction) {
+        for (const operation of transaction.operations) {
+          const result = applier.apply({
+            seq: transaction.seq,
+            ts: transaction.ts,
+            type: operation.type,
+            payload: operation.payload,
+            ...(transaction.source_action_id
+              ? { source_action_id: transaction.source_action_id }
+              : {}),
+          });
+          if (result.status === 'skipped') return result;
+        }
+        return { status: 'applied' };
+      },
+    }, fromSeq, options);
   }
 
   /** Path to the journal file. Useful for tests + diagnostics. */

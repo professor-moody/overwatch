@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync, rmSync, writeFileSync, mkdtempSync } from 'fs';
+import { rmSync, writeFileSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -7,7 +7,6 @@ import { GraphEngine } from '../../services/graph-engine.js';
 import { registerTapeTools } from '../tapes.js';
 import type { EngagementConfig } from '../../types.js';
 
-const TEST_STATE_FILE = './state-test-tapes.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -20,11 +19,6 @@ function makeConfig(): EngagementConfig {
   };
 }
 
-function cleanup(): void {
-  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { rmSync('./evidence-test-tapes', { recursive: true, force: true }); } catch {}
-}
-
 function parse(result: any): any {
   return JSON.parse(result.content[0].text);
 }
@@ -35,8 +29,8 @@ describe('register_tape_session', () => {
   let tmp: string;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    tmp = mkdtempSync(join(tmpdir(), 'overwatch-tapes-'));
+    engine = new GraphEngine(makeConfig(), join(tmp, 'state.json'));
     handlers = {};
     const fakeServer = {
       registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
@@ -44,11 +38,10 @@ describe('register_tape_session', () => {
       },
     } as unknown as McpServer;
     registerTapeTools(fakeServer, engine);
-    tmp = mkdtempSync(join(tmpdir(), 'overwatch-tapes-'));
   });
 
   afterEach(() => {
-    cleanup();
+    engine.dispose();
     rmSync(tmp, { recursive: true, force: true });
   });
 

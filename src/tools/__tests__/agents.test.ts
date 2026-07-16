@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerAgentTools, dispatchCampaignAgents } from '../agents.js';
 import type { EngagementConfig } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-agents.json';
 
@@ -23,6 +24,7 @@ function makeConfig(): EngagementConfig {
 }
 
 function cleanup(): void {
+  cleanupTestPersistence(TEST_STATE_FILE);
   try {
     if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
   } catch {}
@@ -47,6 +49,7 @@ describe('agent tools', () => {
   });
 
   afterEach(() => {
+    engine.dispose();
     cleanup();
   });
 

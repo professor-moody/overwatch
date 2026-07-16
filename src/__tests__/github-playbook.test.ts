@@ -2,12 +2,35 @@
 // A.2 — GitHub playbook + 5 new gh-api parsers.
 // ============================================================
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { parseGhApiOrgs } from '../services/parsers/gh-api-orgs.js';
 import { parseGhApiRepos } from '../services/parsers/gh-api-repos.js';
 import { parseGhApiSecrets } from '../services/parsers/gh-api-secrets.js';
 import { parseGhApiBranchProtection } from '../services/parsers/gh-api-branch-protection.js';
 import { parseGhApiDeployKeys } from '../services/parsers/gh-api-deploy-keys.js';
+import { GraphEngine } from '../services/graph-engine.js';
+import { cleanupTestPersistence } from './helpers/cleanup-test-persistence.js';
+
+const STATE_PATHS = [
+  './state-test-gh-playbook.json',
+  './state-test-gh-playbook-2.json',
+] as const;
+const liveEngines = new Set<GraphEngine>();
+
+function openEngine(config: ConstructorParameters<typeof GraphEngine>[0], path: string): GraphEngine {
+  const engine = new GraphEngine(config, path);
+  liveEngines.add(engine);
+  return engine;
+}
+
+function cleanup(): void {
+  for (const engine of liveEngines) engine.dispose();
+  liveEngines.clear();
+  for (const path of STATE_PATHS) cleanupTestPersistence(path);
+}
+
+beforeEach(cleanup);
+afterEach(cleanup);
 
 describe('parseGhApiOrgs', () => {
   it('emits one idp per org and stamps cred_orgs on the source credential', () => {
@@ -130,14 +153,13 @@ describe('parseGhApiDeployKeys', () => {
 
 describe('expand_github_credential plan shape', () => {
   it('produces plan steps without treating plan generation as execution progress', async () => {
-    const { GraphEngine } = await import('../services/graph-engine.js');
     const config = {
       id: 'test', name: 'test', created_at: '2026-01-01T00:00:00Z',
       scope: { cidrs: [], domains: [], exclusions: [] },
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = new GraphEngine(config, './state-test-gh-playbook.json');
+    const engine = openEngine(config, './state-test-gh-playbook.json');
     engine.addNode({
       id: 'cred-pat-1',
       type: 'credential',
@@ -171,14 +193,13 @@ describe('expand_github_credential plan shape', () => {
   });
 
   it('expands per-repo steps when candidate_repos is provided', async () => {
-    const { GraphEngine } = await import('../services/graph-engine.js');
     const config = {
       id: 'test2', name: 'test', created_at: '2026-01-01T00:00:00Z',
       scope: { cidrs: [], domains: [], exclusions: [] },
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = new GraphEngine(config, './state-test-gh-playbook-2.json');
+    const engine = openEngine(config, './state-test-gh-playbook-2.json');
     engine.addNode({
       id: 'cred-pat-2',
       type: 'credential',

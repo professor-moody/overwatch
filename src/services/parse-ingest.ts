@@ -251,16 +251,16 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
     };
   }
 
-  let ingestResult: { new_nodes: string[]; new_edges: string[]; inferred_edges: string[] } | undefined;
+  let ingestResult: {
+    new_nodes: string[];
+    new_edges: string[];
+    inferred_edges: string[];
+    campaign_id?: string;
+  } | undefined;
   let campaignId: string | undefined;
   if (ingest) {
     ingestResult = engine.ingestFinding(prepared.finding);
-    campaignId = engine.linkFindingToCampaign({
-      finding_id: finding.id,
-      frontier_item_id,
-      agent_id,
-      action_id,
-    });
+    campaignId = ingestResult.campaign_id;
   }
 
   engine.logActionEvent({

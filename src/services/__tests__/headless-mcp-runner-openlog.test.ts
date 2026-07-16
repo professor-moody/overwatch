@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { existsSync, rmSync, mkdtempSync, type WriteStream } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -7,6 +7,7 @@ import { ProcessTracker } from '../process-tracker.js';
 import { HeadlessProcessRegistry } from '../headless-process-registry.js';
 import { HeadlessMcpRunner } from '../headless-mcp-runner.js';
 import type { EngagementConfig } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-headless-openlog.json';
 
@@ -22,14 +23,24 @@ function makeConfig(): EngagementConfig {
 }
 
 describe('HeadlessMcpRunner.openLog', () => {
+  let engine: GraphEngine | undefined;
+
+  beforeEach(() => {
+    cleanupTestPersistence(TEST_STATE_FILE);
+  });
+
   afterEach(() => {
+    engine?.dispose();
+    engine = undefined;
+    cleanupTestPersistence(TEST_STATE_FILE);
     try { if (existsSync(TEST_STATE_FILE)) rmSync(TEST_STATE_FILE); } catch { /* ignore */ }
   });
 
   it('attaches an error listener so an async log-stream error cannot crash the daemon', () => {
     const logDir = mkdtempSync(join(tmpdir(), 'ow-openlog-'));
+    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     const runner = new HeadlessMcpRunner(
-      new GraphEngine(makeConfig(), TEST_STATE_FILE),
+      engine,
       new HeadlessProcessRegistry(),
       new ProcessTracker(),
       { logDir },

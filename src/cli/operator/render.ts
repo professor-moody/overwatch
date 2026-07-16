@@ -61,8 +61,15 @@ interface OpsecBudget { global_noise_spent: number; noise_budget_remaining: numb
 function renderPersistenceRecovery(recovery: PersistenceRecoveryStatus): string {
   const writable = recovery.writable ? 'writable' : 'read-only';
   const source = recovery.outcome === 'clean' ? '' : ` from ${recovery.source}`;
+  const appliedLogical = recovery.highest_contiguous_applied_logical_seq
+    ?? recovery.highest_contiguous_applied_seq;
   const sequence = recovery.journal.enabled
-    ? ` · seq ${recovery.highest_contiguous_applied_seq}/${recovery.highest_on_disk_seq}`
+    ? ` · seq ${appliedLogical}/${recovery.highest_on_disk_seq}`
+    : '';
+  const frames = recovery.journal.enabled
+    && recovery.highest_allocated_frame_seq !== undefined
+    && recovery.highest_physical_frame_seq !== undefined
+    ? ` · frames ${recovery.highest_allocated_frame_seq}/${recovery.highest_physical_frame_seq}`
     : '';
   const failures = recovery.consecutive_persistence_failures > 0
     ? ` · ${recovery.consecutive_persistence_failures} write failure${recovery.consecutive_persistence_failures === 1 ? '' : 's'}`
@@ -71,7 +78,7 @@ function renderPersistenceRecovery(recovery: PersistenceRecoveryStatus): string 
   const reasonDetail = reason && (recovery.outcome === 'incomplete' || recovery.outcome === 'reinitialized' || !recovery.writable)
     ? ` · ${reason}`
     : '';
-  const summary = `${recovery.outcome}${source} · ${writable}${sequence}${failures}${reasonDetail}`;
+  const summary = `${recovery.outcome}${source} · ${writable}${sequence}${frames}${failures}${reasonDetail}`;
 
   if (recovery.outcome === 'incomplete' || recovery.outcome === 'reinitialized' || !recovery.writable) {
     return red(summary);
@@ -172,17 +179,34 @@ function renderStateMigrationStatus(status: StateMigrationStatus): string {
 
 export function renderRecovery(data: RecoveryResponse): string {
   const recovery = data.recovery;
+  const allocatedLogical = recovery.highest_allocated_logical_seq
+    ?? recovery.highest_allocated_seq;
+  const appliedLogical = recovery.highest_contiguous_applied_logical_seq
+    ?? recovery.highest_contiguous_applied_seq;
   const persistencePairs: Array<[string, string]> = [
     ['combined status', renderPersistenceRecovery(recovery)],
     ['state/WAL health', renderStateWalHealth(recovery)],
     ['durable mutations', recovery.writable ? 'enabled' : 'paused'],
     ['base checkpoint', String(recovery.base_checkpoint)],
-    ['applied / on-disk checkpoint', `${recovery.highest_contiguous_applied_seq}/${recovery.highest_on_disk_seq}`],
-    ['allocated sequence', String(recovery.highest_allocated_seq)],
+    ['applied / on-disk checkpoint', `${appliedLogical}/${recovery.highest_on_disk_seq}`],
+    ['allocated sequence', String(allocatedLogical)],
     ['WAL', recovery.journal.enabled ? `${recovery.journal.applied} applied · ${recovery.journal.skipped} skipped · ${recovery.journal.failed} failed` : 'disabled'],
     ['WAL preserved', recovery.journal.preserved ? 'yes' : 'no'],
     ['WAL malformed', recovery.journal.malformed ? 'yes' : 'no'],
   ];
+  if (
+    recovery.highest_allocated_frame_seq !== undefined
+    && recovery.highest_physical_frame_seq !== undefined
+  ) {
+    persistencePairs.splice(6, 0,
+      ['logical applied checkpoint', String(appliedLogical)],
+      ['logical allocated high-water', String(allocatedLogical)],
+      [
+      'physical frames allocated / on-disk',
+      `${recovery.highest_allocated_frame_seq}/${recovery.highest_physical_frame_seq}`,
+      ],
+    );
+  }
   if (recovery.journal.path) persistencePairs.push(['WAL path', recovery.journal.path]);
   if (recovery.persistence_reason) persistencePairs.push(['persistence reason', recovery.persistence_reason]);
   if (recovery.last_persistence_error) persistencePairs.push(['last persistence error', recovery.last_persistence_error]);

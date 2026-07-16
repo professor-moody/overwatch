@@ -43,6 +43,27 @@ describe('ProcessTracker', () => {
     });
   });
 
+  describe('remove', () => {
+    it('removes an abandoned process reservation and notifies durability listeners', () => {
+      tracker.register({ id: 'p1', pid: 1234, command: 'nmap', description: 'scan' });
+      let calls = 0;
+      tracker.onChange(() => { calls++; });
+
+      expect(tracker.remove('p1')).toBe(true);
+      expect(tracker.get('p1')).toBeNull();
+      expect(calls).toBe(1);
+      expect(tracker.remove('p1')).toBe(false);
+    });
+
+    it('rolls back removal when durable notification fails', () => {
+      tracker.register({ id: 'p1', pid: 1234, command: 'nmap', description: 'scan' });
+      tracker.onChange(() => { throw new Error('journal unavailable'); });
+
+      expect(() => tracker.remove('p1')).toThrow('journal unavailable');
+      expect(tracker.get('p1')).not.toBeNull();
+    });
+  });
+
   describe('pruneCompleted via update()', () => {
     it('prunes oldest completed processes beyond cap of 50', () => {
       // Register 55 processes and complete them
@@ -221,6 +242,120 @@ describe('ProcessTracker', () => {
       expect(first).toBe(1);
       expect(second).toBe(2);
     });
+
+    it('rolls back register when durable notification fails', () => {
+      tracker.onChange(() => { throw new Error('journal unavailable'); });
+
+      expect(() => tracker.register({
+        id: 'not-durable',
+        pid: process.pid,
+        command: 'scan',
+        description: 'must roll back',
+      })).toThrow('journal unavailable');
+
+      expect(tracker.listAll()).toEqual([]);
+    });
+
+    it('rolls back an ordinary update when durable notification fails', () => {
+      tracker.register({
+        id: 'running',
+        pid: process.pid,
+        command: 'scan',
+        description: 'still running',
+      });
+      const before = tracker.serialize().map(proc => ({ ...proc }));
+      tracker.onChange(() => { throw new Error('journal unavailable'); });
+
+      expect(() => tracker.update('running', 'failed')).toThrow('journal unavailable');
+
+      expect(tracker.serialize()).toEqual(before);
+      expect(tracker.get('running')?.completed_at).toBeUndefined();
+    });
+
+    it('restores processes pruned by an update when durable notification fails', () => {
+      const completed = Array.from({ length: 50 }, (_, index) => ({
+        id: `completed-${index}`,
+        pid: 10_000 + index,
+        command: 'scan',
+        description: `completed ${index}`,
+        started_at: `2026-01-01T00:00:${String(index).padStart(2, '0')}.000Z`,
+        completed_at: `2026-01-01T00:01:${String(index).padStart(2, '0')}.000Z`,
+        status: 'completed' as const,
+      }));
+      tracker = ProcessTracker.deserialize([
+        ...completed,
+        {
+          id: 'finishing',
+          pid: process.pid,
+          command: 'scan',
+          description: 'finishing',
+          started_at: '2026-01-01T01:00:00.000Z',
+          status: 'running',
+        },
+      ]);
+      const before = tracker.serialize().map(proc => ({ ...proc }));
+      tracker.onChange(() => { throw new Error('journal unavailable'); });
+
+      expect(() => tracker.update('finishing', 'completed')).toThrow('journal unavailable');
+
+      expect(tracker.serialize()).toEqual(before);
+      expect(tracker.get('completed-0')).not.toBeNull();
+      expect(tracker.get('finishing')?.status).toBe('running');
+    });
+
+    it('rolls back refresh transitions and pruning when durable notification fails', () => {
+      tracker.register({
+        id: 'dead',
+        pid: 999999999,
+        command: 'scan',
+        description: 'dead process',
+      });
+      const before = tracker.serialize().map(proc => ({ ...proc }));
+      tracker.onChange(() => { throw new Error('journal unavailable'); });
+
+      expect(() => tracker.refreshStatuses()).toThrow('journal unavailable');
+
+      expect(tracker.serialize()).toEqual(before);
+      expect(tracker.get('dead')?.status).toBe('running');
+      expect(tracker.get('dead')?.completed_at).toBeUndefined();
+    });
+
+    it('rolls back an authoritative restore when durable notification fails', () => {
+      tracker.register({
+        id: 'current',
+        pid: process.pid,
+        command: 'scan',
+        description: 'current',
+      });
+      const before = tracker.serialize().map(proc => ({ ...proc }));
+      tracker.onChange(() => { throw new Error('journal unavailable'); });
+
+      expect(() => tracker.restore([])).toThrow('journal unavailable');
+
+      expect(tracker.serialize()).toEqual(before);
+    });
+  });
+
+  describe('read isolation', () => {
+    it('does not expose mutable internal process records', () => {
+      const registered = tracker.register({
+        id: 'isolated',
+        pid: process.pid,
+        command: 'scan',
+        description: 'immutable projection',
+      });
+      registered.status = 'failed';
+      tracker.get('isolated')!.description = 'mutated getter';
+      tracker.listAll()[0]!.command = 'mutated list';
+      tracker.serialize()[0]!.pid = 1;
+
+      expect(tracker.get('isolated')).toMatchObject({
+        pid: process.pid,
+        command: 'scan',
+        description: 'immutable projection',
+        status: 'running',
+      });
+    });
   });
 
   describe('mutation guard', () => {
@@ -249,6 +384,7 @@ describe('ProcessTracker', () => {
       expect(() => tracker.update('live', 'completed')).toThrow('read-only');
       expect(() => tracker.refreshStatuses()).toThrow('read-only');
       expect(() => tracker.restore([])).toThrow('read-only');
+      expect(() => tracker.remove('live')).toThrow('read-only');
 
       expect(tracker.serialize()).toEqual(before);
       expect(tracker.get('blocked')).toBeNull();
@@ -259,6 +395,7 @@ describe('ProcessTracker', () => {
       tracker.setMutationGuard(() => { calls++; });
 
       expect(tracker.update('missing', 'failed')).toBe(false);
+      expect(tracker.remove('missing')).toBe(false);
       expect(tracker.refreshStatuses()).toBe(false);
       expect(tracker.listAll()).toEqual([]);
       expect(calls).toBe(0);

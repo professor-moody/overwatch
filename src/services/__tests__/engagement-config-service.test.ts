@@ -377,6 +377,37 @@ describe('EngagementConfigService', () => {
     expect(h.events).toHaveLength(1);
   });
 
+  it('permits only the known commit window and still blocks external divergence before and after it', () => {
+    const initial = withConfigMetadata(config(), 1);
+    const externalBefore = withConfigMetadata(config({ name: 'External before' }), 2);
+    writeFileSync(file, JSON.stringify(externalBefore));
+    const blockedBefore = harness(initial);
+    const blockedBeforeService = new EngagementConfigService(blockedBefore.host, file);
+    blockedBeforeService.initialize({ restored: true, persistence_writable: true });
+    expect(() => blockedBeforeService.assertWritable()).toThrow(/read-only/i);
+
+    writeFileSync(file, JSON.stringify(initial));
+    const h = harness(initial);
+    const applyRuntimeConfig = h.host.applyRuntimeConfig;
+    let service!: EngagementConfigService;
+    let observedCommitWindow = false;
+    h.host.applyRuntimeConfig = (next, context) => {
+      applyRuntimeConfig(next, context);
+      expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(next);
+      expect(() => service.assertWritable()).not.toThrow();
+      observedCommitWindow = true;
+    };
+    service = new EngagementConfigService(h.host, file);
+    service.initialize({ restored: true, persistence_writable: true });
+    const updated = service.commit({ ...initial, name: 'Internal update' }, 'test');
+    expect(observedCommitWindow).toBe(true);
+    expect(updated.name).toBe('Internal update');
+
+    const externalAfter = withConfigMetadata(config({ name: 'External after' }), 3);
+    writeFileSync(file, JSON.stringify(externalAfter));
+    expect(() => service.assertWritable()).toThrow(/read-only/i);
+  });
+
   it('retains a failed write intent and completes it on the next startup', () => {
     const initial = withConfigMetadata(config(), 1);
     writeFileSync(file, JSON.stringify(initial));

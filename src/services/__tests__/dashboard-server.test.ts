@@ -197,12 +197,13 @@ describe('DashboardServer', () => {
     engine.persist();
     engine.flushNow();
     const journalName = TEST_STATE_FILE.replace(/\.json$/, '.journal.jsonl');
-    writeFileSync(journalName, JSON.stringify({
-      seq: 1,
-      ts: new Date().toISOString(),
-      type: 'add_node',
-      payload: { props: { id: 'journal-only' } },
-    }) + '\n');
+    engine.addNode({
+      id: 'journal-only',
+      type: 'host',
+      label: 'journal-only',
+      discovered_at: new Date().toISOString(),
+      confidence: 1,
+    });
 
     const chunks: Buffer[] = [];
     const res = new PassThrough() as any;
@@ -232,7 +233,7 @@ describe('DashboardServer', () => {
       )) as Record<string, unknown>;
       expect(manifest).toMatchObject({
         state_version: 1,
-        journal_version: 1,
+        journal_version: 2,
       });
       expect(existsSync(join(testStateDir, 'bundle-manifest.json'))).toBe(false);
     } finally {
@@ -348,7 +349,7 @@ describe('DashboardServer', () => {
     expect(payload.data.delta.removed_edges).toEqual(['old-alias-edge']);
   });
 
-  it('serveState includes history_count', () => {
+  it('serveState includes history_count and browser community projection', () => {
     const res = {
       statusCode: 0,
       headers: {} as Record<string, string>,
@@ -368,6 +369,10 @@ describe('DashboardServer', () => {
     expect(typeof payload.history_count).toBe('number');
     expect(payload.state).toBeDefined();
     expect(payload.graph).toBeDefined();
+    expect(payload.graph.nodes.length).toBeGreaterThan(0);
+    expect(payload.graph.nodes.every((node: any) =>
+      typeof node.properties.community_id === 'number'
+    )).toBe(true);
   });
 
   it('serveHistory returns full history with total count', () => {
@@ -832,7 +837,7 @@ describe('DashboardServer', () => {
     const payload = graphUpdates[0];
     const deltaNodes = payload.data.delta.nodes;
 
-    // Every delta node should have community_id materialized
+    // Every browser delta node should have community_id projected
     const hostNodes = deltaNodes.filter((n: any) => n.id.startsWith('host-'));
     expect(hostNodes.length).toBe(2);
     for (const node of hostNodes) {
@@ -2301,6 +2306,9 @@ describe('DashboardServer', () => {
       const sessionSocket = await openWithFirstMessage(`/ws/session/${sessionId}`);
       const action = await openWithFirstMessage('/ws/actions/act-live/output');
       expect(main.message.type).toBe('full_state');
+      expect(main.message.data.graph.nodes.every((node: any) =>
+        typeof node.properties.community_id === 'number'
+      )).toBe(true);
       expect(sessionSocket.message.type).toBe('session_meta');
       expect(action.message).toMatchObject({ type: 'output', text: 'live output' });
 

@@ -224,11 +224,9 @@ describe('Engagement Phases', () => {
       const children = engine.splitCampaign(parent.id, 2)!;
 
       // Simulate progress on children
-      children[0].progress.completed = 1;
-      children[0].progress.succeeded = 1;
-      children[1].progress.completed = 2;
-      children[1].progress.succeeded = 1;
-      children[1].progress.failed = 1;
+      engine.updateCampaignProgress(children[0].id, children[0].items[0], 'success');
+      engine.updateCampaignProgress(children[1].id, children[1].items[0], 'success');
+      engine.updateCampaignProgress(children[1].id, children[1].items[1], 'failure');
 
       const progress = engine.getCampaignParentProgress(parent.id);
       expect(progress).not.toBeNull();
@@ -257,8 +255,9 @@ describe('Engagement Phases', () => {
       expect(engine.deriveCampaignParentStatus(parent.id)).toBe('active');
 
       // Complete all → parent completed
-      children[0].status = 'completed';
-      children[1].status = 'completed';
+      engine.activateCampaign(children[1].id);
+      engine.updateCampaignProgress(children[0].id, children[0].items[0], 'success');
+      engine.updateCampaignProgress(children[1].id, children[1].items[0], 'success');
       expect(engine.deriveCampaignParentStatus(parent.id)).toBe('completed');
     });
 

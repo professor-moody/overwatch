@@ -51,6 +51,9 @@ export class AgentQueryStore {
   private queries = new Map<string, AgentQuery>();
   private listeners = new Set<() => void>();
   private mutationGuard: (() => void) | undefined;
+  private mutationRunner:
+    | (<T>(reason: string, mutation: () => T) => T)
+    | undefined;
 
   constructor(private ttlMs: number = DEFAULT_TTL_MS) {}
 
@@ -64,6 +67,19 @@ export class AgentQueryStore {
     this.mutationGuard = guard;
   }
 
+  setMutationRunner(
+    runner: (<T>(reason: string, mutation: () => T) => T) | undefined,
+  ): void {
+    this.mutationRunner = runner;
+  }
+
+  private runMutation<T>(reason: string, mutation: () => T): T {
+    this.mutationGuard?.();
+    return this.mutationRunner
+      ? this.mutationRunner(reason, mutation)
+      : mutation();
+  }
+
   private notifyChange(): void {
     let firstError: unknown;
     for (const listener of this.listeners) {
@@ -74,22 +90,23 @@ export class AgentQueryStore {
 
   /** Record a new question. Returns the stored record (with its query_id). */
   add(args: AddAgentQueryArgs): AgentQuery {
-    this.mutationGuard?.();
-    const now = args.now ?? Date.now();
-    this.pruneInternal(now, false);
-    const query: AgentQuery = {
-      query_id: randomUUID(),
-      task_id: args.task_id,
-      agent_id: args.agent_id,
-      question: args.question,
-      options: args.options,
-      status: 'open',
-      created_at: now,
-      expires_at: now + this.ttlMs,
-    };
-    this.queries.set(query.query_id, query);
-    this.notifyChange();
-    return query;
+    return this.runMutation('add agent query', () => {
+      const now = args.now ?? Date.now();
+      this.pruneInternal(now, false);
+      const query: AgentQuery = {
+        query_id: randomUUID(),
+        task_id: args.task_id,
+        agent_id: args.agent_id,
+        question: args.question,
+        options: args.options,
+        status: 'open',
+        created_at: now,
+        expires_at: now + this.ttlMs,
+      };
+      this.queries.set(query.query_id, query);
+      this.notifyChange();
+      return query;
+    });
   }
 
   get(query_id: string): AgentQuery | undefined {
@@ -109,16 +126,17 @@ export class AgentQueryStore {
    * is unknown / already answered / expired.
    */
   answer(query_id: string, answer: string, now: number = Date.now()): AgentQuery | null {
-    this.mutationGuard?.();
-    // Prune first so an expired-but-unswept question can't be answered (matches
-    // ProposedPlanStore.resolve). getOpen already prunes, but the answer path
-    // must not rely on a prior poll having run.
-    this.pruneInternal(now, false);
-    const query = this.queries.get(query_id);
-    if (!query || query.status !== 'open') return null;
-    this.resolveQuery(query, answer, now);
-    this.notifyChange();
-    return query;
+    return this.runMutation('answer agent query', () => {
+      // Prune first so an expired-but-unswept question can't be answered (matches
+      // ProposedPlanStore.resolve). getOpen already prunes, but the answer path
+      // must not rely on a prior poll having run.
+      this.pruneInternal(now, false);
+      const query = this.queries.get(query_id);
+      if (!query || query.status !== 'open') return null;
+      this.resolveQuery(query, answer, now);
+      this.notifyChange();
+      return query;
+    });
   }
 
   /**
@@ -130,17 +148,18 @@ export class AgentQueryStore {
    * Fires onChange once (not per member).
    */
   answerMany(query_ids: string[], answer: string, now: number = Date.now()): AgentQuery[] {
-    this.mutationGuard?.();
-    this.pruneInternal(now, false);
-    const resolved: AgentQuery[] = [];
-    for (const id of query_ids) {
-      const query = this.queries.get(id);
-      if (!query || query.status !== 'open') continue;
-      this.resolveQuery(query, answer, now);
-      resolved.push(query);
-    }
-    if (resolved.length > 0) this.notifyChange();
-    return resolved;
+    return this.runMutation('answer agent queries', () => {
+      this.pruneInternal(now, false);
+      const resolved: AgentQuery[] = [];
+      for (const id of query_ids) {
+        const query = this.queries.get(id);
+        if (!query || query.status !== 'open') continue;
+        this.resolveQuery(query, answer, now);
+        resolved.push(query);
+      }
+      if (resolved.length > 0) this.notifyChange();
+      return resolved;
+    });
   }
 
   private resolveQuery(query: AgentQuery, answer: string, now: number): void {
@@ -174,17 +193,18 @@ export class AgentQueryStore {
    * answered into the void).
    */
   expireForTask(task_id: string): void {
-    this.mutationGuard?.();
-    let changed = false;
-    for (const [id, q] of this.queries) {
-      if (q.task_id === task_id) { this.queries.delete(id); changed = true; }
-    }
-    if (changed) this.notifyChange();
+    this.runMutation('expire agent queries for task', () => {
+      let changed = false;
+      for (const [id, q] of this.queries) {
+        if (q.task_id === task_id) { this.queries.delete(id); changed = true; }
+      }
+      if (changed) this.notifyChange();
+    });
   }
 
   /** Sweep questions older than the TTL (open ones effectively expire). */
   prune(now: number = Date.now()): void {
-    this.pruneInternal(now, true);
+    this.runMutation('prune agent queries', () => this.pruneInternal(now, false));
   }
 
   private pruneInternal(now: number, guard: boolean, notify = true): void {

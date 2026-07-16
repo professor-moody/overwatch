@@ -18,14 +18,14 @@ export class InferenceEngine {
   private addEdge: AddEdgeFn;
   private getNode: GetNodeFn;
   private getNodesByType: GetNodesByTypeFn;
-  private addNode?: AddNodeFn;
+  private addNode: AddNodeFn;
 
   constructor(
     ctx: EngineContext,
     addEdge: AddEdgeFn,
     getNode: GetNodeFn,
     getNodesByType: GetNodesByTypeFn,
-    addNode?: AddNodeFn,
+    addNode: AddNodeFn,
   ) {
     this.ctx = ctx;
     this.addEdge = addEdge;
@@ -122,6 +122,10 @@ export class InferenceEngine {
    */
   private ruleOrderCache: { rules: InferenceRule[]; ts: number } | null = null;
   private static readonly RULE_ORDER_CACHE_MS = 60_000;
+
+  invalidateCaches(): void {
+    this.ruleOrderCache = null;
+  }
 
   private getSortedRules(): InferenceRule[] {
     const now = Date.now(); // clock-ok: rule-order cache TTL (perf only; never persisted/hashed)
@@ -388,12 +392,8 @@ export class InferenceEngine {
 
     if (inferredOs) {
       const existing = this.getNode(hostNodeId);
-      if (existing && this.addNode) {
-        this.addNode({ ...existing, os: inferredOs, os_inferred: true });
-      } else {
-        // Compatibility fallback for isolated inference-engine unit hosts.
-        this.ctx.graph.mergeNodeAttributes(hostNodeId, { os: inferredOs, os_inferred: true });
-      }
+      if (!existing) return;
+      this.addNode({ ...existing, os: inferredOs, os_inferred: true });
       this.ctx.logEvent({
         description: `Inferred OS for ${hostNodeId}: ${inferredOs} (from service signatures)`,
         category: 'inference',

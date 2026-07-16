@@ -1,12 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, readdirSync, unlinkSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { GraphEngine } from '../../services/graph-engine.js';
+import { GraphEngine as BaseGraphEngine } from '../../services/graph-engine.js';
 import { ProcessTracker } from '../../services/process-tracker.js';
 import { registerProcessTools } from '../processes.js';
 import type { EngagementConfig } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-process-tools.json';
+const engines = new Set<BaseGraphEngine>();
+
+class GraphEngine extends BaseGraphEngine {
+  constructor(config: EngagementConfig, stateFilePath?: string, configFilePath?: string) {
+    super(config, stateFilePath, configFilePath);
+    engines.add(this);
+  }
+}
 
 function makeConfig(): EngagementConfig {
   return {
@@ -24,6 +33,9 @@ function makeConfig(): EngagementConfig {
 }
 
 function cleanup(): void {
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  cleanupTestPersistence(TEST_STATE_FILE);
   try {
     if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
   } catch {}
@@ -58,6 +70,7 @@ describe('registerProcessTools', () => {
   });
 
   afterEach(() => {
+    engine.dispose();
     cleanup();
   });
 

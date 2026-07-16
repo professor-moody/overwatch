@@ -1334,16 +1334,31 @@ export interface PersistenceRecoveryStatus {
     complete: boolean;
     writable: boolean;
     reason?: string;
+    highest_allocated_logical_seq?: number;
+    highest_allocated_frame_seq?: number;
+    highest_physical_frame_seq?: number;
+    highest_contiguous_applied_logical_seq?: number;
   };
   base_checkpoint: number;
+  /** Compatibility name for the highest logical transaction allocated. */
   highest_allocated_seq: number;
+  /** Explicit logical transaction allocation high-water. */
+  highest_allocated_logical_seq?: number;
+  /** Highest physical WAL frame allocated by this process. */
+  highest_allocated_frame_seq?: number;
+  /** Compatibility name for the highest logical transaction observed on disk. */
   highest_on_disk_seq: number;
+  /** Highest physical WAL frame observed on disk, retained across compaction. */
+  highest_physical_frame_seq?: number;
+  /** Compatibility name for the contiguous applied logical checkpoint. */
   highest_contiguous_applied_seq: number;
+  /** Explicit contiguous applied logical transaction checkpoint. */
+  highest_contiguous_applied_logical_seq?: number;
   consecutive_persistence_failures: number;
   last_persistence_error?: string;
   journal: {
     enabled: boolean;
-    /** Primitive JSONL is version 1; PR6 introduces transaction journal v2. */
+    /** Observed on-disk format. Primitive JSONL is 1; transaction journal is 2. */
     format_version?: number;
     /** Active WAL path when journaling is enabled for this process. */
     path?: string;

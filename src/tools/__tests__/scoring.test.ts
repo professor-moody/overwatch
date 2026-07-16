@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerScoringTools } from '../scoring.js';
 import { registerInferenceTools } from '../inference.js';
 import { registerStateTools } from '../state.js';
 import type { EngagementConfig } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-scoring.json';
+const engines = new Set<GraphEngine>();
 
 function makeConfig(): EngagementConfig {
   return {
@@ -27,9 +28,15 @@ function makeConfig(): EngagementConfig {
 }
 
 function cleanup(): void {
-  try {
-    if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-  } catch {}
+  for (const opened of engines) opened.dispose();
+  engines.clear();
+  cleanupTestPersistence(TEST_STATE_FILE);
+}
+
+function openEngine(config: EngagementConfig): GraphEngine {
+  const opened = new GraphEngine(config, TEST_STATE_FILE);
+  engines.add(opened);
+  return opened;
 }
 
 async function waitForPendingApproval(engine: GraphEngine, actionId: string) {
@@ -47,7 +54,7 @@ describe('scoring and inference tools', () => {
 
   beforeEach(() => {
     cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine = openEngine(makeConfig());
     handlers = {};
 
     const fakeServer = {
@@ -61,9 +68,7 @@ describe('scoring and inference tools', () => {
     registerInferenceTools(fakeServer, engine);
   });
 
-  afterEach(() => {
-    cleanup();
-  });
+  afterEach(cleanup);
 
   it('recompute_objectives returns before and after objective status', async () => {
     const result = await handlers.recompute_objectives({});
@@ -226,7 +231,7 @@ describe('scoring and inference tools', () => {
     // On restart the record is still persisted/reloaded, but it must NOT come
     // back as actionable 'pending' — the requesting agent (and the live tool
     // call an approval would unblock) are gone, so it's reconciled to 'aborted'.
-    const reloaded = new GraphEngine(engine.getConfig(), TEST_STATE_FILE);
+    const reloaded = openEngine(engine.getConfig());
     expect(reloaded.getPendingApprovalRequests()).toEqual([]);
     const rec = reloaded.getApprovalRequest('act-reloaded-approval');
     expect(rec).toMatchObject({ action_id: 'act-reloaded-approval', status: 'aborted', target_ip: '10.10.10.7' });
@@ -252,8 +257,7 @@ describe('scoring and inference tools', () => {
       // Manually emit a frontier item id through the tracker, then log an
       // action_completed event with that id; the next next_task summary
       // should reflect it as pursued.
-      const tracker = engine.getFrontierLinkage();
-      tracker.recordEmitted(['fi-fake-1']);
+      engine.recordFrontierEmission(['fi-fake-1']);
       engine.logActionEvent({
         description: 'simulated completion',
         event_type: 'action_completed',
@@ -267,8 +271,7 @@ describe('scoring and inference tools', () => {
     });
 
     it('emits a frontier_item_dropped system event after the threshold', async () => {
-      const tracker = engine.getFrontierLinkage();
-      tracker.recordEmitted(['fi-stale']);
+      engine.recordFrontierEmission(['fi-stale']);
       // Burn through threshold next_task calls without the item reappearing.
       for (let i = 0; i < 6; i++) {
         await handlers.next_task({ max_items: 5, include_filtered: false, group_by: 'individual' });

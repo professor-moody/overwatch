@@ -108,6 +108,127 @@ describe('StatePersistence', () => {
   // persist + loadState round-trip
   // =============================================
   describe('persist + loadState', () => {
+    it('rejects a stale state writer after another process advances the durable transaction head', () => {
+      const statePath = join(tempDir, 'shared-state.json');
+      const first = buildPersistence(statePath);
+      first.persistence.persistImmediate();
+
+      const stale = buildPersistence(statePath);
+      expect(stale.persistence.restoreBaseAndReplay()).toMatchObject({
+        status: 'restored',
+        source: 'state',
+      });
+
+      const props = {
+        id: 'newer-writer-node',
+        type: 'host',
+        label: 'newer-writer-node',
+        discovered_at: now,
+        confidence: 1,
+      } as NodeProperties;
+      first.ctx.applyJournaledMutation(
+        'add_node',
+        { props },
+        () => first.graph.addNode(props.id, props),
+      );
+      first.persistence.persistImmediate();
+      expect(first.ctx.mutationJournal?.compactUpTo(1)).toEqual({
+        kept: 0,
+        dropped: 1,
+      });
+      const newerState = readFileSync(statePath);
+
+      expect(() => stale.persistence.persistImmediate()).toThrow(
+        /stale|durable transaction head|local applied checkpoint/i,
+      );
+      expect(readFileSync(statePath)).toEqual(newerState);
+      expect(stale.persistence.isWritable()).toBe(false);
+    });
+
+    it('retains the checkpoint from an unusable primary when rejecting a stale state writer', () => {
+      const statePath = join(tempDir, 'shared-invalid-state.json');
+      const first = buildPersistence(statePath);
+      first.persistence.persistImmediate();
+
+      const stale = buildPersistence(statePath);
+      expect(stale.persistence.restoreBaseAndReplay()).toMatchObject({
+        status: 'restored',
+        source: 'state',
+      });
+
+      const props = {
+        id: 'newer-invalid-primary-node',
+        type: 'host',
+        label: 'newer-invalid-primary-node',
+        discovered_at: now,
+        confidence: 1,
+      } as NodeProperties;
+      first.ctx.applyJournaledMutation(
+        'add_node',
+        { props },
+        () => first.graph.addNode(props.id, props),
+      );
+      first.persistence.persistImmediate();
+      expect(first.ctx.mutationJournal?.compactUpTo(1)).toEqual({
+        kept: 0,
+        dropped: 1,
+      });
+
+      const invalidPrimary = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+      delete invalidPrimary.walCompactionAuthority;
+      invalidPrimary.activityLog = 'synthetic invalid auxiliary state';
+      const invalidBytes = Buffer.from(JSON.stringify(invalidPrimary));
+      writeFileSync(statePath, invalidBytes);
+
+      expect(() => stale.persistence.persistImmediate()).toThrow(
+        /durable transaction head 1 does not match local applied checkpoint 0/i,
+      );
+      expect(readFileSync(statePath)).toEqual(invalidBytes);
+      expect(stale.persistence.isWritable()).toBe(false);
+    });
+
+    it('exposes distinct logical and physical WAL high-water marks across compaction', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      persistence.persistImmediate();
+      const props = {
+        id: 'multi-frame-node',
+        type: 'host',
+        label: 'x'.repeat(150_000),
+        discovered_at: now,
+        confidence: 1,
+      } as NodeProperties;
+      ctx.applyJournaledMutation(
+        'add_node',
+        { props },
+        () => graph.addNode(props.id, props),
+      );
+
+      const live = persistence.getRecoveryStatus();
+      expect(live).toMatchObject({
+        highest_allocated_seq: 1,
+        highest_allocated_logical_seq: 1,
+        highest_on_disk_seq: 1,
+        highest_contiguous_applied_seq: 1,
+        highest_contiguous_applied_logical_seq: 1,
+      });
+      expect(live.highest_allocated_frame_seq).toBeGreaterThan(1);
+      expect(live.highest_physical_frame_seq).toBe(
+        live.highest_allocated_frame_seq,
+      );
+
+      persistence.persistImmediate();
+      expect(ctx.mutationJournal?.compactUpTo(1)).toEqual({
+        kept: 0,
+        dropped: 1,
+      });
+      expect(persistence.getRecoveryStatus()).toMatchObject({
+        highest_allocated_logical_seq: 1,
+        highest_allocated_frame_seq: live.highest_allocated_frame_seq,
+        highest_physical_frame_seq: live.highest_physical_frame_seq,
+        highest_contiguous_applied_logical_seq: 1,
+      });
+    });
+
     it('round-trips graph nodes and edges through persist/load', () => {
       const { ctx, persistence, graph } = buildPersistence();
       graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', ip: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);

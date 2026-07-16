@@ -6,6 +6,10 @@ import { GraphEngine } from '../graph-engine.js';
 import { MutationJournal, writeAllSync, type MutationType } from '../mutation-journal.js';
 import { EngineContext } from '../engine-context.js';
 import { createOverwatchGraph } from '../graphology-types.js';
+import {
+  getStateWriterLockDepth,
+  withStateMigrationWriteGuard,
+} from '../state-migration-lock.js';
 import type { EngagementConfig } from '../../types.js';
 
 const NONCE = 'b'.repeat(64);
@@ -33,6 +37,50 @@ function trackedEngine(...args: ConstructorParameters<typeof GraphEngine>): Grap
   return engine;
 }
 
+function appendV2Mutation(
+  journal: MutationJournal,
+  type: MutationType,
+  payload: Record<string, unknown>,
+) {
+  const transaction = journal.appendTransaction({
+    operations: [{ type, payload }],
+  });
+  journal.markApplied(transaction.seq);
+  return transaction;
+}
+
+function activityAppendPayload(
+  eventId: string,
+  expectedLength: number,
+  expectedTail: string | null,
+): Record<string, unknown> {
+  return {
+    payload_version: 1,
+    items: [{
+      entry: {
+        event_id: eventId,
+        timestamp: '2026-01-01T00:00:00.000Z',
+        description: eventId,
+      },
+    }],
+    result_event_id: eventId,
+    expected: {
+      activity_length: expectedLength,
+      activity_tail_event_id: expectedTail,
+      last_chain_hash: '0'.repeat(64),
+      chain_events_since_checkpoint: 0,
+      checkpoint_count: 0,
+      checkpoint_tail_event_id: null,
+      deterministic_seq: 0,
+    },
+    final: {
+      last_chain_hash: '0'.repeat(64),
+      chain_events_since_checkpoint: 0,
+      deterministic_seq: 0,
+    },
+  };
+}
+
 beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), 'overwatch-mutation-journal-'));
   TEST_STATE = join(testDir, 'state-test-mutation-journal.json');
@@ -55,6 +103,335 @@ describe('MutationJournal (P2.1)', () => {
       expect(b.seq).toBe(2);
       const raw = readFileSync(j.getPath(), 'utf-8');
       expect(raw.split('\n').filter(Boolean).length).toBe(2);
+    });
+
+    it('appends journal-v2 transactions as checksum-protected begin/chunk/commit frames', () => {
+      const j = new MutationJournal(TEST_STATE);
+      const tx = j.appendTransaction({
+        operations: [{
+          type: 'add_node',
+          payload: { props: { id: 'v2-node', type: 'host', label: 'v2-node' } },
+        }],
+        source_action_id: 'action-v2',
+        ts: '2026-01-01T00:00:00.000Z',
+      });
+      j.markApplied(tx.seq);
+
+      expect(tx).toMatchObject({
+        version: 2,
+        seq: 1,
+        begin_frame_seq: 1,
+        commit_frame_seq: 3,
+        source_action_id: 'action-v2',
+      });
+      const frames = readFileSync(j.getPath(), 'utf-8')
+        .split('\n')
+        .filter(Boolean)
+        .map(line => JSON.parse(line) as Record<string, unknown>);
+      expect(frames.map(frame => frame.record_type)).toEqual([
+        'tx_begin',
+        'tx_chunk',
+        'tx_commit',
+      ]);
+      expect(frames.map(frame => frame.frame_seq)).toEqual([1, 2, 3]);
+      expect(frames.every(frame => frame.tx_seq === 1)).toBe(true);
+      expect(j.getHighestPhysicalSeq()).toBe(1);
+      expect(j.getHighestPhysicalFrameSeq()).toBe(3);
+      expect(j.readTransactionsSince(0)).toEqual([tx]);
+    });
+
+    it('rejects malformed activity_append payloads before allocating WAL state', () => {
+      const j = new MutationJournal(TEST_STATE);
+
+      expect(() => j.appendTransaction({
+        operations: [{
+          type: 'activity_append',
+          payload: {
+            payload_version: 1,
+            items: [],
+          },
+        }],
+      })).toThrow(/activity_append payload\.items/);
+
+      expect(existsSync(j.getPath())
+        ? readFileSync(j.getPath(), 'utf-8')
+        : '').toBe('');
+      expect(j.peekSeq()).toBe(0);
+      j.dispose();
+    });
+
+    it('transfers an idle retained writer within one process and keeps the old writer stale', () => {
+      const first = new MutationJournal(TEST_STATE);
+      const retained = first.appendTransaction({
+        operations: [{
+          type: 'activity_append',
+          payload: activityAppendPayload('event-one', 0, null),
+        }],
+      });
+      first.markApplied(retained.seq);
+
+      const second = new MutationJournal(TEST_STATE);
+      second.setNextSeq(retained.seq);
+      const advanced = second.appendTransaction({
+        operations: [{
+          type: 'add_node',
+          payload: { props: { id: 'writer-two', type: 'host', label: 'writer-two' } },
+        }],
+      });
+      second.markApplied(advanced.seq);
+      expect(advanced.seq).toBe(retained.seq + 1);
+
+      expect(() => first.appendTransaction({
+        operations: [{
+          type: 'add_node',
+          payload: { props: { id: 'stale-writer', type: 'host', label: 'stale-writer' } },
+        }],
+      })).toThrow(/writer is stale/);
+
+      first.dispose();
+      second.dispose();
+    });
+
+    it('refuses retained-writer transfer while the journal owner is applying', () => {
+      const first = new MutationJournal(TEST_STATE);
+      const retained = first.appendTransaction({
+        operations: [{
+          type: 'activity_append',
+          payload: activityAppendPayload('event-busy', 0, null),
+        }],
+      });
+      first.markApplied(retained.seq);
+      const second = new MutationJournal(TEST_STATE);
+      second.setNextSeq(retained.seq);
+
+      (first as any).withMigrationWriteGuard(() => {
+        expect(() => second.appendTransaction({
+          operations: [{
+            type: 'add_node',
+            payload: { props: { id: 'must-wait', type: 'host', label: 'must-wait' } },
+          }],
+        })).toThrow(/state writer lock is already owned/);
+      });
+
+      const next = first.appendTransaction({
+        operations: [{
+          type: 'add_node',
+          payload: { props: { id: 'owner-remains-live', type: 'host', label: 'owner-remains-live' } },
+        }],
+      });
+      first.markApplied(next.seq);
+      expect(next.seq).toBe(retained.seq + 1);
+      first.dispose();
+      second.dispose();
+    });
+
+    it('does not transfer a retained owner through a nested generic state guard', () => {
+      const first = new MutationJournal(TEST_STATE);
+      const retained = first.appendTransaction({
+        operations: [{
+          type: 'activity_append',
+          payload: activityAppendPayload('event-generic-guard', 0, null),
+        }],
+      });
+      first.markApplied(retained.seq);
+      const second = new MutationJournal(TEST_STATE);
+      second.setNextSeq(retained.seq);
+
+      withStateMigrationWriteGuard(TEST_STATE, undefined, () => {
+        expect(getStateWriterLockDepth(TEST_STATE)).toBe(2);
+        expect(() => second.appendTransaction({
+          operations: [{
+            type: 'add_node',
+            payload: { props: { id: 'must-not-reenter', type: 'host', label: 'must-not-reenter' } },
+          }],
+        })).toThrow(/state writer lock is already owned/);
+        expect(getStateWriterLockDepth(TEST_STATE)).toBe(2);
+      });
+
+      expect(getStateWriterLockDepth(TEST_STATE)).toBe(1);
+      first.dispose();
+      expect(getStateWriterLockDepth(TEST_STATE)).toBe(0);
+      second.dispose();
+    });
+
+    it('chunks large transactions into bounded ordered physical frames', () => {
+      const j = new MutationJournal(TEST_STATE);
+      const tx = j.appendTransaction({
+        operations: [{
+          type: 'add_node',
+          payload: {
+            props: {
+              id: 'large-v2-node',
+              type: 'host',
+              label: 'x'.repeat(150_000),
+            },
+          },
+        }],
+        ts: '2026-01-01T00:00:00.000Z',
+      });
+      j.markApplied(tx.seq);
+
+      const frames = readFileSync(j.getPath(), 'utf-8')
+        .split('\n')
+        .filter(Boolean)
+        .map(line => JSON.parse(line) as Record<string, any>);
+      const begin = frames[0];
+      const chunks = frames.filter(frame => frame.record_type === 'tx_chunk');
+      expect(begin.chunk_count).toBeGreaterThan(1);
+      expect(chunks.map(frame => frame.chunk_index)).toEqual(
+        Array.from({ length: begin.chunk_count }, (_, index) => index),
+      );
+      expect(chunks.every(frame => Buffer.from(frame.data, 'base64').length <= 64 * 1024)).toBe(true);
+      expect(tx.commit_frame_seq).toBe(tx.begin_frame_seq + begin.chunk_count + 1);
+      expect(j.readTransactionsSince(0)[0]?.operations[0]?.payload).toEqual(
+        tx.operations[0]?.payload,
+      );
+    });
+
+    it('refuses to append when the WAL has lost the first transaction after the durable base', () => {
+      writeFileSync(TEST_STATE, JSON.stringify({ journalSnapshotSeq: 1 }));
+      writeFileSync(JOURNAL_PATH, `${JSON.stringify({
+        seq: 3,
+        ts: '2026-01-01T00:00:02.000Z',
+        type: 'add_node',
+        payload: { props: { id: 'stranded-after-gap', type: 'host', label: 'stranded-after-gap' } },
+      })}\n`);
+      const original = readFileSync(JOURNAL_PATH);
+      const recovered = new MutationJournal(TEST_STATE);
+      // Model a live process that already applied seq 2 and 3 before seq 2 was
+      // externally removed from the active WAL.
+      recovered.setNextSeq(3, {
+        appliedThroughSeq: 3,
+        physicalFrameSeq: 3,
+      });
+
+      expect(() => recovered.appendTransaction({
+        operations: [{
+          type: 'add_node',
+          payload: { props: { id: 'must-not-append', type: 'host', label: 'must-not-append' } },
+        }],
+        ts: '2026-01-01T00:00:03.000Z',
+      })).toThrow(/expected transaction seq 2, found 3/);
+      expect(readFileSync(JOURNAL_PATH)).toEqual(original);
+      expect(recovered.getAppendBlockedReason()).toContain(
+        'journal integrity check failed before append',
+      );
+    });
+
+    it('rejects a checksum-corrupted committed v2 transaction without applying it', () => {
+      const j = new MutationJournal(TEST_STATE);
+      j.appendTransaction({
+        operations: [{
+          type: 'add_node',
+          payload: { props: { id: 'checksum-node', type: 'host', label: 'checksum-node' } },
+        }],
+        ts: '2026-01-01T00:00:00.000Z',
+      });
+      const frames = readFileSync(j.getPath(), 'utf-8').split('\n').filter(Boolean);
+      const commit = JSON.parse(frames.at(-1)!) as Record<string, unknown>;
+      commit.commit_checksum = '0'.repeat(64);
+      frames[frames.length - 1] = JSON.stringify(commit);
+      writeFileSync(j.getPath(), `${frames.join('\n')}\n`);
+      const attempted: number[] = [];
+
+      const result = new MutationJournal(TEST_STATE).replayTransactions({
+        applyTransaction(transaction) {
+          attempted.push(transaction.seq);
+          return { status: 'applied' };
+        },
+      }, 0);
+
+      expect(attempted).toEqual([]);
+      expect(result).toMatchObject({
+        read: 0,
+        attempted: 0,
+        applied: 0,
+        complete: false,
+        read_issue: {
+          kind: 'checksum_mismatch',
+          actual_seq: 1,
+        },
+      });
+    });
+
+    it('quarantines and trims a fully framed but uncommitted v2 EOF tail', () => {
+      const j = new MutationJournal(TEST_STATE);
+      const committed = j.appendTransaction({
+        operations: [{
+          type: 'add_node',
+          payload: { props: { id: 'committed-v2', type: 'host', label: 'committed-v2' } },
+        }],
+        ts: '2026-01-01T00:00:00.000Z',
+      });
+      j.markApplied(committed.seq);
+      const committedBytes = readFileSync(j.getPath());
+      const uncommitted = j.appendTransaction({
+        operations: [{
+          type: 'add_node',
+          payload: { props: { id: 'uncommitted-v2', type: 'host', label: 'uncommitted-v2' } },
+        }],
+        ts: '2026-01-01T00:00:01.000Z',
+      });
+      const frames = readFileSync(j.getPath(), 'utf-8').split('\n').filter(Boolean);
+      frames.pop(); // remove the complete tx_commit frame, leaving begin+chunk at EOF
+      writeFileSync(j.getPath(), `${frames.join('\n')}\n`);
+      const original = readFileSync(j.getPath());
+
+      const recovered = new MutationJournal(TEST_STATE);
+      expect(recovered.inspectReplayIntegrity(1, {
+        trustedContiguousCheckpoint: true,
+      })).toMatchObject({
+        kind: 'incomplete_transaction',
+        actual_seq: uncommitted.seq,
+        tx_id: uncommitted.tx_id,
+      });
+      const repair = recovered.repairIncompleteTransactionTail();
+
+      expect(repair).toMatchObject({
+        repaired: true,
+        committed_transactions: 1,
+      });
+      if (!repair.repaired) throw new Error('expected repair');
+      expect(readFileSync(repair.quarantine_path)).toEqual(original);
+      expect(readFileSync(j.getPath())).toEqual(committedBytes);
+      expect(recovered.readTransactionsSince(0).map(tx => tx.seq)).toEqual([1]);
+      expect(recovered.getHighestPhysicalFrameSeq()).toBe(committed.commit_frame_seq);
+    });
+
+    it('replays a legacy-v1 prefix followed by journal-v2 transactions', () => {
+      const j = new MutationJournal(TEST_STATE);
+      j.append({
+        type: 'add_node',
+        payload: { props: { id: 'legacy-prefix', type: 'host', label: 'legacy-prefix' } },
+        ts: '2026-01-01T00:00:00.000Z',
+      });
+      j.markApplied(1);
+      const current = j.appendTransaction({
+        operations: [{
+          type: 'add_node',
+          payload: { props: { id: 'v2-suffix', type: 'host', label: 'v2-suffix' } },
+        }],
+        ts: '2026-01-01T00:00:01.000Z',
+      });
+      j.markApplied(current.seq);
+
+      const recovered = new MutationJournal(TEST_STATE);
+      const transactions = recovered.readTransactionsSince(0);
+      expect(transactions.map(transaction => transaction.seq)).toEqual([1, 2]);
+      expect(transactions.map(transaction => transaction.operations[0]?.type)).toEqual([
+        'add_node',
+        'add_node',
+      ]);
+      expect(transactions[0]).toMatchObject({
+        tx_id: 'legacy-v1-1',
+        begin_frame_seq: 1,
+        commit_frame_seq: 1,
+      });
+      expect(transactions[1]).toMatchObject({
+        seq: 2,
+        begin_frame_seq: 2,
+        commit_frame_seq: 4,
+      });
     });
 
     it('writeAllSync drains short writes and rejects a writer that makes no progress', () => {
@@ -590,7 +967,8 @@ describe('MutationJournal (P2.1)', () => {
         { props: { id: 'must-not-append-after-skipped-live-node' } },
         () => 'generic callback result',
       )).toThrow(/Mutation journal is read-only/);
-      expect(readFileSync(journal.getPath(), 'utf8').split('\n').filter(Boolean)).toHaveLength(1);
+      expect(journal.readTransactionsSince(0)).toHaveLength(1);
+      expect(readFileSync(journal.getPath(), 'utf8').split('\n').filter(Boolean)).toHaveLength(3);
     });
 
     it('restores the journal and does not checkpoint a skipped live composite mutation', () => {
@@ -618,7 +996,8 @@ describe('MutationJournal (P2.1)', () => {
         { props: { id: 'must-not-append-after-skipped-live-composite-node' } },
         () => ({ status: 'applied' as const }),
       )).toThrow(/Mutation journal is read-only/);
-      expect(readFileSync(journal.getPath(), 'utf8').split('\n').filter(Boolean)).toHaveLength(1);
+      expect(journal.readTransactionsSince(0)).toHaveLength(1);
+      expect(readFileSync(journal.getPath(), 'utf8').split('\n').filter(Boolean)).toHaveLength(3);
     });
 
     it('degrades legacy checkpoints that retain physical records at or below the claim', () => {
@@ -837,7 +1216,12 @@ describe('MutationJournal (P2.1)', () => {
       reason: 'legacy scope crash recovery',
     })).toThrow('synthetic crash');
     expect(internal.ctx.mutationJournal).not.toBeNull();
-    expect(readFileSync(internal.ctx.mutationJournal!.getPath(), 'utf8')).toContain('"type":"scope_updated"');
+    expect(
+      internal.ctx.mutationJournal!
+        .readTransactionsSince(0)
+        .flatMap(transaction => transaction.operations)
+        .map(operation => operation.type),
+    ).toContain('scope_updated');
     first.dispose();
     engines.delete(first);
 
@@ -851,16 +1235,25 @@ describe('MutationJournal (P2.1)', () => {
   });
 
   describe('integrated with engine', () => {
-    it('does NOT journal when engagement_nonce is absent (legacy path)', () => {
+    it('journals even when engagement_nonce is absent', () => {
       const eng = trackedEngine(makeConfig(), TEST_STATE); // no nonce
       eng.addNode({ id: 'x', type: 'host', label: 'x', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
-      expect(existsSync(JOURNAL_PATH)).toBe(false);
+      expect(existsSync(JOURNAL_PATH)).toBe(true);
+      expect(eng.getPersistenceRecoveryStatus().journal).toMatchObject({
+        enabled: true,
+        format_version: 2,
+        path: JOURNAL_PATH,
+      });
     });
 
-    it('reports an in-process journal enabled with its path after a legacy composite mutation', () => {
+    it('keeps the always-on journal enabled through a composite mutation', () => {
       const eng = trackedEngine(makeConfig(), TEST_STATE);
       eng.addNode({ id: 'x', type: 'host', label: 'x', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
-      expect(eng.getPersistenceRecoveryStatus().journal).toMatchObject({ enabled: false });
+      expect(eng.getPersistenceRecoveryStatus().journal).toMatchObject({
+        enabled: true,
+        format_version: 2,
+        path: JOURNAL_PATH,
+      });
 
       eng.correctGraph('add durable operator annotation', [{
         kind: 'patch_node',
@@ -873,6 +1266,12 @@ describe('MutationJournal (P2.1)', () => {
         enabled: true,
         path: JOURNAL_PATH,
       });
+      expect(
+        new MutationJournal(TEST_STATE)
+          .readTransactionsSince(0)
+          .flatMap(transaction => transaction.operations)
+          .map(operation => operation.type),
+      ).toContain('graph_corrected');
     });
 
     it('journals add_node and add_edge for engagements with engagement_nonce', () => {
@@ -881,8 +1280,11 @@ describe('MutationJournal (P2.1)', () => {
       eng.addNode({ id: 's1', type: 'service', label: 'smb/445', port: 445, discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
       eng.addEdge('h1', 's1', { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
       expect(existsSync(JOURNAL_PATH)).toBe(true);
-      const lines = readFileSync(JOURNAL_PATH, 'utf-8').split('\n').filter(Boolean);
-      const types = lines.map(l => JSON.parse(l).type).sort();
+      const types = new MutationJournal(TEST_STATE)
+        .readTransactionsSince(0)
+        .flatMap(transaction => transaction.operations)
+        .map(operation => operation.type)
+        .sort();
       // Two add_node + one add_edge (subnet inference may add more, so just
       // confirm the three we explicitly issued are in the journal).
       expect(types).toContain('add_node');
@@ -963,19 +1365,16 @@ describe('MutationJournal (P2.1)', () => {
       const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
       const j = new MutationJournal(TEST_STATE);
       j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
-      j.append({
-        type: 'add_edge',
-        payload: {
-          source: 'missing-host',
-          target: 'missing-service',
-          props: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' },
-        },
+      appendV2Mutation(j, 'add_edge', {
+        source: 'missing-host',
+        target: 'missing-service',
+        props: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' },
       });
-      j.append({
-        type: 'merge_edge_attrs',
-        payload: { edge_id: 'missing-edge', props: { session_live: false } },
+      appendV2Mutation(j, 'merge_edge_attrs', {
+        edge_id: 'missing-edge',
+        props: { session_live: false },
       });
-      j.append({ type: 'future_mutation' as any, payload: {} });
+      appendV2Mutation(j, 'future_mutation' as MutationType, {});
       const journalBeforeRecovery = readFileSync(JOURNAL_PATH);
       const checkpoint = typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0;
 
@@ -1015,7 +1414,9 @@ describe('MutationJournal (P2.1)', () => {
       const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
       const j = new MutationJournal(TEST_STATE);
       j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
-      j.append({ type: 'merge_node_attrs', payload: { props: { id: 'n1', type: 'cloud_identity', label: 'g2' } } });
+      appendV2Mutation(j, 'merge_node_attrs', {
+        props: { id: 'n1', type: 'cloud_identity', label: 'g2' },
+      });
 
       const eng2 = trackedEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
       // Guard held on replay: the type was NOT flipped, but the non-type merge applied.
@@ -1036,7 +1437,16 @@ describe('MutationJournal (P2.1)', () => {
       j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
       // Two HAS_POLICY edges at DIFFERENT scopes — must not collapse into one.
       for (const scope of ['/subscriptions/A', '/subscriptions/B']) {
-        j.append({ type: 'add_edge', payload: { source: 'p', target: 'r', props: { type: 'HAS_POLICY', confidence: 1, discovered_at: '2026-01-01T00:00:00Z', scope } } });
+        appendV2Mutation(j, 'add_edge', {
+          source: 'p',
+          target: 'r',
+          props: {
+            type: 'HAS_POLICY',
+            confidence: 1,
+            discovered_at: '2026-01-01T00:00:00Z',
+            scope,
+          },
+        });
       }
 
       const eng2 = trackedEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
@@ -1054,7 +1464,15 @@ describe('MutationJournal (P2.1)', () => {
       const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
       const j = new MutationJournal(TEST_STATE);
       j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
-      j.append({ type: 'add_node', payload: { props: { id: 'kept', type: 'host', label: 'kept', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } } });
+      appendV2Mutation(j, 'add_node', {
+        props: {
+          id: 'kept',
+          type: 'host',
+          label: 'kept',
+          discovered_at: '2026-01-01T00:00:00Z',
+          confidence: 1,
+        },
+      });
       // A malformed line MID-journal, then a valid line after it (a durable tail
       // that readSince will drop — this must be surfaced, not silently swallowed).
       appendFileSync(JOURNAL_PATH, 'THIS IS NOT JSON\n');
@@ -1086,7 +1504,16 @@ describe('MutationJournal (P2.1)', () => {
       const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
       const j = new MutationJournal(TEST_STATE);
       j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
-      j.append({ type: 'replace_node_attrs', payload: { props: { id: 'n1', type: 'host', label: 'n1', ip: '10.10.10.1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } } });
+      appendV2Mutation(j, 'replace_node_attrs', {
+        props: {
+          id: 'n1',
+          type: 'host',
+          label: 'n1',
+          ip: '10.10.10.1',
+          discovered_at: '2026-01-01T00:00:00Z',
+          confidence: 1,
+        },
+      });
 
       const eng2 = trackedEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
       // The cleared key must NOT linger after recovery (merge-replay left it stale pre-fix).
@@ -1103,7 +1530,15 @@ describe('MutationJournal (P2.1)', () => {
       const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
       const j = new MutationJournal(TEST_STATE);
       j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
-      j.append({ type: 'add_node', payload: { props: { id: 'kept', type: 'host', label: 'kept', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } } });
+      appendV2Mutation(j, 'add_node', {
+        props: {
+          id: 'kept',
+          type: 'host',
+          label: 'kept',
+          discovered_at: '2026-01-01T00:00:00Z',
+          confidence: 1,
+        },
+      });
       appendFileSync(JOURNAL_PATH, 'CORRUPT NOT JSON\n');
       appendFileSync(JOURNAL_PATH, JSON.stringify({ seq: 99999, type: 'add_node', payload: { props: { id: 'orphan' } } }) + '\n');
       const journalBeforeRecovery = readFileSync(JOURNAL_PATH);
@@ -1146,17 +1581,18 @@ describe('MutationJournal (P2.1)', () => {
       eng2.dispose();
     });
 
-    it('legacy engagement keeps the empty manifest assertion (no journal field)', () => {
-      // Sanity: snapshot persisted for a legacy engagement still works,
-      // and the journal field is the no-op default (peekSeq() === 0
-      // when journal is null).
+    it('persists a transaction checkpoint for an engagement without a nonce', () => {
+      // WAL durability is now engagement-wide rather than nonce-gated.
       const eng = trackedEngine(makeConfig(), TEST_STATE); // no nonce
       eng.addNode({ id: 'x', type: 'host', label: 'x', ip: '10.10.10.1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
       eng.persist();
       eng.flushNow();
       const snap = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
-      // journalSnapshotSeq defaults to 0 because mutationJournal is null.
-      expect(snap.journalSnapshotSeq).toBe(0);
+      expect(snap.journal_version).toBe(2);
+      expect(snap.journalSnapshotSeq).toBeGreaterThan(0);
+      expect(snap.journalSnapshotSeq).toBe(
+        eng.getPersistenceRecoveryStatus().highest_contiguous_applied_seq,
+      );
       eng.dispose();
     });
   });

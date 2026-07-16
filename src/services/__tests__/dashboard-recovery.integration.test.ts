@@ -218,7 +218,10 @@ describe('dashboard recovery API', () => {
     journal.setNextSeq(state.journalSnapshotSeq ?? 0, {
       appliedThroughSeq: state.journalSnapshotSeq ?? 0,
     });
-    journal.append({ type: 'future_mutation' as MutationType, payload: {} });
+    journal.appendTransaction({
+      operations: [{ type: 'future_mutation' as MutationType, payload: {} }],
+      ts: new Date().toISOString(),
+    });
     const external = withConfigMetadata({ ...durable, name: 'External during WAL failure' }, 2);
     writeFileSync(configPath, JSON.stringify(external));
     const configBefore = readFileSync(configPath);

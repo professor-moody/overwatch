@@ -3,6 +3,7 @@ import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
 import { FrontierLeases } from '../frontier-leases.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-frontier-leases.json';
 
@@ -29,6 +30,7 @@ function makeTask(id: string, frontier_item_id: string, agent_id = 'a'): AgentTa
 }
 
 function cleanup(): void {
+  cleanupTestPersistence(TEST_STATE_FILE);
   try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
 }
 
@@ -129,6 +131,7 @@ describe('FrontierLeases (P1.4)', () => {
     });
 
     afterEach(() => {
+      engine.dispose();
       cleanup();
     });
 

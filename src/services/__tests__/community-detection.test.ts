@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
-import { unlinkSync, existsSync } from 'fs';
 import type { EngagementConfig } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-community.json';
+const engines = new Set<GraphEngine>();
 
 function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig {
   return {
@@ -34,7 +35,15 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
 }
 
 function cleanup() {
-  if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  cleanupTestPersistence(TEST_STATE_FILE);
+}
+
+function openEngine(config: EngagementConfig): GraphEngine {
+  const opened = new GraphEngine(config, TEST_STATE_FILE);
+  engines.add(opened);
+  return opened;
 }
 
 describe('Community Detection', () => {
@@ -42,12 +51,10 @@ describe('Community Detection', () => {
 
   beforeEach(() => {
     cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine = openEngine(makeConfig());
   });
 
-  afterEach(() => {
-    cleanup();
-  });
+  afterEach(cleanup);
 
   it('returns communities for graph with only config-created nodes', () => {
     // Config creates objective + domain nodes automatically
@@ -164,15 +171,52 @@ describe('Community Detection', () => {
     expect(itemC!.community_unexplored_count).toBe(1);
   });
 
-  it('writes community_id to node properties for graph export', () => {
+  it('projects community_id without materializing it in the durable graph', () => {
     engine.addNode({ id: 'host-a', type: 'host', label: 'A', ip: '10.10.10.1', confidence: 1.0, discovered_at: new Date().toISOString(), discovered_by: 'test' });
     engine.addNode({ id: 'host-b', type: 'host', label: 'B', ip: '10.10.10.2', confidence: 1.0, discovered_at: new Date().toISOString(), discovered_by: 'test' });
     engine.addEdge('host-a', 'host-b', { type: 'REACHABLE', confidence: 1.0, discovered_at: new Date().toISOString(), discovered_by: 'test' });
+
+    const firstExport = engine.exportGraph();
+    const rawNode = (engine as any).ctx.graph.getNodeAttributes('host-a');
+    expect(rawNode.community_id).toBeUndefined();
+    expect(typeof firstExport.nodes.find(
+      node => node.id === 'host-a',
+    )?.properties.community_id).toBe('number');
 
     engine.getCommunities();
     const nodeA = engine.getNode('host-a');
     expect(nodeA).toBeDefined();
     expect(typeof nodeA!.community_id).toBe('number');
+
+    const canonicalExport = engine.exportGraph({ includeDerivedCommunities: false });
+    expect(canonicalExport.nodes.find(
+      node => node.id === 'host-a',
+    )?.properties.community_id).toBeUndefined();
+
+    engine.getState();
+    expect(engine.exportGraph()).toEqual(firstExport);
+  });
+
+  it('strips legacy materialized community_id from canonical exports', () => {
+    engine.addNode({
+      id: 'host-legacy-community',
+      type: 'host',
+      label: 'Legacy community',
+      ip: '10.10.10.9',
+      confidence: 1,
+      discovered_at: new Date().toISOString(),
+      discovered_by: 'test',
+      community_id: 999,
+    });
+
+    const canonical = engine.exportGraph({ includeDerivedCommunities: false })
+      .nodes.find(node => node.id === 'host-legacy-community');
+    expect(canonical?.properties.community_id).toBeUndefined();
+
+    const projected = engine.exportGraph()
+      .nodes.find(node => node.id === 'host-legacy-community');
+    expect(typeof projected?.properties.community_id).toBe('number');
+    expect(projected?.properties.community_id).not.toBe(999);
   });
 
   it('weights access edges higher than REACHABLE edges', () => {
@@ -219,7 +263,7 @@ describe('Community Detection', () => {
 
     // Now create a new engine with higher resolution
     cleanup();
-    const hiResEngine = new GraphEngine(makeConfig({ community_resolution: 3.0 }), TEST_STATE_FILE);
+    const hiResEngine = openEngine(makeConfig({ community_resolution: 3.0 }));
     for (let i = 0; i < 6; i++) {
       hiResEngine.addNode({ id: `host-${i}`, type: 'host', label: `H${i}`, ip: `10.10.10.${i + 1}`, ...base });
     }
@@ -246,7 +290,7 @@ describe('Community Detection', () => {
 
     // Engine with explicit resolution=1.0 should give same result
     cleanup();
-    const explicitEngine = new GraphEngine(makeConfig({ community_resolution: 1.0 }), TEST_STATE_FILE);
+    const explicitEngine = openEngine(makeConfig({ community_resolution: 1.0 }));
     explicitEngine.addNode({ id: 'host-a', type: 'host', label: 'A', ip: '10.10.10.1', ...base });
     explicitEngine.addNode({ id: 'host-b', type: 'host', label: 'B', ip: '10.10.10.2', ...base });
     explicitEngine.addEdge('host-a', 'host-b', { type: 'REACHABLE', ...base });

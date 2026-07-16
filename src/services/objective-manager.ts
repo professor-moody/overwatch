@@ -17,6 +17,7 @@ import type {
 export interface ObjectiveManagerHost {
   ctx: EngineContext;
   getNode(id: string): NodeProperties | null;
+  addNode(props: NodeProperties): string;
   getNodesByType(type: NodeType): NodeProperties[];
   queryGraph(query: GraphQuery): GraphQueryResult;
   persist(detail?: Record<string, unknown>): void;
@@ -170,12 +171,13 @@ export function syncObjectiveNodes(host: ObjectiveManagerHost): void {
     const nodeId = `obj-${objective.id}`;
     const existing = host.getNode(nodeId);
     if (!existing) continue;
-    host.ctx.graph.mergeNodeAttributes(nodeId, {
+    host.addNode({
+      ...existing,
       objective_description: objective.description,
       objective_achieved: objective.achieved,
       objective_achieved_at: objective.achieved_at,
       last_seen_at: now,
-    } as Partial<NodeProperties>);
+    });
   }
 }
 

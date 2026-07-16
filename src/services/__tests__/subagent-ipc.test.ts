@@ -1,11 +1,12 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import { encodeMessage, decodeMessages, type SubAgentMessage } from '../subagent-ipc.js';
 import { runSubAgent, type SubAgentRunner } from '../subagent-process-runner.js';
 import type { EngagementConfig, AgentTask, Finding } from '../../types.js';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE = './state-test-subagent-ipc.json';
+const engines = new Set<GraphEngine>();
 
 function makeConfig(): EngagementConfig {
   return {
@@ -20,9 +21,15 @@ function makeConfig(): EngagementConfig {
 }
 
 function cleanup(): void {
-  for (const f of [TEST_STATE, TEST_STATE + '.journal.jsonl']) {
-    try { if (existsSync(f)) unlinkSync(f); } catch {}
-  }
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  cleanupTestPersistence(TEST_STATE);
+}
+
+function openEngine(): GraphEngine {
+  const engine = new GraphEngine(makeConfig(), TEST_STATE);
+  engines.add(engine);
+  return engine;
 }
 
 /**
@@ -86,11 +93,11 @@ function makeTask(): AgentTask {
 }
 
 describe('Sub-agent IPC + process runner (P4.2)', () => {
-  afterEach(() => cleanup());
+  beforeEach(cleanup);
+  afterEach(cleanup);
 
   it('completes a register → heartbeat → report_finding → submit_transcript round-trip', async () => {
-    cleanup();
-    const engine = new GraphEngine(makeConfig(), TEST_STATE);
+    const engine = openEngine();
     const task = makeTask();
     engine.registerAgent(task);
 
@@ -158,8 +165,7 @@ describe('Sub-agent IPC + process runner (P4.2)', () => {
   });
 
   it('treats child exit without submit_transcript as interrupted', async () => {
-    cleanup();
-    const engine = new GraphEngine(makeConfig(), TEST_STATE);
+    const engine = openEngine();
     const task = { ...makeTask(), id: 'task-2', frontier_item_id: 'fi-2' };
     engine.registerAgent(task);
 
@@ -192,8 +198,7 @@ describe('Sub-agent IPC + process runner (P4.2)', () => {
   // sending a transcript used to block the parent forever. We now kill it
   // after the configured timeout and mark the task interrupted.
   it('kills the child and marks the task interrupted when the timeout elapses (F2)', async () => {
-    cleanup();
-    const engine = new GraphEngine(makeConfig(), TEST_STATE);
+    const engine = openEngine();
     const task = { ...makeTask(), id: 'task-wedge', frontier_item_id: 'fi-wedge' };
     engine.registerAgent(task);
 

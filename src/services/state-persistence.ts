@@ -53,6 +53,7 @@ import {
 import {
   CURRENT_JOURNAL_VERSION,
   CURRENT_STATE_VERSION,
+  LEGACY_JOURNAL_VERSION,
   LEGACY_STATE_VERSION,
   PersistedJournalVersionError,
   PersistedStateVersionError,
@@ -60,15 +61,24 @@ import {
   detectStateVersion,
   validatePersistedStateV1,
   type PersistedStateV1,
+  type SupportedJournalVersion,
   type SupportedStateVersion,
 } from './persisted-state.js';
 import { buildArtifactReferences, mergeArtifactReferences } from './state-artifacts.js';
+import type {
+  EngineTransactionApplier,
+  EngineTransactionApplyResult,
+  EngineTransactionDraft,
+} from './engine-transaction.js';
+import type { DurableStatePatchV1 } from './durable-state-patch.js';
+import type { ActivityAppendPayloadV1 } from './activity-append.js';
 import {
   acquireStateMigrationLease,
   activateStateMigration,
   assertStateMigrationWriteAllowed,
   assertStateMigrationSourcesUnchanged,
   completeStateMigration,
+  createJournalUpgradeBackup,
   hasStateMigrationIntent,
   prepareStateMigrationBackup,
   stateMigrationLockDirectory,
@@ -120,6 +130,7 @@ export interface ReplayMutators {
   applyDropNodeMutation(payload: DropNodeMutationPayloadV1, recovery?: boolean): MutationApplyResult;
   applyIdentityRewriteMutation(payload: IdentityRewriteMutationPayloadV1, recovery?: boolean): MutationApplyResult;
   applyGraphCorrectedMutation(payload: GraphCorrectedMutationPayloadV1, recovery?: boolean): MutationApplyResult;
+  applyStatePatchMutation(payload: DurableStatePatchV1, recovery?: boolean): MutationApplyResult;
   prepareRecoveryCommit?(): void;
   completeRecoveryCommit?(): void;
   abortRecoveryReplay?(): void;
@@ -129,7 +140,17 @@ export interface ReplayMutators {
 export const FLUSH_DEBOUNCE_MS = 100;   // Wait 100ms of quiet before flushing
 export const FLUSH_MAX_DELAY_MS = 500;  // Maximum time between dirty and flush
 export const PERSIST_RETRY_DELAYS_MS = [250, 1_000, 5_000, 30_000] as const;
-export const JOURNAL_CHECKPOINT_SEMANTICS = 'contiguous_applied_v1' as const;
+export const LEGACY_JOURNAL_CHECKPOINT_SEMANTICS = 'contiguous_applied_v1' as const;
+export const JOURNAL_CHECKPOINT_SEMANTICS = 'contiguous_committed_transactions_v2' as const;
+
+function isTrustedJournalCheckpoint(
+  semantics: unknown,
+  journalVersion: SupportedJournalVersion,
+): boolean {
+  return journalVersion === CURRENT_JOURNAL_VERSION
+    ? semantics === JOURNAL_CHECKPOINT_SEMANTICS
+    : semantics === LEGACY_JOURNAL_CHECKPOINT_SEMANTICS;
+}
 
 class JournalRecoveryGateError extends Error {
   constructor(message: string) {
@@ -164,7 +185,7 @@ interface ValidatedRestoreCandidate extends RestoreCandidate {
   rawSha256: string;
   checkpoint: number;
   stateVersion: SupportedStateVersion;
-  journalVersion: typeof CURRENT_JOURNAL_VERSION;
+  journalVersion: SupportedJournalVersion;
   /** Lower values are newer. The primary outranks an equal-checkpoint
    * snapshot; snapshots inherit listSnapshots()'s filename chronology. */
   newnessRank: number;
@@ -176,15 +197,20 @@ interface RestoredBase {
   data: unknown;
   checkpoint: number;
   stateVersion: SupportedStateVersion;
-  journalVersion: typeof CURRENT_JOURNAL_VERSION;
+  journalVersion: SupportedJournalVersion;
   replay?: MutationReplayResult;
+  repairedIncompleteTail?: {
+    quarantine_path: string;
+    dropped_bytes: number;
+    committed_transactions: number;
+  };
 }
 
 interface RestoredCheckpoint {
   checkpoint: number;
   trusted: boolean;
   stateVersion: SupportedStateVersion;
-  journalVersion: typeof CURRENT_JOURNAL_VERSION;
+  journalVersion: SupportedJournalVersion;
   /** Only current-writer, checksum-bound full-state snapshots may authorize
    * deletion of WAL bytes. Legacy bases remain valid for recovery but are not
    * compaction authorities. */
@@ -294,6 +320,7 @@ export class StatePersistence {
     migration_required: false,
   };
   private migrationBackup: MigrationBackupResult | undefined;
+  private journalUpgradeBackup: MigrationBackupResult | undefined;
   private releaseMigrationLease: StateMigrationLeaseRelease | undefined;
   /** Present only while an explicit rollback is being installed. Persisting
    * this marker in the replacement primary makes that primary authoritative on
@@ -311,10 +338,12 @@ export class StatePersistence {
       throw new Error('A graph factory is required to validate persisted recovery bases');
     });
     const journal = this.ctx.mutationJournal;
-    let initialPhysicalSeq = 0;
+    let initialLogicalOnDiskSeq = 0;
+    let initialPhysicalFrameSeq = 0;
     if (journal) {
       try {
-        initialPhysicalSeq = journal.getHighestPhysicalSeq();
+        initialLogicalOnDiskSeq = journal.getHighestPhysicalSeq();
+        initialPhysicalFrameSeq = journal.getHighestPhysicalFrameSeq();
       } catch (error) {
         this.journalAccessError = error;
         const reason = this.describeJournalAccessFailure(error);
@@ -330,8 +359,12 @@ export class StatePersistence {
       ...(this.journalAccessError ? { reason: this.recoveryReadOnlyReason } : {}),
       base_checkpoint: 0,
       highest_allocated_seq: journal?.getHighestAllocatedSeq() ?? 0,
-      highest_on_disk_seq: initialPhysicalSeq,
+      highest_allocated_logical_seq: journal?.getHighestAllocatedSeq() ?? 0,
+      highest_allocated_frame_seq: journal?.getHighestAllocatedFrameSeq() ?? 0,
+      highest_on_disk_seq: initialLogicalOnDiskSeq,
+      highest_physical_frame_seq: initialPhysicalFrameSeq,
       highest_contiguous_applied_seq: journal?.getAppliedThroughSeq() ?? 0,
+      highest_contiguous_applied_logical_seq: journal?.getAppliedThroughSeq() ?? 0,
       consecutive_persistence_failures: 0,
       journal: {
         enabled: journal !== null,
@@ -347,6 +380,9 @@ export class StatePersistence {
       },
     };
     this.ctx.persistenceWriteGuard = () => this.assertWritable();
+    this.ctx.persistencePostCommitFailure = (seq, error) => {
+      this.latchPostCommitApplyFailure(seq, error);
+    };
     this.hookShutdown();
   }
 
@@ -360,10 +396,14 @@ export class StatePersistence {
       migrationBlockedReason = error instanceof Error ? error.message : String(error);
     }
     const writeBlockedReason = journalBlockedReason ?? migrationBlockedReason;
-    let physicalHighest: number | undefined;
+    let logicalOnDiskHighest: number | undefined;
+    let physicalFrameHighest: number | undefined;
+    let observedJournalFormat: number | undefined;
     let journalHasData = false;
     try {
-      physicalHighest = journal?.getHighestPhysicalSeq();
+      logicalOnDiskHighest = journal?.getHighestPhysicalSeq();
+      physicalFrameHighest = journal?.getHighestPhysicalFrameSeq();
+      observedJournalFormat = journal?.getObservedFormatVersion();
       journalHasData = journal?.hasData() ?? false;
     } catch (error) {
       const accessReason = this.describeJournalAccessFailure(error);
@@ -378,9 +418,42 @@ export class StatePersistence {
         malformed: false,
         accessFailure: true,
       });
-      physicalHighest = this.recoveryStatus.highest_on_disk_seq;
+      logicalOnDiskHighest = this.recoveryStatus.highest_on_disk_seq;
+      physicalFrameHighest = this.recoveryStatus.highest_physical_frame_seq ?? 0;
+      observedJournalFormat = undefined;
       journalHasData = journal !== null;
     }
+    const highestAllocatedLogicalSeq = Math.max(
+      this.recoveryStatus.highest_allocated_logical_seq
+        ?? this.recoveryStatus.highest_allocated_seq,
+      journal?.getHighestAllocatedSeq() ?? 0,
+    );
+    const highestAllocatedFrameSeq = Math.max(
+      this.recoveryStatus.highest_allocated_frame_seq ?? 0,
+      journal?.getHighestAllocatedFrameSeq() ?? 0,
+    );
+    const highestLogicalOnDiskSeq = logicalOnDiskHighest === undefined
+      ? this.recoveryStatus.highest_on_disk_seq
+      : Math.max(this.recoveryStatus.highest_on_disk_seq, logicalOnDiskHighest);
+    const highestPhysicalFrameSeq = physicalFrameHighest === undefined
+      ? this.recoveryStatus.highest_physical_frame_seq ?? 0
+      : Math.max(
+          this.recoveryStatus.highest_physical_frame_seq ?? 0,
+          physicalFrameHighest,
+        );
+    const highestContiguousAppliedLogicalSeq = journal?.getAppliedThroughSeq()
+      ?? this.recoveryStatus.highest_contiguous_applied_logical_seq
+      ?? this.recoveryStatus.highest_contiguous_applied_seq;
+    this.recoveryStatus = {
+      ...this.recoveryStatus,
+      highest_allocated_seq: highestAllocatedLogicalSeq,
+      highest_allocated_logical_seq: highestAllocatedLogicalSeq,
+      highest_allocated_frame_seq: highestAllocatedFrameSeq,
+      highest_on_disk_seq: highestLogicalOnDiskSeq,
+      highest_physical_frame_seq: highestPhysicalFrameSeq,
+      highest_contiguous_applied_seq: highestContiguousAppliedLogicalSeq,
+      highest_contiguous_applied_logical_seq: highestContiguousAppliedLogicalSeq,
+    };
     return {
       ...this.recoveryStatus,
       state_migration: JSON.parse(JSON.stringify(this.stateMigrationStatus)) as StateMigrationStatus,
@@ -388,19 +461,21 @@ export class StatePersistence {
       outcome: writeBlockedReason ? 'incomplete' : this.recoveryStatus.outcome,
       complete: writeBlockedReason ? false : this.recoveryStatus.complete,
       writable: this.isWritable(),
-      highest_allocated_seq: journal?.getHighestAllocatedSeq() ?? this.recoveryStatus.highest_allocated_seq,
+      highest_allocated_seq: highestAllocatedLogicalSeq,
+      highest_allocated_logical_seq: highestAllocatedLogicalSeq,
+      highest_allocated_frame_seq: highestAllocatedFrameSeq,
       // Compaction legitimately removes replayed records from the active WAL.
-      // Preserve the highest sequence observed during recovery while still
-      // allowing later live appends to advance the value.
-      highest_on_disk_seq: physicalHighest === undefined
-        ? this.recoveryStatus.highest_on_disk_seq
-        : Math.max(this.recoveryStatus.highest_on_disk_seq, physicalHighest),
-      highest_contiguous_applied_seq: journal?.getAppliedThroughSeq() ?? this.recoveryStatus.highest_contiguous_applied_seq,
+      // Preserve the highest logical transaction and physical frame observed
+      // during recovery while still allowing later live appends to advance.
+      highest_on_disk_seq: highestLogicalOnDiskSeq,
+      highest_physical_frame_seq: highestPhysicalFrameSeq,
+      highest_contiguous_applied_seq: highestContiguousAppliedLogicalSeq,
+      highest_contiguous_applied_logical_seq: highestContiguousAppliedLogicalSeq,
       consecutive_persistence_failures: this.consecutivePersistenceFailures,
       ...(this.lastPersistenceError ? { last_persistence_error: this.lastPersistenceError } : {}),
       journal: {
         ...this.recoveryStatus.journal,
-        format_version: CURRENT_JOURNAL_VERSION,
+        format_version: this.reportedJournalFormatVersion(observedJournalFormat),
         // Legacy engagements can acquire a journal in-process immediately
         // before their first composite mutation. Do not keep reporting the
         // constructor-time, disabled journal metadata after that transition.
@@ -425,11 +500,18 @@ export class StatePersistence {
     this.recoveryStatus = {
       ...this.recoveryStatus,
       highest_allocated_seq: journal.getHighestAllocatedSeq(),
+      highest_allocated_logical_seq: journal.getHighestAllocatedSeq(),
+      highest_allocated_frame_seq: journal.getHighestAllocatedFrameSeq(),
       highest_on_disk_seq: Math.max(
         this.recoveryStatus.highest_on_disk_seq,
         journal.getHighestPhysicalSeq(),
       ),
+      highest_physical_frame_seq: Math.max(
+        this.recoveryStatus.highest_physical_frame_seq ?? 0,
+        journal.getHighestPhysicalFrameSeq(),
+      ),
       highest_contiguous_applied_seq: journal.getAppliedThroughSeq(),
+      highest_contiguous_applied_logical_seq: journal.getAppliedThroughSeq(),
       journal: {
         ...this.recoveryStatus.journal,
         enabled: true,
@@ -512,6 +594,26 @@ export class StatePersistence {
     }
   }
 
+  /** Physical-frame counterpart to highestPhysicalSeqOr(). Journal-v2 uses
+   * multiple begin/chunk/commit frames for one logical transaction, so this
+   * high-water must remain independently inspectable. */
+  private highestPhysicalFrameSeqOr(fallback: number): number {
+    const journal = this.ctx.mutationJournal;
+    if (!journal) return fallback;
+    try {
+      return journal.getHighestPhysicalFrameSeq();
+    } catch (error) {
+      this.journalAccessError ??= error;
+      const accessReason = this.describeJournalAccessFailure(error);
+      this.recoveryReadOnlyReason ??= accessReason;
+      journal.blockAppends(this.recoveryReadOnlyReason);
+      this.lastPersistenceError ??= error instanceof Error ? error.message : String(error);
+      const previous = (this.recoveryStatus as PersistenceRecoveryStatus | undefined)
+        ?.highest_physical_frame_seq ?? 0;
+      return Math.max(fallback, previous);
+    }
+  }
+
   /** Permanently close this process's durable-mutation gate after discovering
    * an unreadable or semantically corrupt live WAL. Retrying an ordinary state
    * write cannot repair journal ordering, so this path deliberately bypasses
@@ -522,6 +624,7 @@ export class StatePersistence {
     malformed: boolean;
     accessFailure?: boolean;
     subject?: 'WAL' | 'state';
+    quarantine?: boolean;
   }): JournalRecoveryGateError {
     const alreadyLatched = this.recoveryReadOnlyReason === input.reason;
     this.cancelTimers();
@@ -539,7 +642,9 @@ export class StatePersistence {
     this.ctx.mutationJournal?.blockAppends(input.reason);
     let journalHasData = false;
     try { journalHasData = this.ctx.mutationJournal?.hasData() ?? false; } catch { journalHasData = true; }
-    const quarantine = !alreadyLatched && journalHasData ? this.quarantineJournal() : {};
+    const quarantine = input.quarantine !== false && !alreadyLatched && journalHasData
+      ? this.quarantineJournal()
+      : {};
     this.recoveryStatus = {
       ...this.recoveryStatus,
       outcome: 'incomplete',
@@ -656,6 +761,107 @@ export class StatePersistence {
       this.mergeDetail(detail);
       this.recordPersistenceFailure(error, 'immediate_flush');
       throw error;
+    }
+  }
+
+  /**
+   * Publish the first full-state recovery base for a fresh engagement.
+   *
+   * The empty-WAL precondition and atomic state replacement deliberately run
+   * under one cross-process writer mutex. A cooperating journal writer cannot
+   * append between validation and the checkpoint-zero rename.
+   */
+  persistBootstrapBase(detail: GraphUpdateDetail = {}): void {
+    this.cancelTimers();
+    this.assertWritable();
+    try {
+      this.withMigrationWriteGuard(() => {
+        const journal = this.ctx.mutationJournal;
+        if (!journal) {
+          throw new Error('fresh engagement bootstrap requires an initialized mutation journal');
+        }
+        this.assertNoUsableBootstrapBaseAppeared();
+        if (journal.hasData()) {
+          throw new Error('fresh engagement bootstrap refused a nonempty WAL without a valid base');
+        }
+        this.writeStateToDiskUnlocked({ rotateExisting: false });
+      });
+      this.ctx.fireUpdateCallbacks(detail);
+      this.finishSuccessfulWrite();
+    } catch (error) {
+      if (error instanceof JournalRecoveryGateError) throw error;
+      this.dirty = true;
+      this.mergeDetail(detail);
+      this.recordPersistenceFailure(error, 'bootstrap_base');
+      throw error;
+    }
+  }
+
+  /**
+   * Recovery selected `seed_required` before the in-memory seed was built.
+   * Revalidate that decision under the writer mutex so a second fresh engine
+   * cannot publish a different checkpoint-zero base and then be silently
+   * overwritten by this constructor.
+   */
+  private assertNoUsableBootstrapBaseAppeared(): void {
+    let candidates: RestoreCandidate[];
+    try {
+      candidates = this.collectRestoreCandidates();
+    } catch (error) {
+      throw new Error(
+        `fresh engagement bootstrap could not revalidate recovery bases: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    for (const candidate of candidates) {
+      let bytes: Buffer;
+      try {
+        bytes = this.readPersistedBytes(candidate.path);
+      } catch (error) {
+        throw new Error(
+          `fresh engagement bootstrap found an unreadable ${candidate.source} recovery base at ${candidate.path}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      let data: unknown;
+      try {
+        data = parseJsonBytes(bytes);
+      } catch {
+        // Invalid legacy/config-seed leftovers were already rejected by the
+        // recovery pass and remain eligible for deliberate replacement.
+        continue;
+      }
+
+      try {
+        this.validateStateBase(data);
+        this.validateFullStateDetached(data, this.builtinRules);
+      } catch (error) {
+        const record = data && typeof data === 'object' && !Array.isArray(data)
+          ? data as Record<string, unknown>
+          : undefined;
+        const hasExplicitVersion = record !== undefined
+          && (
+            Object.prototype.hasOwnProperty.call(record, 'state_version')
+            || Object.prototype.hasOwnProperty.call(record, 'journal_version')
+          );
+        if (
+          error instanceof StateIntegrityError
+          || error instanceof PersistedStateVersionError
+          || error instanceof PersistedJournalVersionError
+          || hasExplicitVersion
+        ) {
+          throw new Error(
+            `fresh engagement bootstrap found a protected ${candidate.source} recovery base at ${candidate.path}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        // A schema-invalid legacy candidate was part of the original
+        // seed-required decision and is safe to replace from config.
+        continue;
+      }
+
+      throw new Error(
+        `a valid ${candidate.source} recovery base appeared during fresh engagement bootstrap at ${candidate.path}; restart and recover it instead of overwriting it`,
+      );
     }
   }
 
@@ -804,7 +1010,15 @@ export class StatePersistence {
       last_persistence_error: message,
     };
     this.scheduleRetry();
+    const activityTransactionRunner = this.ctx.activityTransactionRunner;
     try {
+      // This diagnostic describes a state write that is already dirty and has
+      // its bounded retry scheduled above. Running it through the ordinary
+      // activity transaction boundary would append another transaction and
+      // schedule debounce/max-delay flushes, multiplying persistence attempts.
+      // Keep the event in the dirty in-memory state so the existing retry owns
+      // its durability without recursively creating more persistence work.
+      this.ctx.activityTransactionRunner = undefined;
       this.ctx.logEvent({
         description: `Scheduled state persistence flush failed (${source})`,
         category: 'system',
@@ -820,6 +1034,8 @@ export class StatePersistence {
       });
     } catch {
       // Persistence retry must never depend on diagnostic event emission.
+    } finally {
+      this.ctx.activityTransactionRunner = activityTransactionRunner;
     }
     // Persistence health can change after the original graph delta was already
     // delivered (for example, when the debounced flush exhausts retries). Push
@@ -918,7 +1134,9 @@ export class StatePersistence {
     }
     this.shutdownHandlers = [];
     this.ctx.persistenceWriteGuard = undefined;
+    this.ctx.persistencePostCommitFailure = undefined;
     this.releaseHeldMigrationLease();
+    this.ctx.mutationJournal?.dispose();
   }
 
   private releaseHeldMigrationLease(): void {
@@ -987,6 +1205,21 @@ export class StatePersistence {
   }
 
   private finishStateFormatWrite(): void {
+    if (this.journalUpgradeBackup) {
+      this.stateMigrationStatus = {
+        status: 'migrated',
+        supported_state_version: CURRENT_STATE_VERSION,
+        supported_journal_version: CURRENT_JOURNAL_VERSION,
+        observed_state_version: CURRENT_STATE_VERSION,
+        observed_journal_version: LEGACY_JOURNAL_VERSION,
+        migration_required: false,
+        backup_path: this.journalUpgradeBackup.directory,
+        backup_manifest_sha256: this.journalUpgradeBackup.manifest_sha256,
+      };
+      this.journalUpgradeBackup = undefined;
+      this.releaseHeldMigrationLease();
+      return;
+    }
     if (this.migrationBackup) {
       if (!this.releaseMigrationLease) {
         throw new Error('state migration lease is missing at the V1 publication boundary');
@@ -997,7 +1230,7 @@ export class StatePersistence {
         supported_state_version: CURRENT_STATE_VERSION,
         supported_journal_version: CURRENT_JOURNAL_VERSION,
         observed_state_version: LEGACY_STATE_VERSION,
-        observed_journal_version: CURRENT_JOURNAL_VERSION,
+        observed_journal_version: LEGACY_JOURNAL_VERSION,
         migration_required: false,
         backup_path: this.migrationBackup.directory,
         backup_manifest_sha256: this.migrationBackup.manifest_sha256,
@@ -1064,11 +1297,14 @@ export class StatePersistence {
     const stateDir = dirname(this.ctx.stateFilePath);
     mkdirDurable(stateDir);
     let primaryIsUsableBase = false;
+    let primaryCheckpoint = 0;
     if (
       options.allowIntegrityReplacement !== true
       && existsSync(this.ctx.stateFilePath)
     ) {
-      primaryIsUsableBase = this.assertPrimaryStateIntegrity();
+      const primary = this.inspectPrimaryStateIntegrity();
+      primaryIsUsableBase = primary.usable;
+      primaryCheckpoint = primary.checkpoint;
     }
     // Every ordinary write is followed by retention pruning, even when the
     // 30-second rotation interval has not elapsed. Inspect retained recovery
@@ -1077,11 +1313,34 @@ export class StatePersistence {
       this.assertNoBlockingRetainedStateIntegrity(primaryIsUsableBase);
     }
 
+    const now = Date.now();
+    const shouldRotate = options.rotateExisting !== false
+      && existsSync(this.ctx.stateFilePath)
+      && now - this.ctx.lastSnapshotTime >= 30000;
+    // Preserve the established, checkpoint-aware rotation diagnostics before
+    // the broader stale-writer comparison. Both checks run under the same
+    // cross-process writer mutex and therefore describe one durable head.
+    if (shouldRotate) this.assertSnapshotJournalIntegrity();
+    if (options.allowIntegrityReplacement !== true && this.ctx.mutationJournal) {
+      try {
+        this.ctx.mutationJournal.assertCaughtUpForStateWrite(primaryCheckpoint);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const staleWriter = message.startsWith('writer is stale:');
+        throw this.latchJournalRecoveryFailure({
+          reason: `state replacement refused: ${message}`,
+          error,
+          malformed: false,
+          subject: staleWriter ? 'state' : 'WAL',
+          quarantine: !staleWriter,
+        });
+      }
+    }
+
     // Rotate the current durable primary before creating the replacement temp.
     // This lets a WAL-integrity preflight fail without leaving a state temp that
     // could be mistaken for a completed checkpoint.
-    const now = Date.now();
-    if (options.rotateExisting !== false && existsSync(this.ctx.stateFilePath) && (now - this.ctx.lastSnapshotTime >= 30000)) {
+    if (shouldRotate) {
       this.rotateSnapshot();
       this.ctx.lastSnapshotTime = now;
     }
@@ -1121,31 +1380,35 @@ export class StatePersistence {
     this.metrics.flushCount++;
   }
 
+  private assertSnapshotJournalIntegrity(): void {
+    const journal = this.ctx.mutationJournal;
+    if (!journal) return;
+    let issue;
+    try {
+      issue = journal.inspectIntegrity(this.ctx.journalSnapshotSeq);
+    } catch (error) {
+      throw this.latchJournalRecoveryFailure({
+        reason: this.describeJournalAccessFailure(error),
+        error,
+        malformed: false,
+        accessFailure: true,
+      });
+    }
+    if (issue) {
+      throw this.latchJournalRecoveryFailure({
+        reason: `snapshot WAL integrity preflight failed at line ${issue.line}: ${issue.reason}`,
+        error: issue.reason,
+        malformed: issue.kind === 'malformed_entry',
+      });
+    }
+  }
+
   private rotateSnapshot(): void {
     const dir = dirname(this.ctx.stateFilePath);
     const base = basename(this.ctx.stateFilePath, '.json');
     const snapDir = join(dir, '.snapshots');
     const journal = this.ctx.mutationJournal;
-    if (journal) {
-      let issue;
-      try {
-        issue = journal.inspectIntegrity(this.ctx.journalSnapshotSeq);
-      } catch (error) {
-        throw this.latchJournalRecoveryFailure({
-          reason: this.describeJournalAccessFailure(error),
-          error,
-          malformed: false,
-          accessFailure: true,
-        });
-      }
-      if (issue) {
-        throw this.latchJournalRecoveryFailure({
-          reason: `snapshot WAL integrity preflight failed at line ${issue.line}: ${issue.reason}`,
-          error: issue.reason,
-          malformed: issue.kind === 'malformed_entry',
-        });
-      }
-    }
+    this.assertSnapshotJournalIntegrity();
     mkdirDurable(snapDir);
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     let snapPath: string | undefined;
@@ -1273,7 +1536,7 @@ export class StatePersistence {
     }
   }
 
-  private assertPrimaryStateIntegrity(): boolean {
+  private inspectPrimaryStateIntegrity(): { checkpoint: number; usable: boolean } {
     let bytes: Buffer;
     try {
       bytes = this.readPersistedBytes(this.ctx.stateFilePath);
@@ -1282,11 +1545,24 @@ export class StatePersistence {
         `state replacement could not read the durable primary at ${this.ctx.stateFilePath}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+    let data: unknown;
     try {
-      const data = parseJsonBytes(bytes);
-      this.validateStateBase(data);
+      data = parseJsonBytes(bytes);
+    } catch {
+      return { checkpoint: 0, usable: false };
+    }
+    const record = data && typeof data === 'object'
+      ? data as Record<string, unknown>
+      : undefined;
+    const observedCheckpoint = record
+      && Number.isSafeInteger(record.journalSnapshotSeq)
+      && (record.journalSnapshotSeq as number) >= 0
+      ? record.journalSnapshotSeq as number
+      : 0;
+    try {
+      const validated = this.validateStateBase(data);
       this.validateFullStateDetached(data, this.builtinRules);
-      return true;
+      return { checkpoint: validated.checkpoint, usable: true };
     } catch (error) {
       if (
         (error instanceof PersistedStateVersionError
@@ -1297,7 +1573,9 @@ export class StatePersistence {
           `state replacement found an unsupported durable primary format: ${error.message}`,
         );
       }
-      if (!(error instanceof StateIntegrityError)) return false;
+      if (!(error instanceof StateIntegrityError)) {
+        return { checkpoint: observedCheckpoint, usable: false };
+      }
       throw this.latchJournalRecoveryFailure({
         reason: `state replacement found a recognized integrity mismatch at ${this.ctx.stateFilePath}: ${error.message}`,
         error,
@@ -1936,7 +2214,7 @@ export class StatePersistence {
     this.ctx.journalSnapshotSeq = checkpoint;
     return {
       checkpoint,
-      trusted: data.journalCheckpointSemantics === JOURNAL_CHECKPOINT_SEMANTICS,
+      trusted: isTrustedJournalCheckpoint(data.journalCheckpointSemantics, journalVersion),
       stateVersion,
       journalVersion,
     };
@@ -2415,7 +2693,10 @@ export class StatePersistence {
         continue;
       }
 
-      if (restoredCheckpoint.stateVersion === LEGACY_STATE_VERSION) {
+      const migratingLegacyState = restoredCheckpoint.stateVersion === LEGACY_STATE_VERSION;
+      const migratingLegacyJournal =
+        restoredCheckpoint.journalVersion === LEGACY_JOURNAL_VERSION;
+      if (migratingLegacyState || migratingLegacyJournal) {
         try {
           this.acquireMigrationLease();
           // A rollback may have committed its sidecar/marked primary after the
@@ -2427,7 +2708,11 @@ export class StatePersistence {
             mutators?.prepareRecoveryCommit !== undefined,
           );
           if (pendingRollback) {
-            if (!this.migrationBackup && this.releaseMigrationLease) {
+            if (
+              !this.migrationBackup
+              && !this.journalUpgradeBackup
+              && this.releaseMigrationLease
+            ) {
               this.releaseHeldMigrationLease();
             }
             return pendingRollback;
@@ -2447,18 +2732,31 @@ export class StatePersistence {
               mutators,
               true,
             );
-            if (!this.migrationBackup && this.releaseMigrationLease) {
+            if (
+              !this.migrationBackup
+              && !this.journalUpgradeBackup
+              && this.releaseMigrationLease
+            ) {
               this.releaseHeldMigrationLease();
             }
             return reranked;
           }
           // Backup exact config/state/WAL/snapshot bytes before replay can
           // authorize any V1 publication. Replay itself remains read-only.
-          this.beginLegacyMigration();
+          if (migratingLegacyState) {
+            this.beginLegacyMigration();
+          } else if (!this.journalUpgradeBackup) {
+            this.journalUpgradeBackup = createJournalUpgradeBackup({
+              stateFilePath: this.ctx.stateFilePath,
+              configFilePath: this.ctx.configFilePath,
+            });
+          }
         } catch (error) {
           return this.enterMigrationFailure(
             candidate.source,
-            `state migration backup could not be prepared: ${error instanceof Error ? error.message : String(error)}`,
+            `${migratingLegacyState ? 'state migration' : 'journal upgrade'} backup could not be prepared: ${error instanceof Error ? error.message : String(error)}`,
+            restoredCheckpoint.stateVersion,
+            migratingLegacyState,
           );
         }
       }
@@ -2466,9 +2764,12 @@ export class StatePersistence {
       this.ensureJournalForRestoredConfig();
       const journal = this.ctx.mutationJournal;
       let replay: MutationReplayResult | undefined;
+      let repairedIncompleteTail:
+        | Extract<ReturnType<MutationJournal['repairIncompleteTransactionTail']>, { repaired: true }>
+        | undefined;
       if (journal) {
         if (this.journalAccessError !== undefined) {
-          if (restoredCheckpoint.stateVersion === LEGACY_STATE_VERSION) {
+          if (migratingLegacyState || migratingLegacyJournal) {
             this.releaseHeldMigrationLease();
           }
           return this.enterJournalAccessFailure(this.journalAccessError, candidate.source);
@@ -2478,14 +2779,22 @@ export class StatePersistence {
           appliedThroughSeq: restoredCheckpoint.trusted ? restoredCheckpoint.checkpoint : 0,
         });
         try {
-          replay = journal.replay(
-            this.makeMutationApplier(mutators),
+          const preflightIssue = journal.inspectReplayIntegrity(
+            restoredCheckpoint.checkpoint,
+            { trustedContiguousCheckpoint: restoredCheckpoint.trusted },
+          );
+          if (preflightIssue?.kind === 'incomplete_transaction') {
+            const repair = journal.repairIncompleteTransactionTail();
+            if (repair.repaired) repairedIncompleteTail = repair;
+          }
+          replay = journal.replayTransactions(
+            this.makeTransactionApplier(mutators),
             restoredCheckpoint.checkpoint,
             { trustedContiguousCheckpoint: restoredCheckpoint.trusted },
           );
         } catch (error) {
           mutators?.abortRecoveryReplay?.();
-          if (restoredCheckpoint.stateVersion === LEGACY_STATE_VERSION) {
+          if (migratingLegacyState || migratingLegacyJournal) {
             this.releaseHeldMigrationLease();
           }
           return this.enterJournalAccessFailure(error, candidate.source);
@@ -2504,6 +2813,7 @@ export class StatePersistence {
         stateVersion: restoredCheckpoint.stateVersion,
         journalVersion: restoredCheckpoint.journalVersion,
         ...(replay ? { replay } : {}),
+        ...(repairedIncompleteTail ? { repairedIncompleteTail } : {}),
       };
 
       // Once the newest valid base exposes an incomplete WAL, do not reinterpret
@@ -2517,7 +2827,7 @@ export class StatePersistence {
             supported_state_version: CURRENT_STATE_VERSION,
             supported_journal_version: CURRENT_JOURNAL_VERSION,
             observed_state_version: LEGACY_STATE_VERSION,
-            observed_journal_version: CURRENT_JOURNAL_VERSION,
+            observed_journal_version: restored.journalVersion,
             migration_required: true,
             ...(this.migrationBackup
               ? {
@@ -2528,21 +2838,43 @@ export class StatePersistence {
             reason: this.describeIncompleteReplay(replay),
           };
           this.releaseHeldMigrationLease();
+        } else if (restored.journalVersion === LEGACY_JOURNAL_VERSION) {
+          this.stateMigrationStatus = {
+            status: 'blocked',
+            supported_state_version: CURRENT_STATE_VERSION,
+            supported_journal_version: CURRENT_JOURNAL_VERSION,
+            observed_state_version: CURRENT_STATE_VERSION,
+            observed_journal_version: LEGACY_JOURNAL_VERSION,
+            migration_required: true,
+            ...(this.journalUpgradeBackup
+              ? {
+                  backup_path: this.journalUpgradeBackup.directory,
+                  backup_manifest_sha256: this.journalUpgradeBackup.manifest_sha256,
+                }
+              : {}),
+            reason: this.describeIncompleteReplay(replay),
+          };
+          this.releaseHeldMigrationLease();
         }
         return this.enterIncompleteRecovery(restored, this.describeIncompleteReplay(replay));
       }
 
-      if (restored.stateVersion !== LEGACY_STATE_VERSION) {
+      if (
+        restored.stateVersion !== LEGACY_STATE_VERSION
+        && restored.journalVersion === CURRENT_JOURNAL_VERSION
+      ) {
         const migrationCompletion = this.finishInterruptedMigrationIfPresent(candidate.source);
         if (migrationCompletion) return migrationCompletion;
-        this.stateMigrationStatus = {
-          status: 'current',
-          supported_state_version: CURRENT_STATE_VERSION,
-          supported_journal_version: CURRENT_JOURNAL_VERSION,
-          observed_state_version: CURRENT_STATE_VERSION,
-          observed_journal_version: CURRENT_JOURNAL_VERSION,
-          migration_required: false,
-        };
+        if (this.stateMigrationStatus.status !== 'migrated') {
+          this.stateMigrationStatus = {
+            status: 'current',
+            supported_state_version: CURRENT_STATE_VERSION,
+            supported_journal_version: CURRENT_JOURNAL_VERSION,
+            observed_state_version: CURRENT_STATE_VERSION,
+            observed_journal_version: CURRENT_JOURNAL_VERSION,
+            migration_required: false,
+          };
+        }
       }
 
       return this.finishRestoredBase(restored, mutators);
@@ -2619,8 +2951,10 @@ export class StatePersistence {
         status: 'migrated',
         supported_state_version: CURRENT_STATE_VERSION,
         supported_journal_version: CURRENT_JOURNAL_VERSION,
-        observed_state_version: LEGACY_STATE_VERSION,
-        observed_journal_version: CURRENT_JOURNAL_VERSION,
+        observed_state_version:
+          backup?.manifest.source_state_version ?? LEGACY_STATE_VERSION,
+        observed_journal_version:
+          backup?.manifest.source_journal_version ?? LEGACY_JOURNAL_VERSION,
         migration_required: false,
         ...(backup
           ? {
@@ -2637,6 +2971,7 @@ export class StatePersistence {
         `completed V1 state has an invalid or unretirable migration intent: ${error instanceof Error ? error.message : String(error)}`,
         CURRENT_STATE_VERSION,
         false,
+        CURRENT_JOURNAL_VERSION,
       );
     }
   }
@@ -2652,7 +2987,7 @@ export class StatePersistence {
       supported_state_version: CURRENT_STATE_VERSION,
       supported_journal_version: CURRENT_JOURNAL_VERSION,
       observed_state_version: LEGACY_STATE_VERSION,
-      observed_journal_version: CURRENT_JOURNAL_VERSION,
+      observed_journal_version: LEGACY_JOURNAL_VERSION,
       migration_required: true,
       backup_path: this.migrationBackup.directory,
       backup_manifest_sha256: this.migrationBackup.manifest_sha256,
@@ -2664,6 +2999,7 @@ export class StatePersistence {
     reason: string,
     observedStateVersion: typeof LEGACY_STATE_VERSION | typeof CURRENT_STATE_VERSION = LEGACY_STATE_VERSION,
     migrationRequired = observedStateVersion === LEGACY_STATE_VERSION,
+    observedJournalVersion: SupportedJournalVersion = LEGACY_JOURNAL_VERSION,
   ): RestoreResult {
     this.recoveryReadOnlyReason = reason;
     this.ctx.mutationJournal?.blockAppends(reason);
@@ -2674,12 +3010,12 @@ export class StatePersistence {
       supported_state_version: CURRENT_STATE_VERSION,
       supported_journal_version: CURRENT_JOURNAL_VERSION,
       observed_state_version: observedStateVersion,
-      observed_journal_version: CURRENT_JOURNAL_VERSION,
+      observed_journal_version: observedJournalVersion,
       migration_required: migrationRequired,
-      ...(this.migrationBackup
+      ...(this.migrationBackup || this.journalUpgradeBackup
         ? {
-            backup_path: this.migrationBackup.directory,
-            backup_manifest_sha256: this.migrationBackup.manifest_sha256,
+            backup_path: (this.migrationBackup ?? this.journalUpgradeBackup)!.directory,
+            backup_manifest_sha256: (this.migrationBackup ?? this.journalUpgradeBackup)!.manifest_sha256,
           }
         : {}),
       reason,
@@ -2827,7 +3163,7 @@ export class StatePersistence {
     scratch.import(record.graph as Parameters<OverwatchGraph['import']>[0]);
     return {
       checkpoint,
-      trusted: record.journalCheckpointSemantics === JOURNAL_CHECKPOINT_SEMANTICS,
+      trusted: isTrustedJournalCheckpoint(record.journalCheckpointSemantics, journalVersion),
       compactionTrusted: compactionAuthority === 'valid',
       stateVersion,
       journalVersion,
@@ -3079,13 +3415,46 @@ export class StatePersistence {
     this.recoveryStatus.last_persistence_error = message;
   }
 
+  private latchPostCommitApplyFailure(seq: number, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = `committed transaction seq ${seq} failed during in-memory application; restart required: ${message}`;
+    this.cancelTimers();
+    this.cancelRetryTimer();
+    // Memory may contain a partial transaction. Never let the ordinary
+    // snapshot/retry/shutdown path publish that state over the committed WAL.
+    this.dirty = false;
+    this.pendingDetail = {};
+    this.pendingRecoveryCheckpoint = undefined;
+    this.pendingRecoverySource = undefined;
+    this.persistenceFailureGateTripped = true;
+    this.lastPersistenceError = message;
+    this.recoveryReadOnlyReason = reason;
+    this.ctx.mutationJournal?.blockAppends(reason);
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source: this.recoveryStatus.source,
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: this.ctx.journalSnapshotSeq,
+      preserved: true,
+      highestContiguousAppliedSeq: this.ctx.mutationJournal?.getAppliedThroughSeq()
+        ?? this.ctx.journalSnapshotSeq,
+    });
+    this.recoveryStatus.last_persistence_error = message;
+    // eslint-disable-next-line no-console
+    console.error(`[persistence] ${reason}`);
+  }
+
   private finishRestoredBase(restored: RestoredBase, mutators?: ReplayMutators): RestoreResult {
     const replay = restored.replay;
     const checkpoint = replay?.highest_contiguous_applied_seq ?? restored.checkpoint;
     const migratingLegacyState = restored.stateVersion === LEGACY_STATE_VERSION;
+    const migratingLegacyJournal = restored.journalVersion === LEGACY_JOURNAL_VERSION;
     const recovered = restored.source === 'snapshot'
       || checkpoint !== restored.checkpoint
-      || migratingLegacyState;
+      || migratingLegacyState
+      || migratingLegacyJournal;
 
     if (replay && (replay.read > 0 || replay.read_issue !== undefined)) {
       this.ctx.logEvent({
@@ -3128,6 +3497,26 @@ export class StatePersistence {
         );
       }
     }
+    if (migratingLegacyJournal && !migratingLegacyState) {
+      try {
+        if (!this.journalUpgradeBackup) {
+          throw new Error('journal upgrade backup authority is missing');
+        }
+        assertStateMigrationSourcesUnchanged({
+          backup: this.journalUpgradeBackup,
+          stateFilePath: this.ctx.stateFilePath,
+          configFilePath: this.ctx.configFilePath,
+        });
+      } catch (error) {
+        mutators?.abortRecoveryReplay?.();
+        return this.enterMigrationFailure(
+          restored.source,
+          `journal-v1 replay completed, but journal-v2 publication was not authorized: ${error instanceof Error ? error.message : String(error)}`,
+          restored.stateVersion,
+          true,
+        );
+      }
+    }
 
     // A retained, already-applied WAL prefix is a recovery anchor, not a reason
     // to rewrite state on every restart. V0 is the exception: once its complete
@@ -3135,6 +3524,7 @@ export class StatePersistence {
     // checkpoint.
     if (
       migratingLegacyState
+      || migratingLegacyJournal
       || restored.source === 'snapshot'
       || checkpoint !== restored.checkpoint
     ) {
@@ -3170,6 +3560,20 @@ export class StatePersistence {
         category: 'system',
         outcome: 'success',
         details: { checkpoint },
+      });
+    }
+    if (restored.repairedIncompleteTail) {
+      this.ctx.logEvent({
+        description: 'Recovered by discarding an uncommitted journal-v2 tail',
+        event_type: 'system',
+        category: 'system',
+        outcome: 'success',
+        result_classification: 'neutral',
+        details: {
+          quarantine_path: restored.repairedIncompleteTail.quarantine_path,
+          dropped_bytes: restored.repairedIncompleteTail.dropped_bytes,
+          committed_transactions: restored.repairedIncompleteTail.committed_transactions,
+        },
       });
     }
     return { status: 'restored', source: restored.source };
@@ -3433,6 +3837,23 @@ export class StatePersistence {
     options: { restartRequired?: boolean } = {},
   ): void {
     const journal = this.ctx.mutationJournal;
+    const highestAllocatedLogicalSeq = Math.max(
+      this.recoveryStatus.highest_allocated_logical_seq
+        ?? this.recoveryStatus.highest_allocated_seq,
+      journal?.getHighestAllocatedSeq() ?? checkpoint,
+    );
+    const highestAllocatedFrameSeq = Math.max(
+      this.recoveryStatus.highest_allocated_frame_seq ?? 0,
+      journal?.getHighestAllocatedFrameSeq() ?? checkpoint,
+    );
+    const highestLogicalOnDiskSeq = Math.max(
+      this.recoveryStatus.highest_on_disk_seq,
+      this.highestPhysicalSeqOr(checkpoint),
+    );
+    const highestPhysicalFrameSeq = Math.max(
+      this.recoveryStatus.highest_physical_frame_seq ?? 0,
+      this.highestPhysicalFrameSeqOr(0),
+    );
     if (journal) {
       const oldestSnapshotCheckpoint = this.oldestRetainedValidSnapshotCheckpoint();
       // Without a retained valid snapshot, keep the whole WAL. When snapshots
@@ -3468,12 +3889,13 @@ export class StatePersistence {
       writable: restartReason === undefined,
       reason: restartReason,
       base_checkpoint: checkpoint,
-      highest_allocated_seq: checkpoint,
-      highest_on_disk_seq: Math.max(
-        this.recoveryStatus.highest_on_disk_seq,
-        this.highestPhysicalSeqOr(0),
-      ),
+      highest_allocated_seq: highestAllocatedLogicalSeq,
+      highest_allocated_logical_seq: highestAllocatedLogicalSeq,
+      highest_allocated_frame_seq: highestAllocatedFrameSeq,
+      highest_on_disk_seq: highestLogicalOnDiskSeq,
+      highest_physical_frame_seq: highestPhysicalFrameSeq,
       highest_contiguous_applied_seq: checkpoint,
+      highest_contiguous_applied_logical_seq: checkpoint,
       journal: { ...this.recoveryStatus.journal, preserved: false },
     };
     this.durableConfig = JSON.parse(JSON.stringify(this.ctx.config)) as EngagementConfig;
@@ -3492,6 +3914,20 @@ export class StatePersistence {
   }): PersistenceRecoveryStatus {
     const journal = this.ctx.mutationJournal;
     const replay = input.replay;
+    const highestAllocatedLogicalSeq = journal?.getHighestAllocatedSeq()
+      ?? input.checkpoint;
+    const highestAllocatedFrameSeq = journal?.getHighestAllocatedFrameSeq()
+      ?? input.checkpoint;
+    const highestLogicalOnDiskSeq = replay?.highest_on_disk_seq
+      ?? this.highestPhysicalSeqOr(input.checkpoint);
+    const highestPhysicalFrameSeq = replay?.highest_physical_frame_seq
+      ?? this.highestPhysicalFrameSeqOr(
+        this.recoveryStatus.highest_physical_frame_seq ?? 0,
+      );
+    const highestContiguousAppliedLogicalSeq = input.highestContiguousAppliedSeq
+      ?? replay?.highest_contiguous_applied_seq
+      ?? journal?.getAppliedThroughSeq()
+      ?? input.checkpoint;
     return {
       outcome: input.outcome,
       source: input.source,
@@ -3499,18 +3935,26 @@ export class StatePersistence {
       writable: input.writable,
       ...(input.reason ? { reason: input.reason } : {}),
       base_checkpoint: input.checkpoint,
-      highest_allocated_seq: journal?.getHighestAllocatedSeq() ?? input.checkpoint,
-      highest_on_disk_seq: replay?.highest_on_disk_seq
-        ?? this.highestPhysicalSeqOr(input.checkpoint),
-      highest_contiguous_applied_seq: input.highestContiguousAppliedSeq
-        ?? replay?.highest_contiguous_applied_seq
-        ?? journal?.getAppliedThroughSeq()
-        ?? input.checkpoint,
+      highest_allocated_seq: highestAllocatedLogicalSeq,
+      highest_allocated_logical_seq: highestAllocatedLogicalSeq,
+      highest_allocated_frame_seq: highestAllocatedFrameSeq,
+      highest_on_disk_seq: highestLogicalOnDiskSeq,
+      highest_physical_frame_seq: highestPhysicalFrameSeq,
+      highest_contiguous_applied_seq: highestContiguousAppliedLogicalSeq,
+      highest_contiguous_applied_logical_seq: highestContiguousAppliedLogicalSeq,
       consecutive_persistence_failures: this.consecutivePersistenceFailures,
       ...(this.lastPersistenceError ? { last_persistence_error: this.lastPersistenceError } : {}),
       journal: {
         enabled: journal !== null,
-        format_version: CURRENT_JOURNAL_VERSION,
+        format_version: this.reportedJournalFormatVersion(
+          (() => {
+            try {
+              return journal?.getObservedFormatVersion();
+            } catch {
+              return undefined;
+            }
+          })(),
+        ),
         ...(journal ? { path: journal.getPath() } : {}),
         read: replay?.read ?? 0,
         attempted: replay?.attempted ?? 0,
@@ -3523,6 +3967,20 @@ export class StatePersistence {
         preserved: input.preserved,
       },
     };
+  }
+
+  private reportedJournalFormatVersion(observed: number | undefined): number {
+    if (observed !== undefined) return observed;
+    if (
+      (
+        this.stateMigrationStatus.status === 'blocked'
+        || this.stateMigrationStatus.status === 'backup_created'
+      )
+      && this.stateMigrationStatus.observed_journal_version !== undefined
+    ) {
+      return this.stateMigrationStatus.observed_journal_version;
+    }
+    return CURRENT_JOURNAL_VERSION;
   }
 
   /**
@@ -3603,6 +4061,27 @@ export class StatePersistence {
                 return { status: 'skipped', reason: 'graph_corrected replay requires the engine correction applier' };
               }
               return mutators.applyGraphCorrectedMutation(payload, true);
+            }
+            case 'state_patch': {
+              const payload = entry.payload as unknown as DurableStatePatchV1;
+              if (payload.payload_version !== 1) {
+                return {
+                  status: 'skipped',
+                  reason: `unsupported state_patch payload version: ${String(payload.payload_version)}`,
+                };
+              }
+              if (!mutators) {
+                return {
+                  status: 'skipped',
+                  reason: 'state_patch replay requires the engine state-patch applier',
+                };
+              }
+              return mutators.applyStatePatchMutation(payload, true);
+            }
+            case 'activity_append': {
+              return ctx.applyActivityAppend(
+                entry.payload as unknown as ActivityAppendPayloadV1,
+              );
             }
             case 'add_edge': {
               const p = entry.payload as {
@@ -3727,6 +4206,69 @@ export class StatePersistence {
         }
       },
     };
+  }
+
+  private makeTransactionApplier(mutators?: ReplayMutators): EngineTransactionApplier {
+    const operationApplier = this.makeMutationApplier(mutators);
+    return {
+      applyTransaction: transaction => {
+        // A standalone activity append has its own O(delta) continuity checks
+        // and rollback. Avoid cloning the entire growing engagement for every
+        // replayed event; all other transaction shapes retain the full atomic
+        // fallback baseline.
+        const baseline = transaction.operations.length === 1
+          && transaction.operations[0]?.type === 'activity_append'
+          ? undefined
+          : this.captureRestoreBaseline();
+        try {
+          for (const operation of transaction.operations) {
+            const result = operationApplier.apply({
+              seq: transaction.seq,
+              ts: transaction.ts,
+              type: operation.type,
+              payload: operation.payload,
+              ...(transaction.source_action_id
+                ? { source_action_id: transaction.source_action_id }
+                : {}),
+            });
+            if (result.status === 'skipped') {
+              if (baseline !== undefined) {
+                this.restoreRejectedCandidateBaseline(baseline, this.builtinRules);
+              }
+              return result;
+            }
+          }
+          return { status: 'applied' };
+        } catch (error) {
+          if (baseline !== undefined) {
+            this.restoreRejectedCandidateBaseline(baseline, this.builtinRules);
+          }
+          throw error;
+        }
+      },
+    };
+  }
+
+  /**
+   * Apply an immutable transaction draft through the exact operation applier
+   * used by WAL recovery. Finding ingestion uses this first against a restored
+   * baseline to prove its captured operations reproduce the speculative
+   * after-state, then again as the live post-commit applier.
+   */
+  applyTransactionDraft(
+    draft: EngineTransactionDraft,
+    mutators?: ReplayMutators,
+  ): EngineTransactionApplyResult {
+    const transaction = {
+      version: 2 as const,
+      tx_id: 'uncommitted-draft',
+      seq: 0,
+      begin_frame_seq: 0,
+      commit_frame_seq: 0,
+      ts: this.ctx.nowIso(),
+      ...structuredClone(draft),
+    };
+    return this.makeTransactionApplier(mutators).applyTransaction(transaction);
   }
 
   recoverFromSnapshot(builtinRules: InferenceRule[], mutators?: ReplayMutators): boolean {

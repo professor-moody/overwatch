@@ -6,6 +6,8 @@ import { createOverwatchApp, registerAllTools, shutdownOverwatchApp, ToolRegistr
 import { InProcessTapeController } from '../services/in-process-tape.js';
 import { EngagementManager } from '../services/engagement-manager.js';
 import { GraphEngine } from '../services/graph-engine.js';
+import { MutationJournal } from '../services/mutation-journal.js';
+import { CURRENT_JOURNAL_VERSION, CURRENT_STATE_VERSION } from '../services/persisted-state.js';
 import type { EngagementConfig } from '../types.js';
 import { registerEngagementTools } from '../tools/engagement.js';
 import { withErrorBoundary } from '../tools/error-boundary.js';
@@ -112,6 +114,11 @@ describe('app bootstrap', () => {
         delete state.walCompactionAuthority;
         delete state.config.config_revision;
         delete state.config.config_hash;
+        // This fixture models a complete snapshot-only V0 base. Retaining
+        // journal-v2 transactions at/below a checkpoint after deleting its
+        // contiguous-checkpoint semantics is intentionally ambiguous and must
+        // remain degraded rather than being treated as a migratable V0 state.
+        rmSync(MutationJournal.pathForState(stateFilePath), { force: true });
       } else {
         state.state_version = 2;
       }
@@ -135,8 +142,8 @@ describe('app bootstrap', () => {
         } else {
           const recovery = app.engine.getPersistenceRecoveryStatus();
           expect(JSON.parse(readFileSync(stateFilePath, 'utf8'))).toMatchObject({
-            state_version: 1,
-            journal_version: 1,
+            state_version: CURRENT_STATE_VERSION,
+            journal_version: CURRENT_JOURNAL_VERSION,
           });
           const backup = verifyStateMigrationBackup(
             join(recovery.state_migration!.backup_path!, 'manifest.json'),

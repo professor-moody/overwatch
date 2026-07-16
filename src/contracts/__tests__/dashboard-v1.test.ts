@@ -91,12 +91,20 @@ describe('dashboard v1 contracts', () => {
           source: 'state',
           complete: true,
           writable: true,
+          highest_allocated_logical_seq: 2,
+          highest_allocated_frame_seq: 8,
+          highest_physical_frame_seq: 8,
+          highest_contiguous_applied_logical_seq: 2,
         },
         reason: 'configuration reconciliation is required',
         base_checkpoint: 2,
         highest_allocated_seq: 2,
+        highest_allocated_logical_seq: 2,
+        highest_allocated_frame_seq: 8,
         highest_on_disk_seq: 2,
+        highest_physical_frame_seq: 8,
         highest_contiguous_applied_seq: 2,
+        highest_contiguous_applied_logical_seq: 2,
         consecutive_persistence_failures: 0,
         journal: {
           enabled: true,
@@ -149,6 +157,16 @@ describe('dashboard v1 contracts', () => {
     expect(parsed.recovery.state_migration?.future_migration_field).toBe('additive');
     expect(parsed.recovery.config_recovery?.conflicted_intent?.future_conflict_field).toBe('additive');
     expect(parsed.recovery.future_recovery_field).toBe('additive');
+    expect(parsed.recovery).toMatchObject({
+      highest_allocated_logical_seq: 2,
+      highest_allocated_frame_seq: 8,
+      highest_physical_frame_seq: 8,
+      highest_contiguous_applied_logical_seq: 2,
+      state_recovery: {
+        highest_allocated_frame_seq: 8,
+        highest_physical_frame_seq: 8,
+      },
+    });
     expect(RecoveryStatusResponseSchema.safeParse({
       recovery: {
         ...parsed.recovery,

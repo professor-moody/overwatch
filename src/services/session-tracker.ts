@@ -6,11 +6,19 @@
 // ============================================================
 
 import type { EngineContext, ActivityLogEntry } from './engine-context.js';
+import type { EdgeProperties } from '../types.js';
 
 export interface SessionTrackerHost {
   ctx: EngineContext;
   logActionEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry;
   log(message: string, agentId?: string, extra?: Partial<ActivityLogEntry>): void;
+  addEdge(
+    source: string,
+    target: string,
+    props: EdgeProperties,
+    replayEdgeId?: string,
+  ): { id: string; isNew: boolean };
+  mergeEdgeAttributes(edgeId: string, props: Record<string, unknown>): void;
   persist(detail?: Record<string, unknown>): void;
   invalidateFrontierCache(): void;
   invalidatePathGraph(): void;
@@ -57,7 +65,7 @@ export function ingestSessionResult(
         // (which would pull a non-deterministic value into hashed state).
         const edgeId = `session-${principal_node}-${target_node}`;
         if (!host.ctx.graph.hasEdge(edgeId)) {
-          host.ctx.graph.addEdgeWithKey(edgeId, principal_node, target_node, {
+          host.addEdge(principal_node, target_node, {
             type: 'HAS_SESSION',
             confidence: 1.0,
             discovered_at: new Date().toISOString(),
@@ -68,7 +76,7 @@ export function ingestSessionResult(
             session_live: true,
             session_id,
             live_session_ids: session_id ? [session_id] : [],
-          });
+          }, edgeId);
           host.invalidateFrontierCache();
           host.invalidatePathGraph();
         } else {
@@ -87,7 +95,7 @@ export function ingestSessionResult(
           // Only overwrite the scalar session_id when this open carries one —
           // an id-less re-open must not clobber a valid recorded session_id.
           if (session_id) mergeProps.session_id = session_id;
-          host.ctx.graph.mergeEdgeAttributes(edgeId, mergeProps);
+          host.mergeEdgeAttributes(edgeId, mergeProps);
         }
       }
     }
@@ -192,9 +200,7 @@ export function onSessionClosed(host: SessionTrackerHost, sessionId: string, tar
       // what gates liveness; the scalar is cosmetic on a historical edge.
       props.session_closed_at = new Date().toISOString();
     }
-    host.ctx.applyJournaledMutation('merge_edge_attrs', { edge_id: edgeId, props }, () => {
-      host.ctx.graph.mergeEdgeAttributes(edgeId, props);
-    });
+    host.mergeEdgeAttributes(edgeId, props);
   }
 
   if (edgesToDowngrade.length > 0) {
@@ -226,9 +232,7 @@ export function reconcileSessionEdgesOnStartup(host: SessionTrackerHost): void {
         session_closed_at: attrs.session_closed_at || new Date().toISOString(),
         live_session_ids: [] as string[],
       };
-      host.ctx.applyJournaledMutation('merge_edge_attrs', { edge_id: _edgeId, props }, () => {
-        host.ctx.graph.mergeEdgeAttributes(_edgeId, props);
-      });
+      host.mergeEdgeAttributes(_edgeId, props);
       downgraded++;
     }
   });
@@ -254,7 +258,7 @@ function markFrontierEdgeTested(
     // Frontier edge IDs follow pattern "frontier-edge-{edgeId}"
     const edgeId = frontier_item_id.replace(/^frontier-edge-/, '');
     if (edgeId !== frontier_item_id && host.ctx.graph.hasEdge(edgeId)) {
-      host.ctx.graph.mergeEdgeAttributes(edgeId, {
+      host.mergeEdgeAttributes(edgeId, {
         tested: true,
         test_result,
       });

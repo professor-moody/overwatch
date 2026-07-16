@@ -128,6 +128,11 @@ export interface Session {
   metadata: SessionMetadata;
   handle: AdapterHandle | null;
   buffer: RingBuffer;
+  last_descriptor_activity_persisted_at?: number;
+}
+
+function cloneSessionMetadata(metadata: SessionMetadata): SessionMetadata {
+  return structuredClone(metadata);
 }
 
 // ============================================================
@@ -156,6 +161,7 @@ export type SessionEventCallback = (event: SessionEvent) => void;
 const MAX_CLOSED_SESSIONS = 50;
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const PERSISTENCE_GATE_POLL_MS = 250;
+const SESSION_ACTIVITY_DURABILITY_MS = 1_000;
 
 export interface SessionCreateOptions {
   kind: SessionKind;
@@ -246,6 +252,12 @@ export class SessionManager {
   private engine: GraphEngine | null;
   private idleTimeoutMs: number;
   private eventListeners: Set<SessionEventCallback> = new Set();
+  /**
+   * Single durability owner. Unlike ordinary dashboard/event listeners, this
+   * callback is allowed to fail the session operation so runtime state can
+   * never advance past a descriptor that was not journaled.
+   */
+  private durableEventListener?: SessionEventCallback;
   private persistenceGateTimer: ReturnType<typeof setInterval> | null = null;
   private persistenceFrozen = false;
   private persistenceAbortController = new AbortController();
@@ -265,8 +277,21 @@ export class SessionManager {
     return () => this.eventListeners.delete(callback);
   }
 
+  onDurableEvent(callback: SessionEventCallback): () => void {
+    if (this.durableEventListener) {
+      throw new Error('SessionManager already has a durable event listener.');
+    }
+    this.durableEventListener = callback;
+    return () => {
+      if (this.durableEventListener === callback) {
+        this.durableEventListener = undefined;
+      }
+    };
+  }
+
   async create(options: SessionCreateOptions): Promise<{ metadata: SessionMetadata; initial: SessionReadResult }> {
     this.assertPersistenceWritable();
+    this.assertDurableDescriptorOwner();
     validateSessionCreateOptions(options);
     const adapter = this.adapters.get(options.kind);
     if (!adapter) {
@@ -278,7 +303,9 @@ export class SessionManager {
     const buffer = new RingBuffer();
 
     // Determine initial state based on kind
-    const initialState: SessionState = options.kind === 'socket' ? 'pending' : 'connected';
+    // Every session begins as a durable reservation. A PTY/SSH descriptor is
+    // promoted to connected only after its adapter handle has been created.
+    const initialState: SessionState = 'pending';
 
     // Determine transport label
     let transport = 'pty';
@@ -295,7 +322,9 @@ export class SessionManager {
       bind_host: options.bind_host,
       advertise_host: options.advertise_host,
       accept_mode: options.accept_mode,
-      reachability_warnings: options.reachability_warnings,
+      reachability_warnings: options.reachability_warnings
+        ? [...options.reachability_warnings]
+        : undefined,
       title: options.title,
       host: options.host,
       user: options.user,
@@ -317,13 +346,23 @@ export class SessionManager {
         tty_quality: 'none',
       },
       buffer_end_pos: 0,
-      default_validation: options.default_validation,
+      default_validation: options.default_validation
+        ? structuredClone(options.default_validation)
+        : undefined,
     };
 
-    const session: Session = { metadata, handle: null, buffer };
+    const session: Session = {
+      metadata,
+      handle: null,
+      buffer,
+      last_descriptor_activity_persisted_at: 0,
+    };
     this.sessions.set(id, session);
 
     try {
+      // Reserve the descriptor before DNS, SSH, PTY creation, or listener
+      // binding can create a live runtime surface.
+      this.emitDurableSessionEvent('session_created', session);
       this.assertPersistenceWritable();
       const handle = await adapter.spawn({
         host: options.host,
@@ -349,16 +388,18 @@ export class SessionManager {
         // is still pending when persistence transitions to read-only.
         abort_signal: this.persistenceAbortController.signal,
       });
+      // Take ownership immediately. Persistence may have degraded while the
+      // adapter was spawning; if runtime cleanup then fails, this retained
+      // handle is the only safe way to retry instead of orphaning the target.
+      session.handle = handle;
 
       // Adapter setup may involve DNS, SSH, or binding a listener. If the gate
       // closed while it was pending, tear the newly-created runtime handle down
       // before it can become an untracked target execution surface.
       if (!this.checkPersistenceGate()) {
-        try { handle.close(); } catch { /* best-effort freeze */ }
         throw this.persistenceReadOnlyError();
       }
 
-      session.handle = handle;
       session.metadata.pid = handle.pid;
       session.metadata.capabilities = { ...handle.capabilities };
 
@@ -366,20 +407,44 @@ export class SessionManager {
       handle.onData((chunk: string) => {
         if (!this.checkPersistenceGate()) return;
         session.buffer.write(chunk);
-        session.metadata.buffer_end_pos = session.buffer.endPos;
-        session.metadata.last_activity_at = new Date().toISOString();
+        const priorMetadata = session.metadata;
+        const observedAt = new Date();
+        session.metadata = {
+          ...session.metadata,
+          buffer_end_pos: session.buffer.endPos,
+          last_activity_at: observedAt.toISOString(),
+        };
+        if (
+          observedAt.getTime() - (session.last_descriptor_activity_persisted_at ?? 0)
+          >= SESSION_ACTIVITY_DURABILITY_MS
+        ) {
+          try {
+            this.emitSessionEvent('session_updated', session);
+            session.last_descriptor_activity_persisted_at = observedAt.getTime();
+          } catch {
+            session.metadata = priorMetadata;
+            this.checkPersistenceGate();
+          }
+        }
       });
 
       handle.onExit((info) => {
         if (!this.checkPersistenceGate()) return;
         try {
           if (session.metadata.state !== 'closed') {
-            session.metadata.state = 'closed';
-            session.metadata.closed_at = new Date().toISOString();
-            this.logSessionEvent(id, 'session_closed',
-              `Session "${session.metadata.title}" exited (code=${info.exitCode}, signal=${info.signal})`);
-            this.notifySessionClosed(session);
-            this.emitSessionEvent('session_closed', session);
+            const closedMetadata: SessionMetadata = {
+              ...session.metadata,
+              state: 'closed',
+              closed_at: new Date().toISOString(),
+              claimed_by: undefined,
+            };
+            this.commitSessionClosure(
+              session,
+              closedMetadata,
+              `Session "${session.metadata.title}" exited (code=${info.exitCode}, signal=${info.signal})`,
+            );
+            session.handle = null;
+            this.emitBestEffortSessionEvent('session_closed', session);
           }
           this.pruneClosedSessions();
         } catch {
@@ -475,7 +540,7 @@ export class SessionManager {
 
       const initial = session.buffer.tail(4096);
       return {
-        metadata: { ...session.metadata },
+        metadata: cloneSessionMetadata(session.metadata),
         initial: {
           session_id: id,
           start_pos: initial.startPos,
@@ -486,31 +551,63 @@ export class SessionManager {
       };
     } catch (err) {
       const persistenceDegraded = !this.checkPersistenceGate();
-      session.metadata.state = persistenceDegraded ? 'closed' : 'error';
-      session.metadata.closed_at = new Date().toISOString();
+      let cleanupError: unknown;
       if (session.handle) {
-        try { session.handle.close(); } catch { /* ignore cleanup errors */ }
-        session.handle = null;
+        const handle = session.handle;
+        try {
+          handle.close();
+          if (session.handle === handle) session.handle = null;
+        } catch (error) {
+          // A throwing close is ambiguous: retain ownership so shutdown or an
+          // explicit retry can attempt cleanup again.
+          session.handle = handle;
+          cleanupError = error;
+        }
+      }
+      if (cleanupError !== undefined) {
+        session.metadata.state = 'error';
+        session.metadata.closed_at = undefined;
+        session.metadata.notes = [
+          session.metadata.notes,
+          `Session-open cleanup could not close runtime: ${
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          }`,
+        ].filter(Boolean).join('\n');
+      } else {
+        session.metadata.state = persistenceDegraded ? 'closed' : 'error';
+        session.metadata.closed_at = new Date().toISOString();
       }
       if (!persistenceDegraded) {
         this.logSessionEvent(id, 'session_error',
           `Session "${options.title}" failed to open: ${err instanceof Error ? err.message : String(err)}`);
+        this.emitDurableSessionEvent('session_updated', session);
       }
 
       // Session → graph integration: mark failure on specific frontier item
       if (!persistenceDegraded && this.engine && options.kind === 'ssh' && options.target_node) {
-        this.engine.ingestSessionResult({
-          success: false,
-          target_node: options.target_node,
-          principal_node: options.principal_node,
-          credential_node: options.credential_node,
-          session_id: id,
-          agent_id: options.agent_id,
-          action_id: options.action_id,
-          frontier_item_id: options.frontier_item_id,
-        });
+        try {
+          this.engine.ingestSessionResult({
+            success: false,
+            target_node: options.target_node,
+            principal_node: options.principal_node,
+            credential_node: options.credential_node,
+            session_id: id,
+            agent_id: options.agent_id,
+            action_id: options.action_id,
+            frontier_item_id: options.frontier_item_id,
+          });
+        } catch {
+          // Preserve the primary open/cleanup failure. A second graph-ingest
+          // error cannot make runtime ownership less important or more precise.
+        }
       }
 
+      if (cleanupError !== undefined) {
+        throw new AggregateError(
+          [err, cleanupError],
+          `Session "${options.title}" failed to open and runtime cleanup failed`,
+        );
+      }
       throw err;
     }
   }
@@ -527,9 +624,11 @@ export class SessionManager {
     }
 
     this.assertPersistenceWritable();
+    this.commitSessionMetadataUpdate(session, {
+      ...session.metadata,
+      last_activity_at: new Date().toISOString(),
+    });
     session.handle.write(data);
-    session.metadata.last_activity_at = new Date().toISOString();
-    this.emitSessionEvent('session_updated', session);
     return { session_id: sessionId, end_pos: session.buffer.endPos };
   }
 
@@ -590,9 +689,11 @@ export class SessionManager {
       throw new Error(`Session ${sessionId} has no active handle`);
     }
     this.assertPersistenceWritable();
+    this.commitSessionMetadataUpdate(session, {
+      ...session.metadata,
+      last_activity_at: new Date().toISOString(),
+    });
     session.handle.write(command + '\n');
-    session.metadata.last_activity_at = new Date().toISOString();
-    this.emitSessionEvent('session_updated', session);
 
     // Wait for output to settle.
     // Phase 1: wait for at least one byte of post-command output (or timeout).
@@ -737,22 +838,34 @@ export class SessionManager {
     this.assertOwnership(session, claimedBy, force);
     this.assertPersistenceWritable();
 
-    if (updates.capabilities) {
-      session.metadata.capabilities = {
-        ...session.metadata.capabilities,
-        ...updates.capabilities,
-      };
-    }
-    if (updates.title !== undefined) session.metadata.title = updates.title;
-    if (updates.claimed_by !== undefined) session.metadata.claimed_by = updates.claimed_by;
-    if (updates.notes !== undefined) session.metadata.notes = updates.notes;
-    session.metadata.last_activity_at = new Date().toISOString();
-    this.emitSessionEvent('session_updated', session);
+    const metadata: SessionMetadata = {
+      ...session.metadata,
+      capabilities: updates.capabilities
+        ? {
+            ...session.metadata.capabilities,
+            ...updates.capabilities,
+          }
+        : session.metadata.capabilities,
+      ...(updates.title !== undefined ? { title: updates.title } : {}),
+      ...(updates.claimed_by !== undefined ? { claimed_by: updates.claimed_by } : {}),
+      ...(updates.notes !== undefined ? { notes: updates.notes } : {}),
+      last_activity_at: new Date().toISOString(),
+    };
+    this.commitSessionMetadataUpdate(session, metadata);
 
-    return { ...session.metadata };
+    return cloneSessionMetadata(session.metadata);
   }
 
   close(sessionId: string, claimedBy?: string, force?: boolean): { metadata: SessionMetadata; final: SessionReadResult } {
+    return this.closeInternal(sessionId, claimedBy, force, false);
+  }
+
+  private closeInternal(
+    sessionId: string,
+    claimedBy: string | undefined,
+    force: boolean | undefined,
+    preserveDescriptor: boolean,
+  ): { metadata: SessionMetadata; final: SessionReadResult } {
     // A degraded manager performs runtime cleanup through freezeForPersistence,
     // which deliberately avoids claiming durable audit/graph updates. Direct
     // service callers must not receive a falsely durable ordinary close.
@@ -770,31 +883,96 @@ export class SessionManager {
       truncated: tailResult.truncated,
     };
 
-    // Close the handle
-    if (session.handle) {
-      try { session.handle.close(); } catch { /* best effort */ }
+    const closedMetadata: SessionMetadata = {
+      ...session.metadata,
+      state: 'closed',
+      closed_at: new Date().toISOString(),
+      claimed_by: undefined,
+    };
+    const description = `Session "${session.metadata.title}" closed by operator`;
+    const previousMetadata = cloneSessionMetadata(session.metadata);
+    try {
+      this.commitSessionClosure(
+        session,
+        closedMetadata,
+        description,
+        preserveDescriptor,
+      );
+    } catch (error) {
+      // A committed transaction that fails its live applier trips the engine's
+      // read-only gate synchronously. Freeze immediately so a live target
+      // handle cannot survive until the background poll notices.
+      this.checkPersistenceGate();
+      throw error;
     }
 
-    session.metadata.state = 'closed';
-    session.metadata.closed_at = new Date().toISOString();
-    session.metadata.claimed_by = undefined;
-
-    this.logSessionEvent(sessionId, 'session_closed',
-      `Session "${session.metadata.title}" closed by operator`);
-    this.notifySessionClosed(session);
-    this.emitSessionEvent('session_closed', session);
+    const handle = session.handle;
+    try {
+      handle?.close();
+      session.handle = null;
+    } catch (error) {
+      // The durable lifecycle close has committed, but the external runtime
+      // may still be alive. Retain ownership for retry and surface an explicit
+      // unresolved state instead of returning an ordinary successful close.
+      const message = error instanceof Error ? error.message : String(error);
+      const unresolvedMetadata: SessionMetadata = {
+        ...previousMetadata,
+        state: 'error',
+        closed_at: undefined,
+        last_activity_at: new Date().toISOString(),
+        notes: [
+          previousMetadata.notes,
+          `Runtime close failed: ${message}`,
+        ].filter(Boolean).join('\n'),
+      };
+      if (preserveDescriptor) {
+        // Graceful shutdown deliberately retains the previously persisted
+        // resumable listener descriptor. Only the retiring in-memory manager
+        // needs to remember that runtime cleanup remains unresolved.
+        session.metadata = unresolvedMetadata;
+      } else {
+        try {
+          this.commitSessionMetadataUpdate(session, unresolvedMetadata);
+        } catch (correctionError) {
+          this.checkPersistenceGate();
+          throw new AggregateError(
+            [error, correctionError],
+            `Session ${sessionId} runtime close failed and its unresolved descriptor could not be persisted`,
+          );
+        }
+      }
+      throw new Error(`Session ${sessionId} runtime close failed: ${message}`, {
+        cause: error,
+      });
+    }
+    this.emitBestEffortSessionEvent('session_closed', session);
     this.pruneClosedSessions();
 
-    return { metadata: { ...session.metadata }, final };
+    return { metadata: cloneSessionMetadata(session.metadata), final };
   }
 
   list(activeOnly: boolean = false): SessionMetadata[] {
     this.reapIdleSessions();
-    const all = Array.from(this.sessions.values()).map(s => ({ ...s.metadata }));
+    const all = Array.from(this.sessions.values(), session =>
+      cloneSessionMetadata(session.metadata));
     if (activeOnly) {
       return all.filter(m => m.state === 'pending' || m.state === 'connected');
     }
     return all;
+  }
+
+  /**
+   * Runtime ownership that must block state rollback. Lifecycle metadata alone
+   * is insufficient: a failed close deliberately leaves state=error with the
+   * only retryable adapter handle still attached.
+   */
+  listUnresolvedRuntimeOwnership(): SessionMetadata[] {
+    return Array.from(this.sessions.values())
+      .filter(session =>
+        session.handle !== null
+        || session.metadata.state === 'pending'
+        || session.metadata.state === 'connected')
+      .map(session => cloneSessionMetadata(session.metadata));
   }
 
   /**
@@ -804,13 +982,10 @@ export class SessionManager {
    * descriptor set selected by the operator.
    */
   reconcileAfterStateRollback(): void {
-    const active = Array.from(this.sessions.values())
-      .filter(session =>
-        session.metadata.state === 'pending'
-        || session.metadata.state === 'connected');
-    if (active.length > 0) {
+    const unresolved = this.listUnresolvedRuntimeOwnership();
+    if (unresolved.length > 0) {
       throw new Error(
-        `Cannot reconcile session runtime after rollback while ${active.length} session(s) are live.`,
+        `Cannot reconcile session runtime after rollback while ${unresolved.length} session(s) retain live or unresolved runtime ownership.`,
       );
     }
     this.sessions.clear();
@@ -818,26 +993,36 @@ export class SessionManager {
 
   getSession(sessionId: string): SessionMetadata | null {
     const session = this.sessions.get(sessionId);
-    return session ? { ...session.metadata } : null;
+    return session ? cloneSessionMetadata(session.metadata) : null;
   }
 
   async shutdown(): Promise<void> {
     this.stopPersistenceGateMonitor();
+    let firstError: unknown;
     try {
       if (!this.persistenceWritable()) {
         this.freezeForPersistence();
         return;
       }
       for (const [id, session] of this.sessions) {
-        if (session.metadata.state === 'connected' || session.metadata.state === 'pending') {
+        const active = session.metadata.state === 'connected'
+          || session.metadata.state === 'pending';
+        if (active || session.handle) {
           try {
-            this.close(id, undefined, true);
-          } catch { /* best effort on shutdown */ }
+            const preserveDescriptor = active
+              && session.metadata.kind === 'socket'
+              && session.metadata.mode === 'listen'
+              && session.metadata.accept_mode === 'rearm';
+            this.closeInternal(id, undefined, true, preserveDescriptor);
+          } catch (error) {
+            if (firstError === undefined) firstError = error;
+          }
         }
       }
     } finally {
       this.stopPersistenceGateMonitor();
     }
+    if (firstError !== undefined) throw firstError;
   }
 
   reapIdleSessions(): string[] {
@@ -856,19 +1041,58 @@ export class SessionManager {
       const lastActivity = new Date(session.metadata.last_activity_at).getTime();
       if (now - lastActivity > this.idleTimeoutMs) {
         const title = session.metadata.title;
+        const previousMetadata = cloneSessionMetadata(session.metadata);
         try {
-          if (session.handle) {
-            try { session.handle.close(); } catch { /* best-effort */ }
+          const closedMetadata: SessionMetadata = {
+            ...session.metadata,
+            state: 'closed',
+            closed_at: new Date().toISOString(),
+            claimed_by: undefined,
+          };
+          this.commitSessionClosure(
+            session,
+            closedMetadata,
+            `Session "${title}" auto-closed after idle timeout (${Math.round(this.idleTimeoutMs / 60000)}min)`,
+          );
+          const handle = session.handle;
+          try {
+            handle?.close();
+            if (session.handle === handle) session.handle = null;
+          } catch (error) {
+            // The durable close already committed, but runtime ownership is
+            // unresolved. Retain the handle and correct the descriptor to an
+            // explicit retryable error instead of claiming the session reaped.
+            session.handle = handle;
+            const message = error instanceof Error ? error.message : String(error);
+            const unresolvedMetadata: SessionMetadata = {
+              ...previousMetadata,
+              state: 'error',
+              closed_at: undefined,
+              last_activity_at: new Date().toISOString(),
+              notes: [
+                previousMetadata.notes,
+                `Idle reaper runtime close failed: ${message}`,
+              ].filter(Boolean).join('\n'),
+            };
+            try {
+              this.commitSessionMetadataUpdate(session, unresolvedMetadata);
+            } catch (correctionError) {
+              // Keep the live projection truthful even if durability has
+              // failed and the persistence gate is about to freeze the manager.
+              session.metadata = unresolvedMetadata;
+              this.checkPersistenceGate();
+              throw new AggregateError(
+                [error, correctionError],
+                `Session ${id} idle close failed and its unresolved descriptor could not be persisted`,
+              );
+            }
+            continue;
           }
-          session.metadata.state = 'closed';
-          session.metadata.closed_at = new Date().toISOString();
-          session.metadata.claimed_by = undefined;
-          this.logSessionEvent(id, 'session_closed',
-            `Session "${title}" auto-closed after idle timeout (${Math.round(this.idleTimeoutMs / 60000)}min)`);
-          this.notifySessionClosed(session);
-          this.emitSessionEvent('session_closed', session);
+          this.emitBestEffortSessionEvent('session_closed', session);
           reaped.push(id);
-        } catch { /* best-effort */ }
+        } catch {
+          this.checkPersistenceGate();
+        }
       }
     }
     this.pruneClosedSessions();
@@ -917,19 +1141,33 @@ export class SessionManager {
   /** Close runtime handles without trying to journal lifecycle or graph state.
    * The gate is sticky for this manager instance; recovery requires restart. */
   private freezeForPersistence(): void {
-    if (this.persistenceFrozen) return;
-    this.persistenceFrozen = true;
-    this.stopPersistenceGateMonitor();
-    this.persistenceAbortController.abort(this.persistenceReadOnlyError());
+    if (!this.persistenceFrozen) {
+      this.persistenceFrozen = true;
+      this.stopPersistenceGateMonitor();
+      this.persistenceAbortController.abort(this.persistenceReadOnlyError());
+    }
     const closedAt = new Date().toISOString();
     for (const session of this.sessions.values()) {
-      if (session.metadata.state !== 'connected' && session.metadata.state !== 'pending') continue;
+      if (
+        session.metadata.state !== 'connected'
+        && session.metadata.state !== 'pending'
+        && !session.handle
+      ) continue;
       const handle = session.handle;
-      session.handle = null;
-      session.metadata.state = 'closed';
-      session.metadata.closed_at = closedAt;
-      session.metadata.claimed_by = undefined;
-      try { handle?.close(); } catch { /* best-effort runtime freeze */ }
+      try {
+        handle?.close();
+        session.handle = null;
+        session.metadata.state = 'closed';
+        session.metadata.closed_at = closedAt;
+        session.metadata.claimed_by = undefined;
+      } catch (error) {
+        session.metadata.state = 'error';
+        session.metadata.closed_at = undefined;
+        session.metadata.notes = [
+          session.metadata.notes,
+          `Persistence freeze could not close runtime: ${error instanceof Error ? error.message : String(error)}`,
+        ].filter(Boolean).join('\n');
+      }
       // Session events are an in-memory dashboard projection only. Do not call
       // logSessionEvent/onSessionClosed here: both are durable graph mutations.
       this.emitSessionEvent('session_closed', session);
@@ -947,15 +1185,15 @@ export class SessionManager {
     throw this.persistenceReadOnlyError();
   }
 
-  private notifySessionClosed(session: Session): void {
-    if (this.engine && this.persistenceWritable()) {
-      try {
-        this.engine.onSessionClosed(
-          session.metadata.id,
-          session.metadata.target_node,
-          session.metadata.principal_node,
-        );
-      } catch { /* best-effort graph update */ }
+  private assertDurableDescriptorOwner(): void {
+    if (
+      this.engine
+      && typeof this.engine.recordSessionDescriptor === 'function'
+      && !this.durableEventListener
+    ) {
+      throw new Error(
+        'Session runtime refused because no durable descriptor owner is registered.',
+      );
     }
   }
 
@@ -1026,14 +1264,78 @@ export class SessionManager {
   }
 
   private emitSessionEvent(type: SessionEventType, session: Session): void {
-    if (this.eventListeners.size === 0) return;
-    const event: SessionEvent = {
-      type,
-      session: { ...session.metadata },
-      sessions: Array.from(this.sessions.values()).map(candidate => ({ ...candidate.metadata })),
-    };
+    const event = this.buildSessionEvent(type, session);
+    if (!this.persistenceFrozen) this.emitDurableEvent(event);
+    this.emitBestEffortEvent(event);
+  }
+
+  private emitBestEffortSessionEvent(type: SessionEventType, session: Session): void {
+    this.emitBestEffortEvent(this.buildSessionEvent(type, session));
+  }
+
+  private emitBestEffortEvent(event: SessionEvent): void {
     for (const listener of this.eventListeners) {
-      try { listener(event); } catch { /* isolate listener failures */ }
+      try { listener(structuredClone(event)); } catch { /* isolate listener failures */ }
+    }
+  }
+
+  private emitDurableSessionEvent(type: SessionEventType, session: Session): void {
+    if (this.persistenceFrozen) return;
+    this.emitDurableEvent(this.buildSessionEvent(type, session));
+  }
+
+  private emitDurableEvent(event: SessionEvent): void {
+    this.assertDurableDescriptorOwner();
+    this.durableEventListener?.(structuredClone(event));
+  }
+
+  private buildSessionEvent(type: SessionEventType, session: Session): SessionEvent {
+    return {
+      type,
+      session: cloneSessionMetadata(session.metadata),
+      sessions: Array.from(this.sessions.values(), candidate =>
+        cloneSessionMetadata(candidate.metadata)),
+    };
+  }
+
+  private commitSessionClosure(
+    session: Session,
+    closedMetadata: SessionMetadata,
+    description: string,
+    preserveDescriptor = false,
+  ): void {
+    const previous = session.metadata;
+    if (
+      this.engine
+      && typeof this.engine.closeSessionDurably === 'function'
+    ) {
+      this.engine.closeSessionDurably(closedMetadata, description, {
+        preserve_descriptor: preserveDescriptor,
+      });
+      session.metadata = closedMetadata;
+      return;
+    }
+
+    session.metadata = closedMetadata;
+    try {
+      this.emitDurableSessionEvent('session_closed', session);
+    } catch (error) {
+      session.metadata = previous;
+      throw error;
+    }
+  }
+
+  private commitSessionMetadataUpdate(
+    session: Session,
+    metadata: SessionMetadata,
+  ): void {
+    const previous = session.metadata;
+    session.metadata = metadata;
+    try {
+      this.emitSessionEvent('session_updated', session);
+    } catch (error) {
+      session.metadata = previous;
+      throw error;
     }
   }
 

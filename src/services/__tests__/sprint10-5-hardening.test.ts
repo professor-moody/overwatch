@@ -1,12 +1,21 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { GraphEngine } from '../graph-engine.js';
+import { GraphEngine as BaseGraphEngine } from '../graph-engine.js';
 import { DashboardServer } from '../dashboard-server.js';
 import { SessionManager, RingBuffer } from '../session-manager.js';
 import type { Session } from '../session-manager.js';
 import type { EngagementConfig, Finding, SessionMetadata } from '../../types.js';
 import { unlinkSync, existsSync } from 'fs';
+import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-hardening.json';
+const engines = new Set<BaseGraphEngine>();
+
+class GraphEngine extends BaseGraphEngine {
+  constructor(config: EngagementConfig, stateFilePath?: string, configFilePath?: string) {
+    super(config, stateFilePath, configFilePath);
+    engines.add(this);
+  }
+}
 
 function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig {
   return {
@@ -31,8 +40,13 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
 }
 
 function cleanup() {
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  cleanupTestPersistence(TEST_STATE_FILE);
   if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
 }
+
+afterEach(cleanup);
 
 const now = new Date().toISOString();
 

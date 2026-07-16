@@ -10,8 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, rmSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../services/graph-engine.js';
 import type { EngagementConfig } from '../types.js';
+import { cleanupTestPersistence } from './helpers/cleanup-test-persistence.js';
 
 const TEST_STATE_FILE = './state-test-opsec-visibility.json';
+const liveEngines = new Set<GraphEngine>();
+
+function openEngine(opsec: EngagementConfig['opsec']): GraphEngine {
+  const engine = new GraphEngine(makeConfig(opsec), TEST_STATE_FILE);
+  liveEngines.add(engine);
+  return engine;
+}
 
 function makeConfig(opsec: EngagementConfig['opsec']): EngagementConfig {
   return {
@@ -25,6 +33,9 @@ function makeConfig(opsec: EngagementConfig['opsec']): EngagementConfig {
 }
 
 function cleanup(): void {
+  for (const engine of liveEngines) engine.dispose();
+  liveEngines.clear();
+  cleanupTestPersistence(TEST_STATE_FILE);
   try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
   try { rmSync('./evidence-test-opsec-visibility', { recursive: true, force: true }); } catch {}
 }
@@ -36,7 +47,7 @@ describe('OPSEC visibility (Phase B)', () => {
   it('flags inert OPSEC when max_noise is set but enabled is omitted', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const engine = new GraphEngine(makeConfig({ name: 'pentest', max_noise: 0.4 }), TEST_STATE_FILE);
+      const engine = openEngine({ name: 'pentest', max_noise: 0.4 });
       const status = engine.getOpsecStatus();
       expect(status.enabled).toBe(false);
       expect(status.inert).toBe(true);
@@ -54,10 +65,12 @@ describe('OPSEC visibility (Phase B)', () => {
   it('does not warn when OPSEC is enabled', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const engine = new GraphEngine(
-        makeConfig({ name: 'pentest', enabled: true, max_noise: 0.4, blacklisted_techniques: ['nmap_aggressive'] }),
-        TEST_STATE_FILE,
-      );
+      const engine = openEngine({
+        name: 'pentest',
+        enabled: true,
+        max_noise: 0.4,
+        blacklisted_techniques: ['nmap_aggressive'],
+      });
       const status = engine.getOpsecStatus();
       expect(status.enabled).toBe(true);
       expect(status.inert).toBe(false);
@@ -73,7 +86,7 @@ describe('OPSEC visibility (Phase B)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       // max_noise: 1 means no ceiling; this is not a "configured but disabled" trap.
-      const engine = new GraphEngine(makeConfig({ name: 'ctf', max_noise: 1 }), TEST_STATE_FILE);
+      const engine = openEngine({ name: 'ctf', max_noise: 1 });
       const status = engine.getOpsecStatus();
       expect(status.inert).toBe(false);
       expect(status.configured_fields).not.toContain('max_noise');
@@ -86,16 +99,13 @@ describe('OPSEC visibility (Phase B)', () => {
   });
 
   it('reports opsec_skipped on validateAction when enforcement is inert', () => {
-    const engine = new GraphEngine(makeConfig({ name: 'pentest', max_noise: 0.4 }), TEST_STATE_FILE);
+    const engine = openEngine({ name: 'pentest', max_noise: 0.4 });
     const r = engine.validateAction({ technique: 'recon' });
     expect(r.opsec_skipped).toBe(true);
   });
 
   it('omits opsec_skipped when enforcement is enabled', () => {
-    const engine = new GraphEngine(
-      makeConfig({ name: 'pentest', enabled: true, max_noise: 0.4 }),
-      TEST_STATE_FILE,
-    );
+    const engine = openEngine({ name: 'pentest', enabled: true, max_noise: 0.4 });
     const r = engine.validateAction({ technique: 'recon' });
     expect(r.opsec_skipped).toBeUndefined();
   });
