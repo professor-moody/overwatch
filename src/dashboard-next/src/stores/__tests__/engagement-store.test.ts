@@ -22,6 +22,7 @@ describe('engagement store hydration', () => {
       recentActivity: [],
       phases: [],
       readiness: null,
+      persistenceRecovery: null,
       accessSummary: { compromised_hosts: [], valid_credentials: [], current_access_level: 'none' },
     });
   });
@@ -160,5 +161,52 @@ describe('engagement store hydration', () => {
       delta: { nodes: [], edges: [], removed_nodes: ['host-1'], removed_edges: [], cold_nodes: [] },
     } as GraphUpdateData);
     expect(useEngagementStore.getState().graph.nodes).toEqual([]);
+  });
+
+  it('hydrates, updates, and preserves recovery state across full-state and delta messages', () => {
+    const initialRecovery = {
+      outcome: 'incomplete' as const,
+      source: 'state' as const,
+      complete: false,
+      writable: false,
+      reason: 'configuration differs',
+      base_checkpoint: 3,
+      highest_allocated_seq: 3,
+      highest_on_disk_seq: 3,
+      highest_contiguous_applied_seq: 3,
+      consecutive_persistence_failures: 0,
+      journal: {
+        enabled: true, read: 0, attempted: 0, applied: 0, skipped: 0, failed: 0,
+        malformed: false, preserved: true,
+      },
+      config_recovery: {
+        status: 'diverged' as const,
+        resolution_required: true,
+        intent_present: false,
+      },
+    };
+    useEngagementStore.getState().loadFullState({
+      state: { persistence_recovery: initialRecovery },
+      graph: { nodes: [], edges: [] },
+      history_count: 0,
+    } as FullStateData);
+    expect(useEngagementStore.getState().persistenceRecovery).toEqual(initialRecovery);
+
+    const deltaBase = {
+      state: {}, history_count: 0, detail: {},
+      delta: { nodes: [], edges: [], removed_nodes: [], removed_edges: [] },
+    } as GraphUpdateData;
+    useEngagementStore.getState().applyGraphUpdate(deltaBase);
+    expect(useEngagementStore.getState().persistenceRecovery).toEqual(initialRecovery);
+
+    const recovered = { ...initialRecovery, outcome: 'recovered' as const, complete: true, writable: true };
+    useEngagementStore.getState().applyGraphUpdate({
+      ...deltaBase,
+      state: { persistence_recovery: recovered },
+    });
+    expect(useEngagementStore.getState().persistenceRecovery).toEqual(recovered);
+
+    useEngagementStore.getState().setPersistenceRecovery(null);
+    expect(useEngagementStore.getState().persistenceRecovery).toBeNull();
   });
 });

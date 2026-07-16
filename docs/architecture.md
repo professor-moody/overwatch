@@ -106,9 +106,9 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Graph Schema** | `src/services/graph-schema.ts` | Node/edge type validation |
 | **Graph Health** | `src/services/graph-health.ts` | Integrity checks and diagnostics |
 | **Finding Validation** | `src/services/finding-validation.ts` | Input validation and normalization |
-| **State Persistence** | `src/services/state-persistence.ts` | Atomic write-rename with snapshot rotation; replays the [Mutation Journal](#mutation-journal-write-ahead-log) on load for engagements with a nonce |
+| **State Persistence** | `src/services/state-persistence.ts` | Atomic write-rename with snapshot rotation; always replays an existing [Mutation Journal](#mutation-journal-write-ahead-log) and enables one for managed active engagements |
 | **Activity Chain** | `src/services/activity-chain.ts` | Tamper-evident SHA-256 chain over agent/system events; signed checkpoints for O(events_since_checkpoint) verification (default-on for new engagements) |
-| **Mutation Journal** | `src/services/mutation-journal.ts` | Write-ahead log of graph mutations; replay on load + compaction after snapshot. Gated on `engagement_nonce` |
+| **Mutation Journal** | `src/services/mutation-journal.ts` | Write-ahead log of graph mutations; replay on load + compaction after snapshot. Enabled for managed active engagements and deterministic-ID contexts; an existing WAL is always recovered |
 | **Deterministic ID** | `src/services/deterministic-id.ts` | sha256-derived action and event IDs for engagements with `engagement_nonce`; `uuidv4` fallback for legacy |
 | **Frontier Leases** | `src/services/frontier-leases.ts` | TTL leases on frontier items so two agents can't race on the same target |
 | **Agent Watchdog** | `src/services/agent-watchdog.ts` | Periodic reaper for stale heartbeats and expired frontier leases |
@@ -164,6 +164,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | Module | File | Tools |
 |--------|------|-------|
 | **State** | `src/tools/state.ts` | `get_state`, `run_lab_preflight`, `run_graph_health`, `recompute_objectives`, `get_history`, `export_graph` |
+| **Recovery** | `src/tools/recovery.ts` | `get_recovery_status`, `resolve_config_divergence` |
 | **Scoring** | `src/tools/scoring.ts` | `next_task`, `validate_action` |
 | **Findings** | `src/tools/findings.ts` | `report_finding`, `get_evidence` |
 | **Exploration** | `src/tools/exploration.ts` | `query_graph`, `find_paths` |
@@ -225,17 +226,17 @@ Features:
 
 ### Mutation Journal (Write-Ahead Log)
 
-Engagements created with an `engagement_nonce` (the deterministic-ID family, see [Foundations](#foundations-trust-audit-replay)) layer a write-ahead log on top of the snapshot:
+Managed active engagements layer a write-ahead log on top of the snapshot. Standalone deterministic-ID contexts also enable it through `engagement_nonce`, and any existing WAL is recovered regardless of the current config:
 
 - Every graph-affecting mutation (`add_node`, `add_edge`, `merge_node_attrs`, `drop_edge`) appends a `MutationEntry { seq, ts, type, payload }` to `<state-file>.journal.jsonl` and `fsync`s **before** the in-memory mutation is applied.
 - On load, the engine reads the snapshot, then replays journal entries with `seq > journalSnapshotSeq`. A crash between journal append and the next snapshot rotation is recoverable.
 - Snapshot rotation truncates the journal up to the snapshot's seq. Crash mid-write leaves a partial line; the reader stops at it without poisoning subsequent replays.
 
-Legacy engagements (no nonce) keep the debounced-snapshot-only path with no behavior change.
+Unmanaged legacy contexts with neither a nonce nor an existing WAL retain the debounced-snapshot-only path.
 
 ## Foundations: Trust, Audit, Replay
 
-Engagements created after the foundations work shipped get a coordinated set of guarantees. **All gated on `engagement_nonce` populated** (the strict-migration boundary for new engagements; legacy engagements keep their original UUID-based identity model).
+Engagements created after the foundations work shipped get a coordinated set of guarantees. Deterministic identity remains gated on `engagement_nonce`; WAL durability is additionally enabled for every managed active engagement and always honors existing journal data.
 
 | Guarantee | What it gives you | Where it lives |
 |---|---|---|
@@ -278,7 +279,7 @@ flowchart LR
     class ID,WAL,CHAIN,EV,LEASE,WATCH,REPLAY new
 ```
 
-The whole substrate snaps together when the engagement carries a nonce: deterministic IDs become the keys for the journal, the journal feeds replay, replay validates the hash chain, the chain references content-addressed evidence. Each layer is independent at the implementation level but compose into a single audit story.
+The whole substrate snaps together when the engagement carries a nonce: deterministic IDs identify replayed operations, the journal feeds recovery, the activity chain records causality, and the chain references content-addressed evidence. Managed active engagements receive the journal/recovery guarantee even without deterministic IDs. Each layer is independent at the implementation level but composes into a single audit story.
 
 ## Session + Transport Architecture
 

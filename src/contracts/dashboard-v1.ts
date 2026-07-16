@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { EDGE_TYPES, NODE_TYPES, edgeTypeSchema, nodeTypeSchema } from '../types.js';
 
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+
 /**
  * Browser-safe runtime contracts for the dashboard correctness slice.
  *
@@ -487,3 +489,89 @@ export const DashboardErrorSchema = z.object({
   error: z.string(),
   code: z.string().optional(),
 }).passthrough();
+
+export const ConfigRecoveryStatusSchema = z.object({
+  status: z.enum(['unmanaged', 'in_sync', 'recovered', 'diverged', 'write_incomplete']),
+  resolution_required: z.boolean(),
+  file_path: z.string().optional(),
+  intent_path: z.string().optional(),
+  intent_present: z.boolean(),
+  file_valid: z.boolean().optional(),
+  file_revision: z.number().int().positive().optional(),
+  state_revision: z.number().int().positive().optional(),
+  runtime_revision: z.number().int().positive().optional(),
+  file_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  state_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  runtime_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  reason: z.string().optional(),
+  last_resolution: z.enum(['use_file', 'use_state']).optional(),
+  allowed_resolutions: z.array(z.enum(['use_file', 'use_state'])).optional(),
+  conflicted_intent: z.object({
+    archive_path: z.string(),
+    intent_sha256: Sha256Schema,
+    intent_checksum: Sha256Schema.optional(),
+    reason: z.string(),
+    observed_file_hash: Sha256Schema,
+    observed_state_hash: Sha256Schema,
+  }).passthrough().optional(),
+}).passthrough();
+export type ConfigRecoveryStatusDto = z.infer<typeof ConfigRecoveryStatusSchema>;
+
+export const RecoveryStatusDtoSchema = z.object({
+  outcome: z.enum(['clean', 'recovered', 'incomplete', 'reinitialized']),
+  source: z.enum(['fresh', 'state', 'snapshot', 'config']),
+  complete: z.boolean(),
+  writable: z.boolean(),
+  reason: z.string().optional(),
+  persistence_reason: z.string().optional(),
+  state_recovery: z.object({
+    outcome: z.enum(['clean', 'recovered', 'incomplete', 'reinitialized']),
+    source: z.enum(['fresh', 'state', 'snapshot', 'config']),
+    complete: z.boolean(),
+    writable: z.boolean(),
+    reason: z.string().optional(),
+  }).passthrough().optional(),
+  base_checkpoint: z.number().int().nonnegative(),
+  highest_allocated_seq: z.number().int().nonnegative(),
+  highest_on_disk_seq: z.number().int().nonnegative(),
+  highest_contiguous_applied_seq: z.number().int().nonnegative(),
+  consecutive_persistence_failures: z.number().int().nonnegative(),
+  last_persistence_error: z.string().optional(),
+  journal: z.object({
+    enabled: z.boolean(),
+    path: z.string().optional(),
+    read: z.number().int().nonnegative(),
+    attempted: z.number().int().nonnegative(),
+    applied: z.number().int().nonnegative(),
+    skipped: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    malformed: z.boolean(),
+    preserved: z.boolean(),
+  }).passthrough(),
+  config_recovery: ConfigRecoveryStatusSchema.optional(),
+}).passthrough();
+export type RecoveryStatusDto = z.infer<typeof RecoveryStatusDtoSchema>;
+
+export const RecoveryStatusResponseSchema = z.object({
+  recovery: RecoveryStatusDtoSchema,
+}).passthrough();
+export type RecoveryStatusResponse = z.infer<typeof RecoveryStatusResponseSchema>;
+
+export const ConfigDivergenceResolveRequestSchema = z.object({
+  resolution: z.enum(['use_file', 'use_state']),
+  expected_file_hash: z.string().regex(/^[0-9a-f]{64}$/),
+  expected_state_hash: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+export type ConfigDivergenceResolveRequest = z.infer<typeof ConfigDivergenceResolveRequestSchema>;
+
+export const ConfigDivergenceResolveResponseSchema = z.object({
+  resolved: z.literal(true),
+  mode: z.enum(['use_file', 'use_state']),
+  config: z.object({
+    id: z.string().min(1),
+    config_revision: z.number().int().positive(),
+    config_hash: z.string().regex(/^[0-9a-f]{64}$/),
+  }).passthrough(),
+  recovery: ConfigRecoveryStatusSchema,
+}).passthrough();
+export type ConfigDivergenceResolveResponse = z.infer<typeof ConfigDivergenceResolveResponseSchema>;

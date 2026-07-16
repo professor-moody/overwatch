@@ -105,15 +105,21 @@ export function seedFromConfig(host: ConfigManagerHost): void {
  * Applies changes to a deep clone, validates the result, then commits.
  * If validation fails the live runtime config is never touched.
  */
-export function updateConfig(host: ConfigManagerHost, partial: Record<string, unknown>): EngagementConfig {
+export function mergeConfig(current: EngagementConfig, partial: Record<string, unknown>): EngagementConfig {
   // Work on a deep clone so a validation failure cannot leave the live
   // config in a half-mutated state (P1 atomicity fix).
-  const draft = JSON.parse(JSON.stringify(host.ctx.config)) as EngagementConfig;
+  const draft = JSON.parse(JSON.stringify(current)) as EngagementConfig;
 
   // Merge top-level scalars
   if (typeof partial.name === 'string' && partial.name.length > 0) draft.name = partial.name;
   if (typeof partial.profile === 'string') draft.profile = partial.profile as EngagementConfig['profile'];
   if (typeof partial.community_resolution === 'number') draft.community_resolution = partial.community_resolution;
+  if (typeof partial.max_prompt_tokens === 'number') draft.max_prompt_tokens = partial.max_prompt_tokens;
+  if (typeof partial.iam_assume_depth === 'number') draft.iam_assume_depth = partial.iam_assume_depth;
+  if (typeof partial.hash_chain_enabled === 'boolean') draft.hash_chain_enabled = partial.hash_chain_enabled;
+  if (partial.engagement_signing_key_id === null) draft.engagement_signing_key_id = undefined;
+  else if (typeof partial.engagement_signing_key_id === 'string') draft.engagement_signing_key_id = partial.engagement_signing_key_id;
+  if (typeof partial.subagent_isolation === 'string') draft.subagent_isolation = partial.subagent_isolation as EngagementConfig['subagent_isolation'];
   // Agent model knobs (settable via a config PATCH, not only file edit).
   if (Array.isArray(partial.available_models)) draft.available_models = (partial.available_models as unknown[]).filter(m => typeof m === 'string') as string[];
   if (partial.default_agent_model === null) draft.default_agent_model = undefined;
@@ -128,6 +134,8 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
   }
   if (partial.postgres_dsn === null) draft.postgres_dsn = undefined;
   else if (typeof partial.postgres_dsn === 'string') draft.postgres_dsn = partial.postgres_dsn;
+  if (partial.tape === null) draft.tape = undefined;
+  else if (partial.tape && typeof partial.tape === 'object') draft.tape = partial.tape as EngagementConfig['tape'];
 
   // Merge scope (partial merge — only overwrite provided keys)
   if (partial.scope && typeof partial.scope === 'object') {
@@ -156,6 +164,7 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
     if (Array.isArray(s.azure_subscriptions)) draft.scope.azure_subscriptions = s.azure_subscriptions;
     if (Array.isArray(s.gcp_projects)) draft.scope.gcp_projects = s.gcp_projects;
     if (Array.isArray(s.url_patterns)) draft.scope.url_patterns = s.url_patterns;
+    if (Array.isArray(s.cross_tier_links)) draft.scope.cross_tier_links = s.cross_tier_links as NonNullable<EngagementConfig['scope']['cross_tier_links']>;
   }
 
   // Merge opsec
@@ -186,6 +195,9 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
   if (Array.isArray(partial.objectives)) {
     draft.objectives = partial.objectives as EngagementConfig['objectives'];
   }
+  if (Array.isArray(partial.phases)) {
+    draft.phases = partial.phases as EngagementConfig['phases'];
+  }
 
   // Merge operator_policy (full replace; null clears it). The dashboard validates the
   // whole policy strictly at the route, and the merged draft is validated again below.
@@ -206,8 +218,12 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
     throw new Error(`Config validation failed: ${issues.join('; ')}`);
   }
 
+  return parsed.data;
+}
+
+export function updateConfig(host: ConfigManagerHost, partial: Record<string, unknown>): EngagementConfig {
   // Commit: only now does the live config change.
-  host.ctx.config = parsed.data;
+  host.ctx.config = mergeConfig(host.ctx.config, partial);
   host.persist();
   return host.ctx.config;
 }

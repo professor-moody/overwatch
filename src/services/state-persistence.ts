@@ -25,6 +25,7 @@ import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { FrontierLeases } from './frontier-leases.js';
 import {
   engagementConfigSchema,
+  type EngagementConfig,
   type InferenceRule,
   type NodeProperties,
   type EdgeProperties,
@@ -32,7 +33,15 @@ import {
 } from '../types.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
 import { OpsecTracker } from './opsec-tracker.js';
-import { MutationJournal, type MutationReplayResult } from './mutation-journal.js';
+import {
+  MutationJournal,
+  type MutationApplyResult,
+  type MutationReplayResult,
+  type ScopeUpdatedMutationPayloadV1,
+  type DropNodeMutationPayloadV1,
+  type IdentityRewriteMutationPayloadV1,
+  type GraphCorrectedMutationPayloadV1,
+} from './mutation-journal.js';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
 import { parseJsonBytes } from './durable-json.js';
 import {
@@ -80,6 +89,13 @@ function compareSnapshotPaths(a: string, b: string): number {
 export interface ReplayMutators {
   addNode(props: NodeProperties): string;
   addEdge(source: string, target: string, props: EdgeProperties, replayEdgeId?: string): { id: string; isNew: boolean };
+  applyScopeUpdatedMutation(payload: ScopeUpdatedMutationPayloadV1, recovery?: boolean): MutationApplyResult;
+  applyDropNodeMutation(payload: DropNodeMutationPayloadV1, recovery?: boolean): MutationApplyResult;
+  applyIdentityRewriteMutation(payload: IdentityRewriteMutationPayloadV1, recovery?: boolean): MutationApplyResult;
+  applyGraphCorrectedMutation(payload: GraphCorrectedMutationPayloadV1, recovery?: boolean): MutationApplyResult;
+  prepareRecoveryCommit?(): void;
+  completeRecoveryCommit?(): void;
+  abortRecoveryReplay?(): void;
 }
 
 // --- Coalescing configuration ---
@@ -106,6 +122,9 @@ export interface RestoreResult {
   status: 'restored' | 'seed_required' | 'degraded';
   source: PersistenceRecoveryStatus['source'];
   reason?: string;
+  /** A checksummed rollback authority still owns the selected config/state and
+   * must remain until GraphEngine durably synchronizes engagement.json. */
+  rollback_pending?: boolean;
 }
 
 interface RestoreCandidate {
@@ -237,6 +256,9 @@ export class StatePersistence {
    * this marker in the replacement primary makes that primary authoritative on
    * restart before destructive snapshot/WAL cleanup resumes. */
   private rollbackIntent: RollbackIntentV1 | undefined;
+  /** Configuration in the last checkpointed base. It intentionally does not
+   * follow an uncheckpointed prefix applied during incomplete WAL replay. */
+  private durableConfig: EngagementConfig | undefined;
 
   constructor(ctx: EngineContext, builtinRules: InferenceRule[], createGraph?: () => OverwatchGraph) {
     this.ctx = ctx;
@@ -270,6 +292,7 @@ export class StatePersistence {
       consecutive_persistence_failures: 0,
       journal: {
         enabled: journal !== null,
+        ...(journal ? { path: journal.getPath() } : {}),
         read: 0,
         attempted: 0,
         applied: 0,
@@ -325,10 +348,38 @@ export class StatePersistence {
       ...(this.lastPersistenceError ? { last_persistence_error: this.lastPersistenceError } : {}),
       journal: {
         ...this.recoveryStatus.journal,
+        // Legacy engagements can acquire a journal in-process immediately
+        // before their first composite mutation. Do not keep reporting the
+        // constructor-time, disabled journal metadata after that transition.
+        enabled: journal !== null,
+        ...(journal ? { path: journal.getPath() } : {}),
         // An append/apply ambiguity blocks the journal outside the startup
         // replay path. Surface that the bytes remain available for recovery.
         preserved: this.recoveryStatus.journal.preserved
           || (journalBlockedReason !== undefined && journalHasData),
+      },
+    };
+  }
+
+  /**
+   * Install a WAL created after startup and refresh the cached recovery
+   * metadata atomically with the EngineContext transition. Legacy engagements
+   * use this before their first composite mutation.
+   */
+  enableMutationJournal(journal: MutationJournal): void {
+    this.ctx.mutationJournal = journal;
+    this.recoveryStatus = {
+      ...this.recoveryStatus,
+      highest_allocated_seq: journal.getHighestAllocatedSeq(),
+      highest_on_disk_seq: Math.max(
+        this.recoveryStatus.highest_on_disk_seq,
+        journal.getHighestPhysicalSeq(),
+      ),
+      highest_contiguous_applied_seq: journal.getAppliedThroughSeq(),
+      journal: {
+        ...this.recoveryStatus.journal,
+        enabled: true,
+        path: journal.getPath(),
       },
     };
   }
@@ -450,6 +501,12 @@ export class StatePersistence {
       writable: this.isWritable(),
       ...(reinitialized ? { reason: 'no valid persisted base was available; state was reinitialized from config' } : {}),
     };
+  }
+
+  getDurableConfig(): EngagementConfig | undefined {
+    return this.durableConfig
+      ? JSON.parse(JSON.stringify(this.durableConfig)) as EngagementConfig
+      : undefined;
   }
 
   /**
@@ -678,6 +735,11 @@ export class StatePersistence {
     } catch {
       // Persistence retry must never depend on diagnostic event emission.
     }
+    // Persistence health can change after the original graph delta was already
+    // delivered (for example, when the debounced flush exhausts retries). Push
+    // an empty consolidated update so synchronized dashboard clients receive
+    // the new recovery/write gate without waiting for another mutation or 503.
+    this.ctx.fireUpdateCallbacks({});
   }
 
   private finishSuccessfulWrite(): void {
@@ -688,6 +750,7 @@ export class StatePersistence {
     this.lastPersistenceError = undefined;
     this.dirty = false;
     this.pendingDetail = {};
+    this.durableConfig = JSON.parse(JSON.stringify(this.ctx.config)) as EngagementConfig;
     this.recoveryStatus = {
       ...this.recoveryStatus,
       writable: this.isWritable(),
@@ -1161,7 +1224,11 @@ export class StatePersistence {
     return oldest;
   }
 
-  rollbackToSnapshot(snapshotName: string, builtinRules: InferenceRule[]): boolean {
+  rollbackToSnapshot(
+    snapshotName: string,
+    builtinRules: InferenceRule[],
+    options: { deferAuthorityRelease?: boolean } = {},
+  ): boolean {
     const dir = dirname(this.ctx.stateFilePath);
     const candidates = this.listSnapshotsStrict().map(snapshot => join(dir, snapshot));
     const requested = isAbsolute(snapshotName)
@@ -1179,10 +1246,14 @@ export class StatePersistence {
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw new Error(`Rollback snapshot must be a regular retained file: ${snapshotName}`);
     }
-    return this._rollbackFrom(snapPath, builtinRules);
+    return this._rollbackFrom(snapPath, builtinRules, options.deferAuthorityRelease === true);
   }
 
-  private _rollbackFrom(snapPath: string, builtinRules: InferenceRule[]): boolean {
+  private _rollbackFrom(
+    snapPath: string,
+    builtinRules: InferenceRule[],
+    deferAuthorityRelease: boolean,
+  ): boolean {
     // Read and perform structural validation before disturbing any pending
     // persistence work. A bad rollback input must not strand an otherwise
     // writable dirty engine with its debounce/retry timers cancelled.
@@ -1239,11 +1310,30 @@ export class StatePersistence {
         rotateExisting: false,
         allowIntegrityReplacement: true,
       });
+      this.durableConfig = JSON.parse(JSON.stringify(this.ctx.config)) as EngagementConfig;
 
       // Phase 2 is destructive but idempotent. It is safe only after the marked
       // primary above has reached stable storage.
       this.completeRollbackCleanup(intent);
       this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
+
+      if (deferAuthorityRelease) {
+        // engagement.json is synchronized by GraphEngine while both the
+        // marked primary and sidecar still make the selected rollback the
+        // only restart authority. A crash here therefore resumes this same
+        // rollback instead of treating the newer config file as a choice.
+        this.finishSuccessfulWrite();
+        this.recoveryReadOnlyReason = undefined;
+        this.recoveryStatus = this.buildRecoveryStatus({
+          outcome: 'recovered',
+          source: 'snapshot',
+          complete: true,
+          writable: true,
+          checkpoint: snapshotSeq,
+          preserved: false,
+        });
+        return true;
+      }
 
       // Phase 3: clear the intent only after cleanup is durable. If this final
       // write fails, the marked primary remains and startup retries phase 2.
@@ -1303,6 +1393,37 @@ export class StatePersistence {
       throw new Error(
         `Rollback to ${basename(snapPath)} did not complete durably: ${error instanceof Error ? error.message : String(error)}`,
       );
+    }
+  }
+
+  /** Release a rollback authority only after the external config file and the
+   * marked durable state share the rollback target revision/hash. */
+  completePendingRollbackAuthority(): void {
+    const intent = this.rollbackIntent;
+    if (!intent) return;
+    try {
+      this.rollbackIntent = undefined;
+      this.writeStateToDisk({
+        journalCheckpointSeq: intent.checkpoint,
+        rotateExisting: false,
+        allowIntegrityReplacement: true,
+      });
+      this.removeRollbackAuthority();
+      this.ctx.mutationJournal?.unblockAppends();
+      this.finishSuccessfulWrite();
+      this.recoveryReadOnlyReason = undefined;
+      this.recoveryStatus = this.buildRecoveryStatus({
+        outcome: 'recovered',
+        source: 'snapshot',
+        complete: true,
+        writable: true,
+        checkpoint: intent.checkpoint,
+        preserved: false,
+      });
+    } catch (error) {
+      this.rollbackIntent = intent;
+      this.latchRollbackFailure(error, intent.checkpoint, 'snapshot');
+      throw error;
     }
   }
 
@@ -1557,7 +1678,7 @@ export class StatePersistence {
    * the post-snapshot journal.
    */
   restoreBaseAndReplay(mutators?: ReplayMutators): RestoreResult {
-    const pendingRollback = this.resumePendingRollback();
+    const pendingRollback = this.resumePendingRollback(mutators?.prepareRecoveryCommit !== undefined);
     if (pendingRollback) return pendingRollback;
 
     const candidates: RestoreCandidate[] = [];
@@ -1580,7 +1701,7 @@ export class StatePersistence {
   /** A checksummed sidecar is the durable authority for an explicit rollback.
    * While it exists, the retained selected snapshot is canonical and rebuilds
    * the replaceable marked primary regardless of that primary's contents. */
-  private resumePendingRollback(): RestoreResult | undefined {
+  private resumePendingRollback(deferAuthorityRelease: boolean): RestoreResult | undefined {
     const authorityPath = this.rollbackAuthorityPath();
     const hasAuthoritySidecar = existsSync(authorityPath);
     let intent: RollbackIntentV1 | undefined;
@@ -1664,6 +1785,7 @@ export class StatePersistence {
       this.writeRollbackAuthority(intent);
       this.rollbackIntent = intent;
       this._restoreFromData(rollbackData, this.builtinRules);
+      this.durableConfig = JSON.parse(JSON.stringify(this.ctx.config)) as EngagementConfig;
       this.ensureJournalForRestoredConfig();
       this.ctx.mutationJournal?.setNextSeq(intent.checkpoint, {
         preserveAllocated: true,
@@ -1687,14 +1809,16 @@ export class StatePersistence {
         outcome: 'success',
         details: { checkpoint: intent.checkpoint },
       });
-      this.rollbackIntent = undefined;
-      this.writeStateToDisk({
-        journalCheckpointSeq: intent.checkpoint,
-        rotateExisting: false,
-        allowIntegrityReplacement: true,
-      });
-      this.removeRollbackAuthority();
-      this.ctx.mutationJournal?.unblockAppends();
+      if (!deferAuthorityRelease) {
+        this.rollbackIntent = undefined;
+        this.writeStateToDisk({
+          journalCheckpointSeq: intent.checkpoint,
+          rotateExisting: false,
+          allowIntegrityReplacement: true,
+        });
+        this.removeRollbackAuthority();
+        this.ctx.mutationJournal?.unblockAppends();
+      }
       this.finishSuccessfulWrite();
       this.recoveryReadOnlyReason = undefined;
       this.recoveryStatus = this.buildRecoveryStatus({
@@ -1705,7 +1829,11 @@ export class StatePersistence {
         checkpoint: intent.checkpoint,
         preserved: false,
       });
-      return { status: 'restored', source: recoverySource };
+      return {
+        status: 'restored',
+        source: recoverySource,
+        ...(deferAuthorityRelease ? { rollback_pending: true } : {}),
+      };
     } catch (error) {
       if (error instanceof JournalRecoveryGateError) {
         return {
@@ -1806,6 +1934,7 @@ export class StatePersistence {
       let restoredCheckpoint: RestoredCheckpoint;
       try {
         restoredCheckpoint = this._restoreFromData(candidate.data, builtinRules);
+        this.durableConfig = JSON.parse(JSON.stringify(this.ctx.config)) as EngagementConfig;
       } catch (error) {
         this.restoreRejectedCandidateBaseline(baseline, builtinRules);
         rejected.push({
@@ -1833,6 +1962,7 @@ export class StatePersistence {
             { trustedContiguousCheckpoint: restoredCheckpoint.trusted },
           );
         } catch (error) {
+          mutators?.abortRecoveryReplay?.();
           return this.enterJournalAccessFailure(error, candidate.source);
         }
         if (replay.applied > 0) {
@@ -1853,10 +1983,11 @@ export class StatePersistence {
       // its durable history against an older state. Even a complete replay from
       // that older base cannot prove it contains newer base-only legacy state.
       if (replay && !replay.complete) {
+        mutators?.abortRecoveryReplay?.();
         return this.enterIncompleteRecovery(restored, this.describeIncompleteReplay(replay));
       }
 
-      return this.finishRestoredBase(restored);
+      return this.finishRestoredBase(restored, mutators);
     }
 
     try {
@@ -2158,10 +2289,11 @@ export class StatePersistence {
       checkpoint,
       preserved: true,
     });
+    this.durableConfig = JSON.parse(JSON.stringify(this.ctx.config)) as EngagementConfig;
     this.recoveryStatus.last_persistence_error = message;
   }
 
-  private finishRestoredBase(restored: RestoredBase): RestoreResult {
+  private finishRestoredBase(restored: RestoredBase, mutators?: ReplayMutators): RestoreResult {
     const replay = restored.replay;
     const checkpoint = replay?.highest_contiguous_applied_seq ?? restored.checkpoint;
     const recovered = restored.source === 'snapshot'
@@ -2190,13 +2322,16 @@ export class StatePersistence {
     // truth, advanced the checkpoint, or selected a snapshot as the new primary.
     if (restored.source === 'snapshot' || checkpoint !== restored.checkpoint) {
       try {
+        mutators?.prepareRecoveryCommit?.();
         this.writeStateToDisk({
           journalCheckpointSeq: checkpoint,
           rotateExisting: false,
           allowIntegrityReplacement: restored.source === 'snapshot',
         });
+        mutators?.completeRecoveryCommit?.();
         this.finishRecoveryCheckpoint(checkpoint, restored.source);
       } catch (error) {
+        mutators?.abortRecoveryReplay?.();
         return this.enterCheckpointFailure(restored, checkpoint, error);
       }
     }
@@ -2476,6 +2611,7 @@ export class StatePersistence {
       highest_contiguous_applied_seq: checkpoint,
       journal: { ...this.recoveryStatus.journal, preserved: false },
     };
+    this.durableConfig = JSON.parse(JSON.stringify(this.ctx.config)) as EngagementConfig;
   }
 
   private buildRecoveryStatus(input: {
@@ -2509,6 +2645,7 @@ export class StatePersistence {
       ...(this.lastPersistenceError ? { last_persistence_error: this.lastPersistenceError } : {}),
       journal: {
         enabled: journal !== null,
+        ...(journal ? { path: journal.getPath() } : {}),
         read: replay?.read ?? 0,
         attempted: replay?.attempted ?? 0,
         applied: replay?.applied ?? 0,
@@ -2570,6 +2707,36 @@ export class StatePersistence {
                 ctx.graph.addNode(props.id, props);
               }
               return { status: 'applied' };
+            }
+            case 'drop_node': {
+              const payload = entry.payload as unknown as DropNodeMutationPayloadV1;
+              if (payload.payload_version !== 1) {
+                return { status: 'skipped', reason: `unsupported drop_node payload version: ${String(payload.payload_version)}` };
+              }
+              if (!mutators) {
+                return { status: 'skipped', reason: 'drop_node replay requires the engine node-drop applier' };
+              }
+              return mutators.applyDropNodeMutation(payload, true);
+            }
+            case 'identity_rewrite': {
+              const payload = entry.payload as unknown as IdentityRewriteMutationPayloadV1;
+              if (payload.payload_version !== 1) {
+                return { status: 'skipped', reason: `unsupported identity_rewrite payload version: ${String(payload.payload_version)}` };
+              }
+              if (!mutators) {
+                return { status: 'skipped', reason: 'identity_rewrite replay requires the engine identity applier' };
+              }
+              return mutators.applyIdentityRewriteMutation(payload, true);
+            }
+            case 'graph_corrected': {
+              const payload = entry.payload as unknown as GraphCorrectedMutationPayloadV1;
+              if (payload.payload_version !== 1) {
+                return { status: 'skipped', reason: `unsupported graph_corrected payload version: ${String(payload.payload_version)}` };
+              }
+              if (!mutators) {
+                return { status: 'skipped', reason: 'graph_corrected replay requires the engine correction applier' };
+              }
+              return mutators.applyGraphCorrectedMutation(payload, true);
             }
             case 'add_edge': {
               const p = entry.payload as {
@@ -2672,6 +2839,16 @@ export class StatePersistence {
               const id = (entry.payload as { id: string }).id;
               ctx.coldStore.promote(id);
               return { status: 'applied' };
+            }
+            case 'scope_updated': {
+              const payload = entry.payload as unknown as ScopeUpdatedMutationPayloadV1;
+              if (payload.payload_version !== 1) {
+                return { status: 'skipped', reason: `unsupported scope_updated payload version: ${String(payload.payload_version)}` };
+              }
+              if (!mutators) {
+                return { status: 'skipped', reason: 'scope_updated replay requires the engine scope applier' };
+              }
+              return mutators.applyScopeUpdatedMutation(payload, true);
             }
             default:
               // Unknown / future types are tolerated (forward-compat for

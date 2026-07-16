@@ -10,7 +10,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { GraphEngine } from './graph-engine.js';
 import { SkillIndex } from './skill-index.js';
-import type { EdgeProperties, EngagementConfig, NodeProperties } from '../types.js';
+import { engagementConfigSchema, type EdgeProperties, type EngagementConfig, type NodeProperties } from '../types.js';
 
 const NOW = new Date('2026-05-15T18:23:34.963Z');
 const iso = (minutesAgo = 0) => new Date(NOW.getTime() - minutesAgo * 60_000).toISOString();
@@ -60,12 +60,6 @@ function edge(type: EdgeProperties['type'], extra: Partial<EdgeProperties> = {})
 }
 
 export function createReportQaFixture(options: ReportQaFixtureOptions = {}): ReportQaFixture {
-  const rootDir = options.rootDir ?? mkdtempSync(join(tmpdir(), 'overwatch-report-qa-fixture-'));
-  mkdirSync(rootDir, { recursive: true });
-  const stateFilePath = options.stateFilePath ?? join(rootDir, 'state-report-qa.json');
-  const skillsDir = join(rootDir, 'skills');
-  mkdirSync(skillsDir, { recursive: true });
-
   const config: EngagementConfig = {
     id: 'report-qa-demo',
     name: 'Report QA Demo',
@@ -80,7 +74,7 @@ export function createReportQaFixture(options: ReportQaFixtureOptions = {}): Rep
     opsec: {
       name: 'pentest',
       enabled: true,
-      max_noise: 1.2,
+      max_noise: 1,
       approval_mode: 'approve-all',
       blacklisted_techniques: ['credential_dump'],
     },
@@ -121,8 +115,17 @@ export function createReportQaFixture(options: ReportQaFixtureOptions = {}): Rep
       },
     ],
   };
+  const validatedConfig = engagementConfigSchema.parse(config);
 
-  const engine = new GraphEngine(config, stateFilePath);
+  // Allocate fixture-owned storage only after the static config is complete so
+  // config/schema failures cannot strand temporary evidence and state trees.
+  const rootDir = options.rootDir ?? mkdtempSync(join(tmpdir(), 'overwatch-report-qa-fixture-'));
+  mkdirSync(rootDir, { recursive: true });
+  const stateFilePath = options.stateFilePath ?? join(rootDir, 'state-report-qa.json');
+  const skillsDir = join(rootDir, 'skills');
+  mkdirSync(skillsDir, { recursive: true });
+
+  const engine = new GraphEngine(validatedConfig, stateFilePath);
   const skills = new SkillIndex(skillsDir);
 
   const nodes = [

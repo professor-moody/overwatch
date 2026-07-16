@@ -29,6 +29,7 @@ const srcRoot = resolve(here, '../..'); // .../src
 const GUARDED_FILES = [
   'services/graph-engine.ts',
   'services/engine-context.ts',
+  'services/engagement-config-service.ts',
   'services/inference-engine.ts',
   'services/cross-tier-inference.ts',
   'services/cross-tier-correlator.ts',

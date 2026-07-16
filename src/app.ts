@@ -3,8 +3,8 @@
 // Core app construction separated from transport startup.
 // ============================================================
 
-import { readFileSync, existsSync, writeFileSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { readFileSync, readdirSync, existsSync, writeFileSync } from 'fs';
+import { basename, dirname, join, resolve } from 'path';
 import { randomUUID, createHash } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -72,6 +72,12 @@ import { registerPostgresTools } from './tools/postgres.js';
 import { registerIngestJsonTools } from './tools/ingest-json.js';
 import { registerBundleTools } from './tools/bundle.js';
 import { registerInstructionTools } from './tools/instructions.js';
+import { registerRecoveryTools } from './tools/recovery.js';
+import {
+  recoverInterruptedAtomicJsonWrite,
+  withConfigMetadata,
+  writeJsonAtomicDurable,
+} from './services/engagement-config-service.js';
 import type { ToolEntry } from './services/prompt-generator.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
 import { setTelemetry, getTelemetry } from './tools/error-boundary.js';
@@ -84,6 +90,147 @@ type DashboardStatusProvider = () => {
 };
 
 export type OverwatchToolRegistrar = Pick<McpServer, 'registerTool'>;
+
+type McpToolFailure = {
+  error?: string;
+  code?: string;
+};
+
+function failureFromError(error: unknown): McpToolFailure {
+  return {
+    error: error instanceof Error ? error.message : String(error),
+    ...(typeof (error as { code?: unknown } | null)?.code === 'string'
+      ? { code: (error as { code: string }).code }
+      : {}),
+  };
+}
+
+/** Extract the structured payload emitted by withErrorBoundary without
+ * coupling the registrar to a specific tool implementation. */
+function failureFromToolResult(result: unknown): McpToolFailure | undefined {
+  if (!result || typeof result !== 'object' || (result as { isError?: unknown }).isError !== true) {
+    return undefined;
+  }
+  const content = (result as { content?: unknown }).content;
+  if (!Array.isArray(content)) return {};
+  for (const block of content) {
+    if (!block || typeof block !== 'object' || (block as { type?: unknown }).type !== 'text') continue;
+    const text = (block as { text?: unknown }).text;
+    if (typeof text !== 'string') continue;
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (parsed && typeof parsed === 'object') {
+        const record = parsed as Record<string, unknown>;
+        return {
+          ...(typeof record.error === 'string' ? { error: record.error } : {}),
+          ...(typeof record.code === 'string' ? { code: record.code } : {}),
+        };
+      }
+    } catch {
+      return { error: text };
+    }
+  }
+  return {};
+}
+
+function isDurabilityFailure(
+  failure: McpToolFailure,
+  recovery: ReturnType<GraphEngine['getPersistenceRecoveryStatus']>,
+  mapClosedGate: boolean,
+): boolean {
+  // Filesystem codes and persistence-sounding prose are not enough: several
+  // public tools write reports, bundles, or inactive engagement files that are
+  // deliberately outside the live engine's recovery gate. Only normalize a
+  // late error when the combined engine/config recovery surface has actually
+  // closed, or when StatePersistence recorded this exact error during one of
+  // its retryable first/second failures (before the three-failure gate trips).
+  if (
+    failure.error !== undefined
+    && recovery.last_persistence_error === failure.error
+  ) return true;
+
+  const combinedRecoveryIncomplete = recovery.writable === false
+    || recovery.complete === false;
+  if (!combinedRecoveryIncomplete) return false;
+
+  // Ordinary durable tools were admitted only while the combined gate was
+  // writable, so a closed/incomplete status here is necessarily late. Config
+  // reconciliation is the sole exception: it starts behind a config-only gate
+  // and must distinguish an ordinary stale-hash conflict from a newly retained
+  // intent or a state/WAL failure.
+  if (mapClosedGate) return true;
+
+  const configRecovery = recovery.config_recovery;
+  const stateRecovery = recovery.state_recovery;
+  return configRecovery?.status === 'write_incomplete'
+    || configRecovery?.intent_present === true
+    || stateRecovery?.writable === false
+    || stateRecovery?.complete === false;
+}
+
+function persistenceReadOnlyToolResult(
+  recovery: ReturnType<GraphEngine['getPersistenceRecoveryStatus']>,
+  failure: McpToolFailure = {},
+  originalResult?: unknown,
+) {
+  const error = failure.error
+    ?? 'Durable mutations are disabled while persistence recovery is incomplete.';
+  const normalizedPayload = (original: Record<string, unknown> = {}): Record<string, unknown> => ({
+    ...original,
+    error: typeof original.error === 'string' ? original.error : error,
+    ...(failure.code && failure.code !== 'PERSISTENCE_READ_ONLY'
+      ? { persistence_error_code: failure.code }
+      : {}),
+    code: 'PERSISTENCE_READ_ONLY',
+    recovery,
+  });
+
+  if (originalResult && typeof originalResult === 'object') {
+    const original = originalResult as Record<string, unknown>;
+    if (Array.isArray(original.content)) {
+      let augmented = false;
+      const content = original.content.map(block => {
+        if (
+          augmented
+          || !block
+          || typeof block !== 'object'
+          || (block as { type?: unknown }).type !== 'text'
+          || typeof (block as { text?: unknown }).text !== 'string'
+        ) return block;
+        try {
+          const parsed = JSON.parse((block as { text: string }).text) as unknown;
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return block;
+          augmented = true;
+          return {
+            ...block,
+            text: JSON.stringify(normalizedPayload(parsed as Record<string, unknown>), null, 2),
+          };
+        } catch {
+          return block;
+        }
+      });
+      if (!augmented) {
+        content.push({
+          type: 'text' as const,
+          text: JSON.stringify(normalizedPayload(), null, 2),
+        });
+      }
+      return {
+        ...original,
+        content,
+        isError: true,
+      };
+    }
+  }
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify(normalizedPayload(), null, 2),
+    }],
+    isError: true,
+  };
+}
 
 /**
  * Wrapper around McpServer that intercepts registerTool calls to collect
@@ -124,27 +271,40 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
         || name === 'check_processes';
       const explicitlyNonMutating = name === 'get_system_prompt'
         && inputRecord.snapshot === false;
-      const requiresWritablePersistence = conditionallyMutating
+      const recoveryResolution = name === 'resolve_config_divergence';
+      const mutatesDurableState = conditionallyMutating
         || (config?.annotations?.readOnlyHint !== true && !explicitlyNonMutating);
+      const requiresWritablePersistence = !recoveryResolution && mutatesDurableState;
       if (
         requiresWritablePersistence
         && this.persistenceGate
         && !this.persistenceGate.isPersistenceWritable()
       ) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: 'Durable mutations are disabled while persistence recovery is incomplete.',
-              code: 'PERSISTENCE_READ_ONLY',
-              recovery: this.persistenceGate.getPersistenceRecoveryStatus(),
-            }, null, 2),
-          }],
-          isError: true,
-        };
+        return persistenceReadOnlyToolResult(this.persistenceGate.getPersistenceRecoveryStatus());
       }
       const invoke = cb as unknown as (...callbackArgs: unknown[]) => unknown;
-      return invoke(...args);
+      try {
+        const result = await invoke(...args);
+        const failure = mutatesDurableState
+          ? failureFromToolResult(result)
+          : undefined;
+        if (failure && this.persistenceGate) {
+          const recovery = this.persistenceGate.getPersistenceRecoveryStatus();
+          if (isDurabilityFailure(failure, recovery, requiresWritablePersistence)) {
+            return persistenceReadOnlyToolResult(recovery, failure, result);
+          }
+        }
+        return result;
+      } catch (error) {
+        if (mutatesDurableState && this.persistenceGate) {
+          const recovery = this.persistenceGate.getPersistenceRecoveryStatus();
+          const failure = failureFromError(error);
+          if (isDurabilityFailure(failure, recovery, requiresWritablePersistence)) {
+            return persistenceReadOnlyToolResult(recovery, failure);
+          }
+        }
+        throw error;
+      }
     }) as unknown as ToolCallback<InputArgs>;
     return this.server.registerTool(name, config, wrapped);
   }
@@ -152,7 +312,10 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
 }
 
 export type OverwatchApp = {
-  config: EngagementConfig;
+  /** Live revisioned config. Retained as a property for compatibility, but
+   * resolved from GraphEngine so embedded callers never observe startup-only
+   * ownership state. */
+  readonly config: EngagementConfig;
   engine: GraphEngine;
   skills: SkillIndex;
   processTracker: ProcessTracker;
@@ -198,6 +361,91 @@ export function loadConfig(configPath: string = process.env.OVERWATCH_CONFIG || 
   }
 
   return parseEngagementConfig(readFileSync(configPath, 'utf-8'));
+}
+
+function readConfigFromDurableState(stateFilePath: string): EngagementConfig | undefined {
+  const directory = dirname(stateFilePath);
+  const base = basename(stateFilePath, '.json');
+  const candidates: string[] = [];
+  if (existsSync(stateFilePath)) candidates.push(stateFilePath);
+  const snapshotDirectory = join(directory, '.snapshots');
+  try {
+    candidates.push(...readdirSync(snapshotDirectory)
+      .filter(name => name.startsWith(`${base}.snap-`) && name.endsWith('.json'))
+      .sort()
+      .reverse()
+      .map(name => join(snapshotDirectory, name)));
+  } catch { /* no retained snapshot directory */ }
+  try {
+    candidates.push(...readdirSync(directory)
+      .filter(name => name.startsWith(`${base}.snap-`) && name.endsWith('.json'))
+      .sort()
+      .reverse()
+      .map(name => join(directory, name)));
+  } catch { /* state directory is unavailable */ }
+
+  for (const candidate of candidates) {
+    try {
+      const value = JSON.parse(readFileSync(candidate, 'utf8')) as { config?: unknown };
+      return engagementConfigSchema.parse(value.config);
+    } catch { /* try the next retained recovery base */ }
+  }
+  return undefined;
+}
+
+function discoverRecoveryStateFile(
+  configPath: string,
+  preferredConfig?: EngagementConfig,
+): { path: string; config: EngagementConfig } | undefined {
+  const directory = dirname(configPath);
+  let names: string[];
+  try {
+    const directoryNames = readdirSync(directory);
+    const rootNames = directoryNames.filter(name => /^state-.+\.json$/.test(name) && !name.includes('.snap-'));
+    const legacySnapshotBases = directoryNames.flatMap(name => {
+      const match = /^(state-.+)\.snap-.+\.json$/.exec(name);
+      return match ? [`${match[1]}.json`] : [];
+    });
+    let snapshotBases: string[] = [];
+    try {
+      snapshotBases = readdirSync(join(directory, '.snapshots'))
+        .flatMap(name => {
+          const match = /^(state-.+)\.snap-.+\.json$/.exec(name);
+          return match ? [`${match[1]}.json`] : [];
+        });
+    } catch { /* no retained snapshots */ }
+    names = [...new Set([...rootNames, ...legacySnapshotBases, ...snapshotBases])];
+  } catch {
+    return undefined;
+  }
+  const candidates = names.flatMap(name => {
+    const path = join(directory, name);
+    const config = readConfigFromDurableState(path);
+    return config ? [{ path, config }] : [];
+  });
+  if (preferredConfig) {
+    const idMatches = candidates.filter(candidate => candidate.config.id === preferredConfig.id);
+    if (idMatches.length === 1) return idMatches[0];
+    if (idMatches.length > 1) {
+      throw new Error('Multiple durable state candidates match the active engagement id; set OVERWATCH_STATE_FILE explicitly.');
+    }
+    const identityMatches = candidates.filter(candidate =>
+      candidate.config.created_at === preferredConfig.created_at
+      && candidate.config.engagement_nonce === preferredConfig.engagement_nonce,
+    );
+    if (identityMatches.length === 1) return identityMatches[0];
+    if (identityMatches.length > 1) {
+      throw new Error('Active config identity matches multiple durable states; set OVERWATCH_STATE_FILE explicitly.');
+    }
+    return undefined;
+  }
+  if (candidates.length > 1) {
+    throw new Error(
+      `Active config cannot be loaded and ${candidates.length} durable engagement states exist beside it. ` +
+      'Set OVERWATCH_STATE_FILE (or stateFilePath) to select the state to recover.',
+    );
+  }
+  return candidates[0];
 }
 
 export function registerAllTools(
@@ -263,6 +511,7 @@ export function registerAllTools(
   registerPostgresTools(s, deps.engine);
   registerIngestJsonTools(s, deps.engine);
   registerBundleTools(s, deps.engine);
+  registerRecoveryTools(s, deps.engine);
 
   // Register instruction tools last (needs the collected tool list)
   registerInstructionTools(s, deps.engine, () => registrar.getEntries());
@@ -272,14 +521,61 @@ export function registerAllTools(
 
 export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): OverwatchApp {
   const configPath = options.configPath || process.env.OVERWATCH_CONFIG || './engagement.json';
-  const config = options.config || loadConfig(configPath);
   // Keep config and live state separate. By default, the mutable state file
   // lives beside the operator-authored config so launching from a different
   // cwd cannot silently create or load the wrong engagement state.
   const resolvedConfigPath = resolve(configPath);
+  const explicitStateFilePath = options.stateFilePath || process.env.OVERWATCH_STATE_FILE;
+  let config: EngagementConfig;
+  let recoveredStateFilePath: string | undefined;
+  if (options.config) {
+    config = options.config;
+  } else {
+    try {
+      recoverInterruptedAtomicJsonWrite(resolvedConfigPath);
+      config = loadConfig(resolvedConfigPath);
+    } catch (configError) {
+      const explicitRecoveryConfig = explicitStateFilePath
+        ? readConfigFromDurableState(explicitStateFilePath)
+        : undefined;
+      if (explicitStateFilePath && !explicitRecoveryConfig) {
+        throw new Error(
+          `Active config cannot be loaded and the explicit durable state ${explicitStateFilePath} has no valid recovery base.`,
+          { cause: configError },
+        );
+      }
+      const discovered = explicitRecoveryConfig
+        ? { path: explicitStateFilePath!, config: explicitRecoveryConfig }
+        : discoverRecoveryStateFile(resolvedConfigPath);
+      if (!discovered) throw configError;
+      recoveredStateFilePath = discovered.path;
+      config = discovered.config;
+      console.error(
+        `[recovery] active config could not be loaded; starting read-only from durable state ${discovered.path}`,
+      );
+    }
+  }
+
+  if (!explicitStateFilePath && !recoveredStateFilePath) {
+    recoveredStateFilePath = discoverRecoveryStateFile(resolvedConfigPath, config)?.path;
+  }
+
+  // Bootstrap is an explicit request to create a new active engagement. Make
+  // the file real before enabling managed write-through so a fresh bootstrap
+  // cannot immediately classify its own absent file as divergence.
+  if (!options.config && process.env.OVERWATCH_BOOTSTRAP === '1' && !existsSync(resolvedConfigPath)) {
+    config = withConfigMetadata(config, config.config_revision ?? 1);
+    writeJsonAtomicDurable(resolvedConfigPath, config);
+  }
+
   const defaultStateFilePath = join(dirname(resolvedConfigPath), `state-${config.id}.json`);
-  const stateFilePath = options.stateFilePath || process.env.OVERWATCH_STATE_FILE || defaultStateFilePath;
-  const engine = new GraphEngine(config, stateFilePath);
+  const stateFilePath = explicitStateFilePath || recoveredStateFilePath || defaultStateFilePath;
+  // Tests and embedded callers often inject an in-memory config without
+  // intending to create ./engagement.json. A loaded file (or an explicitly
+  // supplied configPath) opts into revisioned write-through ownership.
+  const managedConfigPath = options.config && !options.configPath ? undefined : resolvedConfigPath;
+  const engine = new GraphEngine(config, stateFilePath, managedConfigPath);
+  const authoritativeConfig = engine.getConfig();
   const skillDir = options.skillDir || process.env.OVERWATCH_SKILLS || './skills';
   const skills = new SkillIndex(skillDir);
   console.error(`Loaded ${skills.count} skills from ${skillDir}`);
@@ -314,8 +610,8 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   // In-process tape controller. Always constructed; only opens a writer when
   // explicitly enabled via env, engagement config, or dashboard toggle.
   const tape = new InProcessTapeController(engine, {
-    defaultDir: process.env.OVERWATCH_TAPE_DIR ?? config.tape?.dir,
-    file: process.env.OVERWATCH_TAPE_FILE ?? config.tape?.file,
+    defaultDir: process.env.OVERWATCH_TAPE_DIR ?? authoritativeConfig.tape?.dir,
+    file: process.env.OVERWATCH_TAPE_FILE ?? authoritativeConfig.tape?.file,
   });
   if (dashboard) {
     dashboard.attachTape(tape);
@@ -352,7 +648,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   dashboard?.attachTaskExecution(taskExecution);
 
   return {
-    config,
+    get config() { return engine.getConfig(); },
     engine,
     skills,
     processTracker,
@@ -396,7 +692,7 @@ export function getAutoTapeStartDecision(config: EngagementConfig): { enabled: b
 }
 
 export function maybeAutoEnableTape(app: OverwatchApp): void {
-  const decision = getAutoTapeStartDecision(app.config);
+  const decision = getAutoTapeStartDecision(app.engine.getConfig());
   if (!decision.enabled || app.tape.isEnabled()) return;
   const status = app.tape.enable({ startedBy: decision.startedBy });
   const suffix = status.started_by ? ` (started_by=${status.started_by})` : '';
@@ -571,7 +867,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
   // do NOT set requestTimeout = 0 (unbounded): a finite ceiling keeps a hung
   // request from leaking a socket forever, while the queue's own approval-timeout
   // auto-resolve remains the functional pressure valve for un-answered approvals.
-  const approvalTimeoutMs = app.config.opsec?.approval_timeout_ms ?? DEFAULT_APPROVAL_TIMEOUT_MS;
+  const approvalTimeoutMs = app.engine.getConfig().opsec?.approval_timeout_ms ?? DEFAULT_APPROVAL_TIMEOUT_MS;
   const mcpRequestTimeoutMs = approvalTimeoutMs + MCP_REQUEST_TIMEOUT_MARGIN_MS;
   server.requestTimeout = mcpRequestTimeoutMs;
   // keepAliveTimeout/headersTimeout must exceed requestTimeout to avoid Node

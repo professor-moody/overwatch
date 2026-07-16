@@ -29,7 +29,12 @@ function flagValue(args: string[], name: string): string | undefined {
 }
 
 // Flags that take a value (so their value isn't mistaken for a positional).
-const VALUE_FLAGS = new Set(['url', 'token', 'reason', 'archetype', 'skill', 'type', 'max', 'severity', 'node']);
+const VALUE_FLAGS = new Set([
+  'url', 'token', 'reason', 'archetype', 'skill', 'type', 'max', 'severity', 'node',
+  'file-hash', 'state-hash',
+]);
+
+const SHA256_RE = /^[0-9a-f]{64}$/;
 
 /** Positional (non-flag) args, skipping `--flag value` pairs and boolean flags. */
 function positionals(args: string[]): string[] {
@@ -68,6 +73,13 @@ export const READ_COMMANDS: Record<string, Command> = {
     async run({ client }) {
       const data = await client.get<unknown>('/api/state');
       return { data, text: render.renderStatus(data as never) };
+    },
+  },
+  recovery: {
+    summary: 'Persistence and active configuration recovery status',
+    async run({ client }) {
+      const data = await client.get<unknown>('/api/recovery');
+      return { data, text: render.renderRecovery(data as never) };
     },
   },
   frontier: {
@@ -131,6 +143,34 @@ export const READ_COMMANDS: Record<string, Command> = {
 };
 
 export const WRITE_COMMANDS: Record<string, Command> = {
+  config: {
+    summary: 'Reconcile active configuration using explicit file or state authority',
+    usage: 'config reconcile <use_file|use_state> --file-hash SHA256 --state-hash SHA256',
+    async run({ client, args }) {
+      const positional = positionals(args);
+      if (positional[0] !== 'reconcile') {
+        throw new Error('Expected `config reconcile <use_file|use_state>`.');
+      }
+      const resolution = positional[1];
+      if (resolution !== 'use_file' && resolution !== 'use_state') {
+        throw new Error('Resolution must be `use_file` or `use_state`.');
+      }
+      const expectedFileHash = flagValue(args, 'file-hash');
+      const expectedStateHash = flagValue(args, 'state-hash');
+      if (!expectedFileHash || !SHA256_RE.test(expectedFileHash)) {
+        throw new Error('Missing or invalid --file-hash; inspect `overwatch recovery` and pass its 64-character lowercase SHA-256 observation.');
+      }
+      if (!expectedStateHash || !SHA256_RE.test(expectedStateHash)) {
+        throw new Error('Missing or invalid --state-hash; inspect `overwatch recovery` and pass its 64-character lowercase SHA-256 hash.');
+      }
+      const data = await client.post<unknown>('/api/recovery/config/resolve', {
+        resolution,
+        expected_file_hash: expectedFileHash,
+        expected_state_hash: expectedStateHash,
+      });
+      return { data, text: render.ok(`Configuration reconciled using ${resolution === 'use_file' ? 'file' : 'durable state'} authority.`) };
+    },
+  },
   approve: {
     summary: 'Approve a pending action',
     usage: 'approve <action-id>',

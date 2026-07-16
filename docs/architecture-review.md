@@ -6,7 +6,7 @@
 
 Overwatch is an MCP (Model Context Protocol) server that acts as the persistent state layer and reasoning substrate for LLM-powered penetration testing. Rather than stuffing engagement state into prompts, the LLM calls into a **persistent graph engine** that tracks every discovery, relationship, and hypothesis. After context compaction, a single `get_state()` call reconstructs a complete operational briefing with zero information loss.
 
-The server exposes **80 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, operator infrastructure, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
+The server exposes **82 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, operator infrastructure, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
 
 ---
 
@@ -31,7 +31,7 @@ The server exposes **80 MCP tools** covering the full engagement lifecycle — f
 │  └──────────────┘  └──────────────┘  └────────────────────┘   │
 │                                                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │              80 MCP Tools (Zod-validated)                  │  │
+│  │              82 MCP Tools (Zod-validated)                  │  │
 │  │  state · findings · scoring · exploration · agents ·       │  │
 │  │  logging · parsing · bloodhound · azurehound · inference   │  │
 │  │  remediation · skills · toolcheck · processes · sessions   │  │
@@ -236,7 +236,7 @@ Three transport implementations: `LocalPtyAdapter` (node-pty spawn), `SshAdapter
 
 ---
 
-## MCP Tools (80)
+## MCP Tools (82)
 
 All tools are wrapped in `withErrorBoundary` — unhandled errors return structured MCP error responses instead of crashing the server.
 
@@ -245,6 +245,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 | Tool | Purpose |
 |------|---------|
 | `get_state` | Full engagement briefing (primary recovery after compaction) |
+| `get_recovery_status` | WAL/state recovery and active config convergence |
 | `get_history` | Activity log with optional agent filtering |
 | `export_graph` | Complete graph dump for reporting |
 | `run_lab_preflight` | Lab readiness checks (profile-specific) |
@@ -297,6 +298,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 | `suggest_inference_rule` | Custom inference rule creation + backfill |
 | `correct_graph` | Transactional graph repair (drop/replace edges, patch nodes) |
 | `update_scope` | Confirmation-gated runtime scope expansion/contraction |
+| `resolve_config_divergence` | Explicit file/state authority choice using inspected hashes |
 | `get_system_prompt` | Dynamic agent instructions from engagement state |
 | `generate_report` | Full pentest report with findings, narrative, evidence, remediation |
 | `run_retrospective` | Post-engagement analysis (5 structured outputs) |
@@ -387,8 +389,8 @@ The `run_retrospective` tool produces five structured outputs:
 
 | Area | Files | Coverage |
 |------|-------|----------|
-| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap (80 tools) |
-| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 80 tools via stdio + HTTP/SSE transport |
+| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap (82 tools) |
+| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 82 tools via stdio + HTTP/SSE transport |
 | Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity, cold store integration |
 | Services | 24 test files | CIDR, BloodHound, parsers (21), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager, community detection, prompt generator, report generator, parser utils + sprint test suites (compaction, web surface, hardening, cloud graph, Linux/network, architecture prep) |
 | Tools | 10+ test files | Tool handlers: agents, findings, scoring, state, reporting, instructions, remediation, sessions, parse-output, activity logging, error boundary, processes |
@@ -448,6 +450,7 @@ overwatch/
 │   │   ├── ingest-json.ts          # ingest_json
 │   │   ├── postgres.ts             # connect/list/ingest Postgres helpers
 │   │   ├── bundle.ts               # bundle_engagement
+│   │   ├── recovery.ts             # get_recovery_status, resolve_config_divergence
 │   │   ├── scope.ts                # update_scope
 │   │   ├── instructions.ts         # get_system_prompt
 │   │   ├── reporting.ts            # generate_report

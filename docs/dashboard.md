@@ -122,6 +122,26 @@ Click any panel header to collapse/expand it. Panel state is persisted in `local
 
 ## Controls
 
+### Recovery status
+
+Every main dashboard view shows a global recovery banner when persistence is not
+fully writable. The banner distinguishes an active-config divergence from an
+underlying WAL/state failure, so selecting file/state authority never appears
+to repair an unrelated journal problem.
+
+Open **Settings → Recovery** for the full outcome, contiguous/on-disk
+checkpoints, file/runtime/state revisions and hashes, write-intent state, and
+operator-facing reason. For a config-only divergence, **Use file** and **Use
+state** submit the exact current hashes behind the abbreviated values (hover a
+value to inspect its full digest). The controls require
+confirmation and refresh status after success, conflict, or failure. They are
+not offered for an incomplete known write or a simultaneous persistence
+failure.
+
+While recovery is read-only, inspection routes remain available but durable
+dashboard mutations return HTTP 503 with code `PERSISTENCE_READ_ONLY` and the
+combined recovery object.
+
 ### Tape Toggle (Toolbar)
 
 The top toolbar shows a **Tape** pill that mirrors the in-process JSON-RPC recorder:
@@ -253,6 +273,8 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/` | GET | Dashboard SPA (index.html) |
 | `/assets/...` | GET | Vite-built dashboard JavaScript and CSS assets |
 | `/api/state` | GET | Current engagement state (JSON), includes `history_count` |
+| `/api/recovery` | GET | Combined WAL/state and active-config recovery status; available in degraded read-only mode |
+| `/api/recovery/config/resolve` | POST | Reconcile config with `{ resolution, expected_file_hash, expected_state_hash }`; stale observations return 409 |
 | `/api/graph` | GET | Full graph export (JSON) |
 | `/api/history` | GET | Paginated activity log. Query params: `limit`, `after` (ISO), `before` (ISO) |
 | `/api/evidence-chains/:nodeId` | GET | Evidence chain for a node — walks provenance edges (`DERIVED_FROM`, `DUMPED_FROM`, `OWNS_CRED`) to build the full derivation tree |

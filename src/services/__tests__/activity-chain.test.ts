@@ -241,21 +241,23 @@ describe('activity-chain (Phase 6)', () => {
     const prevNonce = process.env.OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE;
     process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = Buffer.from(kp.privateKeyPem, 'utf8').toString('base64');
     process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = Buffer.from(kp.publicKeyPem, 'utf8').toString('base64');
+    const nonceA = 'a'.repeat(64);
+    const nonceB = 'b'.repeat(64);
     // Engagement with a specific nonce; the external anchor will DISAGREE (splice).
     const cfg = makeConfig(true);
-    (cfg as any).engagement_nonce = 'engagement-A';
+    cfg.engagement_nonce = nonceA;
     const eA = createEngine(cfg, 'anchor.json');
     const hA: Record<string, any> = {};
     registerStateTools({ registerTool(n: string, _c: unknown, fn: any) { hA[n] = fn; } } as unknown as McpServer, eA);
     try {
       eA.logActionEvent({ description: 'x', event_type: 'action_started', provenance: 'agent' });
       // Verifier expects engagement-B out-of-band → config/checkpoints are A → reject.
-      process.env.OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE = 'engagement-B';
+      process.env.OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE = nonceB;
       const bad = JSON.parse((await hA.verify_activity_chain({})).content[0].text);
       expect(bad.checkpoint_attestation.ok).toBe(false);
       expect(bad.checkpoint_attestation.reason).toMatch(/anchor|nonce/i);
       // Correct anchor → attests.
-      process.env.OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE = 'engagement-A';
+      process.env.OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE = nonceA;
       const good = JSON.parse((await hA.verify_activity_chain({})).content[0].text);
       expect(good.checkpoint_attestation.ok).toBe(true);
     } finally {

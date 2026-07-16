@@ -17,6 +17,8 @@ import {
   getInferenceRules,
   getTemplates,
   exportGraphJson,
+  getRecovery,
+  resolveConfigDivergence,
 } from '../../lib/api';
 import type {
   EngagementConfig,
@@ -30,6 +32,7 @@ import type {
   OperatorPolicy,
   OperatorApprovalRule,
   OpsecConfig,
+  PersistenceRecoveryStatus,
 } from '../../lib/types';
 import {
   OBJECTIVE_EDGE_TYPES,
@@ -38,7 +41,9 @@ import {
   type SettingsDto,
 } from '@overwatch/dashboard-contracts';
 import { downloadDashboardResource } from '../../lib/dashboard-transport';
-import { ActionButton, PageHeader, PanelSection } from '../shared/primitives';
+import { recoveryPresentation } from '../../lib/recovery-presentation';
+import { useEngagementStore } from '../../stores/engagement-store';
+import { ActionButton, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
 export function SettingsPanel() {
   const [config, setConfig] = useState<EngagementConfig | null>(null);
@@ -49,29 +54,68 @@ export function SettingsPanel() {
   const [rules, setRules] = useState<InferenceRuleInfo[] | null>(null);
   const [templates, setTemplates] = useState<EngagementTemplate[] | null>(null);
   const [saveStatus, setSaveStatus] = useState('');
+  const [recovery, setRecovery] = useState<PersistenceRecoveryStatus | null>(null);
+  const [recoveryError, setRecoveryError] = useState('');
+  const [resolvingMode, setResolvingMode] = useState<'use_file' | 'use_state' | null>(null);
+  const setPersistenceRecovery = useEngagementStore(state => state.setPersistenceRecovery);
 
   const load = useCallback(async () => {
     try {
-      const [cfg, sets, h, w, tpl] = await Promise.all([
+      setRecoveryError('');
+      const [cfg, sets, h, w, tpl, recoveryStatus] = await Promise.all([
         getConfig(),
         getSettings().catch(() => null),
         getHealth().catch(() => null),
         getFrontierWeights().catch(() => null),
         getTemplates().then(r => r.templates).catch(() => null),
+        getRecovery().catch(error => {
+          setRecoveryError(error instanceof Error ? error.message : 'Unable to inspect recovery status');
+          return null;
+        }),
       ]);
       setConfig(cfg);
       setSettings(sets);
       setHealth(h);
       setWeights(w);
       setTemplates(tpl);
+      if (recoveryStatus) {
+        setRecovery(recoveryStatus);
+        setPersistenceRecovery(recoveryStatus);
+      }
     } catch { /* silent */ }
-  }, []);
+  }, [setPersistenceRecovery]);
 
   useEffect(() => { load(); }, [load]);
 
   const flash = (msg: string, _ok = true) => {
     setSaveStatus(msg);
     setTimeout(() => setSaveStatus(''), 3000);
+  };
+
+  const resolveRecovery = async (mode: 'use_file' | 'use_state') => {
+    const configRecovery = recovery?.config_recovery;
+    if (!configRecovery?.file_hash || !configRecovery.state_hash) {
+      flash('Error: refresh recovery status before reconciling', false);
+      return;
+    }
+    const authority = mode === 'use_file'
+      ? 'apply the validated engagement.json semantics to runtime and durable state'
+      : 'overwrite engagement.json with the durable-state configuration';
+    if (!window.confirm(`Confirm ${mode}: ${authority}?`)) return;
+    setResolvingMode(mode);
+    try {
+      await resolveConfigDivergence({
+        resolution: mode,
+        expected_file_hash: configRecovery.file_hash,
+        expected_state_hash: configRecovery.state_hash,
+      });
+      flash(`Configuration reconciled with ${mode === 'use_file' ? 'file' : 'durable state'} authority ✓`);
+    } catch (error) {
+      flash(`Error: ${error instanceof Error ? error.message : 'reconciliation failed'}`, false);
+    } finally {
+      await load();
+      setResolvingMode(null);
+    }
   };
 
   return (
@@ -90,6 +134,13 @@ export function SettingsPanel() {
           </ActionButton>
           </>
         }
+      />
+
+      <RecoverySection
+        recovery={recovery}
+        error={recoveryError}
+        resolvingMode={resolvingMode}
+        onResolve={resolveRecovery}
       />
 
       {config && <IdentitySection config={config} onSave={async (body) => {
@@ -120,6 +171,141 @@ export function SettingsPanel() {
       <GraphExportSection health={health} />
       <BundleSection />
       <HealthSection health={health} onRefresh={async () => { try { setHealth(await getHealth()); } catch {} }} />
+    </div>
+  );
+}
+
+/* ============ Recovery ============ */
+
+function shortHash(hash?: string): string {
+  return hash ? `${hash.slice(0, 12)}…${hash.slice(-8)}` : '—';
+}
+
+function RecoverySection({
+  recovery,
+  error,
+  resolvingMode,
+  onResolve,
+}: {
+  recovery: PersistenceRecoveryStatus | null;
+  error: string;
+  resolvingMode: 'use_file' | 'use_state' | null;
+  onResolve: (mode: 'use_file' | 'use_state') => Promise<void>;
+}) {
+  if (!recovery && !error) return null;
+  const view = recoveryPresentation(recovery);
+  const config = recovery?.config_recovery;
+  const configTone = config?.status === 'diverged'
+    ? 'warning'
+    : config?.status === 'write_incomplete'
+      ? 'danger'
+      : 'success';
+
+  return (
+    <PanelSection
+      title="Recovery and configuration ownership"
+      meta={config && <StatusPill tone={configTone}>{config.status.replace(/_/g, ' ')}</StatusPill>}
+      className={view?.tone === 'critical'
+        ? 'border-destructive/30'
+        : view?.tone === 'warning'
+          ? 'border-warning/30'
+          : undefined}
+    >
+      {error && <p role="alert" className="mb-3 text-xs text-destructive">Unable to refresh recovery status: {error}</p>}
+      {recovery && (
+        <>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-3">
+            <RecoveryValue label="Persistence" value={`${recovery.outcome} from ${recovery.source}`} />
+            <RecoveryValue
+              label="Journal checkpoint"
+              value={`${recovery.highest_contiguous_applied_seq} / ${recovery.highest_on_disk_seq} on disk`}
+            />
+            <RecoveryValue label="Writable" value={recovery.writable ? 'yes' : 'no'} />
+            <RecoveryValue label="File revision" value={config?.file_revision?.toString() ?? '—'} />
+            <RecoveryValue label="State revision" value={config?.state_revision?.toString() ?? '—'} />
+            <RecoveryValue label="Runtime revision" value={config?.runtime_revision?.toString() ?? '—'} />
+            <RecoveryValue label="File hash" value={shortHash(config?.file_hash)} title={config?.file_hash} mono />
+            <RecoveryValue label="State hash" value={shortHash(config?.state_hash)} title={config?.state_hash} mono />
+            <RecoveryValue label="Runtime hash" value={shortHash(config?.runtime_hash)} title={config?.runtime_hash} mono />
+          </div>
+
+          {(view || config?.reason || recovery.reason) && (
+            <div className={cn(
+              'mt-3 rounded border px-3 py-2 text-xs',
+              view?.tone === 'critical'
+                ? 'border-destructive/20 bg-destructive/5 text-destructive'
+                : view?.tone === 'warning'
+                  ? 'border-warning/20 bg-warning/5 text-warning'
+                  : 'border-border bg-elevated text-muted-foreground',
+            )}>
+              <div className="font-medium">{view?.title ?? 'Recovery status'}</div>
+              <div className="mt-0.5">{view?.message ?? config?.reason ?? recovery.reason}</div>
+              {recovery.persistence_reason && (
+                <div className="mt-1">Underlying persistence: {recovery.persistence_reason}</div>
+              )}
+              {view?.blockedReason && view.blockedReason !== recovery.persistence_reason && (
+                <div className="mt-1">{view.blockedReason}</div>
+              )}
+            </div>
+          )}
+
+          {config?.intent_present && (
+            <div className="mt-3 text-xs text-muted-foreground">
+              Recorded write intent: <code title={config.intent_path}>{config.intent_path ?? 'present'}</code>
+            </div>
+          )}
+          {config?.last_resolution && (
+            <div className="mt-1 text-xs text-muted-foreground">Last resolution: {config.last_resolution}</div>
+          )}
+
+          {config?.status === 'diverged' && view && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {view.canUseFile && (
+                <ActionButton
+                  variant="warning"
+                  disabled={resolvingMode !== null}
+                  onClick={() => onResolve('use_file')}
+                  title="Validate engagement.json, apply its semantic diff, and make runtime/state/file share a new revision"
+                >
+                  {resolvingMode === 'use_file' ? 'Applying file…' : 'Use file authority'}
+                </ActionButton>
+              )}
+              {view.canUseState && (
+                <ActionButton
+                  variant="secondary"
+                  disabled={resolvingMode !== null}
+                  onClick={() => onResolve('use_state')}
+                  title="Atomically restore engagement.json from the durable-state configuration"
+                >
+                  {resolvingMode === 'use_state' ? 'Restoring file…' : 'Use durable state'}
+                </ActionButton>
+              )}
+              {!view.canUseFile && !view.canUseState && (
+                <span className="text-xs text-muted-foreground">{view.blockedReason ?? 'No reconciliation mode is available.'}</span>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </PanelSection>
+  );
+}
+
+function RecoveryValue({
+  label,
+  value,
+  title,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  title?: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={cn('truncate text-foreground', mono && 'font-mono')} title={title}>{value}</div>
     </div>
   );
 }

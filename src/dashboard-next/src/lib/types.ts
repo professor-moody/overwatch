@@ -318,29 +318,8 @@ export interface TimelineEntry {
 
 // --- Engagement State (from get_state) ---
 
-export interface PersistenceRecoveryStatus {
-  outcome: 'clean' | 'recovered' | 'incomplete' | 'reinitialized';
-  source: 'fresh' | 'state' | 'snapshot' | 'config';
-  complete: boolean;
-  writable: boolean;
-  reason?: string;
-  base_checkpoint: number;
-  highest_allocated_seq: number;
-  highest_on_disk_seq: number;
-  highest_contiguous_applied_seq: number;
-  consecutive_persistence_failures: number;
-  last_persistence_error?: string;
-  journal: {
-    enabled: boolean;
-    read: number;
-    attempted: number;
-    applied: number;
-    skipped: number;
-    failed: number;
-    malformed: boolean;
-    preserved: boolean;
-  };
-}
+export type PersistenceRecoveryStatus = import('@overwatch/dashboard-contracts').RecoveryStatusDto;
+export type ConfigRecoveryStatus = import('@overwatch/dashboard-contracts').ConfigRecoveryStatusDto;
 
 export interface FrontierHiddenSummary {
   total: number;

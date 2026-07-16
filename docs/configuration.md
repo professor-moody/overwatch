@@ -28,6 +28,8 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
   "id": "string (required)",
   "name": "string (required)",
   "created_at": "ISO 8601 timestamp (required)",
+  "config_revision": "positive integer (managed by Overwatch)",
+  "config_hash": "64-character SHA-256 (managed by Overwatch)",
   "profile": "goad_ad | single_host | cloud | web_app | hybrid | network (optional, inferred if omitted; network must be set explicitly)",
   "scope": {
     "cidrs": ["CIDR notation strings"],
@@ -87,6 +89,79 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
   "orchestrator": { "enabled": false }
 }
 ```
+
+### Active configuration ownership and recovery
+
+For the active engagement, `engagement.json`, the live engine, and the config
+embedded in durable state are one revisioned value. Overwatch adds two managed
+fields:
+
+| Field | Meaning |
+|-------|---------|
+| `config_revision` | Monotonic revision assigned after each completed active-config change |
+| `config_hash` | SHA-256 of canonical JSON for the complete config, including the revision and excluding only `config_hash` itself |
+
+A legacy file/state pair with neither field is normalized to revision 1 only
+when both representations have identical semantics and persistence is writable.
+If metadata exists on only one side, a declared hash is invalid, or semantics
+differ, Overwatch does not guess.
+
+Active mutations are write-through. Scope, objectives, OPSEC, phase/settings,
+and automatic objective-achievement changes use the same config service:
+
+1. Validate the proposed semantic change and calculate the next revision/hash.
+2. Durably write a checksummed intent beside the active config as
+   `<engagement.json>.write-intent.json`.
+3. Atomically replace and fsync the config file.
+4. Apply the same revision to the live engine and durable state.
+5. Record the audited change, persist it, and remove the intent.
+
+Success is returned only after all managed representations share the target
+revision/hash. Inactive engagement edits remain validated atomic file updates;
+they become managed by this sequence when that engagement is started.
+
+If a crash interrupts a known write, startup resumes the checksummed intent.
+While that completion is unavailable or fails, status is `write_incomplete` and
+new durable mutations remain disabled. Do not delete or edit the intent file by
+hand.
+
+An unexplained file/state difference starts in degraded read-only mode with
+status `diverged`. Inspect it through any of these equivalent read surfaces:
+
+```bash
+overwatch recovery
+```
+
+- MCP: [`get_recovery_status`](tools/get-recovery-status.md)
+- HTTP: `GET /api/recovery`
+- Dashboard: the global recovery banner and **Settings → Recovery**
+
+Recovery reports separate the underlying WAL/state result from
+`config_recovery`. If both are degraded, config reconciliation cannot bypass or
+discard the WAL tail; repair the persistence recovery first.
+
+When `allowed_resolutions` permits it, choose authority explicitly using the
+exact observed hashes:
+
+```bash
+overwatch config reconcile use_file \
+  --file-hash <observed-file-sha256> \
+  --state-hash <durable-state-sha256>
+
+overwatch config reconcile use_state \
+  --file-hash <observed-file-sha256> \
+  --state-hash <durable-state-sha256>
+```
+
+- `use_file` validates and applies the file's semantic diff. The engagement
+  `id`, `created_at`, and `engagement_nonce` remain immutable.
+- `use_state` atomically restores the file from durable-state authority.
+
+Both modes assign a fresh revision, audit the resolution, and reject stale
+hashes with a conflict. Refresh recovery status and review the new values before
+retrying. See
+[`resolve_config_divergence`](tools/resolve-config-divergence.md) for the exact
+MCP and HTTP request shape.
 
 ### Scope
 

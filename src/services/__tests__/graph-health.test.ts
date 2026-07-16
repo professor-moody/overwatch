@@ -1,16 +1,34 @@
-import { describe, expect, it, afterEach } from 'vitest';
-import { unlinkSync, existsSync } from 'fs';
-import { GraphEngine } from '../graph-engine.js';
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { GraphEngine as BaseGraphEngine } from '../graph-engine.js';
 import { hasADContext, contextualFilterHealthReport } from '../graph-health.js';
 import { parseBloodHoundFile } from '../bloodhound-ingest.js';
 import { parseNmapXml, parseSecretsdump } from '../parsers/index.js';
+import type { EngagementConfig } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-health.json';
+let testDir: string;
+let engineIndex = 0;
+const engines = new Set<BaseGraphEngine>();
+
+class GraphEngine extends BaseGraphEngine {
+  constructor(config: EngagementConfig, _stateFilePath?: string) {
+    super(config, join(testDir, `state-${engineIndex++}.json`));
+    engines.add(this);
+  }
+}
+
+beforeEach(() => {
+  testDir = mkdtempSync(join(tmpdir(), 'overwatch-graph-health-'));
+  engineIndex = 0;
+});
 
 function cleanup() {
-  try {
-    if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-  } catch {}
+  for (const engine of engines) engine.dispose();
+  engines.clear();
+  rmSync(testDir, { recursive: true, force: true });
 }
 
 function makeConfig() {

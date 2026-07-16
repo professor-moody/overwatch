@@ -106,6 +106,8 @@ nav:
       - set_opsec: tools/set-opsec.md
     - State & Health:
       - get_state: tools/get-state.md
+      - get_recovery_status: tools/get-recovery-status.md
+      - resolve_config_divergence: tools/resolve-config-divergence.md
       - run_lab_preflight: tools/run-lab-preflight.md
       - run_graph_health: tools/run-graph-health.md
       - get_opsec_status: tools/get-opsec-status.md

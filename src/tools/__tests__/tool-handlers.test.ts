@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerScopeTools } from '../scope.js';
 import { registerExplorationTools } from '../exploration.js';
 import type { EngagementConfig } from '../../types.js';
-
-const TEST_STATE_FILE = './state-test-tool-handlers.json';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -29,12 +29,6 @@ function makeConfig(): EngagementConfig {
   };
 }
 
-function cleanup(): void {
-  try {
-    if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-  } catch {}
-}
-
 function buildHandlers(engine: GraphEngine) {
   const handlers: Record<string, (args: any) => Promise<any>> = {};
   const fakeServer = {
@@ -50,15 +44,19 @@ function buildHandlers(engine: GraphEngine) {
 
 describe('scope tool handler', () => {
   let engine: GraphEngine;
+  let testDir: string;
   let handlers: Record<string, (args: any) => Promise<any>>;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-tool-handlers-'));
+    engine = new GraphEngine(makeConfig(), join(testDir, 'state.json'));
     handlers = buildHandlers(engine);
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   it('dry-run preview returns mode: preview', async () => {
     const result = await handlers['update_scope']({
@@ -112,11 +110,12 @@ describe('scope tool handler', () => {
 
 describe('exploration tool handler', () => {
   let engine: GraphEngine;
+  let testDir: string;
   let handlers: Record<string, (args: any) => Promise<any>>;
 
   beforeEach(() => {
-    cleanup();
-    engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    testDir = mkdtempSync(join(tmpdir(), 'overwatch-tool-handlers-'));
+    engine = new GraphEngine(makeConfig(), join(testDir, 'state.json'));
     handlers = buildHandlers(engine);
 
     engine.ingestFinding({
@@ -131,7 +130,10 @@ describe('exploration tool handler', () => {
     });
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    engine.dispose();
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   it('returns nodes by type', async () => {
     const result = await handlers['query_graph']({

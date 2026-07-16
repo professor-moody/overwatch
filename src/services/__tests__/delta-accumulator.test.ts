@@ -47,4 +47,12 @@ describe('DeltaAccumulator', () => {
     expect(accumulator.drain()).toEqual({ new_nodes: ['node-a'] });
     expect(accumulator.drain()).toBeNull();
   });
+
+  it('preserves a state-only refresh with no graph ids', () => {
+    const accumulator = new DeltaAccumulator();
+
+    accumulator.push({});
+    expect(accumulator.drain()).toEqual({});
+    expect(accumulator.drain()).toBeNull();
+  });
 });

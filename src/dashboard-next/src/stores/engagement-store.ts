@@ -18,6 +18,7 @@ import type {
   GraphUpdateData,
   OpsecBudget,
   AccessSummary,
+  PersistenceRecoveryStatus,
 } from '../lib/types';
 
 export interface EngagementStore {
@@ -66,6 +67,9 @@ export interface EngagementStore {
   // Readiness
   readiness: { status: string; issues: string[] } | null;
 
+  // Durable recovery / configuration convergence
+  persistenceRecovery: PersistenceRecoveryStatus | null;
+
   // OPSEC Budget
   opsecBudget: OpsecBudget | null;
 
@@ -81,6 +85,7 @@ export interface EngagementStore {
   setSessions: (sessions: SessionInfo[]) => void;
   setRecentActivity: (entries: ActivityEntry[]) => void;
   setOpsecBudget: (budget: OpsecBudget) => void;
+  setPersistenceRecovery: (recovery: PersistenceRecoveryStatus | null) => void;
 }
 
 export const useEngagementStore = create<EngagementStore>((set, get) => ({
@@ -129,6 +134,8 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   // Readiness
   readiness: null,
 
+  persistenceRecovery: null,
+
   // OPSEC Budget
   opsecBudget: null,
 
@@ -166,6 +173,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       phases: s.phases || [],
       initialized: true,
       readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : null,
+      persistenceRecovery: s.persistence_recovery ?? null,
       accessSummary: s.access_summary || get().accessSummary,
       recentActivity: (s as any).recent_activity || get().recentActivity,
     });
@@ -226,6 +234,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       pendingActions: s.pending_actions || get().pendingActions,
       phases: s.phases || get().phases,
       readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : get().readiness,
+      persistenceRecovery: s.persistence_recovery ?? get().persistenceRecovery,
       accessSummary: s.access_summary || get().accessSummary,
       recentActivity: (s as any).recent_activity || get().recentActivity,
     });
@@ -250,4 +259,5 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   setSessions: (sessions) => set({ sessions }),
   setRecentActivity: (entries) => set({ recentActivity: entries }),
   setOpsecBudget: (budget) => set({ opsecBudget: budget }),
+  setPersistenceRecovery: (persistenceRecovery) => set({ persistenceRecovery }),
 }));

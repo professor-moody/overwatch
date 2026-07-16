@@ -11,6 +11,7 @@ import { isIpInCidr, isUrlInScope, isCloudResourceInScope, isHostExcluded, isHos
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
+import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { AgentManager } from './agent-manager.js';
 import { isTargetFacing } from './agent-archetypes.js';
 import { InferenceEngine } from './inference-engine.js';
@@ -26,7 +27,10 @@ import { summarizeInlineLabReadiness } from './lab-preflight.js';
 import { normalizeFindingNode, validateFindingNode } from './finding-validation.js';
 import { validateEdgeEndpoints } from './graph-schema.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
-import { IdentityReconciler } from './identity-reconciliation.js';
+import {
+  planIdentityRewrite,
+  type ReconciliationResult,
+} from './identity-reconciliation.js';
 import { detectCommunities, communityStats } from './community-detection.js';
 import { EvidenceStore } from './evidence-store.js';
 import { ActionOutputBuffer } from './action-output-buffer.js';
@@ -57,11 +61,11 @@ import type { ImperativeInferenceHost, PivotReachabilityResult } from './imperat
 import { runCrossTierCorrelator as _runCrossTierCorrelator } from './cross-tier-correlator.js';
 import { runCrossTierInference as _runCrossTierInference } from './cross-tier-inference.js';
 import {
-  updateScope as _updateScope,
   collectScopeSuggestions as _collectScopeSuggestions,
+  planScopeUpdate,
   previewScopeChange as _previewScopeChange,
 } from './scope-manager.js';
-import type { ScopeManagerHost } from './scope-manager.js';
+import type { ScopeManagerHost, ScopeUpdatePlan } from './scope-manager.js';
 import { isPassiveTechnique } from './osint-techniques.js';
 import { buildDecisionLog, queryDecisionLog, type DecisionEntry, type DecisionLogQuery } from './decision-log.js';
 import { explainAction, type ExplainActionResult } from './introspection.js';
@@ -77,13 +81,26 @@ import {
 import type { SessionTrackerHost } from './session-tracker.js';
 import {
   seedFromConfig as _seedFromConfig,
-  updateConfig as _updateConfig,
+  mergeConfig,
 } from './config-manager.js';
 import type { ConfigManagerHost } from './config-manager.js';
 import {
-  addObjective as _addObjective,
-  updateObjective as _updateObjective,
-  removeObjective as _removeObjective,
+  EngagementConfigService,
+  canonicalJson,
+  computeConfigHash,
+  type ConfigApplyContext,
+  type ResolveConfigDivergenceInput,
+  type ResolveConfigDivergenceResult,
+} from './engagement-config-service.js';
+import type {
+  DropNodeMutationPayloadV1,
+  GraphCorrectedMutationPayloadV1,
+  IdentityRewriteMutationPayloadV1,
+  MutationApplyResult,
+  ScopeUpdatedMutationPayloadV1,
+} from './mutation-journal.js';
+import { MutationJournal } from './mutation-journal.js';
+import {
   evaluateObjectives as _evaluateObjectives,
   recomputeObjectives as _recomputeObjectives,
   syncObjectiveNodes as _syncObjectiveNodes,
@@ -95,7 +112,7 @@ import {
 import type { ObjectiveManagerHost } from './objective-manager.js';
 import { queryGraphImpl } from './graph-query.js';
 import { CredentialCoverageTracker } from './credential-coverage.js';
-import { inferProfile } from '../types.js';
+import { engagementConfigSchema, inferProfile } from '../types.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState, FrontierItem,
@@ -103,6 +120,8 @@ import type {
   AgentTask, ExportedGraph, HealthReport, GraphCorrectionOperation,
   ScopeSuggestion, InferenceRuleEffectiveness,
   PersistenceRecoveryStatus,
+  ConfigRecoveryStatus,
+  ConfigIntentConflict,
 } from '../types.js';
 
 /** Public read surfaces must not leak mutable references into durable engine
@@ -120,6 +139,8 @@ export interface RecentOutcome {
   technique?: string;
   action_id?: string;
 }
+
+type ExactGraphDelta = Pick<IdentityRewriteMutationPayloadV1, 'node_changes' | 'edge_changes'>;
 
 function createGraph(): OverwatchGraph {
   return createOverwatchGraph();
@@ -147,13 +168,13 @@ const APPROVAL_STRICTNESS: Record<string, number> = { 'auto-approve': 0, 'approv
 export class GraphEngine {
   private ctx: EngineContext;
   private persistence: StatePersistence;
+  private configService: EngagementConfigService;
   private agentMgr: AgentManager;
   private inference: InferenceEngine;
   private paths: PathAnalyzer;
   private frontierComputer: FrontierComputer;
   private chainScorer: ChainScorer;
   private campaignPlanner: CampaignPlanner;
-  private reconciler: IdentityReconciler;
   private healthReportCache: HealthReport | null = null;
   private frontierCache: { passed: FrontierItem[]; all: FrontierItem[]; campaigns: import('../types.js').Campaign[]; hidden: import('../types.js').FrontierHiddenSummary } | null = null;
   private evidenceStore: EvidenceStore;
@@ -161,22 +182,42 @@ export class GraphEngine {
   /** Shared skill methodology index (attached at app construction); null in bare/test contexts. */
   private skillIndex: SkillIndex | null = null;
   private kb: KnowledgeBase | null = null;
+  private startupReconciliationDeferred = false;
+  private recoveryMaintenanceInProgress = false;
+  private deferredStartupRecoveryError?: string;
 
-  constructor(config: EngagementConfig, stateFilePath?: string) {
+  constructor(config: EngagementConfig, stateFilePath?: string, configFilePath?: string) {
+    config = engagementConfigSchema.parse(config);
     const graph = createGraph();
     const filePath = stateFilePath || `./state-${config.id}.json`;
-    this.ctx = new EngineContext(graph, config, filePath);
+    this.ctx = new EngineContext(graph, config, filePath, configFilePath !== undefined);
     this.ctx.inferenceRules = [...BUILTIN_RULES];
     this.persistence = new StatePersistence(
       this.ctx, BUILTIN_RULES,
       createGraph,
     );
+    this.configService = new EngagementConfigService({
+      getRuntimeConfig: () => this.ctx.config,
+      nowIso: () => this.ctx.nowIso(),
+      applyRuntimeConfig: (next, context) => this.applyRuntimeConfig(next, context),
+      persistRuntimeState: () => this.persistence.persistImmediate(),
+      recordConfigEvent: ({ description, result, details }) => {
+        this.ctx.logEvent({
+          description,
+          event_type: result === 'success' ? 'config_updated' : 'instrumentation_warning',
+          category: 'system',
+          result_classification: result,
+          details,
+        });
+      },
+    }, configFilePath);
     this.agentMgr = new AgentManager(this.ctx);
     this.inference = new InferenceEngine(
       this.ctx,
       this.addEdge.bind(this),
       this.getNode.bind(this),
       this.getNodesByType.bind(this),
+      this.addNode.bind(this),
     );
     this.paths = new PathAnalyzer(
       this.ctx, BIDIRECTIONAL_EDGE_TYPES,
@@ -191,12 +232,6 @@ export class GraphEngine {
       this.hopsToNearestObjective.bind(this),
     );
     this.campaignPlanner = new CampaignPlanner(this.ctx);
-    this.reconciler = new IdentityReconciler(this.ctx.graph, {
-      getNode: this.getNode.bind(this),
-      addEdge: this.addEdge.bind(this),
-      logActionEvent: this.logActionEvent.bind(this),
-      invalidatePathGraph: this.invalidatePathGraph.bind(this),
-    });
     this.evidenceStore = new EvidenceStore(filePath);
 
     // One recovery state machine owns both primary and snapshot fallback.  A
@@ -204,17 +239,9 @@ export class GraphEngine {
     // seeding: the engine stays available for inspection in read-only mode.
     const hadPersistedBase = existsSync(this.ctx.stateFilePath) || this.persistence.listSnapshots().length > 0;
     const restore = this.persistence.restoreBaseAndReplay(this);
-    const degraded = restore.status === 'degraded';
+    let persistenceDegraded = restore.status === 'degraded';
     let seededFromConfig = false;
-    if (restore.status === 'restored') {
-      this.log(
-        restore.source === 'snapshot'
-          ? 'Recovered engagement from persisted snapshot and WAL'
-          : 'Resumed engagement from persisted state',
-        undefined,
-        { category: 'system', event_type: 'system' },
-      );
-    } else if (restore.status === 'seed_required') {
+    if (restore.status === 'seed_required') {
       try {
         this.seedFromConfig();
       } catch (seedErr) {
@@ -256,7 +283,49 @@ export class GraphEngine {
     // ctx.campaigns. Reindexing is read-only and is safe even in degraded mode.
     this.campaignPlanner.reindex();
 
-    if (!degraded) {
+    if (restore.rollback_pending && !persistenceDegraded) {
+      try {
+        this.configService.adoptRestoredRuntimeConfig('snapshot.rollback.recovery');
+      } catch (error) {
+        // A retained config intent or the rollback authority remains the known
+        // restart path. initialize() below may finish an intent that already
+        // became durable; otherwise it keeps the service read-only.
+        console.error(
+          `[recovery] rollback config synchronization remains pending: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    const configRecovery = this.configService.initialize({
+      restored: restore.status === 'restored',
+      persistence_writable: !persistenceDegraded && this.persistence.isWritable(),
+      durable_config: this.persistence.getDurableConfig(),
+    });
+    if (restore.rollback_pending && !configRecovery.resolution_required && !persistenceDegraded) {
+      try {
+        this.persistence.completePendingRollbackAuthority();
+      } catch (error) {
+        persistenceDegraded = true;
+        console.error(
+          `[recovery] rollback authority could not be released after config synchronization: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    this.startupReconciliationDeferred = !persistenceDegraded && configRecovery.resolution_required;
+    // Every guarded primitive now observes both WAL/state health and config
+    // convergence. Reconciliation temporarily bypasses only the config half.
+    this.ctx.persistenceWriteGuard = () => this.assertPersistenceWritable();
+
+    if (!persistenceDegraded && !configRecovery.resolution_required) {
+      if (restore.status === 'restored') {
+        this.log(
+          restore.source === 'snapshot'
+            ? 'Recovered engagement from persisted snapshot and WAL'
+            : 'Resumed engagement from persisted state',
+          undefined,
+          { category: 'system', event_type: 'system' },
+        );
+      }
       this.syncObjectiveNodes();
 
       // Reconcile runtime-dependent state on startup only when the resulting
@@ -284,10 +353,22 @@ export class GraphEngine {
       // Phase B: surface "OPSEC inert" state at startup.
       this.warnIfOpsecInert();
     } else {
-      const status = this.persistence.getRecoveryStatus();
-      console.error(
-        `[persistence] degraded read-only startup: ${status.reason ?? 'WAL recovery is incomplete'}`,
-      );
+      const stateRecovery = this.getStatePersistenceRecoveryStatus();
+      const configStatus = this.getConfigRecoveryStatus();
+      if (!stateRecovery.complete || !stateRecovery.writable) {
+        console.error(
+          `[persistence] degraded read-only startup: ${stateRecovery.reason ?? 'recovery is incomplete'}`,
+        );
+      } else if (configStatus.resolution_required) {
+        console.error(
+          `[config] read-only startup: ${configStatus.reason ?? 'configuration reconciliation is required'}`,
+        );
+      } else {
+        const status = this.getPersistenceRecoveryStatus();
+        console.error(
+          `[recovery] read-only startup: ${status.reason ?? 'startup reconciliation is incomplete'}`,
+        );
+      }
       // Populate the health cache without recording or persisting a new event.
       this.runHealthChecks();
     }
@@ -475,44 +556,339 @@ export class GraphEngine {
     return edgeId;
   }
 
+  dropNodeDurable(
+    nodeId: string,
+    audit: { reason: string; action_id?: string },
+  ): { dropped: boolean; node_id: string; removed_edge_ids: string[] } {
+    this.assertPersistenceWritable();
+    if (!this.ctx.graph.hasNode(nodeId)) {
+      return { dropped: false, node_id: nodeId, removed_edge_ids: [] };
+    }
+    const node = this.ctx.graph.getNodeAttributes(nodeId) as NodeProperties;
+    const incidentEdges = this.ctx.graph.edges(nodeId)
+      .map(edgeId => ({
+        edge_id: edgeId,
+        source: this.ctx.graph.source(edgeId),
+        target: this.ctx.graph.target(edgeId),
+        edge_type: String(this.ctx.graph.getEdgeAttributes(edgeId).type),
+        props: detached(this.ctx.graph.getEdgeAttributes(edgeId) as EdgeProperties),
+      }))
+      .sort((left, right) => left.edge_id.localeCompare(right.edge_id));
+    const payload: DropNodeMutationPayloadV1 = {
+      payload_version: 1,
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      reason: audit.reason,
+      ...(audit.action_id ? { action_id: audit.action_id } : {}),
+      node_id: nodeId,
+      expected_type: node.type,
+      expected_node: { node_id: nodeId, props: detached(node) },
+      incident_edges: incidentEdges,
+    };
+    this.ensureCompositeJournal();
+    const applied = this.ctx.applyJournaledMutation(
+      'drop_node',
+      payload as unknown as Record<string, unknown>,
+      () => this.applyDropNodeMutation(payload, false),
+      audit.action_id,
+    );
+    if (applied.status !== 'applied') throw new Error(applied.reason);
+    this.persist({ removed_nodes: [nodeId], removed_edges: incidentEdges.map(edge => edge.edge_id) });
+    return { dropped: true, node_id: nodeId, removed_edge_ids: incidentEdges.map(edge => edge.edge_id) };
+  }
+
+  applyDropNodeMutation(
+    payload: DropNodeMutationPayloadV1,
+    _recovery = true,
+  ): MutationApplyResult {
+    if (payload.payload_version !== 1) {
+      return { status: 'skipped', reason: `unsupported drop_node payload version: ${String(payload.payload_version)}` };
+    }
+    const nodePresent = this.ctx.graph.hasNode(payload.node_id);
+    if (nodePresent) {
+      const node = this.ctx.graph.getNodeAttributes(payload.node_id) as NodeProperties;
+      if (
+        canonicalJson(this.identityNodeComparable(node))
+        !== canonicalJson(this.identityNodeComparable(payload.expected_node.props))
+      ) {
+        return { status: 'skipped', reason: `drop_node node state changed for ${payload.node_id}` };
+      }
+      const actual = this.ctx.graph.edges(payload.node_id)
+        .map(edgeId => ({
+          edge_id: edgeId,
+          source: this.ctx.graph.source(edgeId),
+          target: this.ctx.graph.target(edgeId),
+          edge_type: String(this.ctx.graph.getEdgeAttributes(edgeId).type),
+          props: detached(this.ctx.graph.getEdgeAttributes(edgeId) as EdgeProperties),
+        }))
+        .sort((left, right) => left.edge_id.localeCompare(right.edge_id));
+      const expected = [...payload.incident_edges].sort((left, right) => left.edge_id.localeCompare(right.edge_id));
+      if (canonicalJson(actual) !== canonicalJson(expected)) {
+        return { status: 'skipped', reason: `drop_node incident edges changed for ${payload.node_id}` };
+      }
+    } else {
+      const reusedEdge = payload.incident_edges.find(edge => this.ctx.graph.hasEdge(edge.edge_id));
+      if (reusedEdge) {
+        return { status: 'skipped', reason: `drop_node edge identity ${reusedEdge.edge_id} was reused after ${payload.node_id} disappeared` };
+      }
+    }
+
+    const graphSnapshot = this.ctx.graph.export();
+    const activitySnapshot = detached(this.ctx.activityLog);
+    const chainHashSnapshot = this.ctx.lastChainHash;
+    const chainCheckpointsSnapshot = detached(this.ctx.chainCheckpoints);
+    const chainEventsSnapshot = this.ctx.chainEventsSinceCheckpoint;
+    const deterministicSeqSnapshot = this.ctx.deterministicSeq;
+    const actionFrontierSnapshot = new Map(
+      [...this.ctx.actionFrontierMap].map(([key, value]) => [key, detached(value)]),
+    );
+    const frontierLinkageSnapshot = detached(this.ctx.frontierLinkage.serialize());
+    try {
+      this.ctx.withClock(payload.occurred_at, () => {
+        if (nodePresent) this.ctx.graph.dropNode(payload.node_id);
+        if (
+          this.ctx.graph.hasNode(payload.node_id)
+          || payload.incident_edges.some(edge => this.ctx.graph.hasEdge(edge.edge_id))
+        ) {
+          throw new Error(`drop_node did not reach its frozen post-state for ${payload.node_id}`);
+        }
+        const alreadyAudited = this.ctx.activityLog.some(entry =>
+          entry.event_type === 'graph_corrected'
+          && entry.details?.operation_id === payload.operation_id,
+        );
+        if (!alreadyAudited) {
+          this.ctx.logEvent({
+            description: 'Graph corrected: durable node drop applied',
+            action_id: payload.action_id,
+            event_type: 'graph_corrected',
+            category: 'system',
+            result_classification: 'success',
+            details: {
+              operation_id: payload.operation_id,
+              reason: payload.reason,
+              operations: [{ kind: 'drop_node', node_id: payload.node_id }],
+              dropped_nodes: [payload.node_id],
+              dropped_edges: payload.incident_edges.map(edge => edge.edge_id),
+            },
+          });
+        }
+      });
+      this.invalidateAllCaches();
+      this.invalidatePathGraph();
+      return { status: 'applied' };
+    } catch (error) {
+      this.ctx.graph.clear();
+      this.ctx.graph.import(graphSnapshot);
+      this.ctx.activityLog = activitySnapshot;
+      this.ctx.lastChainHash = chainHashSnapshot;
+      this.ctx.chainCheckpoints = chainCheckpointsSnapshot;
+      this.ctx.chainEventsSinceCheckpoint = chainEventsSnapshot;
+      this.ctx.deterministicSeq = deterministicSeqSnapshot;
+      this.ctx.actionFrontierMap = actionFrontierSnapshot;
+      this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(frontierLinkageSnapshot);
+      this.invalidateAllCaches();
+      this.invalidatePathGraph();
+      if (!_recovery) throw error;
+      return { status: 'skipped', reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private reconcileCanonicalNodeDurable(
+    canonicalNodeId: string,
+    agentId?: string,
+    actionId?: string,
+  ): ReconciliationResult {
+    const plan = planIdentityRewrite(this.ctx.graph, canonicalNodeId, {
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      ...(agentId ? { agent_id: agentId } : {}),
+      ...(actionId ? { action_id: actionId } : {}),
+    });
+    if (!plan.payload) return plan.result;
+    this.ensureCompositeJournal();
+    const applied = this.ctx.applyCompositeJournaledMutation(
+      'identity_rewrite',
+      plan.payload as unknown as Record<string, unknown>,
+      () => this.applyIdentityRewriteMutation(plan.payload!, false),
+      actionId,
+    );
+    if (applied.status !== 'applied') throw new Error(applied.reason);
+    return detached(plan.payload.result);
+  }
+
+  applyIdentityRewriteMutation(
+    payload: IdentityRewriteMutationPayloadV1,
+    recovery = true,
+  ): MutationApplyResult {
+    if (payload.payload_version !== 1) {
+      return { status: 'skipped', reason: `unsupported identity_rewrite payload version: ${String(payload.payload_version)}` };
+    }
+    const alreadyApplied = this.exactGraphDeltaMatches(payload, 'after');
+    const readyToApply = !alreadyApplied && this.exactGraphDeltaMatches(payload, 'before');
+    if (!alreadyApplied && !readyToApply) {
+      return {
+        status: 'skipped',
+        reason: `identity_rewrite preconditions changed for operation ${payload.operation_id}`,
+      };
+    }
+
+    const graphSnapshot = this.ctx.graph.export();
+    const activitySnapshot = detached(this.ctx.activityLog);
+    const chainHashSnapshot = this.ctx.lastChainHash;
+    const chainCheckpointsSnapshot = detached(this.ctx.chainCheckpoints);
+    const chainEventsSnapshot = this.ctx.chainEventsSinceCheckpoint;
+    const deterministicSeqSnapshot = this.ctx.deterministicSeq;
+    const actionFrontierSnapshot = new Map(
+      [...this.ctx.actionFrontierMap].map(([key, value]) => [key, detached(value)]),
+    );
+    const frontierLinkageSnapshot = detached(this.ctx.frontierLinkage.serialize());
+    try {
+      this.ctx.withClock(payload.occurred_at, () => {
+        if (readyToApply) {
+          for (const change of payload.edge_changes) {
+            if (change.before && this.ctx.graph.hasEdge(change.edge_id)) {
+              this.ctx.graph.dropEdge(change.edge_id);
+            }
+          }
+          for (const change of payload.node_changes) {
+            if (!change.after && this.ctx.graph.hasNode(change.node_id)) {
+              this.ctx.graph.dropNode(change.node_id);
+            }
+          }
+          for (const change of payload.node_changes) {
+            if (!change.after) continue;
+            const props = detached(change.after.props);
+            if (this.ctx.graph.hasNode(change.node_id)) {
+              this.ctx.graph.replaceNodeAttributes(change.node_id, props);
+            } else {
+              this.ctx.graph.addNode(change.node_id, props);
+            }
+          }
+          for (const change of payload.edge_changes) {
+            if (!change.after) continue;
+            const edge = change.after;
+            if (!this.ctx.graph.hasNode(edge.source) || !this.ctx.graph.hasNode(edge.target)) {
+              throw new Error(`identity_rewrite edge ${edge.edge_id} has a missing endpoint`);
+            }
+            this.ctx.graph.addEdgeWithKey(
+              edge.edge_id,
+              edge.source,
+              edge.target,
+              detached(edge.props),
+            );
+          }
+          if (!this.exactGraphDeltaMatches(payload, 'after')) {
+            throw new Error(`identity_rewrite did not reach its frozen post-state for operation ${payload.operation_id}`);
+          }
+        }
+
+        for (const [index, event] of payload.audit_events.entries()) {
+          const alreadyAudited = this.ctx.activityLog.some(entry =>
+            entry.details?.identity_operation_id === payload.operation_id
+            && entry.details?.identity_event_index === index,
+          );
+          if (alreadyAudited) continue;
+          this.ctx.logEvent({
+            description: event.description,
+            agent_id: payload.agent_id,
+            action_id: payload.action_id,
+            category: event.category ?? 'system',
+            event_type: event.event_type ?? 'system',
+            result_classification: event.result_classification ?? 'success',
+            target_node_ids: event.target_node_ids,
+            details: {
+              ...detached(event.details),
+              identity_operation_id: payload.operation_id,
+              identity_event_index: index,
+            },
+          });
+        }
+      });
+      this.invalidateAllCaches();
+      this.invalidatePathGraph();
+      return { status: 'applied' };
+    } catch (error) {
+      this.ctx.graph.clear();
+      this.ctx.graph.import(graphSnapshot);
+      this.ctx.activityLog = activitySnapshot;
+      this.ctx.lastChainHash = chainHashSnapshot;
+      this.ctx.chainCheckpoints = chainCheckpointsSnapshot;
+      this.ctx.chainEventsSinceCheckpoint = chainEventsSnapshot;
+      this.ctx.deterministicSeq = deterministicSeqSnapshot;
+      this.ctx.actionFrontierMap = actionFrontierSnapshot;
+      this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(frontierLinkageSnapshot);
+      this.invalidateAllCaches();
+      this.invalidatePathGraph();
+      if (!recovery) throw error;
+      return { status: 'skipped', reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private exactGraphDeltaMatches(
+    payload: ExactGraphDelta,
+    phase: 'before' | 'after',
+  ): boolean {
+    for (const change of payload.node_changes) {
+      const expected = change[phase];
+      if (!expected) {
+        if (this.ctx.graph.hasNode(change.node_id)) return false;
+      } else {
+        if (!this.ctx.graph.hasNode(change.node_id)) return false;
+        const actualProps = this.identityNodeComparable(
+          this.ctx.graph.getNodeAttributes(change.node_id) as NodeProperties,
+        );
+        const expectedProps = this.identityNodeComparable(expected.props);
+        if (canonicalJson(actualProps) !== canonicalJson(expectedProps)) return false;
+      }
+    }
+    for (const change of payload.edge_changes) {
+      const expected = change[phase];
+      if (!expected) {
+        if (this.ctx.graph.hasEdge(change.edge_id)) return false;
+      } else {
+        if (!this.ctx.graph.hasEdge(change.edge_id)) return false;
+        if (
+          this.ctx.graph.source(change.edge_id) !== expected.source
+          || this.ctx.graph.target(change.edge_id) !== expected.target
+          || canonicalJson(this.ctx.graph.getEdgeAttributes(change.edge_id)) !== canonicalJson(expected.props)
+        ) return false;
+      }
+    }
+    if (phase === 'before') {
+      for (const change of payload.node_changes) {
+        if (!change.before || change.after || !this.ctx.graph.hasNode(change.node_id)) continue;
+        const expectedIncident = payload.edge_changes
+          .filter(edge => edge.before?.source === change.node_id || edge.before?.target === change.node_id)
+          .map(edge => edge.edge_id)
+          .sort();
+        const actualIncident = this.ctx.graph.edges(change.node_id).sort();
+        if (canonicalJson(actualIncident) !== canonicalJson(expectedIncident)) return false;
+      }
+    }
+    return true;
+  }
+
+  private identityNodeComparable(props: NodeProperties): NodeProperties {
+    const normalized = {
+      ...props,
+      ...normalizeNodeProvenance(props),
+    } as NodeProperties;
+    if (
+      normalized.id.startsWith('cred-default-')
+      && normalized.type === 'credential'
+      && !normalized.cred_is_default_guess
+    ) {
+      normalized.cred_is_default_guess = true;
+    }
+    return normalized;
+  }
+
   patchNodeProperties(nodeId: string, setProperties: Record<string, unknown> = {}, unsetProperties: string[] = []): NodeProperties {
     const existing = this.getNode(nodeId);
     if (!existing) {
       throw new Error(`Node does not exist in graph: ${nodeId}`);
     }
-    if ((typeof setProperties.id === 'string' && setProperties.id !== nodeId) || (typeof setProperties.type === 'string' && setProperties.type !== existing.type)) {
-      throw new Error('patch_node cannot change a node id or type.');
-    }
-
-    const normalizedPatch = existing.type === 'credential'
-      ? normalizeFindingNode({
-          ...existing,
-          ...setProperties,
-          id: nodeId,
-          type: existing.type,
-          label: typeof setProperties.label === 'string' ? setProperties.label : existing.label,
-        } as Partial<NodeProperties> & { id: string; type: string })
-      : ({ ...existing, ...setProperties } as NodeProperties);
-
-    for (const key of unsetProperties) {
-      delete (normalizedPatch as Record<string, unknown>)[key];
-    }
-
-    const validationErrors = validateFindingNode(normalizedPatch as Partial<NodeProperties> & { id: string; type: string });
-    if (validationErrors.length > 0) {
-      throw new Error(validationErrors.map(error => error.message).join('; '));
-    }
-
-    const nextNode = {
-      ...existing,
-      ...normalizedPatch,
-      id: nodeId,
-      type: existing.type,
-    } as NodeProperties;
-    const nextAttrs = {
-      ...nextNode,
-      ...normalizeNodeProvenance(nextNode),
-    };
+    const nextAttrs = this.buildPatchedNode(existing, setProperties, unsetProperties);
     // Journal as a REPLACE (not merge) so replay reproduces the full-node
     // semantics of patch — including REMOVING keys cleared via unsetProperties.
     // A merge_node_attrs replay could only add/overwrite keys, leaving a cleared
@@ -665,6 +1041,7 @@ export class GraphEngine {
       });
       _runCrossTierInference({
         ctx: this.ctx,
+        addNode: this.addNode.bind(this),
         addEdge: this.addEdge.bind(this),
         log: this.log.bind(this),
       });
@@ -734,7 +1111,7 @@ export class GraphEngine {
       log: this.log.bind(this),
       logActionEvent: this.logActionEvent.bind(this),
       findSubnetCidr: this.findSubnetCidr.bind(this),
-      reconcileCanonicalNode: this.reconciler.reconcileCanonicalNode.bind(this.reconciler),
+      reconcileCanonicalNode: this.reconcileCanonicalNodeDurable.bind(this),
       runInferenceRules: this.runInferenceRules.bind(this),
       inferPivotReachability: this.inferPivotReachability.bind(this),
       inferDefaultCredentials: this.inferDefaultCredentials.bind(this),
@@ -743,7 +1120,6 @@ export class GraphEngine {
       degradeExpiredCredentialEdges: this.degradeExpiredCredentialEdges.bind(this),
       evaluateObjectives: this.evaluateObjectives.bind(this),
       persist: this.persist.bind(this),
-      persistImmediate: this.persistImmediate.bind(this),
       propertiesChanged: this.propertiesChanged.bind(this),
       invalidateFrontierCache: this.invalidateFrontierCache.bind(this),
     };
@@ -1896,164 +2272,417 @@ export class GraphEngine {
     operations: GraphCorrectionOperation[],
     actionId?: string,
   ): {
+    dropped_nodes: string[];
     dropped_edges: string[];
     replaced_edges: Array<{ old_edge_id: string; new_edge_id: string }>;
     patched_nodes: string[];
   } {
     this.assertPersistenceWritable();
+    if (reason.trim().length === 0) throw new Error('Graph correction reason must not be empty.');
+    const nodeDrops = operations.filter((operation): operation is Extract<GraphCorrectionOperation, { kind: 'drop_node' }> =>
+      operation.kind === 'drop_node',
+    );
+    if (nodeDrops.length > 0 && operations.length === 1) {
+      const before = this.getNode(nodeDrops[0].node_id);
+      if (!before) throw new Error(`Node does not exist in graph: ${nodeDrops[0].node_id}`);
+      const dropped = this.dropNodeDurable(nodeDrops[0].node_id, {
+        reason,
+        ...(actionId ? { action_id: actionId } : {}),
+      });
+      return {
+        dropped_nodes: [nodeDrops[0].node_id],
+        dropped_edges: dropped.removed_edge_ids,
+        replaced_edges: [],
+        patched_nodes: [],
+      };
+    }
+    const occurredAt = this.ctx.nowIso();
+    const payload = this.planGraphCorrectionMutation(
+      reason,
+      operations,
+      occurredAt,
+      actionId,
+    );
+    this.ensureCompositeJournal();
+    const applied = this.ctx.applyCompositeJournaledMutation(
+      'graph_corrected',
+      payload as unknown as Record<string, unknown>,
+      () => this.applyGraphCorrectedMutation(payload, false),
+      actionId,
+    );
+    if (applied.status !== 'applied') throw new Error(applied.reason);
+    this.evaluateObjectives();
+    this.persist({
+      removed_nodes: payload.result.dropped_nodes,
+      removed_edges: payload.result.dropped_edges,
+      new_edges: payload.result.replaced_edges.map(edge => edge.new_edge_id),
+      updated_nodes: payload.result.patched_nodes,
+    });
+    return detached(payload.result);
+  }
+
+  /**
+   * Legacy engagements may predate WAL creation. Before their first composite
+   * mutation, checkpoint the complete pre-state once and then start a journal
+   * from that trusted base. Subsequent corrections use WAL durability and no
+   * longer depend on a post-mutation forced snapshot.
+   */
+  private ensureCompositeJournal(): void {
+    if (this.ctx.mutationJournal) return;
+    this.persistence.persistImmediate();
+    const journal = new MutationJournal(this.ctx.stateFilePath);
+    journal.setNextSeq(this.ctx.journalSnapshotSeq, {
+      appliedThroughSeq: this.ctx.journalSnapshotSeq,
+    });
+    this.persistence.enableMutationJournal(journal);
+  }
+
+  private planGraphCorrectionMutation(
+    reason: string,
+    operations: GraphCorrectionOperation[],
+    occurredAt: string,
+    actionId?: string,
+  ): GraphCorrectedMutationPayloadV1 {
+    const beforeNodes = this.collectGraphNodeStates(this.ctx.graph);
+    const beforeEdges = this.collectGraphEdgeStates(this.ctx.graph);
+    const scratch = createGraph();
+    scratch.import(detached(this.ctx.graph.export()));
+    const droppedNodes: string[] = [];
     const droppedEdges: string[] = [];
     const replacedEdges: Array<{ old_edge_id: string; new_edge_id: string }> = [];
     const patchedNodes: string[] = [];
-    const removedEdges: string[] = [];
-    const newEdges: string[] = [];
-    const updatedNodes: string[] = [];
-    const beforeSummary = {
-      total_nodes: this.ctx.graph.order,
-      total_edges: this.ctx.graph.size,
-    };
+    const beforeSummary = { total_nodes: scratch.order, total_edges: scratch.size };
 
     for (const operation of operations) {
-      if (operation.kind === 'drop_edge' || operation.kind === 'replace_edge') {
-        const sourceId = operation.source_id;
-        const targetId = operation.target_id;
-        const existingEdgeId = this.findEdgeId(sourceId, targetId, operation.edge_type);
-        if (!existingEdgeId) {
-          throw new Error(`Edge does not exist in graph: ${sourceId} --[${operation.edge_type}]--> ${targetId}`);
-        }
-
-        if (operation.kind === 'replace_edge') {
-          const newSource = operation.new_source_id || sourceId;
-          const newTarget = operation.new_target_id || targetId;
-          const newType = operation.new_edge_type || operation.edge_type;
-          const sourceNode = this.getNode(newSource);
-          const targetNode = this.getNode(newTarget);
-          if (!sourceNode || !targetNode) {
-            throw new Error(`Replacement edge references missing nodes: ${newSource} --[${newType}]--> ${newTarget}`);
-          }
-
-          const validation = validateEdgeEndpoints(newType, sourceNode.type, targetNode.type, {
-            source_id: newSource,
-            target_id: newTarget,
-            edge_id: existingEdgeId,
-          });
-          if (!validation.valid) {
-            // F0-6: surface the same suggested_fix text the report_finding
-            // ingestion path produces so operators get actionable guidance
-            // regardless of which mutation entrypoint they used.
-            const suggestion = validation.suggested_fix?.message
-              ? ` Suggested fix: ${validation.suggested_fix.message}`
-              : '';
-            throw new Error(`Replacement edge ${newType} cannot connect ${sourceNode.type} to ${targetNode.type}.${suggestion}`);
-          }
-        }
-      }
-
-      if (operation.kind === 'patch_node') {
-        const existingNode = this.getNode(operation.node_id);
-        if (!existingNode) {
+      if (operation.kind === 'drop_node') {
+        if (!scratch.hasNode(operation.node_id)) {
           throw new Error(`Node does not exist in graph: ${operation.node_id}`);
         }
+        const incidentEdgeIds = scratch.edges(operation.node_id);
+        scratch.dropNode(operation.node_id);
+        droppedNodes.push(operation.node_id);
+        droppedEdges.push(...incidentEdgeIds);
+        continue;
       }
+
+      if (operation.kind === 'drop_edge') {
+        const edgeId = this.findEdgeInGraph(
+          scratch,
+          operation.source_id,
+          operation.target_id,
+          operation.edge_type,
+        );
+        if (!edgeId) {
+          throw new Error(`Edge does not exist in graph: ${operation.source_id} --[${operation.edge_type}]--> ${operation.target_id}`);
+        }
+        scratch.dropEdge(edgeId);
+        droppedEdges.push(edgeId);
+        continue;
+      }
+
+      if (operation.kind === 'replace_edge') {
+        const oldEdgeId = this.findEdgeInGraph(
+          scratch,
+          operation.source_id,
+          operation.target_id,
+          operation.edge_type,
+        );
+        if (!oldEdgeId) {
+          throw new Error(`Edge does not exist in graph: ${operation.source_id} --[${operation.edge_type}]--> ${operation.target_id}`);
+        }
+        const previousAttrs = detached(scratch.getEdgeAttributes(oldEdgeId) as EdgeProperties);
+        const sourceId = operation.new_source_id || operation.source_id;
+        const targetId = operation.new_target_id || operation.target_id;
+        const edgeType = operation.new_edge_type || operation.edge_type;
+        if (!scratch.hasNode(sourceId) || !scratch.hasNode(targetId)) {
+          throw new Error(`Replacement edge references missing nodes: ${sourceId} --[${edgeType}]--> ${targetId}`);
+        }
+        const sourceNode = scratch.getNodeAttributes(sourceId) as NodeProperties;
+        const targetNode = scratch.getNodeAttributes(targetId) as NodeProperties;
+        const validation = validateEdgeEndpoints(edgeType, sourceNode.type, targetNode.type, {
+          source_id: sourceId,
+          target_id: targetId,
+          edge_id: oldEdgeId,
+        });
+        if (!validation.valid) {
+          const suggestion = validation.suggested_fix?.message
+            ? ` Suggested fix: ${validation.suggested_fix.message}`
+            : '';
+          throw new Error(`Replacement edge ${edgeType} cannot connect ${sourceNode.type} to ${targetNode.type}.${suggestion}`);
+        }
+        scratch.dropEdge(oldEdgeId);
+        const nextProps = {
+          ...previousAttrs,
+          ...(operation.properties || {}),
+          type: edgeType,
+          confidence: operation.confidence ?? previousAttrs.confidence ?? 1,
+          discovered_at: previousAttrs.discovered_at || occurredAt,
+          discovered_by: previousAttrs.discovered_by,
+        } as EdgeProperties;
+        const newEdgeId = this.addEdgeToCorrectionDraft(
+          scratch,
+          sourceId,
+          targetId,
+          nextProps,
+          occurredAt,
+        );
+        droppedEdges.push(oldEdgeId);
+        replacedEdges.push({ old_edge_id: oldEdgeId, new_edge_id: newEdgeId });
+        continue;
+      }
+
+      const existing = scratch.hasNode(operation.node_id)
+        ? detached(scratch.getNodeAttributes(operation.node_id) as NodeProperties)
+        : null;
+      if (!existing) throw new Error(`Node does not exist in graph: ${operation.node_id}`);
+      scratch.replaceNodeAttributes(
+        operation.node_id,
+        this.buildPatchedNode(
+          existing,
+          operation.set_properties,
+          operation.unset_properties,
+        ),
+      );
+      patchedNodes.push(operation.node_id);
     }
 
-    // Apply all operations against an in-memory graph snapshot so that if any
-    // operation fails, we can restore the graph to its pre-correction state.
-    // Journal entries are suppressed during the attempt and only committed
-    // on full success (P2 correctGraph atomicity fix).
+    const afterNodes = this.collectGraphNodeStates(scratch);
+    const afterEdges = this.collectGraphEdgeStates(scratch);
+    const nodeChanges: GraphCorrectedMutationPayloadV1['node_changes'] = [];
+    for (const nodeId of [...new Set([...beforeNodes.keys(), ...afterNodes.keys()])].sort()) {
+      const before = beforeNodes.get(nodeId);
+      const after = afterNodes.get(nodeId);
+      if (before && after && canonicalJson(before) === canonicalJson(after)) continue;
+      nodeChanges.push({
+        node_id: nodeId,
+        ...(before ? { before } : {}),
+        ...(after ? { after } : {}),
+      });
+    }
+    const edgeChanges: GraphCorrectedMutationPayloadV1['edge_changes'] = [];
+    for (const edgeId of [...new Set([...beforeEdges.keys(), ...afterEdges.keys()])].sort()) {
+      const before = beforeEdges.get(edgeId);
+      const after = afterEdges.get(edgeId);
+      if (before && after && canonicalJson(before) === canonicalJson(after)) continue;
+      edgeChanges.push({
+        edge_id: edgeId,
+        ...(before ? { before } : {}),
+        ...(after ? { after } : {}),
+      });
+    }
+
+    return JSON.parse(JSON.stringify({
+      payload_version: 1,
+      operation_id: uuidv4(),
+      occurred_at: occurredAt,
+      reason,
+      ...(actionId ? { action_id: actionId } : {}),
+      operations,
+      node_changes: nodeChanges,
+      edge_changes: edgeChanges,
+      before_summary: beforeSummary,
+      after_summary: { total_nodes: scratch.order, total_edges: scratch.size },
+      result: {
+        dropped_nodes: [...new Set(droppedNodes)],
+        dropped_edges: [...new Set(droppedEdges)],
+        replaced_edges: replacedEdges,
+        patched_nodes: [...new Set(patchedNodes)],
+      },
+    })) as GraphCorrectedMutationPayloadV1;
+  }
+
+  applyGraphCorrectedMutation(
+    payload: GraphCorrectedMutationPayloadV1,
+    recovery = true,
+  ): MutationApplyResult {
+    if (payload.payload_version !== 1) {
+      return { status: 'skipped', reason: `unsupported graph_corrected payload version: ${String(payload.payload_version)}` };
+    }
+    const alreadyApplied = this.exactGraphDeltaMatches(payload, 'after');
+    const readyToApply = !alreadyApplied && this.exactGraphDeltaMatches(payload, 'before');
+    if (!alreadyApplied && !readyToApply) {
+      return { status: 'skipped', reason: `graph_corrected preconditions changed for operation ${payload.operation_id}` };
+    }
+
     const graphSnapshot = this.ctx.graph.export();
-    const savedJournal = this.ctx.mutationJournal;
-    this.ctx.mutationJournal = null;
-
+    const activitySnapshot = detached(this.ctx.activityLog);
+    const chainHashSnapshot = this.ctx.lastChainHash;
+    const chainCheckpointsSnapshot = detached(this.ctx.chainCheckpoints);
+    const chainEventsSnapshot = this.ctx.chainEventsSinceCheckpoint;
+    const deterministicSeqSnapshot = this.ctx.deterministicSeq;
+    const actionFrontierSnapshot = new Map(
+      [...this.ctx.actionFrontierMap].map(([key, value]) => [key, detached(value)]),
+    );
+    const frontierLinkageSnapshot = detached(this.ctx.frontierLinkage.serialize());
     try {
-      for (const operation of operations) {
-        if (operation.kind === 'drop_edge') {
-          const dropped = this.dropEdgeByRef(operation.source_id, operation.target_id, operation.edge_type);
-          if (!dropped) {
-            throw new Error(`Edge disappeared before correction: ${operation.source_id} --[${operation.edge_type}]--> ${operation.target_id}`);
+      this.ctx.withClock(payload.occurred_at, () => {
+        if (readyToApply) {
+          for (const change of payload.edge_changes) {
+            if (change.before && this.ctx.graph.hasEdge(change.edge_id)) this.ctx.graph.dropEdge(change.edge_id);
           }
-          droppedEdges.push(dropped);
-          removedEdges.push(dropped);
-          continue;
-        }
-
-        if (operation.kind === 'replace_edge') {
-          const existingEdgeId = this.findEdgeId(operation.source_id, operation.target_id, operation.edge_type);
-          const previousAttrs = existingEdgeId ? this.ctx.graph.getEdgeAttributes(existingEdgeId) : null;
-          const oldEdgeId = this.dropEdgeByRef(operation.source_id, operation.target_id, operation.edge_type);
-          if (!oldEdgeId) {
-            throw new Error(`Edge disappeared before replacement: ${operation.source_id} --[${operation.edge_type}]--> ${operation.target_id}`);
+          for (const change of payload.node_changes) {
+            if (!change.after && this.ctx.graph.hasNode(change.node_id)) this.ctx.graph.dropNode(change.node_id);
           }
-          removedEdges.push(oldEdgeId);
-          droppedEdges.push(oldEdgeId);
-          const sourceId = operation.new_source_id || operation.source_id;
-          const targetId = operation.new_target_id || operation.target_id;
-          const edgeType = operation.new_edge_type || operation.edge_type;
-          const nextProps: EdgeProperties = {
-            ...(previousAttrs || {}),
-            ...(operation.properties || {}),
-            type: edgeType,
-            confidence: operation.confidence ?? previousAttrs?.confidence ?? 1.0,
-            discovered_at: previousAttrs?.discovered_at || this.ctx.nowIso(),
-            discovered_by: previousAttrs?.discovered_by,
-          };
-          const { id: newEdgeId } = this.addEdge(sourceId, targetId, nextProps);
-          replacedEdges.push({ old_edge_id: oldEdgeId, new_edge_id: newEdgeId });
-          newEdges.push(newEdgeId);
-          continue;
+          for (const change of payload.node_changes) {
+            if (!change.after) continue;
+            if (this.ctx.graph.hasNode(change.node_id)) {
+              this.ctx.graph.replaceNodeAttributes(change.node_id, detached(change.after.props));
+            } else {
+              this.ctx.graph.addNode(change.node_id, detached(change.after.props));
+            }
+          }
+          for (const change of payload.edge_changes) {
+            if (!change.after) continue;
+            const edge = change.after;
+            if (!this.ctx.graph.hasNode(edge.source) || !this.ctx.graph.hasNode(edge.target)) {
+              throw new Error(`graph_corrected edge ${edge.edge_id} has a missing endpoint`);
+            }
+            this.ctx.graph.addEdgeWithKey(
+              edge.edge_id,
+              edge.source,
+              edge.target,
+              detached(edge.props),
+            );
+          }
+          if (!this.exactGraphDeltaMatches(payload, 'after')) {
+            throw new Error(`graph_corrected did not reach its frozen post-state for operation ${payload.operation_id}`);
+          }
         }
-
-        if (operation.kind === 'patch_node') {
-          this.patchNodeProperties(operation.node_id, operation.set_properties, operation.unset_properties);
-          patchedNodes.push(operation.node_id);
-          updatedNodes.push(operation.node_id);
+        const alreadyAudited = this.ctx.activityLog.some(entry =>
+          entry.event_type === 'graph_corrected'
+          && entry.details?.operation_id === payload.operation_id,
+        );
+        if (!alreadyAudited) {
+          this.ctx.logEvent({
+            description: `Graph corrected: ${payload.operations.length} operation(s) applied`,
+            action_id: payload.action_id,
+            event_type: 'graph_corrected',
+            category: 'system',
+            result_classification: 'success',
+            details: {
+              operation_id: payload.operation_id,
+              reason: payload.reason,
+              operations: payload.operations,
+              before_summary: payload.before_summary,
+              after_summary: payload.after_summary,
+              dropped_nodes: payload.result.dropped_nodes,
+              dropped_edges: payload.result.dropped_edges,
+              replaced_edges: payload.result.replaced_edges,
+              patched_nodes: payload.result.patched_nodes,
+            },
+          });
         }
-      }
-    } catch (err) {
-      // Restore graph to pre-correction state so callers see a clean failure
-      // with no partial mutations applied.
+      });
+      this.invalidateAllCaches();
+      this.invalidatePathGraph();
+      return { status: 'applied' };
+    } catch (error) {
       this.ctx.graph.clear();
       this.ctx.graph.import(graphSnapshot);
+      this.ctx.activityLog = activitySnapshot;
+      this.ctx.lastChainHash = chainHashSnapshot;
+      this.ctx.chainCheckpoints = chainCheckpointsSnapshot;
+      this.ctx.chainEventsSinceCheckpoint = chainEventsSnapshot;
+      this.ctx.deterministicSeq = deterministicSeqSnapshot;
+      this.ctx.actionFrontierMap = actionFrontierSnapshot;
+      this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(frontierLinkageSnapshot);
       this.invalidateAllCaches();
-      this.ctx.mutationJournal = savedJournal;
-      throw err;
+      this.invalidatePathGraph();
+      if (!recovery) throw error;
+      return { status: 'skipped', reason: error instanceof Error ? error.message : String(error) };
     }
+  }
 
-    // All operations succeeded: re-enable journal so subsequent mutations resume
-    // journaling normally.
-    this.ctx.mutationJournal = savedJournal;
-
-    this.evaluateObjectives();
-    this.logActionEvent({
-      description: `Graph corrected: ${operations.length} operation(s) applied`,
-      action_id: actionId,
-      event_type: 'graph_corrected',
-      category: 'system',
-      result_classification: 'success',
-      details: {
-        reason,
-        operations,
-        before_summary: beforeSummary,
-        after_summary: {
-          total_nodes: this.ctx.graph.order,
-          total_edges: this.ctx.graph.size,
-        },
-        dropped_edges: droppedEdges,
-        replaced_edges: replacedEdges,
-        patched_nodes: patchedNodes,
-      },
+  private collectGraphNodeStates(graph: OverwatchGraph): Map<string, { node_id: string; props: NodeProperties }> {
+    const states = new Map<string, { node_id: string; props: NodeProperties }>();
+    graph.forEachNode((nodeId, props) => {
+      states.set(nodeId, { node_id: nodeId, props: detached(props as NodeProperties) });
     });
-    // Durability: the ops were applied with the WAL suppressed (so they're NOT in the
-    // journal), so the ONLY record of the correction is the snapshot. flushNow() no-ops
-    // when the dirty flag is clear — and neither the graph mutations nor logActionEvent
-    // set it — so a correction on otherwise-clean state was silently lost on a crash.
-    // persistImmediate() writes the snapshot unconditionally, capturing the correction.
-    this.persistence.persistImmediate();
+    return states;
+  }
 
-    return {
-      dropped_edges: droppedEdges,
-      replaced_edges: replacedEdges,
-      patched_nodes: patchedNodes,
-    };
+  private collectGraphEdgeStates(graph: OverwatchGraph): Map<string, { edge_id: string; source: string; target: string; props: EdgeProperties }> {
+    const states = new Map<string, { edge_id: string; source: string; target: string; props: EdgeProperties }>();
+    for (const edgeId of graph.edges()) {
+      states.set(edgeId, {
+        edge_id: edgeId,
+        source: graph.source(edgeId),
+        target: graph.target(edgeId),
+        props: detached(graph.getEdgeAttributes(edgeId) as EdgeProperties),
+      });
+    }
+    return states;
+  }
+
+  private findEdgeInGraph(graph: OverwatchGraph, source: string, target: string, type: EdgeType): string | null {
+    if (!graph.hasNode(source) || !graph.hasNode(target)) return null;
+    const matches = graph.edges(source, target).filter(edgeId =>
+      graph.getEdgeAttributes(edgeId).type === type,
+    );
+    if (matches.length > 1) {
+      throw new Error(
+        `Edge reference is ambiguous: ${source} --[${type}]--> ${target} matches ${matches.length} parallel edges.`,
+      );
+    }
+    return matches[0] ?? null;
+  }
+
+  private addEdgeToCorrectionDraft(
+    graph: OverwatchGraph,
+    source: string,
+    target: string,
+    props: EdgeProperties,
+    occurredAt: string,
+  ): string {
+    for (const edgeId of graph.edges(source, target)) {
+      const existing = graph.getEdgeAttributes(edgeId) as EdgeProperties;
+      if (!edgeIdentityMatches(existing, props)) continue;
+      const effective = existing.inferred_by_rule && !existing.confirmed_at && props.confidence >= 1
+        ? { ...props, confirmed_at: occurredAt }
+        : props;
+      graph.mergeEdgeAttributes(edgeId, detached(effective));
+      return edgeId;
+    }
+    const preferred = preferredEdgeKey(source, target, props);
+    const edgeId = graph.hasEdge(preferred)
+      ? deterministicCollisionEdgeKey(source, target, props)
+      : preferred;
+    if (graph.hasEdge(edgeId)) throw new Error(`Deterministic correction edge collision: ${edgeId}`);
+    graph.addEdgeWithKey(edgeId, source, target, detached(props));
+    return edgeId;
+  }
+
+  private buildPatchedNode(
+    existing: NodeProperties,
+    setProperties: Record<string, unknown> = {},
+    unsetProperties: string[] = [],
+  ): NodeProperties {
+    if (
+      (typeof setProperties.id === 'string' && setProperties.id !== existing.id)
+      || (typeof setProperties.type === 'string' && setProperties.type !== existing.type)
+      || unsetProperties.includes('id')
+      || unsetProperties.includes('type')
+    ) {
+      throw new Error('patch_node cannot change a node id or type.');
+    }
+    const nextNode = existing.type === 'credential'
+      ? normalizeFindingNode({
+          ...existing,
+          ...setProperties,
+          id: existing.id,
+          type: existing.type,
+          label: typeof setProperties.label === 'string' ? setProperties.label : existing.label,
+        } as Partial<NodeProperties> & { id: string; type: string })
+      : ({ ...existing, ...setProperties } as NodeProperties);
+    for (const key of unsetProperties) delete (nextNode as Record<string, unknown>)[key];
+    const validationErrors = validateFindingNode(
+      nextNode as Partial<NodeProperties> & { id: string; type: string },
+    );
+    if (validationErrors.length > 0) {
+      throw new Error(validationErrors.map(error => error.message).join('; '));
+    }
+    const completeNode = nextNode as NodeProperties;
+    return { ...completeNode, ...normalizeNodeProvenance(completeNode) } as NodeProperties;
   }
 
   // =============================================
@@ -2694,6 +3323,10 @@ export class GraphEngine {
       queryGraph: this.queryGraph.bind(this),
       persist: (() => this.persist()) as () => void,
       log: this.log.bind(this),
+      commitObjectives: (objectives, source) => {
+        this.configService.commit(mergeConfig(this.ctx.config, { objectives }), source);
+      },
+      nowIso: () => this.ctx.nowIso(),
     };
   }
 
@@ -2719,7 +3352,407 @@ export class GraphEngine {
     reason: string;
   }): { applied: boolean; errors: string[]; before: EngagementConfig['scope']; after: EngagementConfig['scope']; affected_node_count: number } {
     this.assertPersistenceWritable();
-    return _updateScope(this.scopeHost, changes);
+    return this.commitScopeUpdate(changes);
+  }
+
+  /** Full-scope replacement used by the dashboard. Network and cloud/SaaS
+   * fields share one WAL/config commit instead of two independently-failing
+   * mutations. */
+  updateScopeConfig(
+    scope: EngagementConfig['scope'],
+    reason: string,
+  ): { applied: boolean; errors: string[]; before: EngagementConfig['scope']; after: EngagementConfig['scope']; affected_node_count: number } {
+    this.assertPersistenceWritable();
+    return this.commitScopeUpdate({ replace_scope: scope, reason });
+  }
+
+  private commitScopeUpdate(changes: {
+    add_cidrs?: string[];
+    remove_cidrs?: string[];
+    add_domains?: string[];
+    remove_domains?: string[];
+    add_exclusions?: string[];
+    remove_exclusions?: string[];
+    replace_scope?: EngagementConfig['scope'];
+    reason: string;
+  }): { applied: boolean; errors: string[]; before: EngagementConfig['scope']; after: EngagementConfig['scope']; affected_node_count: number } {
+    const plan = planScopeUpdate(this.scopeHost, changes);
+    if (plan.errors.length > 0) {
+      return {
+        applied: false,
+        errors: plan.errors,
+        before: detached(plan.before),
+        after: detached(plan.after),
+        affected_node_count: 0,
+      };
+    }
+    if (canonicalJson(plan.before) === canonicalJson(plan.after)) {
+      return {
+        applied: true,
+        errors: [],
+        before: detached(plan.before),
+        after: detached(plan.after),
+        affected_node_count: 0,
+      };
+    }
+
+    const sourceConfig = this.ctx.config;
+    const targetConfig = this.configService.prepareJournalTarget(
+      mergeConfig(sourceConfig, { scope: plan.after }),
+    );
+    const sourceFileHash = this.configService.getStatus().file_hash ?? computeConfigHash(sourceConfig);
+    return this.commitScopePlan(plan, targetConfig, changes.reason, sourceFileHash);
+  }
+
+  private commitScopePlan(
+    plan: ScopeUpdatePlan,
+    targetConfig: EngagementConfig,
+    reason: string,
+    sourceFileHash: string,
+    configResolution?: 'use_file',
+    supersededConfigIntent?: ConfigIntentConflict,
+  ): { applied: boolean; errors: string[]; before: EngagementConfig['scope']; after: EngagementConfig['scope']; affected_node_count: number } {
+    const sourceConfig = this.ctx.config;
+    const occurredAt = this.ctx.nowIso();
+    const derived = this.planScopeDerivedEffects(plan.promotions, targetConfig, occurredAt);
+    const payload: ScopeUpdatedMutationPayloadV1 = {
+      payload_version: 1,
+      operation_id: uuidv4(),
+      occurred_at: occurredAt,
+      reason,
+      source_config_hash: computeConfigHash(sourceConfig),
+      source_file_hash: sourceFileHash,
+      target_config: targetConfig,
+      before_scope: detached(plan.before),
+      after_scope: detached(plan.after),
+      promotions: derived.promotions,
+      inferred_edges: derived.inferred_edges,
+      inference_events: derived.inference_events,
+      ...(configResolution ? { config_resolution: configResolution } : {}),
+      ...(supersededConfigIntent
+        ? { superseded_config_intent: detached(supersededConfigIntent) }
+        : {}),
+      affected_node_count: plan.affected_node_count,
+    };
+
+    try {
+      this.ensureCompositeJournal();
+      const applied = this.ctx.applyCompositeJournaledMutation(
+        'scope_updated',
+        payload as unknown as Record<string, unknown>,
+        () => this.applyScopeUpdatedMutation(payload, false),
+      );
+      if (applied.status !== 'applied') throw new Error(applied.reason);
+      // The outer sequence is contiguous only after the composite helper
+      // returns. Checkpoint it now so acknowledged scope changes need no replay.
+      this.persistence.persistImmediate({
+        new_nodes: payload.promotions.map(promotion => promotion.hot_node.id),
+      });
+      this.configService.completeJournalCommit(targetConfig, false);
+    } catch (error) {
+      this.configService.failJournalCommit(
+        `Journaled scope update did not complete durably: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+
+    return {
+      applied: true,
+      errors: [],
+      before: detached(plan.before),
+      after: detached(plan.after),
+      affected_node_count: plan.affected_node_count,
+    };
+  }
+
+  applyScopeUpdatedMutation(
+    payload: ScopeUpdatedMutationPayloadV1,
+    recovery = true,
+  ): MutationApplyResult {
+    if (payload.payload_version !== 1) {
+      return { status: 'skipped', reason: `unsupported scope_updated payload version: ${String(payload.payload_version)}` };
+    }
+    const target = engagementConfigSchema.safeParse(payload.target_config);
+    if (!target.success || target.data.config_hash !== computeConfigHash(target.data)) {
+      return { status: 'skipped', reason: 'scope_updated target config failed schema/hash validation' };
+    }
+    if (canonicalJson(target.data.scope) !== canonicalJson(payload.after_scope)) {
+      return { status: 'skipped', reason: 'scope_updated target config does not match after_scope' };
+    }
+
+    const currentHash = computeConfigHash(this.ctx.config);
+    const promotionsBefore = payload.promotions.every(promotion => {
+      const cold = this.ctx.coldStore.get(promotion.cold_record.id);
+      return !this.ctx.graph.hasNode(promotion.hot_node.id)
+        && cold !== undefined
+        && canonicalJson(cold) === canonicalJson(promotion.cold_record);
+    });
+    const promotionsAfter = payload.promotions.every(promotion => {
+      if (this.ctx.coldStore.has(promotion.cold_record.id) || !this.ctx.graph.hasNode(promotion.hot_node.id)) return false;
+      return canonicalJson(this.identityNodeComparable(this.ctx.graph.getNodeAttributes(promotion.hot_node.id) as NodeProperties))
+        === canonicalJson(this.identityNodeComparable(promotion.hot_node));
+    });
+    const edgesBefore = payload.inferred_edges.every(change => {
+      if (!change.before) return !this.ctx.graph.hasEdge(change.edge_id);
+      if (!this.ctx.graph.hasEdge(change.edge_id)) return false;
+      return canonicalJson({
+        edge_id: change.edge_id,
+        source: this.ctx.graph.source(change.edge_id),
+        target: this.ctx.graph.target(change.edge_id),
+        props: this.ctx.graph.getEdgeAttributes(change.edge_id),
+      }) === canonicalJson(change.before);
+    });
+    const edgesAfter = payload.inferred_edges.every(change => {
+      if (!this.ctx.graph.hasEdge(change.edge_id)) return false;
+      return canonicalJson({
+        edge_id: change.edge_id,
+        source: this.ctx.graph.source(change.edge_id),
+        target: this.ctx.graph.target(change.edge_id),
+        props: this.ctx.graph.getEdgeAttributes(change.edge_id),
+      }) === canonicalJson(change.after);
+    });
+    const alreadyApplied = currentHash === target.data.config_hash && promotionsAfter && edgesAfter;
+    const readyToApply = currentHash === payload.source_config_hash && promotionsBefore && edgesBefore;
+    if (!alreadyApplied && !readyToApply) {
+      return { status: 'skipped', reason: 'scope_updated frozen config, cold-store, node, or edge preconditions changed' };
+    }
+
+    const graphSnapshot = this.ctx.graph.export();
+    const coldSnapshot = detached(this.ctx.coldStore.export());
+    const configSnapshot = detached(this.ctx.config);
+    const activitySnapshot = detached(this.ctx.activityLog);
+    const chainHashSnapshot = this.ctx.lastChainHash;
+    const chainCheckpointsSnapshot = detached(this.ctx.chainCheckpoints);
+    const chainEventsSnapshot = this.ctx.chainEventsSinceCheckpoint;
+    const deterministicSeqSnapshot = this.ctx.deterministicSeq;
+
+    try {
+      this.ctx.withClock(payload.occurred_at, () => {
+        this.configService.installJournalTarget(
+          target.data,
+          'scope.update',
+          recovery,
+          payload.source_file_hash,
+        );
+        if (readyToApply) {
+          for (const promotion of [...payload.promotions].sort((a, b) => a.hot_node.id.localeCompare(b.hot_node.id))) {
+            const promoted = this.ctx.coldStore.promote(promotion.cold_record.id);
+            if (!promoted || canonicalJson(promoted) !== canonicalJson(promotion.cold_record)) {
+              throw new Error(`scope_updated cold record changed for ${promotion.cold_record.id}`);
+            }
+            this.ctx.graph.addNode(promotion.hot_node.id, detached(promotion.hot_node));
+          }
+          for (const change of payload.inferred_edges) {
+            if (change.before && this.ctx.graph.hasEdge(change.edge_id)) this.ctx.graph.dropEdge(change.edge_id);
+            const edge = change.after;
+            if (!this.ctx.graph.hasNode(edge.source) || !this.ctx.graph.hasNode(edge.target)) {
+              throw new Error(`scope_updated inferred edge ${edge.edge_id} has a missing endpoint`);
+            }
+            this.ctx.graph.addEdgeWithKey(edge.edge_id, edge.source, edge.target, detached(edge.props));
+          }
+          const postPromotions = payload.promotions.every(promotion =>
+            !this.ctx.coldStore.has(promotion.cold_record.id)
+            && this.ctx.graph.hasNode(promotion.hot_node.id)
+            && canonicalJson(this.identityNodeComparable(this.ctx.graph.getNodeAttributes(promotion.hot_node.id) as NodeProperties))
+              === canonicalJson(this.identityNodeComparable(promotion.hot_node)),
+          );
+          const postEdges = payload.inferred_edges.every(change =>
+            this.ctx.graph.hasEdge(change.edge_id)
+            && canonicalJson({
+              edge_id: change.edge_id,
+              source: this.ctx.graph.source(change.edge_id),
+              target: this.ctx.graph.target(change.edge_id),
+              props: this.ctx.graph.getEdgeAttributes(change.edge_id),
+            }) === canonicalJson(change.after),
+          );
+          if (!postPromotions || !postEdges) {
+            throw new Error(`scope_updated did not reach its frozen post-state for operation ${payload.operation_id}`);
+          }
+        }
+        for (const [index, event] of payload.inference_events.entries()) {
+          const alreadyLogged = this.ctx.activityLog.some(entry =>
+            entry.event_type === 'inference_generated'
+            && entry.details?.scope_operation_id === payload.operation_id
+            && entry.details?.scope_event_index === index,
+          );
+          if (!alreadyLogged) {
+            this.ctx.logEvent({
+              description: event.description,
+              category: 'inference',
+              event_type: 'inference_generated',
+              result_classification: 'success',
+              target_node_ids: event.target_node_ids,
+              details: {
+                ...(event.details ?? {}),
+                scope_operation_id: payload.operation_id,
+                scope_event_index: index,
+              },
+            });
+          }
+        }
+        if (payload.config_resolution) {
+          const resolutionAudited = this.ctx.activityLog.some(entry =>
+            entry.event_type === 'config_updated'
+            && entry.details?.operation_id === payload.operation_id,
+          );
+          if (!resolutionAudited) {
+            this.ctx.logEvent({
+              description: 'Configuration divergence resolved with file authority',
+              event_type: 'config_updated',
+              category: 'system',
+              result_classification: 'success',
+              details: {
+                operation_id: payload.operation_id,
+                resolution: payload.config_resolution,
+                config_revision: payload.target_config.config_revision,
+                config_hash: payload.target_config.config_hash,
+                expected_file_hash: payload.source_file_hash,
+                previous_state_hash: payload.source_config_hash,
+                target_hash: payload.target_config.config_hash,
+                operation_checksum: createHash('sha256')
+                  .update(canonicalJson(payload))
+                  .digest('hex'),
+                ...(payload.superseded_config_intent
+                  ? { superseded_config_intent: detached(payload.superseded_config_intent) }
+                  : {}),
+              },
+            });
+          }
+        }
+        const alreadyAudited = this.ctx.activityLog.some(entry =>
+          entry.event_type === 'scope_updated'
+          && entry.details?.operation_id === payload.operation_id,
+        );
+        if (!alreadyAudited) {
+          this.ctx.logEvent({
+            description: `Scope updated: ${payload.reason}`,
+            event_type: 'scope_updated',
+            category: 'system',
+            result_classification: 'success',
+            details: {
+              operation_id: payload.operation_id,
+              reason: payload.reason,
+              before: payload.before_scope,
+              after: payload.after_scope,
+              source_config_hash: payload.source_config_hash,
+              source_file_hash: payload.source_file_hash,
+              target_config_hash: payload.target_config.config_hash,
+              operation_checksum: createHash('sha256')
+                .update(canonicalJson(payload))
+                .digest('hex'),
+              affected_node_count: payload.affected_node_count,
+            },
+          });
+        }
+        this.invalidateFrontierCache();
+        this.invalidateHealthReport();
+        this.invalidatePathGraph();
+      });
+      return { status: 'applied' };
+    } catch (error) {
+      this.ctx.graph.clear();
+      this.ctx.graph.import(graphSnapshot);
+      this.ctx.coldStore.import(coldSnapshot);
+      this.ctx.config = configSnapshot;
+      this.ctx.activityLog = activitySnapshot;
+      this.ctx.lastChainHash = chainHashSnapshot;
+      this.ctx.chainCheckpoints = chainCheckpointsSnapshot;
+      this.ctx.chainEventsSinceCheckpoint = chainEventsSnapshot;
+      this.ctx.deterministicSeq = deterministicSeqSnapshot;
+      this.invalidateAllCaches();
+      this.invalidatePathGraph();
+      if (!recovery) throw error;
+      return { status: 'skipped', reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private planScopeDerivedEffects(
+    promotions: ScopeUpdatedMutationPayloadV1['promotions'],
+    targetConfig: EngagementConfig,
+    occurredAt: string,
+  ): Pick<ScopeUpdatedMutationPayloadV1, 'promotions' | 'inferred_edges' | 'inference_events'> {
+    const graph = createGraph();
+    graph.import(this.ctx.graph.export());
+    const scratch = new EngineContext(
+      graph,
+      detached(targetConfig),
+      `${this.ctx.stateFilePath}.scope-plan-${process.pid}-${uuidv4()}.json`,
+    );
+    scratch.mutationJournal = null;
+    scratch.inferenceRules = detached(this.ctx.inferenceRules);
+
+    for (const promotion of promotions) {
+      if (graph.hasNode(promotion.hot_node.id)) {
+        graph.replaceNodeAttributes(promotion.hot_node.id, detached(promotion.hot_node));
+      } else {
+        graph.addNode(promotion.hot_node.id, detached(promotion.hot_node));
+      }
+    }
+
+    const inferredEdges: ScopeUpdatedMutationPayloadV1['inferred_edges'] = [];
+    const inference = new InferenceEngine(
+      scratch,
+      (source, target, props) => {
+        const existing = graph.edges(source, target).find(edgeId =>
+          edgeIdentityMatches(graph.getEdgeAttributes(edgeId) as EdgeProperties, props),
+        );
+        if (existing) return { id: existing, isNew: false };
+        const preferred = preferredEdgeKey(source, target, props);
+        const edgeId = graph.hasEdge(preferred)
+          ? deterministicCollisionEdgeKey(source, target, props)
+          : preferred;
+        if (graph.hasEdge(edgeId)) throw new Error(`Deterministic scope inference edge collision: ${edgeId}`);
+        graph.addDirectedEdgeWithKey(edgeId, source, target, detached(props));
+        inferredEdges.push({
+          edge_id: edgeId,
+          after: { edge_id: edgeId, source, target, props: detached(props) },
+        });
+        return { id: edgeId, isNew: true };
+      },
+      id => graph.hasNode(id) ? detached(graph.getNodeAttributes(id) as NodeProperties) : null,
+      type => graph.filterNodes((_id, attrs) => attrs.type === type)
+        .map(id => detached(graph.getNodeAttributes(id) as NodeProperties)),
+      props => {
+        if (graph.hasNode(props.id)) graph.replaceNodeAttributes(props.id, detached(props));
+        else graph.addNode(props.id, detached(props));
+        return props.id;
+      },
+    );
+
+    scratch.withClock(occurredAt, () => {
+      for (const promotion of [...promotions].sort((a, b) => a.hot_node.id.localeCompare(b.hot_node.id))) {
+        inference.runRules(promotion.hot_node.id);
+      }
+    });
+
+    const frozenPromotions = promotions.map(promotion => ({
+      cold_record: detached(promotion.cold_record),
+      hot_node: detached(graph.getNodeAttributes(promotion.hot_node.id) as NodeProperties),
+    }));
+    const inferenceEvents = scratch.activityLog
+      .filter(entry => entry.event_type === 'inference_generated')
+      .map(entry => ({
+        description: entry.description,
+        target_node_ids: entry.target_node_ids ? detached(entry.target_node_ids) : undefined,
+        details: entry.details ? detached(entry.details) : undefined,
+      }));
+    return {
+      promotions: frozenPromotions,
+      inferred_edges: inferredEdges,
+      inference_events: inferenceEvents,
+    };
+  }
+
+  prepareRecoveryCommit(): void {
+    this.configService.prepareJournalReplayCommit();
+  }
+
+  completeRecoveryCommit(): void {
+    this.configService.completeJournalReplayCommit();
+  }
+
+  abortRecoveryReplay(): void {
+    this.configService.abortJournalReplay();
   }
 
   collectScopeSuggestions(): ScopeSuggestion[] {
@@ -2783,11 +3816,9 @@ export class GraphEngine {
     this.persistence.flushNow();
   }
 
-  /**
-   * Immediately write a snapshot regardless of the dirty flag. Use at sync points
-   * whose mutations bypass the WAL (identity merges, graph corrections) so a crash
-   * before the debounced snapshot can't replay stale journal state over them.
-   */
+  /** Immediately write a snapshot regardless of the dirty flag. Reserved for
+   * explicit synchronization points and legacy bootstrap boundaries; composite
+   * identity and graph-correction mutations are durable through the WAL. */
   persistImmediate(detail?: GraphUpdateDetail): void {
     this.persistence.persistImmediate(detail);
   }
@@ -2802,16 +3833,137 @@ export class GraphEngine {
   /** Per-boot persistence recovery state used by MCP, dashboard, preflight,
    *  and CLI read surfaces.  It is intentionally not itself persisted. */
   getPersistenceRecoveryStatus(): PersistenceRecoveryStatus {
+    const persistence = this.persistence.getRecoveryStatus();
+    const state_recovery = {
+      outcome: persistence.outcome,
+      source: persistence.source,
+      complete: persistence.complete,
+      writable: persistence.writable,
+      ...(persistence.reason ? { reason: persistence.reason } : {}),
+    };
+    const configRecovery = this.configService.getStatus();
+    if (!configRecovery.resolution_required && this.startupReconciliationDeferred) {
+      const deferredReason = this.deferredStartupRecoveryError
+        ?? 'Startup lifecycle reconciliation is incomplete after configuration recovery.';
+      const persistenceBlocked = !persistence.complete || !persistence.writable;
+      return {
+        ...persistence,
+        outcome: 'incomplete',
+        complete: false,
+        writable: false,
+        reason: deferredReason,
+        ...(persistenceBlocked
+          ? { persistence_reason: persistence.reason ?? deferredReason }
+          : {}),
+        state_recovery,
+        config_recovery: configRecovery,
+      };
+    }
+    if (!configRecovery.resolution_required) {
+      return { ...persistence, state_recovery, config_recovery: configRecovery };
+    }
+    const persistenceBlocked = !persistence.complete || !persistence.writable;
+    const configReason = configRecovery.reason ?? 'configuration reconciliation is required';
+    const reasons = [persistenceBlocked ? persistence.reason : undefined, configReason]
+      .filter((reason): reason is string => Boolean(reason));
+    return {
+      ...persistence,
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      reason: [...new Set(reasons)].join('; '),
+      ...(persistenceBlocked && persistence.reason ? { persistence_reason: persistence.reason } : {}),
+      state_recovery,
+      config_recovery: configRecovery,
+    };
+  }
+
+  /** Raw state/WAL recovery, excluding configuration and deferred startup
+   * gates. Internal readiness checks use this to avoid reporting one config
+   * divergence as two independent failures. */
+  getStatePersistenceRecoveryStatus(): PersistenceRecoveryStatus {
     return this.persistence.getRecoveryStatus();
+  }
+
+  getConfigRecoveryStatus(): ConfigRecoveryStatus {
+    return detached(this.configService.getStatus());
+  }
+
+  resolveConfigDivergence(input: ResolveConfigDivergenceInput): ResolveConfigDivergenceResult {
+    // Config reconciliation is the sole mutation allowed past a config-only
+    // gate. It may never bypass an incomplete WAL/state recovery.
+    this.persistence.assertWritable();
+    this.recoveryMaintenanceInProgress = true;
+    try {
+      const prepared = this.configService.prepareResolution(input);
+      let result: ResolveConfigDivergenceResult;
+      if (
+        prepared.mode === 'use_file'
+        && canonicalJson(prepared.config.scope) !== canonicalJson(this.ctx.config.scope)
+      ) {
+        const plan = planScopeUpdate(this.scopeHost, {
+          replace_scope: prepared.config.scope,
+          reason: 'Configuration reconciliation applied file scope',
+        });
+        if (plan.errors.length > 0) {
+          throw new Error(`The file-authoritative scope is invalid: ${plan.errors.join('; ')}`);
+        }
+        result = this.configService.applyPreparedResolution(prepared, target => {
+          this.commitScopePlan(
+            plan,
+            target,
+            'Configuration reconciliation applied file scope',
+            prepared.expected_file_hash,
+            'use_file',
+            prepared.intent_conflict,
+          );
+          return this.getConfig();
+        });
+      } else {
+        result = this.configService.commitPreparedResolution(prepared);
+      }
+      this.completeDeferredStartupReconciliation();
+      return result;
+    } catch (error) {
+      if (!this.configService.isBlocked() && this.startupReconciliationDeferred) {
+        this.deferredStartupRecoveryError =
+          `Configuration was reconciled, but startup lifecycle recovery did not complete: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      throw error;
+    } finally {
+      this.recoveryMaintenanceInProgress = false;
+    }
+  }
+
+  private completeDeferredStartupReconciliation(): void {
+    if (!this.startupReconciliationDeferred) return;
+    this.syncObjectiveNodes();
+    this.reconcileSessionEdgesOnStartup();
+    this.agentMgr.reconcileOnStartup();
+    this.reconcilePendingApprovalsOnStartup();
+    this.persistence.persistImmediate();
+    this.runAutoHealthCheck('configuration recovery startup reconciliation');
+    this.warnIfOpsecInert();
+    this.startupReconciliationDeferred = false;
+    this.deferredStartupRecoveryError = undefined;
   }
 
   /** Whether a new durable mutation may be accepted right now. */
   isPersistenceWritable(): boolean {
-    return this.persistence.isWritable();
+    return this.persistence.isWritable()
+      && !this.configService.isBlocked()
+      && (!this.startupReconciliationDeferred || this.recoveryMaintenanceInProgress);
   }
 
   assertPersistenceWritable(): void {
     this.persistence.assertWritable();
+    this.configService.assertWritable();
+    if (this.startupReconciliationDeferred && !this.recoveryMaintenanceInProgress) {
+      throw new Error(
+        this.deferredStartupRecoveryError
+          ?? 'Startup lifecycle recovery is incomplete; restart before accepting durable mutations.',
+      );
+    }
   }
 
   /**
@@ -3043,7 +4195,15 @@ export class GraphEngine {
   rollbackToSnapshot(snapshotName: string): boolean {
     this.assertPersistenceWritable();
     try {
-      return this.persistence.rollbackToSnapshot(snapshotName, BUILTIN_RULES);
+      const restored = this.persistence.rollbackToSnapshot(
+        snapshotName,
+        BUILTIN_RULES,
+        { deferAuthorityRelease: true },
+      );
+      if (!restored) return false;
+      this.configService.adoptRestoredRuntimeConfig('snapshot.rollback');
+      this.persistence.completePendingRollbackAuthority();
+      return true;
     } finally {
       // A failed rollback may already have installed the selected state in
       // memory before durable cleanup failed and the write gate closed.
@@ -3092,24 +4252,130 @@ export class GraphEngine {
     return detached(this.ctx.config);
   }
 
+  private applyRuntimeConfig(next: EngagementConfig, context: ConfigApplyContext): void {
+    const previous = this.ctx.config;
+    this.ctx.config = detached(next);
+    if (!context.semantic_change) return;
+
+    this.invalidateAllCaches();
+    this.invalidatePathGraph();
+
+    const previousObjectives = new Map(previous.objectives.map(objective => [objective.id, objective]));
+    for (const objective of next.objectives) {
+      if (!objective.achieved || previousObjectives.get(objective.id)?.achieved) continue;
+      this.ctx.logEvent({
+        description: `OBJECTIVE ACHIEVED: ${objective.description}`,
+        category: 'objective',
+        event_type: 'objective_achieved',
+        result_classification: 'success',
+        target_node_ids: [`obj-${objective.id}`],
+        details: {
+          objective_id: objective.id,
+          config_source: context.source,
+          recovery: context.recovery,
+        },
+      });
+    }
+
+    // Keep objective graph truth aligned with the revisioned config in the
+    // same recoverable write. Legacy CRUD only changed the array, leaving
+    // missing/stale objective nodes until a later restart.
+    const nextIds = new Set(next.objectives.map(objective => `obj-${objective.id}`));
+    for (const objective of previous.objectives) {
+      const nodeId = `obj-${objective.id}`;
+      if (!nextIds.has(nodeId) && this.ctx.graph.hasNode(nodeId)) {
+        this.ctx.graph.dropNode(nodeId);
+      }
+    }
+    const now = this.ctx.nowIso();
+    for (const objective of next.objectives) {
+      const nodeId = `obj-${objective.id}`;
+      const properties: NodeProperties = {
+        id: nodeId,
+        type: 'objective',
+        label: objective.description,
+        objective_description: objective.description,
+        objective_achieved: objective.achieved,
+        objective_achieved_at: objective.achieved_at,
+        discovered_at: now,
+        first_seen_at: now,
+        last_seen_at: now,
+        confidence: 1,
+      };
+      if (this.ctx.graph.hasNode(nodeId)) {
+        const existing = this.ctx.graph.getNodeAttributes(nodeId) as NodeProperties;
+        this.ctx.graph.replaceNodeAttributes(nodeId, {
+          ...existing,
+          ...properties,
+          discovered_at: existing.discovered_at,
+          first_seen_at: existing.first_seen_at,
+        });
+      } else {
+        this.ctx.graph.addNode(nodeId, properties);
+      }
+    }
+  }
+
   updateConfig(partial: Record<string, unknown>): EngagementConfig {
     this.assertPersistenceWritable();
-    return _updateConfig(this.configHost, partial);
+    const next = mergeConfig(this.ctx.config, partial);
+    if (canonicalJson(next.scope) !== canonicalJson(this.ctx.config.scope)) {
+      const plan = planScopeUpdate(this.scopeHost, {
+        replace_scope: next.scope,
+        reason: 'Active configuration scope updated',
+      });
+      if (plan.errors.length > 0) {
+        throw new Error(`Invalid scope update: ${plan.errors.join('; ')}`);
+      }
+      const target = this.configService.prepareJournalTarget(next);
+      const sourceFileHash = this.configService.getStatus().file_hash ?? computeConfigHash(this.ctx.config);
+      this.commitScopePlan(plan, target, 'Active configuration scope updated', sourceFileHash);
+      return this.getConfig();
+    }
+    return this.configService.commit(next, 'engine.update_config');
   }
 
   addObjective(obj: { description: string; target_node_type?: string; target_criteria?: Record<string, unknown>; achievement_edge_types?: string[] }): EngagementConfig['objectives'][0] {
     this.assertPersistenceWritable();
-    return _addObjective(this.objectiveHost, obj);
+    const objective: EngagementConfig['objectives'][0] = {
+      id: uuidv4(),
+      description: obj.description,
+      target_node_type: obj.target_node_type as NodeType | undefined,
+      target_criteria: obj.target_criteria,
+      achievement_edge_types: obj.achievement_edge_types as EdgeType[] | undefined,
+      achieved: false,
+    };
+    const next = mergeConfig(this.ctx.config, {
+      objectives: [...this.ctx.config.objectives, objective],
+    });
+    this.configService.commit(next, 'objective.add');
+    return detached(objective);
   }
 
   updateObjective(id: string, updates: Record<string, unknown>): boolean {
     this.assertPersistenceWritable();
-    return _updateObjective(this.objectiveHost, id, updates);
+    const index = this.ctx.config.objectives.findIndex(objective => objective.id === id);
+    if (index < 0) return false;
+    const objectives = detached(this.ctx.config.objectives);
+    const objective = objectives[index];
+    if (typeof updates.description === 'string') objective.description = updates.description;
+    if (typeof updates.target_node_type === 'string') objective.target_node_type = updates.target_node_type as NodeType;
+    if (typeof updates.achieved === 'boolean') {
+      objective.achieved = updates.achieved;
+      objective.achieved_at = updates.achieved ? this.ctx.nowIso() : undefined;
+    }
+    if (updates.target_criteria !== undefined) objective.target_criteria = updates.target_criteria as Record<string, unknown>;
+    if (Array.isArray(updates.achievement_edge_types)) objective.achievement_edge_types = updates.achievement_edge_types as EdgeType[];
+    this.configService.commit(mergeConfig(this.ctx.config, { objectives }), 'objective.update');
+    return true;
   }
 
   removeObjective(id: string): boolean {
     this.assertPersistenceWritable();
-    return _removeObjective(this.objectiveHost, id);
+    if (!this.ctx.config.objectives.some(objective => objective.id === id)) return false;
+    const objectives = this.ctx.config.objectives.filter(objective => objective.id !== id);
+    this.configService.commit(mergeConfig(this.ctx.config, { objectives }), 'objective.remove');
+    return true;
   }
 
   getAllAgents(): AgentTask[] {

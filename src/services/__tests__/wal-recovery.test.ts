@@ -2211,6 +2211,8 @@ describe('WAL recovery integration', () => {
   it('keeps the three-failure write gate closed after a late retry until clean restart', async () => {
     const engine = openEngine();
     vi.useFakeTimers();
+    const publishedRecovery: ReturnType<GraphEngine['getPersistenceRecoveryStatus']>[] = [];
+    engine.onUpdate(() => publishedRecovery.push(engine.getPersistenceRecoveryStatus()));
 
     mkdirSync(`${statePath}.tmp`);
     (engine as any).ctx.lastSnapshotTime = Date.now();
@@ -2222,6 +2224,10 @@ describe('WAL recovery integration', () => {
     await vi.advanceTimersByTimeAsync(PERSIST_RETRY_DELAYS_MS[1] + 1); // retry failure 3
 
     expect(engine.getPersistenceRecoveryStatus()).toMatchObject({
+      writable: false,
+      consecutive_persistence_failures: 3,
+    });
+    expect(publishedRecovery.at(-1)).toMatchObject({
       writable: false,
       consecutive_persistence_failures: 3,
     });
@@ -2246,6 +2252,12 @@ describe('WAL recovery integration', () => {
     rmSync(`${statePath}.tmp`, { recursive: true, force: true });
     await vi.advanceTimersByTimeAsync(PERSIST_RETRY_DELAYS_MS[2] + 1);
     expect(engine.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      consecutive_persistence_failures: 0,
+    });
+    expect(publishedRecovery.at(-1)).toMatchObject({
       outcome: 'incomplete',
       complete: false,
       writable: false,

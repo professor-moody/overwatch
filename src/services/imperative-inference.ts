@@ -283,7 +283,10 @@ export function degradeExpiredCredentialEdges(host: ImperativeInferenceHost, cre
     if (attrs.type !== 'POTENTIAL_AUTH') continue;
     const newConfidence = Math.max(0.1, attrs.confidence * 0.5);
     if (newConfidence >= attrs.confidence) continue;
-    host.ctx.graph.mergeEdgeAttributes(edgeId, { confidence: newConfidence } as Partial<EdgeProperties>);
+    host.addEdge(host.ctx.graph.source(edgeId), host.ctx.graph.target(edgeId), {
+      ...attrs,
+      confidence: newConfidence,
+    });
     degraded.push(edgeId);
   }
 

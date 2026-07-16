@@ -651,6 +651,10 @@ export interface EngagementConfig {
   id: string;
   name: string;
   created_at: string;
+  /** Monotonic write-through revision shared by engagement.json and state. */
+  config_revision?: number;
+  /** SHA-256 of the canonical config payload with this field omitted. */
+  config_hash?: string;
   template?: string;
   profile?: LabProfile;
   scope: {
@@ -842,6 +846,8 @@ export const engagementConfigSchema = z.object({
     (val) => !isNaN(Date.parse(val)),
     { message: 'created_at must be a valid ISO-8601 date string' },
   ),
+  config_revision: z.number().int().positive().optional(),
+  config_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   template: z.string().optional(),
   profile: z.enum(['goad_ad', 'single_host', 'network', 'web_app', 'cloud', 'hybrid']).optional(),
   community_resolution: z.number().min(0.1).max(10).optional(),
@@ -918,6 +924,14 @@ export const engagementConfigSchema = z.object({
   operator_policy: operatorPolicySchema.optional(),
   available_models: z.array(z.string()).optional(),
   default_agent_model: z.string().optional(),
+}).superRefine((config, ctx) => {
+  if ((config.config_revision === undefined) !== (config.config_hash === undefined)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['config_hash'],
+      message: 'config_revision and config_hash must either both be present or both be absent',
+    });
+  }
 });
 
 export interface ExportedGraphNode {
@@ -1263,12 +1277,52 @@ export interface Campaign {
  * summary: callers must not treat its absence as a recovery failure when
  * talking to an older server.
  */
+export interface ConfigIntentConflict {
+  archive_path: string;
+  intent_sha256: string;
+  intent_checksum?: string;
+  reason: string;
+  observed_file_hash: string;
+  observed_state_hash: string;
+}
+
+export interface ConfigRecoveryStatus {
+  status: 'unmanaged' | 'in_sync' | 'recovered' | 'diverged' | 'write_incomplete';
+  resolution_required: boolean;
+  file_path?: string;
+  intent_path?: string;
+  intent_present: boolean;
+  file_valid?: boolean;
+  file_revision?: number;
+  state_revision?: number;
+  runtime_revision?: number;
+  file_hash?: string;
+  state_hash?: string;
+  runtime_hash?: string;
+  reason?: string;
+  last_resolution?: 'use_file' | 'use_state';
+  allowed_resolutions?: Array<'use_file' | 'use_state'>;
+  /** Preserved write intent that could not safely auto-resume. */
+  conflicted_intent?: ConfigIntentConflict;
+}
+
 export interface PersistenceRecoveryStatus {
   outcome: 'clean' | 'recovered' | 'incomplete' | 'reinitialized';
   source: 'fresh' | 'state' | 'snapshot' | 'config';
   complete: boolean;
   writable: boolean;
   reason?: string;
+  /** Underlying WAL/state reason when configuration recovery is also blocked. */
+  persistence_reason?: string;
+  /** Raw state/WAL health before the active-config or deferred-lifecycle gate
+   * is folded into the top-level writable result. */
+  state_recovery?: {
+    outcome: 'clean' | 'recovered' | 'incomplete' | 'reinitialized';
+    source: 'fresh' | 'state' | 'snapshot' | 'config';
+    complete: boolean;
+    writable: boolean;
+    reason?: string;
+  };
   base_checkpoint: number;
   highest_allocated_seq: number;
   highest_on_disk_seq: number;
@@ -1277,6 +1331,8 @@ export interface PersistenceRecoveryStatus {
   last_persistence_error?: string;
   journal: {
     enabled: boolean;
+    /** Active WAL path when journaling is enabled for this process. */
+    path?: string;
     read: number;
     attempted: number;
     applied: number;
@@ -1285,6 +1341,8 @@ export interface PersistenceRecoveryStatus {
     malformed: boolean;
     preserved: boolean;
   };
+  /** File/runtime/state configuration convergence for the active engagement. */
+  config_recovery?: ConfigRecoveryStatus;
 }
 
 export interface EngagementState {
@@ -1492,6 +1550,10 @@ export interface GraphQueryResult {
 }
 
 export type GraphCorrectionOperation =
+  | {
+      kind: 'drop_node';
+      node_id: string;
+    }
   | {
       kind: 'drop_edge';
       source_id: string;
