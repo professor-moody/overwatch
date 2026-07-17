@@ -10,6 +10,7 @@ import {
   HeadlessMcpRunner,
   allowedToolsFor,
   buildHeadlessClaudeEnv,
+  inspectHeadlessClaudeCompatibility,
 } from '../headless-mcp-runner.js';
 import { HeadlessProcessRegistry } from '../headless-process-registry.js';
 import { ApplicationCommandService } from '../application-command-service.js';
@@ -110,6 +111,18 @@ describe('Headless runner mechanics (injected spawn)', () => {
     spawnedArgs = [];
     spawnedCmds = [];
     nextPid = 1;
+  });
+
+  it('fails compatibility when the Claude CLI lacks managed-worker isolation flags', () => {
+    expect(inspectHeadlessClaudeCompatibility('claude', () => '--strict-mcp-config')).toEqual({
+      ok: false,
+      missing_flags: ['--setting-sources', '--no-session-persistence'],
+    });
+    expect(inspectHeadlessClaudeCompatibility('claude', () => [
+      '--strict-mcp-config',
+      '--setting-sources',
+      '--no-session-persistence',
+    ].join('\n'))).toEqual({ ok: true, missing_flags: [] });
   });
 
   afterEach(() => {
@@ -1374,6 +1387,45 @@ describe('Headless runner mechanics (injected spawn)', () => {
       event.linked_agent_task_id === 'h-shutdown'
       && (event.details as { reason?: string })?.reason === 'headless_exited'
     )).toBe(true);
+  });
+
+  it('points a planner clean-exit failure at doctor and the exact worker log', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'planner exits too early' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: {
+        command_id: 'no-plan-command',
+        idempotency_key: 'no-plan-command',
+      },
+      reserve: () => ({
+        status: 'accepted',
+        result: { phase: 'planning_queued', planner_task_id: 'h-no-plan' },
+      }),
+    });
+    engine.registerAgent(headlessTask({
+      id: 'h-no-plan',
+      role: 'planner',
+      application_command_id: 'no-plan-command',
+    }));
+    await settle();
+
+    spawned[0].simulateExit(0);
+    spawned[0].simulateClose(0);
+    await settle();
+
+    expect(engine.getApplicationCommandById('no-plan-command')).toMatchObject({
+      status: 'failed',
+      error: {
+        code: 'PLANNER_NO_PLAN',
+        message: expect.stringContaining('npm run doctor'),
+      },
+    });
+    expect(engine.getApplicationCommandById('no-plan-command')?.error?.message)
+      .toContain(join(logDir, 'h-no-plan.ndjson'));
   });
 
   it('CVE auto-dispatch budget counts non-CVE headless agents (cap honored, no over-registration)', async () => {

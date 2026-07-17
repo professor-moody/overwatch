@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
+import { inspectBuildFreshness } from './build-fingerprint.mjs';
 
 const root = resolve(dirname(new URL(import.meta.url).pathname), '..');
 const checks = [];
@@ -147,12 +148,25 @@ if (!claudePath) {
 }
 
 const distIndex = join(root, 'dist', 'index.js');
-if (existsSync(distIndex)) add('pass', 'Runtime build', distIndex);
-else add('fail', 'Runtime build', 'dist/index.js is missing', 'Run: npm run build');
-
 const dashboardBuild = join(root, 'dist', 'dashboard-next', 'index.html');
-if (existsSync(dashboardBuild)) add('pass', 'Dashboard build', dashboardBuild);
-else add('fail', 'Dashboard build', 'dist/dashboard-next/index.html is missing', 'Run: npm run build');
+const buildFreshness = inspectBuildFreshness(root);
+if (buildFreshness.fresh) {
+  add(
+    'pass',
+    'Runtime build',
+    buildFreshness.info?.git_sha
+      ? `${distIndex} (${String(buildFreshness.info.git_sha).slice(0, 8)})`
+      : distIndex,
+  );
+  add('pass', 'Dashboard build', dashboardBuild);
+} else {
+  add('fail', 'Runtime build', buildFreshness.reason, 'Run: npm run build');
+  if (!existsSync(dashboardBuild)) {
+    add('fail', 'Dashboard build', 'dist/dashboard-next/index.html is missing', 'Run: npm run build');
+  } else {
+    add('warn', 'Dashboard build', 'present, but freshness is not proven', 'Run: npm run build');
+  }
+}
 
 const mcpPath = join(root, '.mcp.json');
 const claudeSettingsPath = join(root, '.claude', 'settings.json');

@@ -27,6 +27,9 @@ config unless `OVERWATCH_STATE_FILE` is set.
 Leave the daemon running, open `http://127.0.0.1:8384`, and run `claude` in
 another terminal. Claude, the dashboard, the `overwatch` CLI, and dispatched
 agents then share one engine and one engagement without competing writers.
+After later pulls, `npm run start:daemon` checks whether the compiled runtime
+matches the checkout and rebuilds it automatically when needed, so an old
+dashboard or planner cannot silently start from stale `dist` files.
 
 For a solo Claude-only session, omit `--daemon`; setup retains the compatible
 stdio configuration where Claude launches and owns Overwatch itself.

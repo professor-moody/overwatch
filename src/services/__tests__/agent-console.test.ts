@@ -159,4 +159,29 @@ describe('activityToAgentConsoleEvent — WS-path attribution (3A.3)', () => {
 
     expect(event.summary).toBe('Agent dispatched: planner-1234 as operator planner');
   });
+
+  it('repairs the oldest untyped planner dispatch rows and never renders undefined', () => {
+    const planner = {
+      id: 'planner-task-old',
+      task_id: 'planner-task-old',
+      agent_id: 'planner-old',
+      agent_label: 'planner-old',
+      assigned_at: '2026-06-12T10:00:00Z',
+      status: 'interrupted',
+      role: 'planner',
+      subgraph_node_ids: [],
+    } as AgentTask;
+    const [event] = buildOperatorConsoleEvents([
+      entry({
+        event_id: 'oldest-planner-dispatch',
+        event_type: undefined,
+        category: 'agent',
+        description: 'Agent dispatched: planner-old for undefined',
+        agent_id: 'planner-old',
+      }),
+    ], [planner]);
+
+    expect(event.summary).toBe('Agent dispatched: planner-old as operator planner');
+    expect(event.summary).not.toContain('undefined');
+  });
 });

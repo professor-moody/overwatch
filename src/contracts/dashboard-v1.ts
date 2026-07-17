@@ -620,11 +620,20 @@ export function normalizeLegacyAgentDispatchDescription(entry: {
   description: string;
   details?: Record<string, unknown>;
 }): string {
-  if (entry.event_type !== 'agent_registered' || !/\sfor undefined\s*$/i.test(entry.description)) {
+  const legacyShape = /^Agent dispatched:\s*(.*?)\s+for undefined\s*$/i.exec(entry.description);
+  // The oldest durable rows predate event_type. Restrict that compatibility
+  // case to the exact historical sentence so unrelated untyped activity is not
+  // rewritten. Explicit non-registration event types always remain untouched.
+  if (
+    !legacyShape
+    || (entry.event_type !== undefined && entry.event_type !== 'agent_registered')
+  ) {
     return entry.description;
   }
   const withoutUndefined = entry.description.replace(/\sfor undefined\s*$/i, '').trim();
-  return entry.details?.role === 'planner'
+  const planner = entry.details?.role === 'planner'
+    || /^planner(?:-|\b)/i.test(legacyShape[1]);
+  return planner
     ? `${withoutUndefined} as operator planner`
     : withoutUndefined;
 }

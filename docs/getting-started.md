@@ -147,6 +147,11 @@ cd /absolute/path/to/overwatch
 claude
 ```
 
+Startup verifies that the compiled runtime and dashboard match the current
+checkout. After a pull, a stale or missing build is rebuilt automatically before
+the daemon starts; `npm run doctor` reports the same freshness status without
+changing any files.
+
 Claude Code connects to the already-running Overwatch engine and reads
 [`AGENTS.md`](https://github.com/professor-moody/overwatch/blob/main/AGENTS.md)
 as the primary session prompt. The dashboard, CLI, Claude, and dispatched agents

@@ -201,14 +201,21 @@ export function activityToAgentConsoleEvent(entry: ActivityLogEntry, task?: Agen
  * bug is fixed.
  */
 function projectConsoleSummary(entry: ActivityLogEntry, task?: AgentTask): string {
-  if (entry.event_type !== 'agent_registered') return entry.description;
+  const legacyDispatch = /^Agent dispatched:\s*(.*?)\s+(?:for|as)\s+undefined\s*$/i
+    .exec(entry.description);
+  if (entry.event_type !== 'agent_registered' && !legacyDispatch) return entry.description;
   const details = entry.details || {};
-  const label = task
-    ? agentLabelOf(task)
-    : stringDetail(details.agent_label)
-      || stringDetail(details.agent_id)
-      || entry.agent_id
-      || 'Agent';
+  // Old persisted tasks and activity rows predate canonical agent_label. Keep
+  // presentation total even when the task object exists but its legacy label is
+  // absent; otherwise JavaScript interpolation recreates the literal
+  // "Agent dispatched: undefined" bug we are trying to repair.
+  const taskLabel = task ? stringDetail(agentLabelOf(task)) : undefined;
+  const label = taskLabel
+    || stringDetail(details.agent_label)
+    || stringDetail(details.agent_id)
+    || entry.agent_id
+    || legacyDispatch?.[1]
+    || 'Agent';
   const frontierId = entry.frontier_item_id
     || stringDetail(details.frontier_item_id);
   if (frontierId) return `Agent dispatched: ${label} for frontier ${frontierId}`;
