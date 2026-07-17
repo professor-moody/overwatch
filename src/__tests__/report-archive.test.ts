@@ -7,7 +7,7 @@
 // them, and delete obsolete ones without re-rendering.
 // ============================================================
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ReportArchive } from '../services/report-archive.js';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -22,6 +22,10 @@ beforeEach(() => {
   // Touch a fake state file so the archive sees `dirname(state)` as
   // the engagement dir.
   writeFileSync(stateFilePath, '{}', 'utf8');
+});
+
+afterEach(() => {
+  rmSync(tempDir, { recursive: true, force: true });
 });
 
 describe('ReportArchive', () => {

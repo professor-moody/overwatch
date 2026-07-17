@@ -8,8 +8,10 @@ import { HeadlessProcessRegistry } from '../headless-process-registry.js';
 import { HeadlessMcpRunner } from '../headless-mcp-runner.js';
 import type { EngagementConfig } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-headless-openlog.json';
+const sandbox = createTestSandbox('headless-openlog');
+const TEST_STATE_FILE = sandbox.path('state-test-headless-openlog.json');
 
 function makeConfig(): EngagementConfig {
   return {

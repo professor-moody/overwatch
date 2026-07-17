@@ -5,8 +5,10 @@ import { registerAgentTools, dispatchCampaignAgents } from '../../tools/agents.j
 import { registerFindingTools } from '../../tools/findings.js';
 import type { EngagementConfig } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-campaign-fixes.json';
+const sandbox = createTestSandbox('campaign-fixes');
+const TEST_STATE_FILE = sandbox.path('state-test-campaign-fixes.json');
 const engines = new Set<GraphEngine>();
 
 function makeConfig(): EngagementConfig {

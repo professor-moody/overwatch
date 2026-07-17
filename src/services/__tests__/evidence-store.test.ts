@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { spawn, type ChildProcess } from 'child_process';
 import { createHash } from 'crypto';
@@ -6,9 +6,11 @@ import { once } from 'events';
 import { join, resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { EvidenceStore } from '../evidence-store.js';
+import { createTestSandbox, type TestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE = '/tmp/overwatch-ev-test/state.json';
-const EVIDENCE_DIR = '/tmp/overwatch-ev-test/evidence';
+let sandbox: TestSandbox;
+let TEST_STATE: string;
+let EVIDENCE_DIR: string;
 const evidenceStoreModuleUrl = pathToFileURL(
   resolve('src/services/evidence-store.ts'),
 ).href;
@@ -59,10 +61,14 @@ async function waitForExit(
   };
 }
 
+beforeEach(() => {
+  sandbox = createTestSandbox('evidence-store');
+  TEST_STATE = sandbox.path('state.json');
+  EVIDENCE_DIR = sandbox.path('evidence');
+});
+
 afterEach(() => {
-  if (existsSync('/tmp/overwatch-ev-test')) {
-    rmSync('/tmp/overwatch-ev-test', { recursive: true, force: true });
-  }
+  sandbox.cleanup();
 });
 
 describe('EvidenceStore', () => {
@@ -225,9 +231,9 @@ describe('EvidenceStore', () => {
   });
 
   it('serializes two stale child-process writers and preserves both references', async () => {
-    const readyA = '/tmp/overwatch-ev-test/ready-a';
-    const readyB = '/tmp/overwatch-ev-test/ready-b';
-    const go = '/tmp/overwatch-ev-test/go';
+    const readyA = sandbox.path('ready-a');
+    const readyB = sandbox.path('ready-b');
+    const go = sandbox.path('go');
     const script = `
       import { existsSync, writeFileSync } from 'fs';
       import { EvidenceStore } from ${JSON.stringify(evidenceStoreModuleUrl)};

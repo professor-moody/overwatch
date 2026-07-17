@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -86,18 +86,19 @@ beforeAll(async () => {
     { id: 'pivot-user', type: 'user', label: 'pivot-user' },
   ]) engine.addNode({ ...node, discovered_at: '2026-07-15T00:00:00Z', confidence: 1 } as never);
 
-  vi.spyOn(engine, 'getFrontierItem').mockImplementation(id => items.get(id) ?? null);
-  vi.spyOn(engine, 'getActionableFrontierItem').mockImplementation(id => stale.has(id) ? null : items.get(id) ?? null);
-  vi.spyOn(engine, 'computeSubgraphNodeIds').mockImplementation(id => scopes.get(id) ?? []);
-
   dashboard = new DashboardServer(engine, 0, '127.0.0.1');
   const result = await dashboard.start();
   if (!result.started) throw new Error(result.error);
   baseUrl = dashboard.address;
 });
 
+beforeEach(() => {
+  vi.spyOn(engine, 'getFrontierItem').mockImplementation(id => items.get(id) ?? null);
+  vi.spyOn(engine, 'getActionableFrontierItem').mockImplementation(id => stale.has(id) ? null : items.get(id) ?? null);
+  vi.spyOn(engine, 'computeSubgraphNodeIds').mockImplementation(id => scopes.get(id) ?? []);
+});
+
 afterAll(async () => {
-  vi.restoreAllMocks();
   await dashboard.stop();
   engine.dispose();
   rmSync(tempDir, { recursive: true, force: true });

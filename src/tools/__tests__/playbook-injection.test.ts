@@ -7,8 +7,10 @@ import { registerAwsPlaybookTool } from '../aws-playbook.js';
 import { registerGithubPlaybookTool } from '../github-playbook.js';
 import type { EngagementConfig } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-playbook-injection.json';
+const sandbox = createTestSandbox('playbook-injection');
+const TEST_STATE_FILE = sandbox.path('state-test-playbook-injection.json');
 
 function makeConfig(): EngagementConfig {
   return {

@@ -8,7 +8,7 @@
 // ============================================================
 
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { existsSync, rmSync, unlinkSync } from 'fs';
+import { existsSync, unlinkSync } from 'fs';
 import Graph from 'graphology';
 import {
   parseGitHubActionsOidc,
@@ -19,12 +19,13 @@ import { runCrossTierInference } from '../services/cross-tier-inference.js';
 import { EngineContext } from '../services/engine-context.js';
 import type { OverwatchGraph } from '../services/engine-context.js';
 import type { EdgeProperties, NodeProperties } from '../types.js';
+import { createTestSandbox } from '../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-ci-oidc.json';
+const sandbox = createTestSandbox('ci-oidc-parsers');
+const TEST_STATE_FILE = sandbox.path('state-test-ci-oidc.json');
 
 function cleanup(): void {
   try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { rmSync('./evidence-test-ci-oidc', { recursive: true, force: true }); } catch {}
 }
 
 function makeGraph(): OverwatchGraph {

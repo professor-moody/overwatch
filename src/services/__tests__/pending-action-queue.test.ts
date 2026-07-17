@@ -2,6 +2,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import Graph from 'graphology';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('pending-action-queue');
 import { PendingActionQueue } from '../pending-action-queue.js';
 import type { PendingAction, ActionResolution } from '../pending-action-queue.js';
 import type { OpsecContext } from '../opsec-tracker.js';
@@ -39,7 +42,7 @@ function makeConfigWithOpsec(opsecOverrides: Record<string, unknown> = {}, confi
 function makeQueue(opsecOverrides: Record<string, unknown> = {}): { queue: PendingActionQueue; ctx: EngineContext } {
   const graph = makeGraph();
   const config = makeConfigWithOpsec(opsecOverrides);
-  const ctx = new EngineContext(graph, config, './test-state.json');
+  const ctx = new EngineContext(graph, config, testSandbox.path('test-state.json'));
   const queue = ctx.pendingActionQueue;
   return { queue, ctx };
 }
@@ -171,7 +174,7 @@ describe('PendingActionQueue', () => {
       const graph = makeGraph();
       const config = makeConfig();
       delete config.opsec.approval_mode;
-      const ctx = new EngineContext(graph, config, './test-state.json');
+      const ctx = new EngineContext(graph, config, testSandbox.path('test-state.json'));
       const queue = ctx.pendingActionQueue;
       expect(queue.needsApproval(makeOpsecContext())).toBe(false);
     });

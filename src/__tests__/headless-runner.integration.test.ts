@@ -63,6 +63,14 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
   const prevBinary = process.env.OVERWATCH_CLAUDE_BINARY;
   const prevMode = process.env.OVERWATCH_FAKE_MODE;
   const prevPlannerGate = process.env.OVERWATCH_FAKE_PLANNER_GATE;
+  const prevTokenFile = process.env.OVERWATCH_MCP_TOKEN_FILE;
+
+  const taskExecution = (directory: string) => ({
+    headless: {
+      logDir: join(directory, 'agents'),
+      configDir: join(directory, 'mcp-configs'),
+    },
+  });
 
   beforeAll(() => {
     chmodSync(FAKE_CLAUDE, 0o755);
@@ -71,26 +79,32 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
   beforeEach(async () => {
     process.env.OVERWATCH_CLAUDE_BINARY = FAKE_CLAUDE;
     tempDir = mkdtempSync(join(tmpdir(), 'ow-headless-int-'));
+    process.env.OVERWATCH_MCP_TOKEN_FILE = join(tempDir, '.overwatch-mcp-token');
     const config = parseEngagementConfig(rawConfig);
     app = createOverwatchApp({
       config,
       skillDir: resolve('./skills'),
       dashboardPort: await freeLoopbackPort(),
       stateFilePath: join(tempDir, `state-${config.id}.json`),
+      taskExecution: taskExecution(tempDir),
     });
     await startHttpApp(app, { port: 0, host: '127.0.0.1' });
   });
 
   afterEach(async () => {
     delete process.env.OVERWATCH_FAKE_PLANNER_GATE;
-    if (app) await shutdownOverwatchApp(app);
-    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      if (app) await shutdownOverwatchApp(app);
+    } finally {
+      try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   });
 
   afterAll(() => {
     if (prevBinary === undefined) delete process.env.OVERWATCH_CLAUDE_BINARY; else process.env.OVERWATCH_CLAUDE_BINARY = prevBinary;
     if (prevMode === undefined) delete process.env.OVERWATCH_FAKE_MODE; else process.env.OVERWATCH_FAKE_MODE = prevMode;
     if (prevPlannerGate === undefined) delete process.env.OVERWATCH_FAKE_PLANNER_GATE; else process.env.OVERWATCH_FAKE_PLANNER_GATE = prevPlannerGate;
+    if (prevTokenFile === undefined) delete process.env.OVERWATCH_MCP_TOKEN_FILE; else process.env.OVERWATCH_MCP_TOKEN_FILE = prevTokenFile;
   });
 
   it('launches a headless sub-agent that connects, reports a finding, and completes its task', async () => {
@@ -126,7 +140,7 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
   it('revokes a managed worker credential and closes its actor session after termination', async () => {
     process.env.OVERWATCH_FAKE_MODE = 'hang';
     app.engine.registerAgent(headlessTask('e2e-revoke-token'));
-    const configPath = join(tmpdir(), 'overwatch-mcp-e2e-revoke-token.json');
+    const configPath = join(tempDir, 'mcp-configs', 'overwatch-mcp-e2e-revoke-token.json');
     await waitFor(() => existsSync(configPath) && app.taskExecution.activeHeadlessCount() === 1);
     const config = JSON.parse(readFileSync(configPath, 'utf8')) as {
       mcpServers: { overwatch: { headers: { Authorization: string } } };
@@ -167,8 +181,8 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
     process.env.OVERWATCH_FAKE_MODE = 'hang';
     app.engine.registerAgent(headlessTask('e2e-session-owner-a'));
     app.engine.registerAgent(headlessTask('e2e-session-owner-b'));
-    const configA = join(tmpdir(), 'overwatch-mcp-e2e-session-owner-a.json');
-    const configB = join(tmpdir(), 'overwatch-mcp-e2e-session-owner-b.json');
+    const configA = join(tempDir, 'mcp-configs', 'overwatch-mcp-e2e-session-owner-a.json');
+    const configB = join(tempDir, 'mcp-configs', 'overwatch-mcp-e2e-session-owner-b.json');
     await waitFor(() => existsSync(configA) && existsSync(configB)
       && app.taskExecution.activeHeadlessCount() === 2);
     const authorization = (path: string) => (JSON.parse(readFileSync(path, 'utf8')) as {
@@ -383,6 +397,7 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
       skillDir: resolve('./skills'),
       dashboardPort: await freeLoopbackPort(),
       stateFilePath: statePath,
+      taskExecution: taskExecution(tempDir),
     });
     await startHttpApp(app, { port: 0, host: '127.0.0.1' });
     expect(app.taskExecution.isHeadlessAvailable()).toBe(false);
@@ -444,6 +459,7 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
         skillDir: resolve('./skills'),
         dashboardPort: await freeLoopbackPort(),
         stateFilePath: join(tempDir, 'state-open-loopback.json'),
+        taskExecution: taskExecution(tempDir),
       });
       await startHttpApp(app, { port: 0, host: '127.0.0.1' });
       expect(process.env.OVERWATCH_MCP_TOKEN).toBeUndefined();

@@ -4,6 +4,10 @@ const TOKEN_STORAGE_KEY = 'overwatch.dashboard.token';
 
 let memoryToken: string | null = null;
 
+export function resetDashboardAuthMemoryForTest(): void {
+  memoryToken = null;
+}
+
 export interface DashboardAuthEnvironment {
   href: string;
   storage?: Pick<Storage, 'getItem' | 'setItem'>;

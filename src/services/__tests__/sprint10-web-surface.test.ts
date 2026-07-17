@@ -7,8 +7,10 @@ import type { EngagementConfig, Finding } from '../../types.js';
 import { NODE_TYPES, EDGE_TYPES } from '../../types.js';
 import { unlinkSync, existsSync } from 'fs';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-sprint10.json';
+const sandbox = createTestSandbox('sprint10-web-surface');
+const TEST_STATE_FILE = sandbox.path('state-test-sprint10.json');
 const engines = new Set<BaseGraphEngine>();
 
 class GraphEngine extends BaseGraphEngine {

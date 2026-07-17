@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import Graph from 'graphology';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('opsec-tracker');
 import { OpsecTracker } from '../opsec-tracker.js';
 import type { OpsecTrackerState, DefensiveSignal } from '../opsec-tracker.js';
 
@@ -23,7 +26,7 @@ function makeConfig(overrides: Record<string, unknown> = {}) {
 
 function makeTracker(configOverrides: Record<string, unknown> = {}): { tracker: OpsecTracker; ctx: EngineContext } {
   const graph = makeGraph();
-  const ctx = new EngineContext(graph, makeConfig(configOverrides), './test-state.json');
+  const ctx = new EngineContext(graph, makeConfig(configOverrides), testSandbox.path('test-state.json'));
   const tracker = new OpsecTracker(ctx);
   return { tracker, ctx };
 }
@@ -305,7 +308,7 @@ describe('OpsecTracker', () => {
     it('EngineContext initializes with fresh OpsecTracker', () => {
       const graph = makeGraph();
       const config = makeConfig();
-      const ctx = new EngineContext(graph, config, './test-state.json');
+      const ctx = new EngineContext(graph, config, testSandbox.path('test-state.json'));
       expect(ctx.opsecTracker).toBeInstanceOf(OpsecTracker);
       expect(ctx.opsecTracker.getGlobalNoise()).toBe(0);
     });

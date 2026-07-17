@@ -9,6 +9,9 @@ export default defineConfig({
     },
   },
   test: {
+    globalSetup: ['./src/test-support/artifact-hygiene-global.ts'],
+    setupFiles: ['./src/test-support/setup-hermetic.ts'],
+    sequence: { hooks: 'stack', setupFiles: 'list' },
     include: [
       'src/**/*.test.ts',
     ],

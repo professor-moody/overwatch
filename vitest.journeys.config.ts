@@ -12,6 +12,9 @@ export default defineConfig({
     },
   },
   test: {
+    globalSetup: ['./src/test-support/artifact-hygiene-global.ts'],
+    setupFiles: ['./src/test-support/setup-hermetic.ts'],
+    sequence: { hooks: 'stack', setupFiles: 'list' },
     include: [
       'src/services/__tests__/wal-recovery.test.ts',
       'src/services/__tests__/config-write-through.integration.test.ts',

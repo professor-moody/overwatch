@@ -4,8 +4,10 @@ import { GraphEngine } from '../graph-engine.js';
 import { FrontierLeases } from '../frontier-leases.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-frontier-leases.json';
+const sandbox = createTestSandbox('frontier-leases');
+const TEST_STATE_FILE = sandbox.path('state-test-frontier-leases.json');
 
 function makeConfig(): EngagementConfig {
   return {

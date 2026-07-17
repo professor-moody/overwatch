@@ -6,8 +6,10 @@ import type { Session } from '../session-manager.js';
 import type { EngagementConfig, Finding, SessionMetadata } from '../../types.js';
 import { unlinkSync, existsSync } from 'fs';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-hardening.json';
+const sandbox = createTestSandbox('sprint10-hardening');
+const TEST_STATE_FILE = sandbox.path('state-test-hardening.json');
 const engines = new Set<BaseGraphEngine>();
 
 class GraphEngine extends BaseGraphEngine {

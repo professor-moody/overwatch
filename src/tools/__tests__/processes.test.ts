@@ -6,8 +6,10 @@ import { ProcessTracker } from '../../services/process-tracker.js';
 import { registerProcessTools } from '../processes.js';
 import type { EngagementConfig } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-process-tools.json';
+const sandbox = createTestSandbox('process-tools');
+const TEST_STATE_FILE = sandbox.path('state-test-process-tools.json');
 const engines = new Set<BaseGraphEngine>();
 
 class GraphEngine extends BaseGraphEngine {

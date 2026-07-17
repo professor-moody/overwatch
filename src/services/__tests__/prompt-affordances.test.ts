@@ -8,9 +8,11 @@ import { checkPromptAffordances, REQUIRED_SUBAGENT_AFFORDANCES } from '../eval-r
 import { EVAL_SCENARIOS } from '../../test-support/eval-scenarios.js';
 import type { AgentTask } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
 const config = loadEngagementConfigFile(resolve('./engagement.example.json'));
-const STATE = './state-test-prompt-affordances.json';
+const sandbox = createTestSandbox('prompt-affordances');
+const STATE = sandbox.path('state-test-prompt-affordances.json');
 const liveEngines = new Set<GraphEngine>();
 const openEngine = (): GraphEngine => {
   const engine = new GraphEngine(config, STATE);

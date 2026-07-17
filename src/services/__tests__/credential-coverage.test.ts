@@ -3,6 +3,9 @@ import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('credential-coverage');
 import { CredentialCoverageTracker } from '../credential-coverage.js';
 import { FrontierComputer } from '../frontier.js';
 
@@ -33,7 +36,7 @@ function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string, 
 }
 
 function buildTracker(graph: OverwatchGraph, config?: any) {
-  const ctx = new EngineContext(graph, config || makeConfig(), './test-state.json');
+  const ctx = new EngineContext(graph, config || makeConfig(), testSandbox.path('test-state.json'));
   return { tracker: new CredentialCoverageTracker(ctx), ctx };
 }
 
@@ -317,7 +320,7 @@ describe('CredentialCoverageTracker', () => {
       addNode(graph, 'svc-1', { type: 'service', service_name: 'smb', port: 445 });
       addEdge(graph, 'host-1', 'svc-1', 'RUNS');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const frontier = new FrontierComputer(ctx, () => null);
       const items = frontier.compute();
 
@@ -430,7 +433,7 @@ describe('CredentialCoverageTracker', () => {
       // Add an inferred edge that the frontier will surface as inferred_edge
       addEdge(graph, 'cred-1', 'host-1', 'VALID_ON', { confidence: 0.5, inferred: true });
 
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const frontier = new FrontierComputer(ctx, () => null);
       const items = frontier.compute();
 

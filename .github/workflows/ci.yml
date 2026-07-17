@@ -48,6 +48,24 @@ jobs:
       - run: npm run test:source
       - run: npm run test:dashboard-dom
 
+  supported-runtime-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run test:source
+      - run: npm run test:dashboard-dom
+      - run: npm run build
+
   restart-crash-journeys:
     runs-on: ubuntu-latest
     needs: unit-tests
@@ -61,6 +79,7 @@ jobs:
 
   browser-journeys:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: unit-tests
     steps:
       - uses: actions/checkout@v4

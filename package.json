@@ -62,7 +62,7 @@
     "test:dashboard-dom": "vitest run --config vitest.dashboard-dom.config.ts",
     "test:journeys": "vitest run --config vitest.journeys.config.ts",
     "test:browser:server": "node --import tsx scripts/browser-journey-server.ts",
-    "test:browser": "playwright test",
+    "test:browser": "node scripts/run-browser-tests.mjs",
     "test:integration:stdio": "npm run build && vitest run --config vitest.integration-stdio.config.ts",
     "test:integration:http": "npm run build && vitest run --config vitest.integration-http.config.ts",
     "check:dist": "git diff --exit-code -- dist",

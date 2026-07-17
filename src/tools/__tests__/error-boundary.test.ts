@@ -121,7 +121,7 @@ describe('telemetry integration', () => {
   });
 
   afterEach(() => {
-    if (savedTelemetry) setTelemetry(savedTelemetry);
+    setTelemetry(savedTelemetry);
   });
 
   it('records successful calls via withErrorBoundary', async () => {

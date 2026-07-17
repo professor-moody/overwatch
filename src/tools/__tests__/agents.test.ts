@@ -5,8 +5,10 @@ import { GraphEngine } from '../../services/graph-engine.js';
 import { registerAgentTools, dispatchCampaignAgents } from '../agents.js';
 import type { EngagementConfig } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-agents.json';
+const sandbox = createTestSandbox('agents');
+const TEST_STATE_FILE = sandbox.path('state-test-agents.json');
 
 function makeConfig(): EngagementConfig {
   return {

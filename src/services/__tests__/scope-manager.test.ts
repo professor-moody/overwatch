@@ -3,6 +3,9 @@ import Graph from 'graphology';
 import type { NodeProperties } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('scope-manager');
 import type { ScopeManagerHost } from '../scope-manager.js';
 import { updateScope, collectScopeSuggestions, previewScopeChange } from '../scope-manager.js';
 
@@ -70,7 +73,7 @@ describe('scope-manager', () => {
   describe('updateScope', () => {
     it('adds a CIDR to scope', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const result = updateScope(host, { add_cidrs: ['192.168.1.0/24'], reason: 'Pivot' });
@@ -83,7 +86,7 @@ describe('scope-manager', () => {
 
     it('does not duplicate an already-present CIDR', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       updateScope(host, { add_cidrs: ['10.10.10.0/28'], reason: 'Duplicate test' });
@@ -93,7 +96,7 @@ describe('scope-manager', () => {
 
     it('removes a CIDR from scope', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       expect(ctx.config.scope.cidrs).toContain('10.10.10.0/28');
@@ -106,7 +109,7 @@ describe('scope-manager', () => {
 
     it('adds a domain to scope', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const result = updateScope(host, { add_domains: ['corp.local'], reason: 'New domain' });
@@ -118,7 +121,7 @@ describe('scope-manager', () => {
 
     it('does not duplicate an already-present domain', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       updateScope(host, { add_domains: ['test.local'], reason: 'Dup domain' });
@@ -128,7 +131,7 @@ describe('scope-manager', () => {
 
     it('removes a domain from scope', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const result = updateScope(host, { remove_domains: ['test.local'], reason: 'Drop domain' });
@@ -139,7 +142,7 @@ describe('scope-manager', () => {
 
     it('rejects invalid CIDR in add_cidrs', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const result = updateScope(host, { add_cidrs: ['not-a-cidr'], reason: 'Bad input' });
@@ -151,7 +154,7 @@ describe('scope-manager', () => {
 
     it('rejects invalid CIDR in remove_cidrs', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const result = updateScope(host, { remove_cidrs: ['bogus'], reason: 'Bad remove' });
@@ -162,7 +165,7 @@ describe('scope-manager', () => {
 
     it('rejects invalid exclusion CIDR', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const result = updateScope(host, { add_exclusions: ['xyz'], reason: 'Bad exclusion' });
@@ -175,7 +178,7 @@ describe('scope-manager', () => {
       const graph = makeGraph();
       addHost(graph, 'host-172-16-1-5', '172.16.1.5');
       addHost(graph, 'host-172-16-1-6', '172.16.1.6');
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const result = updateScope(host, { add_cidrs: ['172.16.1.0/24'], reason: 'Expand' });
@@ -187,7 +190,7 @@ describe('scope-manager', () => {
     it('does not count already-in-scope hosts as affected', () => {
       const graph = makeGraph();
       addHost(graph, 'host-10-10-10-1', '10.10.10.1');
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const result = updateScope(host, { add_cidrs: ['192.168.1.0/24'], reason: 'Unrelated expand' });
@@ -197,7 +200,7 @@ describe('scope-manager', () => {
 
     it('promotes cold store records when they enter scope', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       ctx.coldStore.add({
         id: 'cold-host-1',
         type: 'host',
@@ -219,7 +222,7 @@ describe('scope-manager', () => {
 
     it('runs inference rules on each promoted cold host during scope expansion', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       ctx.coldStore.add({
         id: 'cold-host-a',
         type: 'host',
@@ -249,7 +252,7 @@ describe('scope-manager', () => {
 
     it('does not promote cold records that remain out of scope', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       ctx.coldStore.add({
         id: 'cold-oos',
         type: 'host',
@@ -268,7 +271,7 @@ describe('scope-manager', () => {
 
     it('calls persist, invalidateFrontierCache, and invalidateHealthReport on success', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx) as ScopeManagerHost & {
         _persistCalled: boolean;
         _frontierInvalidated: boolean;
@@ -284,7 +287,7 @@ describe('scope-manager', () => {
 
     it('handles exclusion add and remove', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const r1 = updateScope(host, { add_exclusions: ['10.10.10.5/32'], reason: 'Exclude host' });
@@ -306,7 +309,7 @@ describe('scope-manager', () => {
       addHost(graph, 'host-172-16-1-5', '172.16.1.5', { discovered_by: 'nmap' });
       addHost(graph, 'host-172-16-1-10', '172.16.1.10', { discovered_by: 'nmap' });
       addHost(graph, 'host-192-168-5-1', '192.168.5.1', { discovered_by: 'arp' });
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const suggestions = collectScopeSuggestions(host);
@@ -326,7 +329,7 @@ describe('scope-manager', () => {
     it('returns empty when all hosts are in scope', () => {
       const graph = makeGraph();
       addHost(graph, 'host-10-10-10-1', '10.10.10.1');
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const suggestions = collectScopeSuggestions(host);
@@ -344,7 +347,7 @@ describe('scope-manager', () => {
         discovered_at: now,
         confidence: 1.0,
       } as NodeProperties);
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const suggestions = collectScopeSuggestions(host);
@@ -361,7 +364,7 @@ describe('scope-manager', () => {
         discovered_at: now,
         confidence: 1.0,
       } as NodeProperties);
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const suggestions = collectScopeSuggestions(host);
@@ -372,7 +375,7 @@ describe('scope-manager', () => {
     it('skips IPv6 addresses (not 4-octet)', () => {
       const graph = makeGraph();
       addHost(graph, 'host-v6', 'fe80::1');
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const suggestions = collectScopeSuggestions(host);
@@ -386,7 +389,7 @@ describe('scope-manager', () => {
       const late = '2026-03-15T00:00:00Z';
       addHost(graph, 'host-a', '172.16.1.5', { discovered_at: late });
       addHost(graph, 'host-b', '172.16.1.6', { discovered_at: early });
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const suggestions = collectScopeSuggestions(host);
@@ -403,7 +406,7 @@ describe('scope-manager', () => {
     it('counts nodes entering scope without mutating config', () => {
       const graph = makeGraph();
       addHost(graph, 'host-172-16-1-5', '172.16.1.5');
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const cidrsBefore = [...ctx.config.scope.cidrs];
@@ -418,7 +421,7 @@ describe('scope-manager', () => {
     it('counts COLD-STORE hosts the change would promote (preview == apply)', () => {
       const graph = makeGraph();
       addHost(graph, 'host-live', '10.9.9.5'); // one live host entering
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
       // A cold-store host that also enters scope on this change — updateScope
       // would promote it, so the preview must count it too (was undercounted).
@@ -435,7 +438,7 @@ describe('scope-manager', () => {
       const cfg = makeConfig({
         scope: { cidrs: ['10.10.10.0/28', '192.168.1.0/24'], domains: ['test.local'], exclusions: [] },
       });
-      const ctx = new EngineContext(graph, cfg, './test-state.json');
+      const ctx = new EngineContext(graph, cfg, testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const preview = previewScopeChange(host, { remove_cidrs: ['10.10.10.0/28'] });
@@ -446,7 +449,7 @@ describe('scope-manager', () => {
 
     it('returns before and after scope snapshots', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const preview = previewScopeChange(host, {
@@ -464,7 +467,7 @@ describe('scope-manager', () => {
       const graph = makeGraph();
       addHost(graph, 'host-172-16-1-5', '172.16.1.5');
       addHost(graph, 'host-172-16-1-6', '172.16.1.6');
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const preview = previewScopeChange(host, { add_cidrs: ['172.16.1.0/24'] });
@@ -475,7 +478,7 @@ describe('scope-manager', () => {
     it('does not resolve suggestions for unrelated CIDRs', () => {
       const graph = makeGraph();
       addHost(graph, 'host-172-16-1-5', '172.16.1.5');
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const preview = previewScopeChange(host, { add_cidrs: ['192.168.99.0/24'] });
@@ -487,7 +490,7 @@ describe('scope-manager', () => {
       const graph = makeGraph();
       addHost(graph, 'host-10-10-10-1', '10.10.10.1');
       const cfg = makeConfig({ scope: { cidrs: ['10.10.10.0/28'], domains: [], exclusions: [] } });
-      const ctx = new EngineContext(graph, cfg, './test-state.json');
+      const ctx = new EngineContext(graph, cfg, testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const preview = previewScopeChange(host, { add_exclusions: ['10.10.10.0/29'] });
@@ -499,7 +502,7 @@ describe('scope-manager', () => {
     it('does not mutate the graph or config', () => {
       const graph = makeGraph();
       addHost(graph, 'host-10-10-10-1', '10.10.10.1');
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const nodeCountBefore = graph.order;
@@ -520,7 +523,7 @@ describe('scope-manager', () => {
   describe('IPv6 rejection', () => {
     it('rejects IPv6 CIDRs with specific error message', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const result = updateScope(host, {
@@ -536,7 +539,7 @@ describe('scope-manager', () => {
 
     it('rejects IPv6 exclusions with specific error message', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const result = updateScope(host, {
@@ -550,7 +553,7 @@ describe('scope-manager', () => {
 
     it('distinguishes IPv6 from generic invalid CIDR errors', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const host = makeHost(graph, ctx);
 
       const ipv6Result = updateScope(host, { add_cidrs: ['::1/128'], reason: 'v6' });

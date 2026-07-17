@@ -10,8 +10,13 @@ export default defineConfig({
   },
   test: {
     environment: 'happy-dom',
+    globalSetup: ['./src/test-support/artifact-hygiene-global.ts'],
     include: ['src/dashboard-next/src/**/*.dom.test.tsx'],
-    setupFiles: ['./src/dashboard-next/src/test/setup-dom.ts'],
+    setupFiles: [
+      './src/test-support/setup-hermetic.ts',
+      './src/dashboard-next/src/test/setup-dom.ts',
+    ],
+    sequence: { hooks: 'stack', setupFiles: 'list' },
     testTimeout: 15_000,
   },
 });

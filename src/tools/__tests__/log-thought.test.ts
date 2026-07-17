@@ -5,8 +5,10 @@ import { GraphEngine } from '../../services/graph-engine.js';
 import { registerLogThoughtTool } from '../log-thought.js';
 import type { EngagementConfig } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-log-thought.json';
+const sandbox = createTestSandbox('log-thought');
+const TEST_STATE_FILE = sandbox.path('state-test-log-thought.json');
 
 function makeConfig(): EngagementConfig {
   return {

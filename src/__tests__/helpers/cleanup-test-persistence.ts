@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, rmSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
+import { assertTemporaryTestPath } from '../../test-support/test-sandbox.js';
 
 /**
  * Remove only the persistence artifacts derived from one test state pathname.
@@ -10,7 +11,7 @@ import { basename, dirname, join, resolve } from 'path';
  * after each case.
  */
 export function cleanupTestPersistence(stateFilePath: string): void {
-  const absoluteStatePath = resolve(stateFilePath);
+  const absoluteStatePath = assertTemporaryTestPath(resolve(stateFilePath));
   const directory = dirname(absoluteStatePath);
   const stateName = basename(absoluteStatePath);
   const stem = basename(absoluteStatePath, '.json');

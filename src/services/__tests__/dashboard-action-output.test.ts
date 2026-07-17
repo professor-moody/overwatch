@@ -77,6 +77,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await dashboard.stop().catch(() => {});
+  engine.dispose();
   rmSync(tempDir, { recursive: true, force: true });
 });
 

@@ -2,8 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import type { EngagementConfig } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-community.json';
+const sandbox = createTestSandbox('community-detection');
+const TEST_STATE_FILE = sandbox.path('state-test-community.json');
 const engines = new Set<GraphEngine>();
 
 function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig {

@@ -3,6 +3,9 @@ import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties, FrontierItem } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('chain-scorer');
 import { ChainScorer } from '../chain-scorer.js';
 
 function makeGraph(): OverwatchGraph {
@@ -32,7 +35,7 @@ function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string, 
 }
 
 function buildScorer(graph: OverwatchGraph, config?: any, hopsToObjective?: (id: string) => number | null) {
-  const ctx = new EngineContext(graph, config || makeConfig(), './test-state.json');
+  const ctx = new EngineContext(graph, config || makeConfig(), testSandbox.path('test-state.json'));
   const hopsFn = hopsToObjective || (() => null);
   return new ChainScorer(ctx, hopsFn);
 }
