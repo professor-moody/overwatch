@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createHash } from 'crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { spawn } from 'child_process';
 import { tmpdir } from 'os';
@@ -95,6 +96,36 @@ describe('managed runtime supervisor handshake', () => {
     expect(readFileSync(marker, 'utf8')).toBe('done');
     expect(stderr).toBe('boom');
     expect(result).toMatchObject({ exitCode: 7, signal: null });
+  });
+
+  it('drains forwarded output before a successful supervisor exit', async () => {
+    const byteLength = 3 * 1024 * 1024;
+    const expected = Buffer.alloc(byteLength, 0x41);
+    const handle = spawnManagedRuntimeSupervisor(
+      {
+        binary: process.execPath,
+        args: ['-e', `process.stdout.write(Buffer.alloc(${byteLength}, 0x41))`],
+      },
+      { onSupervisorReady: () => undefined },
+      { acknowledgementTimeoutMs: 1_000 },
+    );
+    const stdout = handle.child.stdout!;
+    const chunks: Buffer[] = [];
+    stdout.on('data', chunk => { chunks.push(Buffer.from(chunk)); });
+    stdout.pause();
+
+    await handle.ready;
+    await handle.launched;
+    await new Promise(resolve => setTimeout(resolve, 100));
+    stdout.resume();
+    const result = await handle.targetExit;
+    const actual = Buffer.concat(chunks);
+
+    expect(result).toMatchObject({ exitCode: 0, signal: null });
+    expect(actual).toHaveLength(byteLength);
+    expect(createHash('sha256').update(actual).digest('hex')).toBe(
+      createHash('sha256').update(expected).digest('hex'),
+    );
   });
 
   it('reports a target spawn error promptly instead of waiting for an action timeout', async () => {
