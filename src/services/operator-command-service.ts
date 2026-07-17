@@ -26,6 +26,7 @@ import type { PersistedApplicationCommandV1 } from './persisted-state.js';
 import type { ProposedPlan } from './proposed-plan-store.js';
 import { OperatorOpsSchema } from './operator-op-schema.js';
 import {
+  getArchetype,
   isArchetypeId,
   recommendExploreArchetype,
 } from './agent-archetypes.js';
@@ -301,6 +302,7 @@ export class OperatorCommandService {
           });
         }
         const label = `planner-${taskId.slice(0, 8)}`;
+        const plannerArchetype = getArchetype('planner');
         const registration = this.engine.registerAgent({
           id: taskId,
           task_id: taskId,
@@ -311,7 +313,8 @@ export class OperatorCommandService {
           subgraph_node_ids: [],
           backend: 'headless_mcp',
           role: 'planner',
-          skill: 'operator-planner',
+          archetype: plannerArchetype.id,
+          skill: plannerArchetype.defaultSkill,
           objective: buildPlannerObjective(parsed.command, state),
           application_command_id: identity.command_id,
           ...(configuredModel && modelAllowed

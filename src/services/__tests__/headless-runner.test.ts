@@ -6,7 +6,11 @@ import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import { ProcessTracker } from '../process-tracker.js';
 import { TaskExecutionService } from '../task-execution-service.js';
-import { HeadlessMcpRunner, allowedToolsFor } from '../headless-mcp-runner.js';
+import {
+  HeadlessMcpRunner,
+  allowedToolsFor,
+  buildHeadlessClaudeEnv,
+} from '../headless-mcp-runner.js';
 import { HeadlessProcessRegistry } from '../headless-process-registry.js';
 import { ApplicationCommandService } from '../application-command-service.js';
 import { z } from 'zod';
@@ -113,6 +117,64 @@ describe('Headless runner mechanics (injected spawn)', () => {
     for (const created of engines) created.dispose();
     engines.clear();
     rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('starts dashboard workers as sibling Claude clients without parent session control state', () => {
+    const env = buildHeadlessClaudeEnv('task-isolated', {
+      PATH: '/usr/bin',
+      HOME: '/home/operator',
+      ANTHROPIC_API_KEY: 'anthropic-test',
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      CLAUDE_CODE_USE_VERTEX: '1',
+      CLAUDE_CODE_USE_FOUNDRY: '1',
+      GOOGLE_APPLICATION_CREDENTIALS: '/home/operator/gcp.json',
+      CLAUDECODE: '1',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDE_CODE_CHILD_SESSION: 'child-1',
+      CLAUDE_CODE_SESSION_ID: 'session-1',
+      CLAUDE_CODE_PARENT_SESSION_ID: 'parent-1',
+      CLAUDE_CODE_RUNNER_FD: '9',
+      CLAUDE_CODE_BRIDGE_SOCKET: '/tmp/bridge.sock',
+      CLAUDE_CODE_RESUME_FROM_SESSION: 'prior-session',
+      CLAUDE_CODE_RESUME_INTERRUPTED_TURN: '1',
+      CLAUDE_CODE_RESUME_PROMPT: 'resume this',
+      CLAUDE_CODE_WORKER_EPOCH: '12',
+      CLAUDE_CODE_AGENT: 'parent-agent',
+      CLAUDE_CODE_REMOTE: '1',
+      CLAUDE_RUNNER_ACTIVITY_FD: '11',
+      OVERWATCH_TASK_ID: 'parent-task',
+    });
+
+    expect(env).toMatchObject({
+      PATH: '/usr/bin',
+      HOME: '/home/operator',
+      ANTHROPIC_API_KEY: 'anthropic-test',
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      CLAUDE_CODE_USE_VERTEX: '1',
+      CLAUDE_CODE_USE_FOUNDRY: '1',
+      GOOGLE_APPLICATION_CREDENTIALS: '/home/operator/gcp.json',
+      OVERWATCH_TASK_ID: 'task-isolated',
+    });
+    for (const denied of [
+      'CLAUDECODE',
+      'CLAUDE_CODE_ENTRYPOINT',
+      'CLAUDE_CODE_CHILD_SESSION',
+      'CLAUDE_CODE_SESSION_ID',
+      'CLAUDE_CODE_PARENT_SESSION_ID',
+      'CLAUDE_CODE_RUNNER_FD',
+      'CLAUDE_CODE_BRIDGE_SOCKET',
+      'CLAUDE_CODE_RESUME_FROM_SESSION',
+      'CLAUDE_CODE_RESUME_INTERRUPTED_TURN',
+      'CLAUDE_CODE_RESUME_PROMPT',
+      'CLAUDE_CODE_WORKER_EPOCH',
+      'CLAUDE_CODE_AGENT',
+      'CLAUDE_CODE_REMOTE',
+      'CLAUDE_RUNNER_ACTIVITY_FD',
+    ]) {
+      expect(env).not.toHaveProperty(denied);
+    }
   });
 
   it('does NOT launch headless tasks until an HTTP endpoint is set', async () => {
@@ -1229,9 +1291,22 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(allowed).not.toContain('run_tool');
     expect(allowed).not.toContain('WebSearch');
     expect(allowed.split(/\s+/)).not.toContain('mcp__overwatch');
+    // Dashboard agents must not inherit the operator terminal's project hooks
+    // or merge its .mcp.json. Both can redirect a planner away from the daemon
+    // and its owning durable command.
+    expect(argv).toContain('--strict-mcp-config');
+    expect(argv.slice(argv.indexOf('--setting-sources'), argv.indexOf('--setting-sources') + 2))
+      .toEqual(['--setting-sources', 'user']);
+    expect(argv).toContain('--no-session-persistence');
     // the operator command is embedded in the -p bootstrap prompt
     const prompt = argv[argv.indexOf('-p') + 1];
     expect(prompt).toContain('pause everything');
+    expect(prompt).toContain('available for this planner task');
+    expect(prompt).toContain('propose_plan');
+    expect(prompt).not.toContain('report_finding');
+    expect(prompt).not.toContain('validate_action');
+    expect(prompt).not.toContain('run_tool');
+    expect(prompt).not.toContain('run_bash');
   });
 
   it('isHeadlessAvailable reflects whether an endpoint is set', () => {

@@ -7,7 +7,7 @@ import type { GraphEngine } from './graph-engine.js';
 import type { EngagementConfig, EngagementState, AgentTask, LabProfile } from '../types.js';
 import { inferProfile } from '../types.js';
 import { timeToExpiry } from './credential-utils.js';
-import { doneTestFor, isArchetypeId } from './agent-archetypes.js';
+import { doneTestFor, getArchetype, isArchetypeId } from './agent-archetypes.js';
 import type { TechniqueStats } from './knowledge-base.js';
 
 interface PromptContext {
@@ -336,7 +336,19 @@ function generateSubAgentPrompt(
     || resolution.status === 'unique_legacy_label'
     ? resolution.task
     : undefined;
-  const scopedTools = tools.filter(t => SUBAGENT_TOOL_NAMES.has(t.name));
+  const archetype = getArchetype(agentContext?.archetype ?? agentContext?.role);
+  const scopedToolNames = agentContext && !archetype.tools.full
+    ? new Set(archetype.tools.overwatch)
+    : SUBAGENT_TOOL_NAMES;
+  const scopedTools = tools.filter(t => scopedToolNames.has(t.name));
+
+  // Operator-command planners have a deliberately tiny read/propose surface.
+  // Giving them the generic offensive loop advertises unavailable execution
+  // tools, wastes turns on denied calls, and can end the process before a plan
+  // reaches its owning durable command.
+  if (agentContext && archetype.id === 'planner') {
+    return generatePlannerSubAgentPrompt(state, scopedTools, options, agentContext);
+  }
 
   // Step (b): the 'lean' context-first restructure, piloted via the behavior-eval
   // harness. 'control' is the shipped linear assembly below.
@@ -358,6 +370,49 @@ function generateSubAgentPrompt(
     sections.push(generateAgentContextSection(agentContext, state, engine));
   }
 
+  return sections.join('\n\n');
+}
+
+function generatePlannerSubAgentPrompt(
+  state: EngagementState,
+  scopedTools: ToolEntry[],
+  options: GeneratePromptOptions,
+  agent: AgentTask,
+): string {
+  const taskId = agent.task_id ?? agent.id;
+  const agentLabel = agent.agent_label ?? agent.agent_id;
+  const sections = [
+    `# Overwatch operator planner
+
+You are the read-only planning worker for one operator command. You propose a
+structured plan; the human confirms it; the dashboard executes it. You never
+execute target commands or mutate engagement state directly.
+
+- **Engagement:** ${state.config.name}
+- **Task ID:** ${taskId}
+- **Agent label:** ${agentLabel}
+- **Operator command and planning context:** ${agent.objective ?? '(load with get_agent_context)'}`,
+  ];
+  if (options.include_tools !== false) {
+    sections.push(generateToolTableSection(scopedTools));
+  }
+  sections.push(`## Planner loop
+
+1. **ORIENT** — call \`get_agent_context({ task_id: "${taskId}" })\` first. Use
+   \`query_graph\` only when the command needs exact live node IDs or graph facts.
+2. **PROPOSE** — translate the operator command into the allowed operation
+   vocabulary from your objective and call \`propose_plan\` with the exact
+   \`task_id: "${taskId}"\`, \`agent_id: "${agentLabel}"\`, original \`command\`,
+   a short summary/rationale, and at least one valid op. If the tool rejects an
+   ID or op, correct it from live context and retry; do not exit after a rejected
+   proposal.
+3. **WRAP** — only after \`propose_plan\` returns \`ok: true\`, call
+   \`submit_agent_transcript\`, then \`update_agent\` for task \`${taskId}\`.
+   If the command genuinely cannot be represented by any allowed op, submit a
+   transcript beginning \`UNEXPRESSIBLE:\` with the exact reason, then close.
+
+Call \`agent_heartbeat({ task_id: "${taskId}" })\` if planning runs longer than
+about a minute, and honor any directive or operator answer it returns.`);
   return sections.join('\n\n');
 }
 

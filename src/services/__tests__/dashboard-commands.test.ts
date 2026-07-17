@@ -287,6 +287,8 @@ describe('/api/commands — headless planner fallback', () => {
     expect(r.planner_task_id).toBeTruthy();
     const task = engine.getTask(r.planner_task_id);
     expect(task?.role).toBe('planner');
+    expect(task?.archetype).toBe('planner');
+    expect(task?.skill).toBe('operator-planner');
     expect(task?.backend).toBe('headless_mcp');
     expect(task?.objective).toContain('go take care of the noisy box somehow');
     expect(task?.application_command_id).toBe(r.command_id);

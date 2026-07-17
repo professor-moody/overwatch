@@ -343,6 +343,52 @@ describe('prompt-generator', () => {
       expect(prompt).toContain('Use `agent_id` only as a legacy fallback');
     });
 
+    it('gives an operator planner only its real read/propose workflow and exact task identity', () => {
+      const engine = createTestEngine();
+      engine.registerAgent({
+        id: 'planner-task-1',
+        task_id: 'planner-task-1',
+        agent_id: 'planner-one',
+        agent_label: 'planner-one',
+        assigned_at: new Date().toISOString(),
+        status: 'running',
+        role: 'planner',
+        archetype: 'planner',
+        skill: 'operator-planner',
+        backend: 'headless_mcp',
+        subgraph_node_ids: [],
+        objective: 'OPERATOR COMMAND (free-form): "inspect the odd host"',
+      });
+      const plannerTools: ToolEntry[] = [
+        ...ALL_REGISTERED_TOOLS,
+        { name: 'propose_plan', description: 'Submit a confirmable operator plan' },
+        { name: 'acknowledge_agent_directive', description: 'Acknowledge steering' },
+        { name: 'ask_operator', description: 'Ask the operator' },
+      ];
+
+      const prompt = generateSystemPrompt(engine, plannerTools, {
+        role: 'sub_agent',
+        agent_id: 'planner-task-1',
+      });
+      const tableTools = new Set(
+        (prompt.match(/\| `(\w+)` \|/g) ?? [])
+          .map(row => row.match(/`(\w+)`/)![1]),
+      );
+
+      expect(prompt).toContain('# Overwatch operator planner');
+      expect(prompt).toContain('Task ID:** planner-task-1');
+      expect(prompt).toContain('inspect the odd host');
+      expect(prompt).toContain('only after `propose_plan` returns `ok: true`');
+      expect(tableTools).toContain('propose_plan');
+      expect(tableTools).toContain('query_graph');
+      expect(tableTools).not.toContain('validate_action');
+      expect(tableTools).not.toContain('run_tool');
+      expect(tableTools).not.toContain('run_bash');
+      expect(tableTools).not.toContain('report_finding');
+      expect(prompt).not.toContain('## Loop');
+      expect(prompt).not.toContain('## Workflow');
+    });
+
     it('defaults to the lean variant; control remains reachable via the option', () => {
       const engine = createTestEngine();
       // Isolate from an ambient OVERWATCH_PROMPT_VARIANT (env beats the default in
