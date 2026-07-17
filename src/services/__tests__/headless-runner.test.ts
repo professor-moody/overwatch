@@ -14,6 +14,7 @@ import {
 } from '../headless-mcp-runner.js';
 import { HeadlessProcessRegistry } from '../headless-process-registry.js';
 import { ApplicationCommandService } from '../application-command-service.js';
+import { AgentLifecycleCommandService } from '../agent-lifecycle-command-service.js';
 import { z } from 'zod';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 
@@ -1426,6 +1427,48 @@ describe('Headless runner mechanics (injected spawn)', () => {
     });
     expect(engine.getApplicationCommandById('no-plan-command')?.error?.message)
       .toContain(join(logDir, 'h-no-plan.ndjson'));
+  });
+
+  it('does not overwrite a structured unexpressible planner conclusion on exit', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'change the operator terminal theme' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: {
+        command_id: 'unexpressible-command',
+        idempotency_key: 'unexpressible-command',
+      },
+      reserve: () => ({
+        status: 'accepted',
+        result: { phase: 'planning_queued', planner_task_id: 'h-unexpressible' },
+      }),
+    });
+    engine.registerAgent(headlessTask({
+      id: 'h-unexpressible',
+      role: 'planner',
+      application_command_id: 'unexpressible-command',
+    }));
+    await settle();
+
+    new AgentLifecycleCommandService(engine).submitTranscript({
+      task_reference: 'h-unexpressible',
+      summary: 'No allowed operator operation changes local terminal appearance.',
+      planner_outcome: 'unexpressible',
+    });
+    spawned[0].simulateExit(0);
+    spawned[0].simulateClose(0);
+    await settle();
+
+    expect(engine.getApplicationCommandById('unexpressible-command')).toMatchObject({
+      status: 'failed',
+      error: {
+        code: 'PLANNER_UNEXPRESSIBLE',
+        message: expect.stringContaining('terminal appearance'),
+      },
+    });
   });
 
   it('CVE auto-dispatch budget counts non-CVE headless agents (cap honored, no over-registration)', async () => {

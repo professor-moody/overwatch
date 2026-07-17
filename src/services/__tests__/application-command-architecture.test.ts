@@ -8,6 +8,15 @@ function source(path: string): string {
   return readFileSync(resolve(root, path), 'utf8');
 }
 
+const agentToolModules = [
+  'tools/agents.ts',
+  'tools/agent-dispatch-tools.ts',
+  'tools/agent-context-tools.ts',
+  'tools/agent-transcript-tools.ts',
+  'tools/agent-lifecycle-tools.ts',
+  'tools/agent-steering-tools.ts',
+];
+
 describe('application-command architecture', () => {
   it('keeps dashboard domain mutations behind transport-neutral services', () => {
     const dashboard = source('services/dashboard-server.ts');
@@ -40,7 +49,7 @@ describe('application-command architecture', () => {
 
   it('keeps MCP mutation adapters off direct domain-engine entry points', () => {
     const adapters = [
-      'tools/agents.ts',
+      ...agentToolModules,
       'tools/engagement.ts',
       'tools/scope.ts',
       'tools/recovery.ts',
@@ -59,6 +68,30 @@ describe('application-command architecture', () => {
     ]) {
       expect(adapters).not.toContain(call);
     }
+  });
+
+  it('keeps the agent facade ordered and focused adapters independently reviewable', () => {
+    const facade = source('tools/agents.ts');
+    const registrations = [
+      'registerSingleAgentTool',
+      'registerDispatchAgentsTool',
+      'registerAgentContextTool',
+      'registerAgentTranscriptTool',
+      'registerUpdateAgentTool',
+      'registerDispatchSubnetAgentsTool',
+      'registerDispatchCampaignAgentsTool',
+      'registerAgentHeartbeatTool',
+      'registerAskOperatorTool',
+      'registerManageAgentDirectiveTool',
+      'registerAcknowledgeAgentDirectiveTool',
+    ];
+    let previous = -1;
+    for (const registration of registrations) {
+      const index = facade.indexOf(`${registration}(server`);
+      expect(index).toBeGreaterThan(previous);
+      previous = index;
+    }
+    expect(facade.split('\n').length).toBeLessThan(100);
   });
 
   it('routes every audited external-effect surface through a durable command service', () => {
@@ -90,7 +123,7 @@ describe('application-command architecture', () => {
     const adapters = [
       'tools/logging.ts',
       'tools/postgres.ts',
-      'tools/agents.ts',
+      ...agentToolModules,
       'tools/engagement.ts',
       'tools/scope.ts',
       'tools/recovery.ts',

@@ -408,8 +408,10 @@ execute target commands or mutate engagement state directly.
    proposal.
 3. **WRAP** — only after \`propose_plan\` returns \`ok: true\`, call
    \`submit_agent_transcript\`, then \`update_agent\` for task \`${taskId}\`.
-   If the command genuinely cannot be represented by any allowed op, submit a
-   transcript beginning \`UNEXPRESSIBLE:\` with the exact reason, then close.
+   If the command genuinely cannot be represented by any allowed op, call
+   \`submit_agent_transcript\` with \`planner_outcome: "unexpressible"\` and the
+   exact reason in \`summary\`, then close. Do not use that outcome merely
+   because an ID or proposed operation was rejected; correct it and retry.
 
 Call \`agent_heartbeat({ task_id: "${taskId}" })\` if planning runs longer than
 about a minute, and honor any directive or operator answer it returns.`);
