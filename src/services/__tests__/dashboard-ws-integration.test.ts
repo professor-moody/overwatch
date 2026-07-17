@@ -469,9 +469,9 @@ describe('WS action_resolved push + durable record on dashboard approve/deny', (
 });
 
 describe('request-boundary hardening (CSWSH + crash guard)', () => {
-  function tryOpenWs(origin?: string): Promise<'open' | 'rejected'> {
+  function tryOpenWs(origin?: string, path = '/ws'): Promise<'open' | 'rejected'> {
     return new Promise((resolve) => {
-      const ws = new WebSocket(`${wsBase}/ws`, origin ? { origin } : undefined);
+      const ws = new WebSocket(`${wsBase}${path}`, origin ? { origin } : undefined);
       ws.on('open', () => { ws.close(); resolve('open'); });
       ws.on('error', () => resolve('rejected'));
       ws.on('unexpected-response', () => { try { ws.close(); } catch { /* */ } resolve('rejected'); });
@@ -489,6 +489,10 @@ describe('request-boundary hardening (CSWSH + crash guard)', () => {
 
   it('allows a no-Origin (non-browser) WebSocket handshake', async () => {
     expect(await tryOpenWs(undefined)).toBe('open');
+  });
+
+  it('rejects WebSocket paths absent from the shared registry', async () => {
+    expect(await tryOpenWs(undefined, '/ws/typo')).toBe('rejected');
   });
 
   it('a malformed %-escape path returns 400 and does NOT crash the server', async () => {

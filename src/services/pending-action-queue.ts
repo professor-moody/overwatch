@@ -84,8 +84,11 @@ export class PendingActionQueue {
     this.ctx = ctx;
   }
 
-  onEvent(cb: ActionEventCallback): void {
+  onEvent(cb: ActionEventCallback): () => void {
     this.eventCallback = cb;
+    return () => {
+      if (this.eventCallback === cb) this.eventCallback = null;
+    };
   }
 
   // ---- Approval mode logic ----

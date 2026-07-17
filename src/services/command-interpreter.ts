@@ -199,7 +199,11 @@ export function interpretCommand(text: string, state: InterpreterState): Interpr
 export function buildPlannerObjective(command: string, state: InterpreterState): string {
   const running = state.tasks.filter(t => t.status === 'running');
   const agentLines = running.length
-    ? running.map(t => `  - task_id="${t.id}" agent="${t.agent_id}"${t.skill ? ` skill="${t.skill}"` : ''}`).join('\n')
+    ? running.map(t => {
+        const taskId = t.task_id ?? t.id;
+        const agentLabel = t.agent_label ?? t.agent_id ?? taskId;
+        return `  - task_id="${taskId}" agent="${agentLabel}"${t.skill ? ` skill="${t.skill}"` : ''}`;
+      }).join('\n')
     : '  (none running)';
   const actionLines = state.pendingActionIds.length
     ? state.pendingActionIds.map(id => `  - action_id="${id}"`).join('\n')

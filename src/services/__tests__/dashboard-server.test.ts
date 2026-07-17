@@ -9,7 +9,7 @@ import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
 import { InProcessTapeController } from '../in-process-tape.js';
 import type { EngagementConfig } from '../../types.js';
-import { AgentDtoSchema } from '../../contracts/dashboard-v1.js';
+import { AgentDtoSchema, type SessionDto } from '../../contracts/dashboard-v1.js';
 
 let testStateDir: string;
 let TEST_STATE_FILE: string;
@@ -1375,6 +1375,19 @@ describe('DashboardServer', () => {
     expect(payload.report_ready).toBe(true);
   });
 
+  const completeSessionMeta = (overrides: Partial<SessionDto> = {}): SessionDto => ({
+    id: 'sess-1',
+    state: 'connected',
+    title: 'Shell',
+    kind: 'pty',
+    transport: 'pty',
+    started_at: '2026-07-16T00:00:00.000Z',
+    last_activity_at: '2026-07-16T00:00:00.000Z',
+    capabilities: {},
+    buffer_end_pos: 0,
+    ...overrides,
+  });
+
   it('handleSessionConnection closes with 4503 when no session manager', () => {
     const mockWs = {
       close: vi.fn(),
@@ -1405,7 +1418,7 @@ describe('DashboardServer', () => {
 
   it('handleSessionConnection closes with 4409 when session not connected', () => {
     (dashboard as any).sessionManager = {
-      getSession: () => ({ id: 'sess-1', state: 'closed', title: 'Old' }),
+      getSession: () => completeSessionMeta({ state: 'closed', title: 'Old' }),
     };
 
     const mockWs = {
@@ -1421,7 +1434,7 @@ describe('DashboardServer', () => {
 
   it('handleSessionConnection sends initial output and starts polling', () => {
     vi.useFakeTimers();
-    const mockMeta = { id: 'sess-1', state: 'connected', title: 'Shell', kind: 'pty' };
+    const mockMeta = completeSessionMeta();
     (dashboard as any).sessionManager = {
       getSession: () => mockMeta,
       read: vi.fn()
@@ -1469,14 +1482,12 @@ describe('DashboardServer', () => {
 
   it('closes a terminal WebSocket when its connection generation ends', () => {
     vi.useFakeTimers();
-    let meta = {
-      id: 'sess-1',
-      state: 'connected',
-      title: 'Shell',
+    let meta = completeSessionMeta({
       kind: 'socket',
+      transport: 'tcp',
       connection_id: 'sess-1:g1',
       connection_generation: 1,
-    };
+    });
     (dashboard as any).sessionManager = {
       getSession: () => meta,
       read: vi.fn().mockReturnValue({
@@ -1519,7 +1530,7 @@ describe('DashboardServer', () => {
 
   it('handleSessionConnection forwards input and resize messages', () => {
     vi.useFakeTimers();
-    const mockMeta = { id: 'sess-1', state: 'connected', title: 'Shell', kind: 'pty' };
+    const mockMeta = completeSessionMeta();
     const writeSpy = vi.fn();
     const resizeSpy = vi.fn();
     (dashboard as any).sessionManager = {
@@ -1561,7 +1572,7 @@ describe('DashboardServer', () => {
 
   it('blocks an existing session socket when persistence becomes read-only', () => {
     vi.useFakeTimers();
-    const mockMeta = { id: 'sess-1', state: 'connected', title: 'Shell', kind: 'pty' };
+    const mockMeta = completeSessionMeta();
     const writeSpy = vi.fn();
     (dashboard as any).sessionManager = {
       getSession: () => mockMeta,
@@ -1600,7 +1611,7 @@ describe('DashboardServer', () => {
 
   it('session poller stops and notifies on read error', () => {
     vi.useFakeTimers();
-    const mockMeta = { id: 'sess-1', state: 'connected', title: 'Shell', kind: 'pty' };
+    const mockMeta = completeSessionMeta();
     let readCallCount = 0;
     (dashboard as any).sessionManager = {
       getSession: () => mockMeta,
@@ -2433,10 +2444,20 @@ describe('DashboardServer', () => {
       const session = {
         id: sessionId,
         kind: 'pty',
+        transport: 'pty',
         state: 'connected',
         title: 'Remote shell',
         connection_id: `${sessionId}:g2`,
         connection_generation: 2,
+        started_at: '2026-07-16T00:00:00.000Z',
+        last_activity_at: '2026-07-16T00:00:00.000Z',
+        capabilities: {
+          has_stdin: true,
+          has_stdout: true,
+          supports_resize: true,
+          supports_signals: true,
+        },
+        buffer_end_pos: 0,
       };
       (nlDashboard as any).sessionManager = {
         list: () => [session],

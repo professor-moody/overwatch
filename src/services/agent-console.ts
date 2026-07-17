@@ -54,6 +54,45 @@ export interface AgentConsoleQuery {
   allowLegacyLabel?: boolean;
 }
 
+export interface OperatorConsoleQuery {
+  limit?: number;
+  after?: string;
+}
+
+/** Project the fleet/operator stream through the same canonical mapping used
+ * by per-agent HTTP and WebSocket deltas. Exact task relationships win; a
+ * legacy label is accepted only when it identifies one task. */
+export function buildOperatorConsoleEvents(
+  entries: ActivityLogEntry[],
+  tasks: AgentTask[],
+  query: OperatorConsoleQuery = {},
+): AgentConsoleEvent[] {
+  const taskById = new Map(tasks.map(task => [taskIdOf(task), task]));
+  const tasksByLabel = new Map<string, AgentTask[]>();
+  for (const task of tasks) {
+    const label = agentLabelOf(task);
+    tasksByLabel.set(label, [...(tasksByLabel.get(label) ?? []), task]);
+  }
+
+  let projected = entriesAfterCursor(entries, query.after)
+    .map(entry => {
+      const detailTaskId = stringDetail(entry.details?.task_id) || stringDetail(entry.details?.linked_agent_task_id);
+      const exactTaskId = entry.linked_agent_task_id
+        || detailTaskId
+        || (entry.agent_id && taskById.has(entry.agent_id) ? entry.agent_id : undefined);
+      const legacyMatches = !exactTaskId && entry.agent_id ? tasksByLabel.get(entry.agent_id) : undefined;
+      const task = exactTaskId
+        ? taskById.get(exactTaskId)
+        : legacyMatches?.length === 1 ? legacyMatches[0] : undefined;
+      return activityToAgentConsoleEvent(entry, task);
+    })
+    .filter((event): event is AgentConsoleEvent => event !== null)
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+
+  if (query.limit && query.limit > 0) projected = projected.slice(-query.limit);
+  return projected;
+}
+
 export function activityMatchesAgent(
   entry: ActivityLogEntry,
   task: AgentTask,
@@ -80,14 +119,7 @@ export function buildAgentConsoleEvents(
     .filter(entry => activityMatchesAgent(entry, task, query.allowLegacyLabel ?? true))
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
-  const after = query.after;
-  if (after) {
-    matched = matched.filter(entry =>
-      entry.timestamp > after
-      || entry.event_id === after
-      || entry.action_id === after
-    );
-  }
+  matched = entriesAfterCursor(matched, query.after);
 
   if (query.limit && query.limit > 0) {
     matched = matched.slice(-query.limit);
@@ -96,6 +128,23 @@ export function buildAgentConsoleEvents(
   return matched
     .map(entry => activityToAgentConsoleEvent(entry, task))
     .filter((event): event is AgentConsoleEvent => event !== null);
+}
+
+/**
+ * `after` accepts either the stable id/action id of a returned event or a
+ * timestamp. IDs are positional cursors: exclude the matched event and return
+ * everything after it. Timestamp cursors retain the compatibility comparison.
+ */
+function entriesAfterCursor(
+  entries: ActivityLogEntry[],
+  after?: string,
+): ActivityLogEntry[] {
+  if (!after) return entries;
+  const cursorIndex = entries.findIndex(entry =>
+    entry.event_id === after || entry.action_id === after
+  );
+  if (cursorIndex >= 0) return entries.slice(cursorIndex + 1);
+  return entries.filter(entry => entry.timestamp > after);
 }
 
 export function activityToAgentConsoleEvent(entry: ActivityLogEntry, task?: AgentTask): AgentConsoleEvent | null {
@@ -124,13 +173,13 @@ export function activityToAgentConsoleEvent(entry: ActivityLogEntry, task?: Agen
     timestamp: entry.timestamp,
     agent_id: agentId,
     source_kind: sourceKind,
-    source_label: sourceLabelFor(entry, sourceKind, agentId),
+    source_label: sourceLabelFor(entry, sourceKind, agentId, task),
     operator_name: entry.operator_name,
     operator_model: entry.operator_model,
     kind,
     severity,
     title,
-    summary: entry.description,
+    summary: projectConsoleSummary(entry, task),
     status,
     links: hasLinks(links) ? links : undefined,
     raw: {
@@ -143,6 +192,34 @@ export function activityToAgentConsoleEvent(entry: ActivityLogEntry, task?: Agen
       details: entry.details,
     },
   };
+}
+
+/**
+ * Keep the tamper-evident activity row untouched, but repair the presentation of
+ * legacy agent-registration rows that interpolated an absent frontier id. Those
+ * rows are durable and otherwise keep showing `for undefined` after the runtime
+ * bug is fixed.
+ */
+function projectConsoleSummary(entry: ActivityLogEntry, task?: AgentTask): string {
+  if (entry.event_type !== 'agent_registered') return entry.description;
+  const details = entry.details || {};
+  const label = task
+    ? agentLabelOf(task)
+    : stringDetail(details.agent_label)
+      || stringDetail(details.agent_id)
+      || entry.agent_id
+      || 'Agent';
+  const frontierId = entry.frontier_item_id
+    || stringDetail(details.frontier_item_id);
+  if (frontierId) return `Agent dispatched: ${label} for frontier ${frontierId}`;
+  const role = task?.role || stringDetail(details.role);
+  if (role === 'planner') return `Agent dispatched: ${label} as operator planner`;
+  const nodeIds = task?.subgraph_node_ids
+    || (Array.isArray(details.subgraph_node_ids)
+      ? details.subgraph_node_ids.filter((value): value is string => typeof value === 'string')
+      : []);
+  if (nodeIds.length > 0) return `Agent dispatched: ${label} at ${nodeIds.length} node(s)`;
+  return `Agent dispatched: ${label}`;
 }
 
 /**
@@ -161,8 +238,8 @@ function inferSourceKind(entry: ActivityLogEntry): AgentConsoleSourceKind {
   return 'primary';
 }
 
-function sourceLabelFor(entry: ActivityLogEntry, sourceKind: AgentConsoleSourceKind, agentId: string): string {
-  if (sourceKind === 'subagent') return agentId;
+function sourceLabelFor(entry: ActivityLogEntry, sourceKind: AgentConsoleSourceKind, agentId: string, task?: AgentTask): string {
+  if (sourceKind === 'subagent') return task ? agentLabelOf(task) : agentId;
   if (sourceKind === 'runner') return 'Scripted runner';
   if (sourceKind === 'dashboard') return 'Dashboard';
   if (sourceKind === 'system') return 'System';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activityMatchesAgent, buildAgentConsoleEvents, activityToAgentConsoleEvent, OPERATOR_CONSOLE_SOURCE } from '../agent-console.js';
+import { activityMatchesAgent, buildAgentConsoleEvents, buildOperatorConsoleEvents, activityToAgentConsoleEvent, OPERATOR_CONSOLE_SOURCE } from '../agent-console.js';
 import type { ActivityLogEntry } from '../engine-context.js';
 import type { AgentTask } from '../../types.js';
 
@@ -75,6 +75,19 @@ describe('agent console helpers', () => {
 
     expect(events.map(event => event.id)).toEqual(['new']);
   });
+
+  it('treats event ids as exclusive positional cursors', () => {
+    const entries = [
+      entry({ event_id: 'old', timestamp: '2026-06-12T10:01:00Z' }),
+      entry({ event_id: 'middle', timestamp: '2026-06-12T10:02:00Z' }),
+      entry({ event_id: 'new', timestamp: '2026-06-12T10:03:00Z' }),
+    ];
+
+    expect(buildAgentConsoleEvents(entries, task, { after: 'middle' })
+      .map(event => event.id)).toEqual(['new']);
+    expect(buildOperatorConsoleEvents(entries, [task], { after: 'middle' })
+      .map(event => event.id)).toEqual(['new']);
+  });
 });
 
 describe('activityToAgentConsoleEvent — WS-path attribution (3A.3)', () => {
@@ -120,5 +133,30 @@ describe('activityToAgentConsoleEvent — WS-path attribution (3A.3)', () => {
 
   it('drops heartbeats', () => {
     expect(activityToAgentConsoleEvent(entry({ event_type: 'heartbeat', agent_id: undefined }))).toBeNull();
+  });
+
+  it('repairs legacy planner registration text without rewriting activity history', () => {
+    const planner: AgentTask = {
+      id: 'planner-task',
+      task_id: 'planner-task',
+      agent_id: 'planner-1234',
+      agent_label: 'planner-1234',
+      assigned_at: '2026-06-12T10:00:00Z',
+      status: 'running',
+      role: 'planner',
+      subgraph_node_ids: [],
+    };
+    const [event] = buildOperatorConsoleEvents([
+      entry({
+        event_id: 'legacy-planner-dispatch',
+        event_type: 'agent_registered',
+        description: 'Agent dispatched: planner-1234 for undefined',
+        agent_id: 'planner-1234',
+        linked_agent_task_id: 'planner-task',
+        details: { task_id: 'planner-task', role: 'planner' },
+      }),
+    ], [planner]);
+
+    expect(event.summary).toBe('Agent dispatched: planner-1234 as operator planner');
   });
 });

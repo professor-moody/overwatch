@@ -317,6 +317,12 @@ describe('GET /api/history', () => {
     expect(body.order).toBe('desc');
     expect(Array.isArray(body.entries)).toBe(true);
   });
+
+  it('retains the compatibility order=asc query through the strict registry', async () => {
+    const { status, body } = await getJson<{ entries: unknown[]; order: string }>('/api/history?limit=10&order=asc');
+    expect(status).toBe(200);
+    expect(body.order).toBe('asc');
+  });
 });
 
 // =============================================
@@ -1144,6 +1150,25 @@ describe('GET /api/findings', () => {
   });
 });
 
+describe('registered compatibility 404 envelopes', () => {
+  it('preserves the action-explanation not-found envelope', async () => {
+    const response = await fetch(`${baseUrl}/api/actions/missing-action/explain`);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({
+      action_id: 'missing-action',
+      found: false,
+    });
+  });
+
+  it('preserves the report-delete not-found envelope', async () => {
+    const response = await fetch(`${baseUrl}/api/reports/missing-report`, {
+      method: 'DELETE',
+    });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ deleted: false });
+  });
+});
+
 describe('Reports lifecycle: render → list → get → delete', () => {
   it('round-trips a markdown report through the archive', async () => {
     const render = await postJson<{ report: { id: string; format: string; size_bytes: number } }>('/api/reports/render', {
@@ -1289,16 +1314,11 @@ describe('GET /api/find-paths', () => {
 // =============================================
 
 describe('routing surface', () => {
-  // Note: the dashboard serves a single-page-app shell on any unmatched
-  // path, so unknown /api/* routes return 200 with the SPA's index.html
-  // (Content-Type: text/html). The client-side router then surfaces a
-  // "page not found" inside the SPA — there is no 404 from the server
-  // for `/api/whatever`. This is intentional: the dashboard runs at the
-  // same origin as the API and the SPA handles its own 404s.
-  it('unknown /api/* path falls through to the SPA shell, not a JSON 404', async () => {
+  it('returns a deterministic JSON 404 for an unknown API route', async () => {
     const res = await fetch(`${baseUrl}/api/this-endpoint-does-not-exist`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('text/html');
+    expect(res.status).toBe(404);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    await expect(res.json()).resolves.toMatchObject({ code: 'ROUTE_NOT_FOUND' });
   });
 });
 

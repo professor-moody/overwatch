@@ -56,8 +56,7 @@ import {
 } from './parse-command-service.js';
 import { getSupportedParsers } from './parsers/index.js';
 import type { GraphUpdateDetail } from './engine-context.js';
-import { DeltaAccumulator } from './delta-accumulator.js';
-import type { SessionEvent, SessionManager } from './session-manager.js';
+import type { SessionManager } from './session-manager.js';
 import { interpretCommand, type InterpreterState } from './command-interpreter.js';
 import { interpretQuery, executeQuery, type QueryAnswer } from './query-interpreter.js';
 import { listArchetypes } from './agent-archetypes.js';
@@ -68,7 +67,6 @@ import {
   type AgentDirectiveKind,
   type Campaign,
 } from '../types.js';
-import type { DefensiveSignal, OpsecContext } from './opsec-tracker.js';
 import {
   EngagementManager,
   EngagementManagerError,
@@ -84,9 +82,22 @@ import type { ReportRecord } from './report-archive.js';
 import type { DurableApprovalRecord, PendingAction } from './pending-action-queue.js';
 import type { ToolEntry } from './prompt-generator.js';
 import { buildTrustSignalsResponse, type TrustSignalSeverity } from './trust-signal-summary.js';
-import { activityToAgentConsoleEvent, buildAgentConsoleEvents, type AgentConsoleEvent } from './agent-console.js';
+import { buildAgentConsoleEvents, buildOperatorConsoleEvents } from './agent-console.js';
 import { assessPersistenceRecovery } from './lab-preflight.js';
 import { projectAgentDtos } from './dashboard-agent-projector.js';
+import {
+  projectCampaignDtos,
+  projectDashboardSnapshot,
+  projectDashboardState,
+  type DashboardCampaign,
+  type DashboardState,
+} from './dashboard-projectors.js';
+import {
+  DashboardSessionWebSocketHub,
+  type SessionSocketExpectedGeneration,
+} from './dashboard-session-ws-hub.js';
+import { DashboardActionOutputWebSocketHub } from './dashboard-action-output-ws-hub.js';
+import { DashboardMainWebSocketHub } from './dashboard-main-ws-hub.js';
 import {
   AgentListResponseSchema,
   CampaignActionRequestSchema,
@@ -121,8 +132,16 @@ import {
   SettingsDtoSchema,
   SettingsPatchSchema,
   SettingsUpdateResultSchema,
-  type AgentDto,
+  matchDashboardWebSocketPath,
 } from '../contracts/dashboard-v1.js';
+import {
+  dashboardMethodsForPath,
+  matchDashboardEndpoint,
+  responseSchemaFor,
+  type DashboardEndpointDefinition,
+  type DashboardOperationId,
+  type MatchedDashboardEndpoint,
+} from '../contracts/dashboard-api-v1.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -179,54 +198,39 @@ interface CachedStaticAsset {
   size: number;
 }
 
-export interface DashboardEvent {
-  type: 'graph_update' | 'agent_update' | 'agent_console_update' | 'objective_update' | 'full_state' | 'action_pending' | 'action_resolved' | 'session_update' | 'agent_query';
-  timestamp: string;
-  data: any;
+class DashboardRequestContractError extends Error {
+  constructor(
+    readonly operationId: DashboardOperationId,
+    readonly issues: z.ZodIssue[],
+  ) {
+    super('Invalid JSON');
+    this.name = 'DashboardRequestContractError';
+  }
 }
 
-/** Per-campaign OPSEC budget snapshot — the campaign's own noise contribution
- * measured against the (global) noise budget, plus the global recommended
- * approach. Shaped to feed the same OpsecGauge the Overview uses. */
-interface CampaignOpsecBudget {
-  global_noise_spent: number;
-  noise_budget_remaining: number;
-  max_noise: number;
-  recommended_approach: OpsecContext['recommended_approach'];
-  defensive_signals: DefensiveSignal[];
-  time_window_remaining_hours?: number;
-  warning?: string;
+interface DashboardRequestContract {
+  operation_id: DashboardOperationId;
+  endpoint: DashboardEndpointDefinition;
 }
-
-type DashboardCampaign = Campaign & {
-  agent_count: number;
-  running_agents: number;
-  agents_total: number;
-  agents_active: number;
-  completion_pct: number;
-  findings_count: number;
-  child_count?: number;
-  opsec: CampaignOpsecBudget;
-};
 
 export class DashboardServer {
   private httpServer: ReturnType<typeof createServer>;
   private wss: WebSocketServer;
   private sessionWss: WebSocketServer;
   private actionWss: WebSocketServer;
+  private mainHub: DashboardMainWebSocketHub;
+  private sessionHub: DashboardSessionWebSocketHub;
+  private actionOutputHub: DashboardActionOutputWebSocketHub;
   private engine: GraphEngine;
   private sessionManager: SessionManager | null;
   private port: number;
-  private clients: Set<WebSocket> = new Set();
-  private sessionPollers: Map<WebSocket, ReturnType<typeof setInterval>> = new Map();
-  private actionPollers: Map<WebSocket, ReturnType<typeof setInterval>> = new Map();
-  private agentConsoleCursor = 0;
+  private sessionPollers: Map<WebSocket, ReturnType<typeof setInterval>>;
+  private actionPollers: Map<WebSocket, ReturnType<typeof setInterval>>;
+  private requestContracts = new WeakMap<IncomingMessage, DashboardRequestContract>();
   private _running: boolean = false;
-  private accumulator = new DeltaAccumulator();
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private static readonly DEBOUNCE_MS = 500;
-  private static readonly SESSION_POLL_MS = 50;
-  private static readonly ACTION_POLL_MS = 100;
+
+  private get clients(): Set<WebSocket> { return this.mainHub.clients; }
+  private set clients(value: Set<WebSocket>) { this.mainHub.clients = value; }
 
   private host: string;
   private engagementManager: EngagementManager | null = null;
@@ -328,36 +332,17 @@ export class DashboardServer {
       );
     }
 
-    // Wire engine updates to WS push without requiring external wiring in app.ts.
-    engine.onUpdate(detail => this.onGraphUpdate(detail));
-    this.agentConsoleCursor = engine.getFullHistory().length;
-
-    // 3D: push the agent-question inbox live when an agent asks or is answered.
-    engine.getAgentQueryStore().onChange(() => {
-      if (this.clients.size === 0) return;
-      this.broadcast({
-        type: 'agent_query',
-        timestamp: new Date().toISOString(),
-        data: { queries: engine.getAgentQueryStore().getOpen() },
-      });
-    });
-
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
-    this.wss = new WebSocketServer({ noServer: true });
-    this.sessionWss = new WebSocketServer({ noServer: true });
-    this.actionWss = new WebSocketServer({ noServer: true });
-
-    this.wss.on('error', () => {
-      // Absorb WSS errors
+    this.mainHub = new DashboardMainWebSocketHub(engine, this.sessionManager, {
+      buildState: () => this.buildFrontendState(),
     });
-
-    this.sessionWss.on('error', () => {
-      // Absorb WSS errors
-    });
-
-    this.actionWss.on('error', () => {
-      // Absorb WSS errors
-    });
+    this.wss = this.mainHub.server;
+    this.sessionHub = new DashboardSessionWebSocketHub(engine, this.sessionManager);
+    this.actionOutputHub = new DashboardActionOutputWebSocketHub(engine);
+    this.sessionWss = this.sessionHub.server;
+    this.actionWss = this.actionOutputHub.server;
+    this.sessionPollers = this.sessionHub.pollers;
+    this.actionPollers = this.actionOutputHub.pollers;
 
     // URL-based WebSocket routing
     this.httpServer.on('upgrade', (req, socket, head) => {
@@ -397,9 +382,8 @@ export class DashboardServer {
         }
       }
 
-      const sessionMatch = pathname.match(/^\/ws\/session\/([a-f0-9-]{36})$/);
-      const actionOutputMatch = pathname.match(/^\/ws\/actions\/([A-Za-z0-9_-]+)\/output$/);
-      if (sessionMatch) {
+      const websocketRoute = matchDashboardWebSocketPath(pathname);
+      if (websocketRoute?.channel === 'session') {
         if (!this.engine.isPersistenceWritable()) {
           socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
           socket.destroy();
@@ -412,12 +396,13 @@ export class DashboardServer {
         }
         this.sessionWss.handleUpgrade(req, socket, head, (ws) => {
           this.sessionWss.emit('connection', ws, req);
+          this.sessionHub.setSessionManager(this.sessionManager);
           const expectedConnectionId = url.searchParams.get('connection_id') ?? undefined;
           const expectedGenerationRaw = url.searchParams.get('connection_generation');
           const expectedConnectionGeneration = expectedGenerationRaw === null
             ? undefined
             : Number(expectedGenerationRaw);
-          this.handleSessionConnection(ws, sessionMatch[1], {
+          this.sessionHub.handleConnection(ws, websocketRoute.params.session_id, {
             ...(expectedConnectionId !== undefined
               ? { expected_connection_id: expectedConnectionId }
               : {}),
@@ -432,57 +417,21 @@ export class DashboardServer {
               : {}),
           });
         });
-      } else if (actionOutputMatch) {
+      } else if (websocketRoute?.channel === 'action_output') {
         this.actionWss.handleUpgrade(req, socket, head, (ws) => {
           this.actionWss.emit('connection', ws, req);
-          this.handleActionOutputConnection(ws, actionOutputMatch[1]);
+          this.actionOutputHub.handleConnection(ws, websocketRoute.params.action_id);
         });
-      } else {
+      } else if (websocketRoute?.channel === 'main') {
         this.wss.handleUpgrade(req, socket, head, (ws) => {
           this.wss.emit('connection', ws, req);
         });
+      } else {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
       }
     });
 
-    this.wss.on('connection', (ws) => {
-      this.clients.add(ws);
-      // Send full state on connect
-      const state = this.buildFrontendState();
-      const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
-      const historyCount = this.engine.getFullHistory().length;
-      ws.send(JSON.stringify({
-        type: 'full_state',
-        timestamp: new Date().toISOString(),
-        data: { state, graph, history_count: historyCount },
-      }));
-
-      ws.on('close', () => {
-        this.clients.delete(ws);
-      });
-
-      ws.on('error', () => {
-        this.clients.delete(ws);
-      });
-    });
-
-    // Wire PendingActionQueue events to WebSocket broadcasts
-    engine.getPendingActionQueue().onEvent((eventType, data) => {
-      this.broadcast({
-        type: eventType,
-        timestamp: new Date().toISOString(),
-        data,
-      });
-    });
-
-    if (typeof this.sessionManager?.onEvent === 'function') {
-      this.sessionManager.onEvent((event: SessionEvent) => {
-        this.broadcast({
-          type: 'session_update',
-          timestamp: new Date().toISOString(),
-          data: event,
-        });
-      });
-    }
   }
 
   start(): Promise<DashboardStartResult> {
@@ -509,11 +458,7 @@ export class DashboardServer {
 
   stop(): Promise<void> {
     this._running = false;
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    this.accumulator.drain();
+    this.mainHub.dispose();
     this.fileCache.clear();
     // Clean up session pollers
     for (const [ws, interval] of this.sessionPollers) {
@@ -542,372 +487,32 @@ export class DashboardServer {
     });
   }
 
-  broadcast(event: DashboardEvent): void {
-    const msg = JSON.stringify(event);
-    for (const ws of this.clients) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(msg);
-      }
-    }
+  broadcast(event: unknown): void {
+    this.mainHub.broadcast(event);
   }
 
-  // Called by GraphEngine after persist()
+  // Called by GraphEngine after persist(); retained as a public test/integration seam.
   onGraphUpdate(detail: GraphUpdateDetail): void {
-    const consoleEvents = this.collectNewAgentConsoleEvents();
-
-    // Short-circuit: skip expensive work when nobody is listening
-    if (this.clients.size === 0) return;
-
-    if (consoleEvents.length > 0) {
-      this.broadcast({
-        type: 'agent_console_update',
-        timestamp: new Date().toISOString(),
-        data: { events: consoleEvents },
-      });
-    }
-
-    this.accumulator.push(detail);
-
-    // Reset debounce timer
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => this.flushPendingUpdate(), DashboardServer.DEBOUNCE_MS);
-  }
-
-  private collectNewAgentConsoleEvents(): AgentConsoleEvent[] {
-    const history = this.engine.getFullHistory();
-    if (this.agentConsoleCursor > history.length) {
-      this.agentConsoleCursor = history.length;
-      return [];
-    }
-    const entries = history.slice(this.agentConsoleCursor);
-    this.agentConsoleCursor = history.length;
-    if (entries.length === 0) return [];
-    return entries
-      .map(entry => activityToAgentConsoleEvent(entry))
-      .filter((event): event is AgentConsoleEvent => event !== null);
+    this.mainHub.onGraphUpdate(detail);
   }
 
   /** Immediately flush any pending debounced update. Useful for testing. */
   flush(): void {
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-    }
-    this.flushPendingUpdate();
+    this.mainHub.flush();
   }
 
-  private flushPendingUpdate(): void {
-    let detail = this.accumulator.drain();
-    this.debounceTimer = null;
-    if (!detail || this.clients.size === 0) return;
-
-    // Build state first so graph metrics and the explicitly projected browser
-    // communities describe the same topology generation.
-    const state = this.buildFrontendState();
-    const historyCount = this.engine.getFullHistory().length;
-
-    const fullGraph = this.engine.exportGraph({ includeDerivedCommunities: true });
-
-    // Some state projections perform a deterministic first-use initialization
-    // (for example generating campaign records from the frontier). Those
-    // writes synchronously call onGraphUpdate while this flush is building its
-    // authoritative state. Fold them into this same generation: the state
-    // above already contains them, and leaving the nested callback queued
-    // would emit a redundant second graph_update.
-    const nestedDetail = this.accumulator.drain();
-    if (nestedDetail) {
-      if (this.debounceTimer) clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-      const keys: Array<keyof GraphUpdateDetail> = [
-        'new_nodes',
-        'new_edges',
-        'updated_nodes',
-        'updated_edges',
-        'inferred_edges',
-        'removed_nodes',
-        'removed_edges',
-      ];
-      detail = { ...detail };
-      for (const key of keys) {
-        const merged = [...new Set([...(detail[key] || []), ...(nestedDetail[key] || [])])];
-        if (merged.length > 0) detail[key] = merged;
-      }
-    }
-
-    // Build incremental delta: only the nodes/edges that changed.
-    const changedNodeIds = new Set([...(detail.new_nodes || []), ...(detail.updated_nodes || [])]);
-    const changedEdgeIds = new Set([...(detail.new_edges || []), ...(detail.updated_edges || []), ...(detail.inferred_edges || [])]);
-    const deltaNodes = fullGraph.nodes.filter(n => changedNodeIds.has(n.id));
-    const deltaEdges = fullGraph.edges.filter(e => e.id !== undefined && changedEdgeIds.has(e.id));
-
-    this.broadcast({
-      type: 'graph_update',
-      timestamp: new Date().toISOString(),
-      data: {
-        state,
-        history_count: historyCount,
-        detail,
-        delta: {
-          nodes: deltaNodes,
-          edges: deltaEdges,
-          removed_nodes: detail.removed_nodes || [],
-          removed_edges: detail.removed_edges || [],
-          cold_nodes: fullGraph.cold_nodes ?? [],
-        },
-      },
-    });
-  }
-
-  // ---- Session terminal bridge ----
-
-  private handleSessionConnection(
+  // Compatibility test seams; production upgrades are owned by the extracted hubs.
+  handleSessionConnection(
     ws: WebSocket,
     sessionId: string,
-    expected: {
-      expected_connection_id?: string;
-      expected_connection_generation?: number;
-    } = {},
+    expected: SessionSocketExpectedGeneration = {},
   ): void {
-    if (!this.sessionManager) {
-      ws.close(4503, 'Session manager not available');
-      return;
-    }
-
-    const meta = this.sessionManager.getSession(sessionId);
-    if (!meta) {
-      ws.close(4404, 'Session not found');
-      return;
-    }
-    if (meta.state !== 'connected') {
-      ws.close(4409, `Session not connected (state: ${meta.state})`);
-      return;
-    }
-    if (
-      (expected.expected_connection_id !== undefined
-        && meta.connection_id !== expected.expected_connection_id)
-      || (expected.expected_connection_generation !== undefined
-        && meta.connection_generation !== expected.expected_connection_generation)
-    ) {
-      ws.close(4409, 'Session connection generation changed before attachment');
-      return;
-    }
-    const connectionId = meta.connection_id;
-    const connectionGeneration = meta.connection_generation;
-    const expectedGeneration = {
-      ...(connectionId !== undefined ? { connection_id: connectionId } : {}),
-      ...(connectionGeneration !== undefined
-        ? { connection_generation: connectionGeneration }
-        : {}),
-    };
-    const generationAddressed = connectionId !== undefined || connectionGeneration !== undefined;
-    const readGeneration = (from?: number, tail?: number) =>
-      generationAddressed
-        ? this.sessionManager!.read(sessionId, from, tail, expectedGeneration)
-        : this.sessionManager!.read(sessionId, from, tail);
-
-    // Send initial state
-    ws.send(JSON.stringify({ type: 'session_meta', data: meta }));
-
-    // Read initial buffer tail
-    try {
-      const initial = readGeneration(undefined, 8192);
-      if (initial.text) {
-        ws.send(JSON.stringify({ type: 'output', text: initial.text, end_pos: initial.end_pos }));
-      }
-    } catch { /* session may have closed between check and read */ }
-
-    // Poll buffer for new output
-    let cursor = readGeneration(undefined, 0).end_pos;
-
-    const poller = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) {
-        clearInterval(poller);
-        this.sessionPollers.delete(ws);
-        return;
-      }
-
-      try {
-        const current = this.sessionManager!.getSession(sessionId);
-        if (
-          !current
-          || current.state !== 'connected'
-          || current.connection_id !== connectionId
-        ) {
-          ws.send(JSON.stringify({
-            type: 'session_closed',
-            connection_id: connectionId,
-          }));
-          clearInterval(poller);
-          this.sessionPollers.delete(ws);
-          ws.close(4410, 'Session generation ended');
-          return;
-        }
-        const result = readGeneration(cursor);
-        if (result.text) {
-          ws.send(JSON.stringify({ type: 'output', text: result.text, end_pos: result.end_pos }));
-          cursor = result.end_pos;
-        }
-      } catch {
-        // Session closed or error — notify and stop polling
-        ws.send(JSON.stringify({ type: 'session_closed' }));
-        clearInterval(poller);
-        this.sessionPollers.delete(ws);
-        ws.close(4410, 'Session closed');
-      }
-    }, DashboardServer.SESSION_POLL_MS);
-
-    this.sessionPollers.set(ws, poller);
-
-    // Handle input from client. Dashboard terminal writes act on behalf of
-    // the operator, so always pass force=true — otherwise writes to a
-    // session claimed by an agent silently fail (assertOwnership throws,
-    // and the catch below would swallow it). Surface any write/resize
-    // errors back over the WS so the user sees something change.
-    ws.on('message', (raw) => {
-      try {
-        // The persistence gate can close after the WebSocket was upgraded
-        // (for example, after a third consecutive snapshot failure). Recheck
-        // every command-shaped message so an existing socket cannot outlive
-        // the service's writable generation.
-        if (!this.engine.isPersistenceWritable()) {
-          ws.send(JSON.stringify({
-            type: 'error',
-            op: 'persistence',
-            code: 'PERSISTENCE_READ_ONLY',
-            error: 'Durable mutations are disabled while persistence recovery is incomplete.',
-            recovery: this.engine.getPersistenceRecoveryStatus(),
-          }));
-          ws.close(4503, 'Persistence is read-only');
-          return;
-        }
-        const msg = JSON.parse(String(raw));
-        const current = this.sessionManager!.getSession(sessionId);
-        if (
-          !current
-          || current.state !== 'connected'
-          || current.connection_id !== connectionId
-        ) {
-          ws.send(JSON.stringify({
-            type: 'error',
-            op: 'generation',
-            code: 'SESSION_GENERATION_ENDED',
-            error: 'This terminal is attached to a connection generation that has ended.',
-          }));
-          ws.close(4410, 'Session generation ended');
-          return;
-        }
-        if (msg.type === 'input' && typeof msg.data === 'string') {
-          try {
-            if (generationAddressed) {
-              this.sessionManager!.write(
-                sessionId,
-                msg.data,
-                'dashboard',
-                true,
-                expectedGeneration,
-              );
-            } else {
-              this.sessionManager!.write(sessionId, msg.data, 'dashboard', true);
-            }
-          } catch (err) {
-            ws.send(JSON.stringify({
-              type: 'error',
-              op: 'input',
-              error: err instanceof Error ? err.message : String(err),
-            }));
-          }
-        } else if (msg.type === 'resize' && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
-          try {
-            this.sessionManager!.resize(sessionId, msg.cols, msg.rows, 'dashboard', true);
-          } catch (err) {
-            ws.send(JSON.stringify({
-              type: 'error',
-              op: 'resize',
-              error: err instanceof Error ? err.message : String(err),
-            }));
-          }
-        }
-      } catch { /* ignore malformed messages */ }
-    });
-
-    ws.on('close', () => {
-      const interval = this.sessionPollers.get(ws);
-      if (interval) {
-        clearInterval(interval);
-        this.sessionPollers.delete(ws);
-      }
-    });
-
-    ws.on('error', () => {
-      const interval = this.sessionPollers.get(ws);
-      if (interval) {
-        clearInterval(interval);
-        this.sessionPollers.delete(ws);
-      }
-    });
+    this.sessionHub.setSessionManager(this.sessionManager);
+    this.sessionHub.handleConnection(ws, sessionId, expected);
   }
 
-  // ---- Live action-output bridge (Analysis workspace) ----
-
-  private handleActionOutputConnection(ws: WebSocket, actionId: string): void {
-    const buffer = this.engine.getActionOutputBuffer();
-    if (!buffer.has(actionId)) {
-      // Not live: never streamed, or already finished + evicted. Tell the
-      // client to fall back to the durable evidence route.
-      ws.send(JSON.stringify({ type: 'action_done' }));
-      ws.close(4404, 'No live output');
-      return;
-    }
-
-    let outCursor = 0;
-    let errCursor = 0;
-    const flush = () => {
-      for (const stream of ['stdout', 'stderr'] as const) {
-        const cursor = stream === 'stdout' ? outCursor : errCursor;
-        const r = buffer.read(actionId, stream, cursor);
-        if (r && r.text) {
-          ws.send(JSON.stringify({ type: 'output', stream, text: r.text, end_pos: r.end_pos, dropped: r.dropped }));
-          if (stream === 'stdout') outCursor = r.end_pos; else errCursor = r.end_pos;
-        }
-      }
-    };
-
-    try { flush(); } catch { /* connection may have closed */ }
-
-    const poller = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) {
-        clearInterval(poller);
-        this.actionPollers.delete(ws);
-        return;
-      }
-      try {
-        flush();
-        if (buffer.isDone(actionId)) {
-          ws.send(JSON.stringify({ type: 'action_done' }));
-          clearInterval(poller);
-          this.actionPollers.delete(ws);
-          ws.close(1000, 'done');
-        }
-      } catch {
-        // Send error: stop polling and tell the client to fall back to the
-        // durable route rather than freezing in a live state.
-        clearInterval(poller);
-        this.actionPollers.delete(ws);
-        try { ws.send(JSON.stringify({ type: 'action_done' })); } catch { /* socket gone */ }
-        try { ws.close(); } catch { /* already closed */ }
-      }
-    }, DashboardServer.ACTION_POLL_MS);
-
-    this.actionPollers.set(ws, poller);
-
-    const cleanup = () => {
-      const interval = this.actionPollers.get(ws);
-      if (interval) {
-        clearInterval(interval);
-        this.actionPollers.delete(ws);
-      }
-    };
-    ws.on('close', cleanup);
-    ws.on('error', cleanup);
+  handleActionOutputConnection(ws: WebSocket, actionId: string): void {
+    this.actionOutputHub.handleConnection(ws, actionId);
   }
 
   private static readonly MIME_TYPES: Record<string, string> = {
@@ -1059,6 +664,15 @@ export class DashboardServer {
 
     const pathname = url.split('?')[0];
 
+    if (pathname.startsWith('/api/')) {
+      try {
+        decodeURIComponent(pathname);
+      } catch {
+        this.sendUncontractedJson(res, 400, { error: 'Bad request', code: 'INVALID_PATH_ENCODING' });
+        return;
+      }
+    }
+
     // Require token auth for /api/* reads (and writes) when bound non-loopback.
     // Mutations have their own checkMutationAuth (which also enforces CSRF /
     // Origin); this gate covers GET endpoints that would otherwise leak
@@ -1089,239 +703,222 @@ export class DashboardServer {
       return;
     }
 
-    if (pathname === '/api/recovery' && method === 'GET') {
-      this.serveRecovery(res);
-    } else if (pathname === '/api/recovery/config/resolve' && method === 'POST') {
-      this.handleResolveConfigDivergence(req, res);
-    } else if (pathname === '/api/state') {
-      this.serveState(res);
-    } else if (pathname === '/api/graph') {
-      this.serveGraph(res);
-    } else if (pathname === '/api/history') {
-      this.serveHistory(url, res);
-    } else if (pathname === '/api/decision-log') {
-      this.serveDecisionLog(url, res);
-    } else if (pathname === '/api/timeline') {
-      this.serveTimeline(url, res);
-    } else if (pathname === '/api/find-paths') {
-      this.serveFindPaths(url, res);
-    } else if (pathname === '/api/sessions') {
-      this.serveSessions(res);
-    } else if (pathname === '/api/agents') {
-      this.serveAgents(res);
-    } else if (pathname === '/api/agents/dispatch' && method === 'POST') {
-      this.handleAgentDispatch(req, res);
-    } else if (pathname === '/api/agents/dispatch-batch' && method === 'POST') {
-      this.handleAgentDispatchBatch(req, res);
-    } else if (pathname === '/api/agents/quick-deploy' && method === 'POST') {
-      this.handleQuickDeploy(req, res);
-    } else if (pathname === '/api/agent-archetypes' && method === 'GET') {
-      this.serveAgentArchetypes(res);
-    } else if (pathname === '/api/fleet/directive' && method === 'POST') {
-      this.handleFleetDirective(req, res);
-    } else if (pathname === '/api/fleet/dismiss' && method === 'POST') {
-      this.handleFleetDismiss(req, res);
-    } else if (pathname === '/api/actions/approve-batch' && method === 'POST') {
-      this.handleActionApproveBatch(req, res);
-    } else if (pathname === '/api/actions/deny-batch' && method === 'POST') {
-      this.handleActionDenyBatch(req, res);
-    } else if (pathname === '/api/commands' && method === 'POST') {
-      this.handleCommand(req, res);
-    } else if (pathname === '/api/plans' && method === 'GET') {
-      this.serveProposedPlans(res);
-    } else if (pathname === '/api/agent-queries' && method === 'GET') {
-      this.serveAgentQueries(res);
-    } else if (pathname === '/api/agent-queries/answer-batch' && method === 'POST') {
-      this.handleAnswerAgentQueryBatch(req, res);
-    } else if (pathname === '/api/templates') {
-      this.serveTemplates(res);
-    } else if (pathname === '/api/settings' && method === 'GET') {
-      this.serveSettings(res);
-    } else if (pathname === '/api/settings' && method === 'PATCH') {
-      this.handleUpdateSettings(req, res);
-    } else if (pathname === '/api/config' && method === 'GET') {
-      this.serveConfig(res);
-    } else if (pathname === '/api/config' && method === 'PATCH') {
-      this.handleUpdateConfig(req, res);
-    } else if (pathname === '/api/config/scope/preview' && method === 'POST') {
-      this.handlePreviewScope(req, res);
-    } else if (pathname === '/api/config/scope' && method === 'PATCH') {
-      this.handleUpdateScope(req, res);
-    } else if (pathname === '/api/config/objectives' && method === 'POST') {
-      this.handleAddObjective(req, res);
-    } else if (pathname === '/api/frontier/weights' && method === 'GET') {
-      this.serveFrontierWeights(res);
-    } else if (pathname === '/api/frontier/weights' && method === 'PATCH') {
-      this.handleUpdateFrontierWeights(req, res);
-    } else if (pathname === '/api/frontier/weights/reset' && method === 'POST') {
-      this.handleResetFrontierWeights(req, res);
-    } else if (pathname === '/api/opsec/budget') {
-      this.serveOpsecBudget(res);
-    } else if (pathname === '/api/health') {
-      this.serveHealth(res);
-    } else if (pathname === '/api/engagements' && method === 'GET') {
-      this.serveEngagements(res);
-    } else if (pathname === '/api/engagements' && method === 'POST') {
-      this.handleCreateEngagement(req, res);
-    } else if (pathname === '/api/engagements/from-template' && method === 'POST') {
-      this.handleCreateFromTemplate(req, res);
-    } else if (pathname?.startsWith('/api/engagements/') && !pathname.includes('/from-template') && method === 'GET') {
-      const engId = decodeURIComponent(pathname.slice('/api/engagements/'.length));
-      this.serveEngagementDetail(engId, res);
-    } else if (pathname?.startsWith('/api/engagements/') && !pathname.includes('/from-template') && method === 'PATCH') {
-      const engId = decodeURIComponent(pathname.slice('/api/engagements/'.length));
-      this.handleUpdateEngagement(engId, req, res);
-    } else if (pathname === '/api/campaigns' && method === 'POST') {
-      this.handleCampaignCreate(req, res);
-    } else if (pathname === '/api/campaigns') {
-      this.serveCampaigns(res);
-    } else if (pathname === '/api/phases') {
-      this.servePhases(res);
-    } else if (pathname === '/api/actions/pending') {
-      this.servePendingActions(res);
-    } else if (pathname === '/api/tools' && method === 'GET') {
-      this.serveTools(res);
-    } else if (pathname === '/api/parsers' && method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ parsers: getSupportedParsers() }));
-    } else if (pathname === '/api/mcp-tools' && method === 'GET') {
-      this.serveMcpTools(res);
-    } else if (pathname === '/api/readiness' && method === 'GET') {
-      this.serveReadiness(res);
-    } else if (pathname === '/api/trust-signals' && method === 'GET') {
-      this.serveTrustSignals(url, res);
-    } else if (pathname === '/api/inference-rules' && method === 'GET') {
-      this.serveInferenceRules(res);
-    } else if (pathname === '/api/telemetry' && method === 'GET') {
-      this.serveTelemetry(res);
-    } else if (pathname === '/api/graph/export' && method === 'POST') {
-      this.handleGraphExport(res);
-    } else if (pathname === '/api/graph/correct' && method === 'POST') {
-      this.handleGraphCorrect(req, res);
-    } else if (pathname === '/api/tape' && method === 'GET') {
-      this.handleTapeStatus(res);
-    } else if (pathname === '/api/tape/toggle' && method === 'POST') {
-      this.handleTapeToggle(req, res);
-    } else if (pathname === '/api/findings' && method === 'GET') {
-      this.serveFindings(res);
-    } else if (pathname === '/api/reports' && method === 'GET') {
-      this.serveReportsList(res);
-    } else if (pathname === '/api/reports/render' && method === 'POST') {
-      this.handleRenderReport(req, res);
-    } else if (pathname === '/api/bundle' && method === 'GET') {
-      this.streamBundle(req, res);
-    } else {
-      // Parameterized routes
-      const agentCtxMatch = pathname.match(/^\/api\/agents\/([^/]+)\/context$/);
-      const agentHistoryMatch = pathname.match(/^\/api\/agents\/([^/]+)\/history$/);
-      const agentConsoleMatch = pathname.match(/^\/api\/agents\/([^/]+)\/console$/);
-      const agentCancelMatch = pathname.match(/^\/api\/agents\/([^/]+)\/cancel$/);
-      const agentDismissMatch = pathname.match(/^\/api\/agents\/([^/]+)\/dismiss$/);
-      const agentDirectiveMatch = pathname.match(/^\/api\/agents\/([^/]+)\/directive$/);
-      const applicationCommandMatch = pathname.match(/^\/api\/commands\/([^/]+)$/);
-      const agentQueryAnswerMatch = pathname.match(/^\/api\/agent-queries\/([^/]+)\/answer$/);
-      const objectiveMatch = pathname.match(/^\/api\/config\/objectives\/([^/]+)$/);
-      const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([^/]+)$/);
-      const campaignActionMatch = pathname.match(/^\/api\/campaigns\/([^/]+)\/action$/);
-      const campaignDispatchMatch = pathname.match(/^\/api\/campaigns\/([^/]+)\/dispatch$/);
-      const campaignCloneMatch = pathname.match(/^\/api\/campaigns\/([^/]+)\/clone$/);
-      const campaignSplitMatch = pathname.match(/^\/api\/campaigns\/([^/]+)\/split$/);
-      const campaignChildrenMatch = pathname.match(/^\/api\/campaigns\/([^/]+)\/children$/);
-      const actionExplainMatch = pathname.match(/^\/api\/actions\/([^/]+)\/explain$/);
-      // Raw tool-output for the Analysis workspace. Action ids are `act_<hex>`
-      // or a uuid (the `act_` underscore falls outside [a-f0-9-]), so match the
-      // full id charset — an unknown id is just a 404 in the handler.
-      const actionOutputMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/output$/);
-      const actionReparseMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/reparse$/);
-      const evidenceRawMatch = pathname.match(/^\/api\/evidence\/([^/]+)\/raw$/);
-      const evidenceImageMatch = pathname.match(/^\/api\/evidence\/([^/]+)\/image$/);
-      // Action ids are `act_<hex>` (deterministic, nonce-bearing engagements) or
-      // a uuid — both fall outside [a-f0-9-] because of the `act_` underscore, so
-      // a hex-only class silently 404s every real action. Match the full id
-      // charset (the queue does an exact lookup, so an unknown id is just a 404).
-      const actionApproveMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/approve$/);
-      const actionDenyMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/deny$/);
-      const sessionCloseMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/close$/);
-      const sessionResumeMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/resume$/);
-      const sessionBufferMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/buffer$/);
-      const sessionDetailMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)$/);
-      const evidenceChainMatch = pathname.match(/^\/api\/evidence-chains\/([^/]+)$/);
-      const pathsMatch = pathname.match(/^\/api\/paths\/([^/]+)$/);
-      const findingContextMatch = pathname.match(/^\/api\/findings\/([^/]+)\/context$/);
-      const reportDetailMatch = pathname.match(/^\/api\/reports\/([a-f0-9-]+)$/);
-
-      if (applicationCommandMatch && method === 'GET') {
-        this.serveApplicationCommand(decodeURIComponent(applicationCommandMatch[1]), res);
-      } else if (agentCtxMatch) {
-        this.serveAgentContext(decodeURIComponent(agentCtxMatch[1]), res);
-      } else if (agentHistoryMatch) {
-        this.serveAgentHistory(decodeURIComponent(agentHistoryMatch[1]), res);
-      } else if (agentConsoleMatch) {
-        this.serveAgentConsole(decodeURIComponent(agentConsoleMatch[1]), url, res);
-      } else if (agentCancelMatch && method === 'POST') {
-        this.handleAgentCancel(decodeURIComponent(agentCancelMatch[1]), req, res);
-      } else if (agentDismissMatch && method === 'POST') {
-        this.handleAgentDismiss(decodeURIComponent(agentDismissMatch[1]), req, res);
-      } else if (agentDirectiveMatch && method === 'POST') {
-        this.handleAgentDirective(decodeURIComponent(agentDirectiveMatch[1]), req, res);
-      } else if (agentQueryAnswerMatch && method === 'POST') {
-        this.handleAnswerAgentQuery(decodeURIComponent(agentQueryAnswerMatch[1]), req, res);
-      } else if (objectiveMatch && method === 'PATCH') {
-        this.handleUpdateObjective(decodeURIComponent(objectiveMatch[1]), req, res);
-      } else if (objectiveMatch && method === 'DELETE') {
-        this.handleDeleteObjective(decodeURIComponent(objectiveMatch[1]), req, res);
-      } else if (campaignActionMatch && method === 'POST') {
-        this.handleCampaignAction(decodeURIComponent(campaignActionMatch[1]), req, res);
-      } else if (campaignDispatchMatch && method === 'POST') {
-        this.handleCampaignDispatch(decodeURIComponent(campaignDispatchMatch[1]), req, res);
-      } else if (campaignCloneMatch && method === 'POST') {
-        this.handleCampaignClone(decodeURIComponent(campaignCloneMatch[1]), req, res);
-      } else if (campaignSplitMatch && method === 'POST') {
-        this.handleCampaignSplit(decodeURIComponent(campaignSplitMatch[1]), req, res);
-      } else if (campaignChildrenMatch) {
-        this.serveCampaignChildren(decodeURIComponent(campaignChildrenMatch[1]), res);
-      } else if (campaignDetailMatch && method === 'PATCH') {
-        this.handleCampaignUpdate(decodeURIComponent(campaignDetailMatch[1]), req, res);
-      } else if (campaignDetailMatch && method === 'DELETE') {
-        this.handleCampaignDelete(decodeURIComponent(campaignDetailMatch[1]), req, res);
-      } else if (campaignDetailMatch) {
-        this.serveCampaignDetail(decodeURIComponent(campaignDetailMatch[1]), res);
-      } else if (actionExplainMatch && method === 'GET') {
-        this.serveActionExplanation(decodeURIComponent(actionExplainMatch[1]), res);
-      } else if (actionOutputMatch && method === 'GET') {
-        this.serveActionOutput(decodeURIComponent(actionOutputMatch[1]), url, res);
-      } else if (actionReparseMatch && method === 'POST') {
-        this.handleActionReparse(decodeURIComponent(actionReparseMatch[1]), req, res);
-      } else if (evidenceRawMatch && method === 'GET') {
-        this.serveEvidenceRaw(decodeURIComponent(evidenceRawMatch[1]), url, res);
-      } else if (evidenceImageMatch && method === 'GET') {
-        this.serveEvidenceImage(decodeURIComponent(evidenceImageMatch[1]), res);
-      } else if (actionApproveMatch && method === 'POST') {
-        this.handleActionApprove(actionApproveMatch[1], req, res);
-      } else if (actionDenyMatch && method === 'POST') {
-        this.handleActionDeny(actionDenyMatch[1], req, res);
-      } else if (sessionCloseMatch && method === 'POST') {
-        this.handleSessionClose(sessionCloseMatch[1], req, res);
-      } else if (sessionResumeMatch && method === 'POST') {
-        this.handleSessionResume(sessionResumeMatch[1], req, res);
-      } else if (sessionBufferMatch && method === 'GET') {
-        this.serveSessionBuffer(sessionBufferMatch[1], url, res);
-      } else if (sessionDetailMatch && method === 'PATCH') {
-        this.handleSessionUpdate(sessionDetailMatch[1], req, res);
-      } else if (evidenceChainMatch) {
-        this.serveEvidenceChains(decodeURIComponent(evidenceChainMatch[1]), res);
-      } else if (pathsMatch) {
-        this.servePaths(decodeURIComponent(pathsMatch[1]), url, res);
-      } else if (findingContextMatch && method === 'GET') {
-        this.serveFindingContext(decodeURIComponent(findingContextMatch[1]), res);
-      } else if (reportDetailMatch && method === 'GET') {
-        this.serveReportDownload(reportDetailMatch[1], url, res);
-      } else if (reportDetailMatch && method === 'DELETE') {
-        this.handleReportDelete(reportDetailMatch[1], req, res);
-      } else {
-        this.serveStaticFile(url, res);
+    const matchedEndpoint = matchDashboardEndpoint(method, pathname);
+    if (matchedEndpoint) {
+      let requestUrl: URL;
+      try {
+        requestUrl = new URL(url, `http://${req.headers.host || 'localhost'}`);
+      } catch {
+        this.sendUncontractedJson(res, 400, { error: 'Bad request', code: 'INVALID_URL' });
+        return;
       }
+      const query = Object.fromEntries(requestUrl.searchParams.entries());
+      const queryResult = matchedEndpoint.endpoint.query_schema.safeParse(query);
+      if (!queryResult.success) {
+        this.sendUncontractedJson(res, 400, {
+          error: 'Invalid dashboard query',
+          code: 'DASHBOARD_QUERY_INVALID',
+          operation_id: matchedEndpoint.operation_id,
+          issues: queryResult.error.issues,
+        });
+        return;
+      }
+      this.requestContracts.set(req, {
+        operation_id: matchedEndpoint.operation_id,
+        endpoint: matchedEndpoint.endpoint,
+      });
+      this.installResponseContract(matchedEndpoint, res);
+      this.dispatchApiOperation(matchedEndpoint, req, res, url);
+      return;
     }
+
+    if (pathname.startsWith('/api/')) {
+      const allowed = dashboardMethodsForPath(pathname);
+      if (allowed.length > 0) {
+        res.setHeader('Allow', allowed.join(', '));
+        this.sendUncontractedJson(res, 405, {
+          error: `Method ${method} is not allowed for ${pathname}`,
+          code: 'METHOD_NOT_ALLOWED',
+          allowed_methods: allowed,
+        });
+      } else {
+        this.sendUncontractedJson(res, 404, {
+          error: `Dashboard API route not found: ${pathname}`,
+          code: 'ROUTE_NOT_FOUND',
+        });
+      }
+      return;
+    }
+
+    this.serveStaticFile(url, res);
+  }
+
+  private dispatchApiOperation(
+    matched: MatchedDashboardEndpoint,
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: string,
+  ): void {
+    const path = matched.path_params;
+    const handlers: Record<DashboardOperationId, () => void> = {
+      getRecovery: () => this.serveRecovery(res),
+      resolveConfigDivergence: () => this.handleResolveConfigDivergence(req, res),
+      getState: () => this.serveState(res),
+      getGraph: () => this.serveGraph(res),
+      getHistory: () => this.serveHistory(url, res),
+      getDecisionLog: () => this.serveDecisionLog(url, res),
+      getTimeline: () => this.serveTimeline(url, res),
+      findPaths: () => this.serveFindPaths(url, res),
+      getSessions: () => this.serveSessions(res),
+      getAgents: () => this.serveAgents(res),
+      dispatchAgent: () => this.handleAgentDispatch(req, res),
+      dispatchAgentBatch: () => this.handleAgentDispatchBatch(req, res),
+      quickDeployAgent: () => this.handleQuickDeploy(req, res),
+      getAgentArchetypes: () => this.serveAgentArchetypes(res),
+      issueFleetDirective: () => this.handleFleetDirective(req, res),
+      dismissFleetAgents: () => this.handleFleetDismiss(req, res),
+      approveActionsBatch: () => this.handleActionApproveBatch(req, res),
+      denyActionsBatch: () => this.handleActionDenyBatch(req, res),
+      interpretCommand: () => this.handleCommand(req, res),
+      getActiveApplicationCommands: () => this.serveActiveApplicationCommands(res),
+      getProposedPlans: () => this.serveProposedPlans(res),
+      getAgentQueries: () => this.serveAgentQueries(res),
+      answerAgentQueriesBatch: () => this.handleAnswerAgentQueryBatch(req, res),
+      getTemplates: () => this.serveTemplates(res),
+      getSettings: () => this.serveSettings(res),
+      updateSettings: () => this.handleUpdateSettings(req, res),
+      getConfig: () => this.serveConfig(res),
+      updateConfig: () => this.handleUpdateConfig(req, res),
+      previewScope: () => this.handlePreviewScope(req, res),
+      updateScope: () => this.handleUpdateScope(req, res),
+      createObjective: () => this.handleAddObjective(req, res),
+      getFrontierWeights: () => this.serveFrontierWeights(res),
+      updateFrontierWeights: () => this.handleUpdateFrontierWeights(req, res),
+      resetFrontierWeights: () => this.handleResetFrontierWeights(req, res),
+      getOpsecBudget: () => this.serveOpsecBudget(res),
+      getHealth: () => this.serveHealth(res),
+      listEngagements: () => this.serveEngagements(res),
+      createEngagement: () => { void this.handleCreateEngagement(req, res); },
+      createEngagementFromTemplate: () => this.handleCreateFromTemplate(req, res),
+      createCampaign: () => this.handleCampaignCreate(req, res),
+      listCampaigns: () => this.serveCampaigns(res),
+      getPhases: () => this.servePhases(res),
+      getPendingActions: () => this.servePendingActions(res),
+      getTools: () => { void this.serveTools(res); },
+      getParsers: () => this.sendContractedJson(res, 200, { parsers: getSupportedParsers() }),
+      getMcpTools: () => this.serveMcpTools(res),
+      getReadiness: () => this.serveReadiness(res),
+      getTrustSignals: () => this.serveTrustSignals(url, res),
+      getInferenceRules: () => this.serveInferenceRules(res),
+      getTelemetry: () => this.serveTelemetry(res),
+      exportGraph: () => this.handleGraphExport(res),
+      correctGraph: () => { void this.handleGraphCorrect(req, res); },
+      getTapeStatus: () => this.handleTapeStatus(res),
+      toggleTape: () => { void this.handleTapeToggle(req, res); },
+      getFindings: () => this.serveFindings(res),
+      listReports: () => this.serveReportsList(res),
+      renderReport: () => { void this.handleRenderReport(req, res); },
+      bundleEngagement: () => { void this.streamBundle(req, res); },
+      getOperatorConsole: () => this.serveOperatorConsole(url, res),
+      getApplicationCommand: () => this.serveApplicationCommand(path.command_id, res),
+      getAgentContext: () => this.serveAgentContext(path.task_id, res),
+      getAgentHistory: () => this.serveAgentHistory(path.task_id, res),
+      getAgentConsole: () => this.serveAgentConsole(path.task_id, url, res),
+      cancelAgent: () => this.handleAgentCancel(path.task_id, req, res),
+      dismissAgent: () => this.handleAgentDismiss(path.task_id, req, res),
+      issueAgentDirective: () => this.handleAgentDirective(path.task_id, req, res),
+      answerAgentQuery: () => this.handleAnswerAgentQuery(path.query_id, req, res),
+      updateObjective: () => this.handleUpdateObjective(path.objective_id, req, res),
+      deleteObjective: () => this.handleDeleteObjective(path.objective_id, req, res),
+      getCampaign: () => this.serveCampaignDetail(path.campaign_id, res),
+      updateCampaign: () => this.handleCampaignUpdate(path.campaign_id, req, res),
+      deleteCampaign: () => this.handleCampaignDelete(path.campaign_id, req, res),
+      actOnCampaign: () => this.handleCampaignAction(path.campaign_id, req, res),
+      dispatchCampaign: () => this.handleCampaignDispatch(path.campaign_id, req, res),
+      cloneCampaign: () => this.handleCampaignClone(path.campaign_id, req, res),
+      splitCampaign: () => { void this.handleCampaignSplit(path.campaign_id, req, res); },
+      getCampaignChildren: () => this.serveCampaignChildren(path.campaign_id, res),
+      explainAction: () => this.serveActionExplanation(path.action_id, res),
+      getActionOutput: () => this.serveActionOutput(path.action_id, url, res),
+      reparseAction: () => this.handleActionReparse(path.action_id, req, res),
+      getEvidenceRaw: () => this.serveEvidenceRaw(path.evidence_id, url, res),
+      getEvidenceImage: () => this.serveEvidenceImage(path.evidence_id, res),
+      approveAction: () => this.handleActionApprove(path.action_id, req, res),
+      denyAction: () => this.handleActionDeny(path.action_id, req, res),
+      closeSession: () => this.handleSessionClose(path.session_id, req, res),
+      resumeSession: () => this.handleSessionResume(path.session_id, req, res),
+      getSessionBuffer: () => this.serveSessionBuffer(path.session_id, url, res),
+      updateSession: () => this.handleSessionUpdate(path.session_id, req, res),
+      getEvidenceChains: () => this.serveEvidenceChains(path.node_id, res),
+      getObjectivePaths: () => this.servePaths(path.objective_id, url, res),
+      getFindingContext: () => this.serveFindingContext(path.finding_id, res),
+      downloadReport: () => this.serveReportDownload(path.report_id, url, res),
+      deleteReport: () => this.handleReportDelete(path.report_id, req, res),
+      getEngagement: () => this.serveEngagementDetail(path.engagement_id, res),
+      updateEngagement: () => this.handleUpdateEngagement(path.engagement_id, req, res),
+    };
+    handlers[matched.operation_id]();
+  }
+
+  private sendUncontractedJson(res: ServerResponse, status: number, payload: unknown): void {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  }
+
+  private sendContractedJson(res: ServerResponse, status: number, payload: unknown): void {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  }
+
+  private installResponseContract(matched: MatchedDashboardEndpoint, res: ServerResponse): void {
+    if (matched.endpoint.response_kind !== 'json') return;
+
+    const originalWriteHead = res.writeHead.bind(res);
+    const originalEnd = res.end.bind(res);
+    let statusCode = 200;
+    const deferredHeaders: Record<string, string | string[]> = {};
+
+    res.writeHead = ((status: number, statusMessageOrHeaders?: string | Record<string, string | string[]>, maybeHeaders?: Record<string, string | string[]>) => {
+      statusCode = status;
+      const headers = typeof statusMessageOrHeaders === 'string' ? maybeHeaders : statusMessageOrHeaders;
+      if (headers) {
+        for (const [name, value] of Object.entries(headers)) {
+          deferredHeaders[name] = value;
+          res.setHeader(name, value);
+        }
+      }
+      return res;
+    }) as typeof res.writeHead;
+
+    res.end = ((chunk?: unknown, encodingOrCallback?: BufferEncoding | (() => void), callback?: () => void) => {
+      let outgoing = chunk;
+      const schema = responseSchemaFor(matched.endpoint, statusCode);
+      let payload: unknown;
+      try {
+        const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : typeof chunk === 'string' ? chunk : '';
+        payload = text ? JSON.parse(text) : undefined;
+      } catch {
+        payload = chunk;
+      }
+
+      const validation = schema?.safeParse(payload);
+      if (!schema || !validation?.success) {
+        const issues = validation && !validation.success ? validation.error.issues : [{ message: `No schema registered for status ${statusCode}` }];
+        console.error(`[dashboard-contract] ${matched.operation_id} response ${statusCode} failed validation`, issues);
+        statusCode = 500;
+        res.removeHeader('Content-Length');
+        res.setHeader('Content-Type', 'application/json');
+        outgoing = JSON.stringify({
+          error: 'Dashboard response contract validation failed',
+          code: 'DASHBOARD_RESPONSE_CONTRACT_FAILED',
+          operation_id: matched.operation_id,
+        });
+      }
+
+      originalWriteHead(statusCode, deferredHeaders);
+      if (typeof encodingOrCallback === 'function') return originalEnd(outgoing as never, encodingOrCallback);
+      return (originalEnd as (...args: unknown[]) => ServerResponse)(outgoing, encodingOrCallback, callback);
+    }) as typeof res.end;
   }
 
   private serveStaticFile(url: string, res: ServerResponse): void {
@@ -1895,6 +1492,21 @@ export class DashboardServer {
       res.end(JSON.stringify({ error: 'command not found', command_id: commandId }));
       return;
     }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ command: this.projectApplicationCommand(command) }));
+  }
+
+  private serveActiveApplicationCommands(res: ServerResponse): void {
+    const commands = this.engine.listApplicationCommands()
+      .filter(command => command.command_kind === 'operator.plan'
+        && (command.status === 'accepted' || command.status === 'running'))
+      .sort((left, right) => right.created_at.localeCompare(left.created_at))
+      .map(command => this.projectApplicationCommand(command));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ commands }));
+  }
+
+  private projectApplicationCommand(command: ReturnType<GraphEngine['listApplicationCommands']>[number]) {
     const existingResult = command.result
       && typeof command.result === 'object'
       && !Array.isArray(command.result)
@@ -1919,8 +1531,7 @@ export class DashboardServer {
           },
         }
       : command;
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ command: projectedCommand }));
+    return projectedCommand;
   }
 
   // ---- Agent→operator question inbox (Phase 3D) ----
@@ -2231,68 +1842,51 @@ export class DashboardServer {
    */
   private enrichCampaigns(campaigns: Campaign[] = this.engine.listCampaigns()): DashboardCampaign[] {
     const allCampaigns = this.engine.listCampaigns();
-    const allAgents = this.engine.getAllAgents();
-    // The global noise context (budget remaining, recommended approach, time
-    // window) is the same for every campaign — compute it once. Only the
-    // per-campaign noise contribution differs, via the tracker's accessor.
     const opsecCtx = this.engine.getOpsecContext();
-    const maxNoise = this.engine.getConfig().opsec.max_noise;
     const tracker = this.engine.getOpsecTracker();
-    return campaigns.map(c => {
-      const children = allCampaigns.filter(candidate => candidate.parent_id === c.id);
-      const aggregateProgress = children.length > 0 ? this.engine.getCampaignParentProgress(c.id) : null;
-      const derivedStatus = children.length > 0 ? this.engine.deriveCampaignParentStatus(c.id) : null;
-      const projectedFindings = [...new Set([
-        ...(c.findings ?? []),
-        ...children.flatMap(child => child.findings ?? []),
-      ])];
-      const campaignIds = new Set([c.id, ...children.map(child => child.id)]);
-      const agents = allAgents.filter(a => a.campaign_id && campaignIds.has(a.campaign_id));
-      const progress = aggregateProgress ?? c.progress;
-      const completed = progress?.completed ?? 0;
-      const total = progress?.total ?? c.items.length;
-      const completionPct = total > 0 ? Math.round((completed / total) * 100) : 0;
-      const runningAgents = agents.filter(a => a.status === 'running').length;
-      return {
-        ...c,
-        status: derivedStatus ?? c.status,
-        progress,
-        findings: projectedFindings,
-        agent_count: agents.length,
-        running_agents: runningAgents,
-        agents_total: agents.length,
-        agents_active: runningAgents,
-        completion_pct: completionPct,
-        findings_count: projectedFindings.length,
-        child_count: children.length || undefined,
-        opsec: {
-          global_noise_spent: [...campaignIds].reduce((totalNoise, id) => totalNoise + tracker.getCampaignNoise(id), 0),
-          noise_budget_remaining: opsecCtx.noise_budget_remaining,
-          max_noise: maxNoise,
-          recommended_approach: opsecCtx.recommended_approach,
-          // Defensive signals are tracked globally (and per host/domain), not
-          // per campaign — leave empty here so the per-campaign gauge focuses
-          // on this campaign's noise contribution, not global alarms.
-          defensive_signals: [],
-          time_window_remaining_hours: opsecCtx.time_window_remaining_hours,
-        },
-      };
+    const parentProgress = new Map(allCampaigns.map(campaign => [
+      campaign.id,
+      allCampaigns.some(candidate => candidate.parent_id === campaign.id)
+        ? this.engine.getCampaignParentProgress(campaign.id)
+        : null,
+    ] as const));
+    const parentStatus = new Map(allCampaigns.map(campaign => [
+      campaign.id,
+      allCampaigns.some(candidate => candidate.parent_id === campaign.id)
+        ? this.engine.deriveCampaignParentStatus(campaign.id)
+        : null,
+    ] as const));
+    return projectCampaignDtos({
+      campaigns: allCampaigns,
+      selected: campaigns,
+      agents: this.engine.getAllAgents(),
+      parent_progress: parentProgress,
+      parent_status: parentStatus,
+      campaign_noise: new Map(allCampaigns.map(campaign => [
+        campaign.id,
+        tracker.getCampaignNoise(campaign.id),
+      ])),
+      opsec: opsecCtx,
+      max_noise: this.engine.getConfig().opsec.max_noise,
     });
   }
 
-  private buildFrontendState(): Omit<ReturnType<GraphEngine['getState']>, 'agents'> & {
-    agents: AgentDto[];
-    sessions: ReturnType<NonNullable<SessionManager>['list']>;
-    pending_actions: PendingAction[];
-    campaigns: DashboardCampaign[];
-  } {
+  private buildFrontendState(): DashboardState<
+    ReturnType<NonNullable<SessionManager>['list']>[number],
+    PendingAction
+  > {
     const state = this.engine.getState();
     const sessions = this.sessionManager?.list() ?? [];
     const pending_actions = this.getDashboardApprovalRecords()
       .filter(action => action.status === 'pending') as PendingAction[];
     const campaigns = this.enrichCampaigns();
-    const agents = projectAgentDtos(state.agents, this.engine.getFullHistory(), campaigns);
-    return { ...state, agents, sessions, pending_actions, campaigns };
+    return projectDashboardState({
+      state,
+      sessions,
+      pending_actions,
+      campaigns,
+      history: this.engine.getFullHistory(),
+    });
   }
 
   private serveState(res: ServerResponse): void {
@@ -2300,7 +1894,7 @@ export class DashboardServer {
     const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
     const historyCount = this.engine.getFullHistory().length;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ state, graph, history_count: historyCount }));
+    res.end(JSON.stringify(projectDashboardSnapshot(state, graph, historyCount)));
   }
 
   private serveRecovery(res: ServerResponse): void {
@@ -2994,6 +2588,19 @@ export class DashboardServer {
       after,
       allowLegacyLabel,
     });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ events, total: events.length }));
+  }
+
+  private serveOperatorConsole(url: string, res: ServerResponse): void {
+    const query = new URL(url, 'http://localhost').searchParams;
+    const limit = Math.max(1, Math.min(1_000, Number(query.get('limit') || 200)));
+    const after = query.get('after') || undefined;
+    const events = buildOperatorConsoleEvents(
+      this.engine.getFullHistory(),
+      this.engine.getAllAgents(),
+      { limit, after },
+    );
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ events, total: events.length }));
   }
@@ -3944,7 +3551,18 @@ export class DashboardServer {
       req.on('end', () => {
         try {
           const raw = Buffer.concat(chunks).toString('utf-8');
-          resolve(raw ? JSON.parse(raw) : {});
+          const decoded = raw ? JSON.parse(raw) : {};
+          const contract = this.requestContracts.get(req);
+          if (!contract) {
+            resolve(decoded);
+            return;
+          }
+          const parsed = contract.endpoint.body_schema.safeParse(decoded);
+          if (!parsed.success) {
+            reject(new DashboardRequestContractError(contract.operation_id, parsed.error.issues));
+            return;
+          }
+          resolve(parsed.data);
         } catch { reject(new Error('Invalid JSON')); }
       });
       req.on('error', reject);
@@ -4903,7 +4521,14 @@ export class DashboardServer {
   private async handleRenderReport(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkMutationAuth(req, res)) return;
     try {
-      const body = await this.readJsonBody(req).catch(() => ({} as Record<string, unknown>));
+      let body: Record<string, unknown>;
+      try {
+        body = await this.readJsonBody(req) as Record<string, unknown>;
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid report render request' }));
+        return;
+      }
       const formatRaw = (body as { format?: string }).format ?? 'markdown';
       const format = (formatRaw === 'md' ? 'markdown' : formatRaw) as ReportFormat | 'pdf';
       if (!['markdown', 'html', 'json', 'pdf'].includes(format)) {
