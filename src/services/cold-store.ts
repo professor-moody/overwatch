@@ -26,6 +26,13 @@ export interface ColdNodeRecord {
   action_id?: string;
 }
 
+/** Exact process-local preimage used by bounded transaction rollback. */
+export interface ColdStoreEntrySnapshot {
+  id: string;
+  record: ColdNodeRecord | null;
+  revision: number;
+}
+
 // --- Interesting edge types that force a host into the hot graph ---
 
 const INTERESTING_EDGE_TYPES: ReadonlySet<EdgeType> = new Set([
@@ -98,7 +105,8 @@ export class ColdStore {
   }
 
   get(id: string): ColdNodeRecord | undefined {
-    return this.store.get(id);
+    const record = this.store.get(id);
+    return record ? structuredClone(record) : undefined;
   }
 
   has(id: string): boolean {
@@ -123,6 +131,26 @@ export class ColdStore {
     return this.revision;
   }
 
+  captureEntrySnapshot(id: string): ColdStoreEntrySnapshot {
+    const record = this.store.get(id);
+    return {
+      id,
+      record: record ? structuredClone(record) : null,
+      revision: this.revision,
+    };
+  }
+
+  /**
+   * Restore one entry and its exact prior process-local revision without
+   * publishing an additional inventory change. Only bounded rollback should
+   * call this; ordinary mutations must continue through add/promote/import.
+   */
+  restoreEntrySnapshot(snapshot: ColdStoreEntrySnapshot): void {
+    if (snapshot.record === null) this.store.delete(snapshot.id);
+    else this.store.set(snapshot.id, structuredClone(snapshot.record));
+    this.revision = snapshot.revision;
+  }
+
   countBySubnet(): Record<string, number> {
     const counts: Record<string, number> = {};
     for (const record of this.store.values()) {
@@ -141,7 +169,7 @@ export class ColdStore {
 
   /** All cold records as an array (for serialization). */
   export(): ColdNodeRecord[] {
-    return Array.from(this.store.values());
+    return Array.from(this.store.values(), record => structuredClone(record));
   }
 
   /** Restore from a serialized array. */
@@ -163,7 +191,7 @@ export class ColdStore {
   /** Iterate over all cold records. */
   forEach(fn: (record: ColdNodeRecord) => void): void {
     for (const record of this.store.values()) {
-      fn(record);
+      fn(structuredClone(record));
     }
   }
 }

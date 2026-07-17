@@ -31,6 +31,7 @@ import { AgentQueryStore } from './agent-query-store.js';
 import type { CoordinationRecoveryWarning } from './agent-identity.js';
 import type {
   EngineOperation,
+  EngineOperationDraftObserver,
   EngineTransactionDraft,
 } from './engine-transaction.js';
 import type {
@@ -51,6 +52,7 @@ import {
   type ActivityAppendItemV1,
   type ActivityAppendPayloadV1,
 } from './activity-append.js';
+import { GRAPH_MUTATION_METHODS } from './graph-mutation-methods.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -166,6 +168,12 @@ export type GraphUpdateDetail = {
 export type GraphUpdateCallback = (detail: GraphUpdateDetail) => void;
 export const MAX_ACTIVITY_LOG_ENTRIES = 5000;
 
+const DRAFT_COLD_STORE_WRITE_METHODS = ['add', 'promote', 'import', 'clear'] as const;
+
+function detachedDraftRead<T>(value: T): T {
+  return typeof value === 'object' && value !== null ? structuredClone(value) : value;
+}
+
 function isSkippedMutationApplyResult(
   value: unknown,
 ): value is Extract<MutationApplyResult, { status: 'skipped' }> {
@@ -279,6 +287,8 @@ export class EngineContext {
    * apply to the caller's temporary live draft, and do not touch the WAL. */
   private operationDraftDepth = 0;
   private operationDraftCollector?: EngineOperation[];
+  private operationDraftObserver?: EngineOperationDraftObserver;
+  private operationDraftAuthorizationTokens: unknown[] = [];
   /** Set during WAL replay so the guarded mutators (addNode/addEdge) re-apply
    *  state without re-emitting their edge-case events (the type-conflict warning
    *  + inferred-edge-confirmation log) into the already-restored activity log. */
@@ -423,16 +433,20 @@ export class EngineContext {
       ...(draft.update_detail === undefined ? {} : { update_detail: draft.update_detail }),
     });
     if (this.operationDraftCollector) {
+      const observerToken = this.operationDraftObserver?.beforeOperation(frozenDraft);
       this.operationDraftCollector.push(...frozenDraft.operations);
+      this.operationDraftAuthorizationTokens.push(observerToken);
       this.transactionApplyDepth++;
       try {
         const result = apply();
         if (isSkippedMutationApplyResult(result)) {
           throw new Error(`Draft ${label} was not applied: ${result.reason}`);
         }
+        this.operationDraftObserver?.afterOperation(frozenDraft, observerToken);
         return result;
       } finally {
         this.transactionApplyDepth--;
+        this.operationDraftAuthorizationTokens.pop();
       }
     }
     if (!this.mutationJournal) return apply();
@@ -475,6 +489,7 @@ export class EngineContext {
 
   captureEngineOperations<T>(
     mutation: () => T,
+    observer?: EngineOperationDraftObserver,
   ): { result: T; operations: EngineOperation[] } {
     // Capture only applyJournaledMutation/applyCompositeJournaledMutation (and
     // direct applyEngineTransaction) calls, because those pair an immutable
@@ -495,6 +510,154 @@ export class EngineContext {
     }
     const collector: EngineOperation[] = [];
     this.operationDraftCollector = collector;
+    this.operationDraftObserver = observer;
+    const graph = this.graph as unknown as Record<string, unknown>;
+    const coldStore = this.coldStore as unknown as Record<string, unknown>;
+    const guardedMethods: Array<{
+      owner: Record<string, unknown>;
+      name: string;
+      original: (...args: unknown[]) => unknown;
+      own: boolean;
+    }> = [];
+    for (const name of GRAPH_MUTATION_METHODS) {
+      const original = graph[name];
+      if (typeof original !== 'function') continue;
+      guardedMethods.push({
+        owner: graph,
+        name,
+        original: original as (...args: unknown[]) => unknown,
+        own: Object.prototype.hasOwnProperty.call(graph, name),
+      });
+      graph[name] = (...args: unknown[]) => {
+        const activeToken = this.operationDraftAuthorizationTokens.at(-1);
+        if (
+          this.transactionApplyDepth === 0
+          || (
+            this.operationDraftObserver
+            && !this.operationDraftObserver.authorizeMutation('graph', name, args, activeToken)
+          )
+        ) {
+          throw new Error(
+            `Uncaptured graph mutation did not reproduce its captured after-state: graph.${name} is outside the active engine operation footprint.`,
+          );
+        }
+        return Reflect.apply(original as (...args: unknown[]) => unknown, this.graph, args);
+      };
+    }
+    for (const name of DRAFT_COLD_STORE_WRITE_METHODS) {
+      const original = coldStore[name];
+      if (typeof original !== 'function') continue;
+      guardedMethods.push({
+        owner: coldStore,
+        name,
+        original: original as (...args: unknown[]) => unknown,
+        own: Object.prototype.hasOwnProperty.call(coldStore, name),
+      });
+      coldStore[name] = (...args: unknown[]) => {
+        const activeToken = this.operationDraftAuthorizationTokens.at(-1);
+        if (
+          this.transactionApplyDepth === 0
+          || (
+            this.operationDraftObserver
+            && !this.operationDraftObserver.authorizeMutation('cold_store', name, args, activeToken)
+          )
+        ) {
+          throw new Error(
+            `Uncaptured cold-store mutation did not reproduce its captured after-state: coldStore.${name} is outside the active engine operation footprint.`,
+          );
+        }
+        return Reflect.apply(original as (...args: unknown[]) => unknown, this.coldStore, args);
+      };
+    }
+    const graphMethodNames = new Set<string>();
+    for (let cursor: object | null = this.graph; cursor && cursor !== Object.prototype; cursor = Object.getPrototypeOf(cursor)) {
+      for (const name of Object.getOwnPropertyNames(cursor)) graphMethodNames.add(name);
+    }
+    for (const name of graphMethodNames) {
+      if (GRAPH_MUTATION_METHODS.includes(name as (typeof GRAPH_MUTATION_METHODS)[number])) continue;
+      const original = graph[name];
+      if (typeof original !== 'function') continue;
+      const directAttributeGetter = name === 'getAttributes'
+        || (/^get.*Attributes?$/.test(name) && name !== 'getMaxListeners');
+      const callbackTraversal = /^(forEach|map|filter|find|some|every|reduce)/.test(name);
+      const entryIterator = /Entries$/.test(name);
+      const plainSnapshot = name === 'export' || name === 'toJSON' || name === 'inspect';
+      const graphCopy = name === 'copy' || name === 'emptyCopy' || name === 'nullCopy';
+      if (!directAttributeGetter && !callbackTraversal && !entryIterator && !plainSnapshot && !graphCopy) continue;
+      guardedMethods.push({
+        owner: graph,
+        name,
+        original: original as (...args: unknown[]) => unknown,
+        own: Object.prototype.hasOwnProperty.call(graph, name),
+      });
+      graph[name] = (...args: unknown[]) => {
+        if (directAttributeGetter) {
+          return detachedDraftRead(Reflect.apply(
+            original as (...values: unknown[]) => unknown,
+            this.graph,
+            args,
+          ));
+        }
+        if (plainSnapshot) {
+          return structuredClone(Reflect.apply(
+            original as (...values: unknown[]) => unknown,
+            this.graph,
+            args,
+          ));
+        }
+        if (callbackTraversal) {
+          let callbackIndex = -1;
+          if (name.startsWith('reduce')) {
+            const reducerIndex = args.length - 2;
+            if (reducerIndex >= 0 && typeof args[reducerIndex] === 'function') {
+              callbackIndex = reducerIndex;
+            }
+          } else {
+            for (let index = args.length - 1; index >= 0; index--) {
+              if (typeof args[index] === 'function') {
+                callbackIndex = index;
+                break;
+              }
+            }
+          }
+          if (callbackIndex >= 0) {
+            const callback = args[callbackIndex] as (...values: unknown[]) => unknown;
+            const nextArgs = [...args];
+            nextArgs[callbackIndex] = (...callbackArgs: unknown[]) => callback(...callbackArgs.map(
+              (value, index) => name.startsWith('reduce') && index === 0
+                ? value
+                : detachedDraftRead(value),
+            ));
+            return Reflect.apply(
+              original as (...values: unknown[]) => unknown,
+              this.graph,
+              nextArgs,
+            );
+          }
+        }
+        const result = Reflect.apply(
+          original as (...values: unknown[]) => unknown,
+          this.graph,
+          args,
+        );
+        if (graphCopy && result && typeof result === 'object') {
+          const copied = result as {
+            export(): unknown;
+            import(data: unknown): void;
+            nullCopy(): unknown;
+          };
+          const detachedCopy = copied.nullCopy() as { import(data: unknown): void };
+          detachedCopy.import(structuredClone(copied.export()));
+          return detachedCopy;
+        }
+        if (entryIterator && result && typeof (result as Iterable<unknown>)[Symbol.iterator] === 'function') {
+          return (function* detachEntries() {
+            for (const entry of result as Iterable<unknown>) yield detachedDraftRead(entry);
+          })();
+        }
+        return result;
+      };
+    }
     this.operationDraftDepth++;
     try {
       const result = mutation();
@@ -512,6 +675,12 @@ export class EngineContext {
     } finally {
       this.operationDraftDepth--;
       this.operationDraftCollector = undefined;
+      this.operationDraftObserver = undefined;
+      this.operationDraftAuthorizationTokens = [];
+      for (const method of guardedMethods) {
+        if (method.own) method.owner[method.name] = method.original;
+        else delete method.owner[method.name];
+      }
     }
   }
 

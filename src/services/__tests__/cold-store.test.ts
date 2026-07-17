@@ -136,6 +136,45 @@ describe('ColdStore', () => {
     });
   });
 
+  describe('bounded rollback snapshots', () => {
+    it('restores an updated entry and its exact prior revision', () => {
+      const cs = new ColdStore();
+      cs.add(makeRecord());
+      const snapshot = cs.captureEntrySnapshot('host-1');
+      cs.add(makeRecord({ last_seen_at: later, provenance: 'agent-2' }));
+      expect(cs.getRevision()).toBe(snapshot.revision + 1);
+
+      cs.restoreEntrySnapshot(snapshot);
+
+      expect(cs.get('host-1')).toEqual(makeRecord());
+      expect(cs.getRevision()).toBe(snapshot.revision);
+    });
+
+    it('restores promoted and newly added entries without advancing revision', () => {
+      const cs = new ColdStore();
+      cs.add(makeRecord());
+      const existing = cs.captureEntrySnapshot('host-1');
+      const missing = cs.captureEntrySnapshot('host-2');
+      cs.promote('host-1');
+      cs.add(makeRecord({ id: 'host-2', label: '10.0.0.2', ip: '10.0.0.2' }));
+
+      cs.restoreEntrySnapshot(missing);
+      cs.restoreEntrySnapshot(existing);
+
+      expect(cs.has('host-2')).toBe(false);
+      expect(cs.get('host-1')).toEqual(makeRecord());
+      expect(cs.getRevision()).toBe(existing.revision);
+    });
+
+    it('returns a detached record snapshot', () => {
+      const cs = new ColdStore();
+      cs.add(makeRecord());
+      const snapshot = cs.captureEntrySnapshot('host-1');
+      snapshot.record!.label = 'changed outside the store';
+      expect(cs.get('host-1')?.label).toBe('10.0.0.1');
+    });
+  });
+
   describe('countBySubnet', () => {
     it('groups counts by subnet_cidr', () => {
       const cs = new ColdStore();

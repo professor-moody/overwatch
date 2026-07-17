@@ -124,6 +124,10 @@ import type {
 } from './durable-state-patch.js';
 import type { EngineOperation } from './engine-transaction.js';
 import {
+  BoundedTransactionFootprintCapture,
+  type FinalizedTransactionFootprint,
+} from './transaction-footprint.js';
+import {
   evaluateObjectives as _evaluateObjectives,
   recomputeObjectives as _recomputeObjectives,
   getPhaseStatuses as _getPhaseStatuses,
@@ -993,7 +997,22 @@ export class GraphEngine {
       };
     }
 
-    const graphSnapshot = this.ctx.graph.export();
+    const nodeSnapshots = payload.node_changes.map(change => ({
+      node_id: change.node_id,
+      props: this.ctx.graph.hasNode(change.node_id)
+        ? detached(this.ctx.graph.getNodeAttributes(change.node_id) as NodeProperties)
+        : null,
+    }));
+    const edgeSnapshots = payload.edge_changes.map(change => ({
+      edge_id: change.edge_id,
+      state: this.ctx.graph.hasEdge(change.edge_id)
+        ? {
+            source: this.ctx.graph.source(change.edge_id),
+            target: this.ctx.graph.target(change.edge_id),
+            props: detached(this.ctx.graph.getEdgeAttributes(change.edge_id) as EdgeProperties),
+          }
+        : null,
+    }));
     const activitySnapshot = detached(this.ctx.activityLog);
     const chainHashSnapshot = this.ctx.lastChainHash;
     const chainCheckpointsSnapshot = detached(this.ctx.chainCheckpoints);
@@ -1069,8 +1088,27 @@ export class GraphEngine {
       this.invalidatePathGraph();
       return { status: 'applied' };
     } catch (error) {
-      this.ctx.graph.clear();
-      this.ctx.graph.import(graphSnapshot);
+      for (const snapshot of edgeSnapshots) {
+        if (this.ctx.graph.hasEdge(snapshot.edge_id)) this.ctx.graph.dropEdge(snapshot.edge_id);
+      }
+      for (const snapshot of nodeSnapshots) {
+        if (snapshot.props === null) {
+          if (this.ctx.graph.hasNode(snapshot.node_id)) this.ctx.graph.dropNode(snapshot.node_id);
+        } else if (this.ctx.graph.hasNode(snapshot.node_id)) {
+          this.ctx.graph.replaceNodeAttributes(snapshot.node_id, detached(snapshot.props));
+        } else {
+          this.ctx.graph.addNode(snapshot.node_id, detached(snapshot.props));
+        }
+      }
+      for (const snapshot of edgeSnapshots) {
+        if (!snapshot.state) continue;
+        this.ctx.graph.addEdgeWithKey(
+          snapshot.edge_id,
+          snapshot.state.source,
+          snapshot.state.target,
+          detached(snapshot.state.props),
+        );
+      }
       this.ctx.activityLog = activitySnapshot;
       this.ctx.lastChainHash = chainHashSnapshot;
       this.ctx.chainCheckpoints = chainCheckpointsSnapshot;
@@ -1379,33 +1417,38 @@ export class GraphEngine {
         ...(completion?.additional_state_keys ?? []),
       ]),
     ];
-    const graphBaseline = detached(this.ctx.graph.export());
-    const coldBaseline = detached(this.ctx.coldStore.export());
     const sliceBaseline = this.ctx.captureDurableStateSlices(stateKeys);
+    const graphOrderBaseline = this.ctx.graph.order;
+    const graphSizeBaseline = this.ctx.graph.size;
+    const coldCountBaseline = this.ctx.coldStore.count();
+    const footprintCapture = new BoundedTransactionFootprintCapture(this.ctx);
     const cacheBaseline = {
-      pathGraphCache: new Map(this.ctx.pathGraphCache),
-      communityCache: this.ctx.communityCache ? new Map(this.ctx.communityCache) : null,
-      frontierCache: this.frontierCache ? detached(this.frontierCache) : null,
-      healthReportCache: this.healthReportCache ? detached(this.healthReportCache) : null,
+      pathGraphCache: this.ctx.pathGraphCache,
+      communityCache: this.ctx.communityCache,
+      frontierCache: this.frontierCache,
+      healthReportCache: this.healthReportCache,
+    };
+    const installScratchCaches = () => {
+      this.ctx.pathGraphCache = new Map();
+      this.ctx.communityCache = null;
+      this.frontierCache = null;
+      this.healthReportCache = null;
     };
     const restoreBaseline = () => {
-      this.restoreFindingDraftBaseline(graphBaseline, coldBaseline, sliceBaseline);
-      this.ctx.pathGraphCache = new Map(cacheBaseline.pathGraphCache);
-      this.ctx.communityCache = cacheBaseline.communityCache
-        ? new Map(cacheBaseline.communityCache)
-        : null;
-      this.frontierCache = cacheBaseline.frontierCache
-        ? detached(cacheBaseline.frontierCache)
-        : null;
-      this.healthReportCache = cacheBaseline.healthReportCache
-        ? detached(cacheBaseline.healthReportCache)
-        : null;
+      footprintCapture.restore();
+      this.ctx.applyDurableStatePatch(sliceBaseline);
+      this.applyRestoredRuntimeProjections();
+      this.inference.invalidateCaches();
+      this.ctx.pathGraphCache = cacheBaseline.pathGraphCache;
+      this.ctx.communityCache = cacheBaseline.communityCache;
+      this.frontierCache = cacheBaseline.frontierCache;
+      this.healthReportCache = cacheBaseline.healthReportCache;
     };
 
     let captured!: { result: FindingDraftResult; operations: EngineOperation[] };
-    let graphAfter!: ReturnType<OverwatchGraph['export']>;
-    let coldAfter!: ReturnType<EngineContext['coldStore']['export']>;
     let slicesAfter!: ReturnType<EngineContext['captureDurableStateSlices']>;
+    let footprintAfter!: FinalizedTransactionFootprint;
+    installScratchCaches();
     try {
       captured = this.ctx.captureEngineOperations(() => {
         this.ctx.recentFindingHashes = new Map(activeFindingHashes);
@@ -1452,20 +1495,16 @@ export class GraphEngine {
         };
         completion?.complete(detached(completedResult));
         return { result, ...(campaignId ? { campaign_id: campaignId } : {}) };
-      });
+      }, footprintCapture);
       captured = detached(captured);
-      graphAfter = detached(this.ctx.graph.export());
-      coldAfter = detached(this.ctx.coldStore.export());
       slicesAfter = this.ctx.captureDurableStateSlices(stateKeys);
+      footprintCapture.markInferredEdges(captured.result.result.inferred_edges);
+      footprintAfter = footprintCapture.finalize();
     } finally {
       restoreBaseline();
     }
 
-    const detail = this.deriveGraphUpdateDetail(
-      graphBaseline,
-      graphAfter,
-      captured.result.result.inferred_edges,
-    );
+    const detail = footprintAfter.update_detail;
     const statePatch: DurableStatePatchV1 = {
       payload_version: 1,
       operation_id: uuidv4(),
@@ -1489,25 +1528,25 @@ export class GraphEngine {
     // Prove the frozen operations reproduce the speculative after-state before
     // any WAL bytes are appended. This catches an uncaptured raw mutation or a
     // replay/live semantic drift without publishing a partial transaction.
+    installScratchCaches();
     try {
       const replayed = this.persistence.applyTransactionDraft(transactionDraft, this);
       if (replayed.status === 'skipped') {
         throw new Error(`Finding operation draft could not replay: ${replayed.reason}`);
       }
-      const replayGraph = detached(this.ctx.graph.export());
-      const replayCold = detached(this.ctx.coldStore.export());
       const replaySlices = this.ctx.captureDurableStateSlices(stateKeys);
       if (
-        canonicalJson({
-          graph: replayGraph,
-          cold_store: replayCold,
-          slices: replaySlices,
-        })
-        !== canonicalJson({
-          graph: graphAfter,
-          cold_store: coldAfter,
-          slices: slicesAfter,
-        })
+        !footprintCapture.matchesCurrentAfter(footprintAfter)
+        || this.ctx.graph.order !== graphOrderBaseline
+          + footprintAfter.node_changes.filter(change => change.before === null && change.after !== null).length
+          - footprintAfter.node_changes.filter(change => change.before !== null && change.after === null).length
+        || this.ctx.graph.size !== graphSizeBaseline
+          + footprintAfter.edge_changes.filter(change => change.before === null && change.after !== null).length
+          - footprintAfter.edge_changes.filter(change => change.before !== null && change.after === null).length
+        || this.ctx.coldStore.count() !== coldCountBaseline
+          + footprintAfter.cold_changes.filter(change => change.before === null && change.after !== null).length
+          - footprintAfter.cold_changes.filter(change => change.before !== null && change.after === null).length
+        || canonicalJson(replaySlices) !== canonicalJson(slicesAfter)
       ) {
         throw new Error('Finding operation draft replay did not reproduce its captured after-state.');
       }
@@ -1515,6 +1554,7 @@ export class GraphEngine {
       restoreBaseline();
     }
 
+    installScratchCaches();
     try {
       this.ctx.applyEngineTransaction(
         transactionDraft,

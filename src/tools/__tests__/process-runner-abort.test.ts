@@ -70,14 +70,21 @@ describe('runProcess cancellation', () => {
 
   it('kills a running child when the signal aborts (does not run to completion)', async () => {
     const controller = new AbortController();
-    // `sleep 5` would run 5s; abort after ~100ms must terminate it.
+    // Establish the stated precondition deterministically: abort only after the
+    // managed supervisor confirms that `sleep 5` actually launched.
     const started = Date.now();
-    const p = runProcess('sleep', ['5'], { timeout_ms: 30_000, signal: controller.signal });
-    setTimeout(() => controller.abort(), 100);
+    const p = runProcess('sleep', ['5'], {
+      timeout_ms: 30_000,
+      signal: controller.signal,
+      runtime: {
+        onSupervisorReady: () => undefined,
+        onTargetLaunched: () => controller.abort(),
+      },
+    });
     const result = await p;
     const elapsed = Date.now() - started;
     expect(elapsed).toBeLessThan(3_000);           // killed, not the full 5s
-    expect(result.signal).toBeTruthy();            // died from a signal (SIGTERM)
+    expect(result.signal !== null || result.exit_code !== 0).toBe(true);
     expect(result.timed_out).toBe(false);          // it was cancelled, not a timeout
   }, 10_000);
 
@@ -87,7 +94,8 @@ describe('runProcess cancellation', () => {
     const started = Date.now();
     const result = await runProcess('sleep', ['5'], { timeout_ms: 30_000, signal: controller.signal });
     expect(Date.now() - started).toBeLessThan(3_000);
-    expect(result.signal).toBeTruthy();
+    expect(result.signal !== null || result.exit_code !== 0).toBe(true);
+    expect(result.timed_out).toBe(false);
   }, 10_000);
 
   it('a normally-exiting child resolves cleanly with no lingering kill (signal wired but never aborts)', async () => {

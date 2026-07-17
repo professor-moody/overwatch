@@ -3,65 +3,18 @@ import { readFileSync, readdirSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import * as ts from 'typescript';
+import { GRAPH_MUTATION_METHODS } from '../graph-mutation-methods.js';
+import { createOverwatchGraph } from '../graphology-types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const srcRoot = resolve(here, '../..');
 
-const GRAPH_MUTATORS = new Set([
-  'replaceAttributes',
-  'mergeAttributes',
-  'setAttribute',
-  'updateAttribute',
-  'removeAttribute',
-  'addNode',
-  'mergeNode',
-  'updateNode',
-  'mergeNodeAttributes',
-  'replaceNodeAttributes',
-  'setNodeAttribute',
-  'setNodeAttributes',
-  'updateNodeAttribute',
-  'updateNodeAttributes',
-  'removeNodeAttribute',
-  'updateEachNodeAttributes',
-  'dropNode',
-  'addEdge',
-  'addEdgeWithKey',
-  'addDirectedEdge',
-  'addDirectedEdgeWithKey',
-  'addUndirectedEdge',
-  'addUndirectedEdgeWithKey',
-  'mergeEdge',
-  'mergeEdgeWithKey',
-  'mergeDirectedEdge',
-  'mergeDirectedEdgeWithKey',
-  'mergeUndirectedEdge',
-  'mergeUndirectedEdgeWithKey',
-  'updateEdge',
-  'updateEdgeWithKey',
-  'updateDirectedEdge',
-  'updateDirectedEdgeWithKey',
-  'updateUndirectedEdge',
-  'updateUndirectedEdgeWithKey',
-  'mergeEdgeAttributes',
-  'replaceEdgeAttributes',
-  'setEdgeAttribute',
-  'setEdgeAttributes',
-  'updateEdgeAttribute',
-  'updateEdgeAttributes',
-  'removeEdgeAttribute',
-  'updateEachEdgeAttributes',
-  'dropEdge',
-  'clearEdges',
-  'clear',
-  'import',
-]);
+const GRAPH_MUTATORS = new Set<string>(GRAPH_MUTATION_METHODS);
 
 const TRANSACTION_BOUNDARIES = new Set([
   'applyJournaledMutation',
   'applyCompositeJournaledMutation',
   'applyEngineTransaction',
-  'captureEngineOperations',
 ]);
 
 const DURABLE_STATE_BOUNDARIES = new Set([
@@ -147,12 +100,20 @@ const ALLOWED_RAW_SCOPES = new Map<string, Set<string>>([
   ['services/state-persistence.ts', new Set([
     '_restoreFromData',
     'makeMutationApplier',
+    // Exact preimage restoration for eligibility-classified primitive
+    // transactions. Unsupported/composite shapes retain the full baseline.
+    'restoreBounded',
     'normalizeLoadedNodeProvenance',
     'migrateDefaultCredentialFlags',
   ])],
   ['services/identity-reconciliation.ts', new Set([
     'mergeAliasIntoCanonical',
     'addEdgeToPlanningGraph',
+  ])],
+  ['services/transaction-footprint.ts', new Set([
+    // Exact, process-local rollback for an eligibility-classified operation
+    // draft; serialized writes still flow through the canonical applier.
+    'restore',
   ])],
 ]);
 
@@ -521,6 +482,26 @@ function findViolations(file: string, source: string): Violation[] {
 }
 
 describe('transaction architecture — live graph writes stay behind the applier', () => {
+  it('keeps the runtime mutation inventory exhaustive for the installed Graphology API', () => {
+    const graph = createOverwatchGraph();
+    const methods = new Set<string>();
+    for (let cursor: object | null = graph; cursor && cursor !== Object.prototype; cursor = Object.getPrototypeOf(cursor)) {
+      for (const name of Object.getOwnPropertyNames(cursor)) {
+        if (typeof (graph as unknown as Record<string, unknown>)[name] === 'function') methods.add(name);
+      }
+    }
+    const eventEmitterMethods = new Set([
+      'addListener',
+      'removeListener',
+      'removeAllListeners',
+      'setMaxListeners',
+    ]);
+    const mutationShaped = [...methods]
+      .filter(name => /^(add|merge|update|set|replace|remove|drop|clear|import)/.test(name))
+      .filter(name => !eventEmitterMethods.has(name));
+    expect(mutationShaped.filter(name => !GRAPH_MUTATORS.has(name))).toEqual([]);
+  });
+
   it('has no direct production graph writes outside transaction, replay, restore, or scratch code', () => {
     const files = productionTypeScriptFiles(srcRoot);
     const violations = files.flatMap(file => findViolations(file, readFileSync(file, 'utf8')));
@@ -563,15 +544,22 @@ describe('transaction architecture — live graph writes stay behind the applier
           ctx.graph.addDirectedEdge('host-1', 'host-2', {});
           ctx.graph.updateEdgeAttributes('edge-1', attrs => attrs);
         });
-        ctx.captureEngineOperations(() => {
-          ctx.graph.setNodeAttribute('host-1', 'drafted', true);
-        });
         const graph = createOverwatchGraph();
         graph.addNode('scratch', {});
         graph.setNodeAttribute('scratch', 'safe', true);
       }`,
     );
     expect(allowed).toEqual([]);
+
+    const captureIsNotAuthority = findViolations(
+      join(srcRoot, 'services', 'synthetic-capture-is-not-authority.ts'),
+      `function capture(ctx: any): void {
+        ctx.captureEngineOperations(() => {
+          ctx.graph.setNodeAttribute('host-1', 'drafted', true);
+        });
+      }`,
+    );
+    expect(captureIsNotAuthority).toHaveLength(1);
   });
 
   it('keeps direct durable EngineContext writes behind a method-level transaction boundary', () => {

@@ -78,8 +78,24 @@ let launchAccepted = false;
 // whole process group.
 process.stdout.on('error', () => {});
 process.stderr.on('error', () => {});
-const send = (message) => {
-  try { if (process.connected) process.send({ ...message, token }); } catch {}
+const send = (message, callback) => {
+  try {
+    if (process.connected) {
+      process.send({ ...message, token }, () => callback && callback());
+      return;
+    }
+  } catch {}
+  if (callback) callback();
+};
+let gracefulExitRequested = false;
+const gracefulExit = (exitCode) => {
+  if (gracefulExitRequested) return;
+  gracefulExitRequested = true;
+  process.exitCode = exitCode;
+  // Closing IPC releases the supervisor's last durable-control handle. Avoid
+  // process.exit(): it can discard stdout/stderr still buffered in the pipe to
+  // the daemon, which would silently truncate both responses and evidence.
+  try { if (process.connected) process.disconnect(); } catch {}
 };
 const startIdentity = () => {
   if (process.platform === 'win32') {
@@ -184,13 +200,13 @@ const groupHasOtherMembers = (ignoredPid) => {
 const exitWhenGroupDrained = (exitCode) => {
   const boundedExit = exitCode === null ? 1 : Math.max(0, Math.min(255, exitCode));
   if (!groupHasOtherMembers(undefined)) {
-    process.exit(boundedExit);
+    gracefulExit(boundedExit);
     return;
   }
   const drainTimer = setInterval(() => {
     if (!groupHasOtherMembers(undefined)) {
       clearInterval(drainTimer);
-      process.exit(boundedExit);
+      gracefulExit(boundedExit);
     }
   }, 50);
 };
@@ -257,8 +273,10 @@ process.on('message', (message) => {
   // closed. Exiting on the earlier exit event can discard final buffered output.
   target.once('close', (code, signal) => {
     if (backgroundCleanup) return;
-    send({ type: 'target_exit', exit_code: code, signal });
-    setImmediate(() => exitWhenGroupDrained(code));
+    send(
+      { type: 'target_exit', exit_code: code, signal },
+      () => exitWhenGroupDrained(code),
+    );
   });
 });
 const forwardTermination = (signal) => {

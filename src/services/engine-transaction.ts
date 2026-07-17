@@ -32,9 +32,22 @@ export interface EngineTransaction extends EngineTransactionDraft {
 }
 
 export type EngineTransactionApplyResult =
-  | { status: 'applied' }
+  | { status: 'applied'; update_detail?: GraphUpdateDetail; bounded?: boolean }
   | { status: 'skipped'; reason: string };
 
 export interface EngineTransactionApplier {
   applyTransaction(transaction: EngineTransaction): EngineTransactionApplyResult;
+}
+
+/** Observes speculative operation drafts before and after their live effect.
+ * The observer is process-local and never serialized into the transaction. */
+export interface EngineOperationDraftObserver {
+  beforeOperation(draft: EngineTransactionDraft): unknown;
+  afterOperation(draft: EngineTransactionDraft, token: unknown): void;
+  authorizeMutation(
+    target: 'graph' | 'cold_store',
+    method: string,
+    args: readonly unknown[],
+    token: unknown,
+  ): boolean;
 }
