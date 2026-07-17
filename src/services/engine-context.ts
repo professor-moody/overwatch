@@ -255,9 +255,8 @@ export class EngineContext {
   // Persisted with the snapshot so transitions aren't re-emitted across
   // restarts when the phase hasn't actually changed.
   lastKnownPhaseId?: string;
-  // P2.1: write-ahead log. Only constructed for engagements with
-  // `engagement_nonce` (deterministic-ID engagements). Legacy engagements
-  // continue to rely on debounced snapshots only.
+  // Journal v2 durability boundary for every engagement. Detached scratch
+  // contexts set this to null explicitly while drafting or validating state.
   mutationJournal: MutationJournal | null;
   journalSnapshotSeq: number;        // last seq that's already in the persisted snapshot
   /**
@@ -346,10 +345,9 @@ export class EngineContext {
   }
 
   /**
-   * P2.1: append a mutation to the WAL when journaling is enabled.
-   * No-op for legacy engagements (no engagement_nonce). Caller must invoke
-   * this BEFORE applying the mutation in memory — the contract is "if it's
-   * in the journal it's durable, regardless of in-memory state."
+   * Append a mutation to the WAL when journaling is attached. Scratch contexts
+   * intentionally detach it; ordinary engagement mutations journal before
+   * applying to memory.
    *
    * Throws on journal write failure; callers must abort the in-memory
    * change in that case.

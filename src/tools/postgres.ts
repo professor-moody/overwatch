@@ -46,6 +46,12 @@ Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
         connection_string: z.string().min(5).describe('postgres:// or postgresql:// connection string'),
         schema: z.string().default('public').describe('Schema to introspect (default: public)'),
       },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     withErrorBoundary('connect_postgres', async ({ connection_string, schema }) => {
       engine.assertPersistenceWritable();
@@ -120,6 +126,12 @@ Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
       inputSchema: {
         schema: z.string().default('public').describe('Schema to list (default: public)'),
       },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     withErrorBoundary('list_postgres_tables', async ({ schema }) => {
       const src = getSource(engine.getConfig().id);
@@ -167,6 +179,12 @@ Examples:
         filter: z.string().optional().describe('SQL WHERE clause (without the WHERE keyword)'),
         limit: z.number().int().min(1).max(50000).default(1000).describe('Maximum rows to ingest (default 1000)'),
         agent_id: z.string().optional().describe('Agent performing the ingest'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
       },
     },
     withErrorBoundary('ingest_postgres_table', async ({ table, mapping, filter, limit, agent_id }) => {

@@ -1,6 +1,6 @@
 # Overwatch — Primary Session Instructions
 
-Authorized offensive-engagement operator. Your state + memory are the Overwatch MCP graph — it holds everything, so you do not carry engagement state in context.
+Authorized offensive-engagement operator. Durable engagement truth lives in Overwatch, so do not rely on conversation context as the source of record.
 
 > **`get_system_prompt(role="primary")` is the authoritative, live version of these instructions** — it embeds the current scope, objectives, state snapshot, OPSEC budget, and the live tool table. Call it first whenever MCP is available. The Core Loop and Key Principles below are the **offline fallback** (a condensed mirror for when MCP is unavailable); the generated prompt wins and is richer.
 
@@ -19,14 +19,14 @@ Authorized offensive-engagement operator. Your state + memory are the Overwatch 
 
 ## Key Principles
 
-- **The graph is your memory** — `get_state()` reconstructs everything after compaction; don't hold state in your head. Default is read-only (`{ snapshot: true }` to also persist a snapshot for retrospective fidelity).
+- **Durable state is your operational memory** — `get_state()` rebuilds the briefing needed after compaction; retrieve evidence, history, transcripts, or a bundle for full-fidelity artifacts. Live handles and unsaved UI state are not reconstructed. Default is read-only (`{ snapshot: true }` also persists a retrospective snapshot).
 - **Thread `frontier_item_id`** through `validate_action` / `log_action_event` / `parse_output` / `report_finding` — without it, retrospective attribution falls back to text heuristics.
 - **Validate before you execute** — `opsec_skipped: true` means OPSEC enforcement is off (scope checked, but not blacklist/noise/time-window).
 - **The deterministic layer is a guardrail, not a brain** — you do the offensive thinking; `graph_metrics.confidence` is a score multiplier (KB/chain boosts can push it >1.0), not a probability.
 - **Report early, report often** — every `report_finding()` triggers inference rules that may surface new paths.
 - **Prevent drift** — never leave useful recon only in prose (`parse_output` / `report_finding` / `ingest_json`); never answer engagement-state questions from memory when `get_state()` is available.
 - **Respect OPSEC** — check the profile in `get_state()`; `get_opsec_status()` for the live noise budget + defensive signals (lockouts, rate limits, honeypots). Enforcement is opt-in (`opsec.enabled: true`; a disabled-but-configured engagement shows an "OPSEC INERT" badge).
-- **Enable local config explicitly** — `.mcp.json` (from `.mcp.example.json`) + `.claude/settings.json` (from the example); see `docs/claude-hooks.md`.
+- **Use one shared daemon by default** — `npm run setup` creates the HTTP MCP wiring and Claude hooks without replacing an existing engagement; then run `npm run build`, `npm run doctor`, and `npm run start:daemon`. Use `npm run setup:stdio` only for an intentional Claude-only compatibility session with no dashboard/CLI workers. See `docs/getting-started.md`.
 - **Right export path** — `bundle_engagement()` for a portable archive (state + evidence + reports + manifest + WAL); `export_graph()` for graph JSON only. `connect_postgres()` is runtime-only (reconnect after restart).
 
 ### Credential-Driven Playbooks
@@ -62,7 +62,7 @@ Console-first IA. The **Console** is the operator's home; nav is grouped **Conso
 
 ### Terminal CLI (`overwatch`)
 
-A standalone terminal operator client over the same `/api/*` surface — for operators who prefer the shell, and runnable in a second pane while the model drives. Start one daemon; Claude, the CLI, dashboard, and dashboard-deployed agents share its task leases and durable playbook ownership. Read includes `status`, `frontier`, `findings`, `agents`, `approvals`, `opsec`, `sessions`, `queries`, and `playbooks`. Operate includes approvals, deploy/dispatch, and playbook prepare/resume/retry/interrupt/skip. `--json` emits compact raw API JSON. These live commands need the engagement running (`npm start -- --http`); loopback needs no auth (remote: `--token`/`OVERWATCH_DASHBOARD_TOKEN`). The offline `overwatch state migrate --check --state-file ... [--config-file ...]` command inspects migration readiness without a daemon or writes. See [Terminal CLI](docs/cli.md).
+A standalone terminal operator client over the same `/api/*` surface — for operators who prefer the shell, and runnable in a second pane while the model drives. Start one daemon; Claude, the CLI, dashboard, and dashboard-deployed agents share its task leases and durable playbook ownership. Read includes `status`, `frontier`, `findings`, `agents`, `approvals`, `opsec`, `sessions`, `queries`, and `playbooks`. Operate includes approvals, deploy/dispatch, and playbook prepare/resume/retry/interrupt/skip. `--json` emits compact raw API JSON. These live commands need the engagement running (`npm run start:daemon`); loopback needs no auth (remote: `--token`/`OVERWATCH_DASHBOARD_TOKEN`). The offline `overwatch state migrate --check --state-file ... [--config-file ...]` command inspects migration readiness without a daemon or writes. See [Terminal CLI](docs/cli.md).
 
 ### Sessions (interactive shells / sockets)
 
@@ -123,112 +123,114 @@ Dispatch assigns each agent a typed **archetype** (bounded tool surface + missio
 - **Web app tester** (`web_tester`) — Web application testing: fuzz endpoints, probe auth, find web vulns. Can open sessions for exploitation. _Done when:_ the target's endpoints and auth surface are mapped as nodes/edges and each candidate weakness is a finding with evidence.
 - **Credential operator** (`credential_operator`) — Validate, spray, and expand credentials/tokens (AWS/Entra/GitHub/OIDC), executing only non-blocked playbook descriptors with explicit credential bindings. _Done when:_ each credential's validity and the access it unlocks is recorded as findings/edges (or the credential is marked invalid).
 - **Post-exploitation** (`post_exploit`) — Work from a foothold: interactive sessions, lateral movement, local enumeration from compromised hosts. _Done when:_ the foothold's reachable assets, captured credentials, and lateral edges are recorded as graph findings.
-- **CVE researcher** (`cve_researcher`) _(read-only)_ — Read the public web for CVEs/PoCs and record findings. Never executes against targets. _Done when:_ research_cve has been called for the service (with candidates, or an empty list if none apply).
-- **Pathfinder** (`pathfinder`) _(read-only)_ — Read-only attack-path analysis: find gaps and next hops to objectives, propose plans. Never executes. _Done when:_ a proposed plan of the highest-value next hops is submitted via propose_plan (or the transcript explains why no viable path exists).
-- **Report scribe** (`report_scribe`) _(read-only)_ — Read-only: turn confirmed graph state + evidence into draft report sections. Never executes against targets. _Done when:_ the requested report sections are drafted from confirmed findings and evidence via generate_report.
+- **CVE researcher** (`cve_researcher`) _(no target execution)_ — Read the public web for CVEs/PoCs and record findings. Never executes against targets. _Done when:_ research_cve has been called for the service (with candidates, or an empty list if none apply).
+- **Pathfinder** (`pathfinder`) _(no target execution)_ — Read-only attack-path analysis: find gaps and next hops to objectives, propose plans. Never executes. _Done when:_ a proposed plan of the highest-value next hops is submitted via propose_plan (or the transcript explains why no viable path exists).
+- **Report scribe** (`report_scribe`) _(no target execution)_ — Read-only: turn confirmed graph state + evidence into draft report sections. Never executes against targets. _Done when:_ the requested report sections are drafted from confirmed findings and evidence via generate_report.
 - **Cloud cartographer** (`cloud_cartographer`) — Enumerate cloud + identity (AWS/Entra/GitHub/OIDC): resolve dependency-aware credential plans, then map federation and cloud-to-on-prem pivots. _Done when:_ each cloud credential's reachable resources, roles, and federation edges are recorded as graph findings.
-- **OPSEC sentinel** (`opsec_sentinel`) _(read-only)_ — Read-only OPSEC monitor: track the noise budget + defensive signals, flag risk, and recommend an approach. Never executes. _Done when:_ the current OPSEC posture and any risk (budget near exhaustion, active defensive signals) is reported for the operator.
-- **Session shepherd** (`session_shepherd`) _(read-only)_ — Watch interactive sessions: read buffers, surface stale/orphaned sessions and their ownership. Read-only — no new target execution. _Done when:_ each open session's state and ownership is reported, with stale/orphaned ones flagged.
-- **Evidence auditor** (`evidence_auditor`) _(read-only)_ — Read-only: audit findings + their evidence chains for proof readiness; surface gaps before reporting. Never executes. _Done when:_ each finding's proof readiness is assessed and the gaps are reported for the operator.
-- **OSINT recon** (`osint_recon`) _(read-only)_ — Passive external-recon: map the attack surface (subdomains, DNS, netblocks/ASNs, orgs, emails) from PUBLIC sources via run_tool (subfinder/amass/crt.sh/whois) + web research. No shells, no sessions, no credential tools. _Done when:_ the in-scope external surface is on the graph (subdomains, domains, asns, orgs, emails via parse_output/report_finding) — nothing left only in stdout.
-- **Research (legacy role)** (`research`) _(read-only)_ — Legacy research role — web research + finding recording, no target execution. _Done when:_ research_cve has been called for the service (with candidates, or an empty list if none apply).
-- **Planner (legacy role)** (`planner`) _(read-only)_ — Legacy planner role — read state and propose plans, never executes or mutates. _Done when:_ a plan of valid ops is submitted via propose_plan, or the transcript explains why the command can't be expressed.
+- **OPSEC sentinel** (`opsec_sentinel`) _(no target execution)_ — Read-only OPSEC monitor: track the noise budget + defensive signals, flag risk, and recommend an approach. Never executes. _Done when:_ the current OPSEC posture and any risk (budget near exhaustion, active defensive signals) is reported for the operator.
+- **Session shepherd** (`session_shepherd`) _(no target execution)_ — Watch interactive sessions: read buffers, surface stale/orphaned sessions and their ownership. Read-only — no new target execution. _Done when:_ each open session's state and ownership is reported, with stale/orphaned ones flagged.
+- **Evidence auditor** (`evidence_auditor`) _(no target execution)_ — Read-only: audit findings + their evidence chains for proof readiness; surface gaps before reporting. Never executes. _Done when:_ each finding's proof readiness is assessed and the gaps are reported for the operator.
+- **OSINT recon** (`osint_recon`) _(no target execution)_ — Passive external-recon: map the attack surface (subdomains, DNS, netblocks/ASNs, orgs, emails) from PUBLIC sources via run_tool (subfinder/amass/crt.sh/whois) + web research. No shells, no sessions, no credential tools. _Done when:_ the in-scope external surface is on the graph (subdomains, domains, asns, orgs, emails via parse_output/report_finding) — nothing left only in stdout.
+- **Research (legacy role)** (`research`) _(no target execution)_ — Legacy research role — web research + finding recording, no target execution. _Done when:_ research_cve has been called for the service (with candidates, or an empty list if none apply).
+- **Planner (legacy role)** (`planner`) _(no target execution)_ — Legacy planner role — read state and propose plans, never executes or mutates. _Done when:_ a plan of valid ops is submitted via propose_plan, or the transcript explains why the command can't be expressed.
 <!-- END:archetypes -->
 
 ## Tool Reference
 
-The server exposes a generated MCP tool registry. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the **live** tool table (the authoritative count + set), engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP) and may lag the live set; treat the generated prompt as source of truth. Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
+The server exposes a generated MCP tool registry. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This checked-in table is the offline fallback; the generator and CI reject drift between it, runtime registration, dashboard categories, and the schema manifest. Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
-| Tool | Purpose | When to use |
-|------|---------|-------------|
-| `get_state` | Full engagement briefing | Start of session, after compaction, periodic check-in |
-| `get_recovery_status` | Inspect WAL/state recovery and active config convergence | Startup diagnostics; whenever durable mutations are read-only |
-| `get_opsec_status` | Read-only OPSEC posture: noise budget spent, recommended approach, observed defensive signals | Before noisy actions; the `opsec_sentinel` agent type monitors this |
-| `next_task` | Filtered frontier candidates | When deciding what to do next |
-| `query_graph` | Open-ended graph exploration | When you see a pattern the frontier misses |
-| `find_paths` | Shortest path to objectives | When evaluating if a discovery opens a route |
-| `validate_action` | Pre-execution sanity check | Before every significant action |
-| `approve_action` | Resolve a pending approval gate as approved (with optional notes) | When an action is awaiting approval and you decide to proceed |
-| `deny_action` | Resolve a pending approval gate as denied (with reason) | When an action is awaiting approval and you decide to block it |
-| `log_action_event` | Record action lifecycle around real execution | Before starting and after finishing a significant action |
-| `log_thought` | Record reasoning, plans, decisions, rejections, reflections | Before committing to a frontier item; whenever you weigh alternatives; after major outcomes |
-| `run_bash` | Auto-instrumented `bash -c` execution | One-shot shell commands — wraps validate → approval → action_started → execute → evidence capture → action_completed/failed → optional parse_with ingest in one call |
-| `run_tool` | Auto-instrumented argv-form binary execution | One-shot tool invocations — same lifecycle as `run_bash` but no shell parsing (safer; preferred when you have a binary + argv) |
-| `parse_output` | Deterministically parse supported tool output into findings | When raw output comes from a supported parser |
-| `report_finding` | Submit discoveries to graph | After every discovery, immediately |
-| `get_evidence` | Retrieve evidence blobs by ID or list by action/finding | After `report_finding` stored evidence; full-fidelity review |
-| `get_finding_readiness` | Per-finding proof-readiness audit (client_ready / needs_validation / draft) + gaps | Read-only; before reporting — the `evidence_auditor` agent type uses this to find which findings still need proof |
-| `register_agent` | Dispatch a sub-agent | When frontier diverges into parallel tasks |
-| `dispatch_agents` | Dispatch multiple agents | Batch agent registration |
-| `get_agent_context` | Scoped view for sub-agents | Called by sub-agents at task start |
-| `update_agent` | Mark agent task done/failed | When a sub-agent finishes |
-| `agent_heartbeat` | Refresh a sub-agent task's `heartbeat_at` so the watchdog doesn't reap it | Long-running sub-agents call this every <120s |
-| `submit_agent_transcript` | Sub-agent wrap-up: short summary + optional raw transcript blob linked to the agent task | Sub-agent should call this **before** the primary marks them done |
-| `ingest_transcript` | Pull an external chat/IDE transcript JSONL into the engagement after the fact | Operator/watcher post-hoc context import |
-| `dispatch_subnet_agents` | One agent per scope CIDR for parallel subnet enumeration | When network sweep needs parallelization across CIDRs |
-| `dispatch_campaign_agents` | Dispatch agents for a campaign's grouped frontier items | When launching a campaign with parallel agents |
-| `manage_campaign` | Create, monitor, pause, resume, or abort campaigns | Campaign lifecycle management |
-| `get_skill` | RAG skill lookup | When you need methodology for a specific scenario |
-| `get_history` | Activity log with pagination | During retrospectives; long engagements |
-| `export_graph` | Complete graph dump | For reporting and retrospectives |
-| `bundle_engagement` | Portable archive with state, evidence, reports, manifest, and WAL journal | Moving or preserving a complete engagement archive |
-| `run_lab_preflight` | Lab readiness (tools, config, graph stage) | Before heavy lab work; supports all engagement profiles |
-| `run_graph_health` | Graph integrity and consistency checks | After large ingests or suspected corruption |
-| `verify_activity_chain` | Verify the tamper-evident hash chain over the activity log | During retrospectives, after suspected log tampering |
-| `get_decision_log` | Derived chain of stages per action/frontier item | "Why did I do X?" introspection; retrospectives |
-| `get_timeline` | Read-only temporal scrubber: what was true at time T | Time-travel debugging; phase reconstruction |
-| `explain_action` | Per-action introspection: linked frontier item, alternatives, validation, approval, outcome | Click-through from a graph node/edge |
-| `validate_token_credential` | Live token replay: confirm a token credential still works and emit VALID_FOR_APP / ASSUMES_ROLE edges | When a token-shaped credential lands and you want to confirm reachability (automatic for credential_test items when dashboard is running) |
-| `test_webapp_credential` | Test a credential against a web app (form / basic / bearer / cookie) and stamp AUTHENTICATED_AS + VALID_ON on success | For `credential_test` items on http/https services — ordinary web auth (non-IdP), where `validate_token_credential` doesn't apply |
-| `expand_aws_credential` | Generate a dependency-aware AWS recon plan | Bind execution, ingest caller identity, then re-expand for account/resource steps |
-| `expand_github_credential` | Generate a paginated GitHub recon plan | Bind the selected token; include repository objects with default branches when known |
-| `expand_oidc_capture` | Generate direct OIDC token replay calls | Validate candidate CI/CD federation roles, then expand minted session credentials |
-| `exchange_refresh_token` | Generate an Entra refresh-token exchange step | Bind the selected token in `OVERWATCH_ENTRA_REFRESH_TOKEN` at execution time |
-| `expand_entra_credential` | Generate a tenant-bound Microsoft Graph plan | Bind `OVERWATCH_ENTRA_TOKEN`; resolve `/me` before tenant-dependent steps when needed |
-| `list_playbook_runs` | List durable playbook runs and ownership | Inspect progress before claiming work from terminal or dashboard |
-| `get_playbook_run` | Inspect one durable run | Read immutable plan revisions, dependencies, attempts, and artifact references |
-| `start_playbook_step` | Prepare and claim one ready step | Returns a stable execution descriptor; does not itself execute the target action |
-| `resume_playbook_run` | Resume an interrupted run | Re-open restart-interrupted steps without rewriting prior attempts |
-| `retry_playbook_step` | Append and prepare a retry | Retry failed/interrupted work without overwriting evidence |
-| `skip_playbook_step` | Skip a non-terminal step | Retain the reason and prior attempts |
-| `interrupt_playbook_attempt` | Release an abandoned claim | Prevent terminal/dashboard ownership conflicts when a prepared descriptor will not run |
-| `complete_playbook_attempt` | Record an explicit terminal attempt outcome | Fallback when the linked runner cannot finalize automatically |
-| `ingest_json` | Generic JSON/JSONL/file-path ingestion using caller-supplied mappings | Unsupported structured output or custom datasets |
-| `connect_postgres` | Open a session-scoped PostgreSQL connection | Temporary database-backed target inspection or ingestion |
-| `list_postgres_tables` | List visible PostgreSQL schemas/tables from the active connection | Before selecting tables to ingest |
-| `ingest_postgres_table` | Ingest rows from a PostgreSQL table into graph nodes | Structured target data import after connection |
-| `generate_report` | Client pentest report (Markdown / HTML / JSON / PDF) | End of engagement; also callable mid-engagement for draft reports |
-| `correct_graph` | Transactional graph repair | Operator corrections |
-| `update_scope` | Expand or contract engagement scope | Discovered pivot networks |
-| `resolve_config_divergence` | Reconcile active config using explicit file or durable-state authority | Only after inspecting recovery status and preserving its exact file/state hashes |
-| `create_engagement` | Build + persist a new engagement config (no hand-edited JSON; create-then-start — restart to activate) | Operator asks to set up a new engagement |
-| `list_engagements` | List persisted engagement configs + which is active | Confirming a created engagement / picking one to activate |
-| `add_objective` | Add an objective to the active engagement | A new goal emerges mid-engagement |
-| `set_opsec` | Update the active engagement's OPSEC policy (confirm-gated; warns on loosening) | Adjust noise ceiling / approval mode / time window |
-| `register_mock_service` | Register operator-controlled infrastructure (decoy listeners / mock services) as graph nodes | Setting up catchers / honeytokens; pass `operator_infra: true` |
-| `propose_plan` | Planner-role sub-agent: submit a free-form operator command as a confirmable plan of ops (directives / scope / approvals) | NL operator cockpit — the planner proposes, the operator confirms, the dashboard executes |
-| `manage_agent_directive` | Steer a running sub-agent: pause/resume/stop/narrow_scope/skip_types/prioritize/instruct (delivered on heartbeat) | Operator steering — per-agent + fleet controls in the cockpit |
-| `acknowledge_agent_directive` | Confirm that a live headless sub-agent received an operator directive | Sub-agent calls this after `agent_heartbeat` delivers `pending_directive`, before honoring it |
-| `ask_operator` | Sub-agent escalates a decision and waits; the answer returns on its heartbeat | At a genuine fork the agent can't resolve |
-| `research_cve` | Record CVE/exploit research against a versioned service | Research agents land applicable candidates, or an empty checked result, after public-web review |
-| `suggest_inference_rule` | Propose custom inference rules | Operator-driven graph logic |
-| `run_retrospective` | Post-engagement analysis, traces | End of engagement |
-| `register_tape_session` | Register a JSON-RPC tape captured by the `overwatch-mcp-tape` proxy | After running the engagement under the proxy |
-| `recompute_objectives` | Refresh objective achievement from graph | After credential or access changes |
-| `ingest_bloodhound` | Import BloodHound JSON collections | AD attack path analysis |
-| `ingest_azurehound` | Import AzureHound / cloud identity JSON | Azure attack paths |
-| `ingest_screenshots` | Ingest gowitness/aquatone PNGs as viewable evidence | After visual recon, attach on-disk screenshots to their web application nodes |
-| `check_tools` | Detect offensive tools on PATH | Environment validation |
-| `track_process` | Track long-running scan PIDs | Background nmap, etc. |
-| `check_processes` | Refresh tracked process status | After scans may have finished |
-| `open_session` | Create persistent interactive session (SSH, PTY, socket). Pass `default_validation` so subsequent sends inherit scope/technique. | Long-lived shell, reverse shell catch |
-| `write_session` | Write raw bytes to a session — I/O primitive, **bypasses the action lifecycle**. Pass the last connection ID/generation to reject stale reconnects. | Partial input (passwords, REPL nav) |
-| `read_session` | Generation-aware cursor read from session buffer | Incremental output |
-| `send_to_session` | **Instrumented** command execution: validates scope, persists evidence, emits action_started/completed. | All command-shaped sends; the audited path |
-| `list_sessions` | List sessions (`{ total, active, sessions }`) | Session inventory |
-| `resume_session` | Explicitly rebind a recovered rearm listener | When a listener is `resume_available` after restart |
-| `update_session` | Metadata, ownership, capabilities | After shell upgrade |
-| `resize_session` | PTY terminal size | After layout changes |
-| `signal_session` | SIGINT, SIGTERM, etc. | Cancel hung commands |
-| `close_session` | Close and destroy session | Returns final output |
-| `get_system_prompt` | Dynamic instructions from state | **Preferred** session bootstrap |
+<!-- BEGIN:tool-inventory -->
+| Tool | Purpose | Category | Persistence |
+|------|---------|----------|-------------|
+| [`find_paths`](docs/tools/find-paths.md) | Find paths through the graph from current access to objectives or between specific nodes. | State & readiness | Read-only |
+| [`get_opsec_status`](docs/tools/get-opsec-status.md) | Read the engagement's OPSEC posture: noise budget spent, the recommended approach (quiet/normal/loud), and any defensive signals observed (lockouts, rate limits, honeypots, connection resets, blocks). | State & readiness | Read-only |
+| [`get_recovery_status`](docs/tools/get-recovery-status.md) | Inspect WAL/state recovery, persisted state/journal format migration, active file/runtime/state configuration convergence, and unresolved detached-process ownership. | State & readiness | Read-only |
+| [`get_skill`](docs/tools/get-skill.md) | Search the skill library for methodology guidance relevant to a scenario. | State & readiness | Read-only |
+| [`get_state`](docs/tools/get-state.md) | Returns the current operational briefing synthesized from durable engagement state. | State & readiness | Conditional |
+| [`get_system_prompt`](docs/tools/get-system-prompt.md) | Generate a dynamic system prompt for an MCP consumer based on the current engagement state. | State & readiness | Conditional |
+| [`next_task`](docs/tools/next-task.md) | Returns frontier items (candidate next actions) with graph context attached. | State & readiness | Mutating |
+| [`query_graph`](docs/tools/query-graph.md) | Direct access to the engagement graph for open-ended analysis. | State & readiness | Read-only |
+| [`run_graph_health`](docs/tools/run-graph-health.md) | Run read-only graph integrity checks across the current engagement graph. | State & readiness | Read-only |
+| [`run_lab_preflight`](docs/tools/run-lab-preflight.md) | Run a read-only lab-readiness check for the current engagement. | State & readiness | Read-only |
+| [`approve_action`](docs/tools/approve-action.md) | Approve a currently pending Overwatch action by action_id. | Execution & approval | Mutating |
+| [`check_processes`](docs/tools/check-processes.md) | List all tracked processes and their current status. | Execution & approval | Mutating |
+| [`check_tools`](docs/tools/check-tools.md) | Check which offensive security tools are installed on this system. | Execution & approval | Read-only |
+| [`deny_action`](docs/tools/deny-action.md) | Deny a currently pending Overwatch action by action_id. | Execution & approval | Mutating |
+| [`log_action_event`](docs/tools/log-action-event.md) | Record a structured action lifecycle event for work Overwatch cannot observe directly. | Execution & approval | Mutating |
+| [`log_thought`](docs/tools/log-thought.md) | Persist a piece of the agent's reasoning into the engagement activity log. | Execution & approval | Mutating |
+| [`run_bash`](docs/tools/run-bash.md) | Execute a shell command via bash -c with full action-lifecycle instrumentation. | Execution & approval | Mutating |
+| [`run_tool`](docs/tools/run-tool.md) | Execute a binary with an explicit argv array, fully instrumented like run_bash. | Execution & approval | Mutating |
+| [`track_process`](docs/tools/track-process.md) | Register a long-running scan or process for tracking. | Execution & approval | Mutating |
+| [`validate_action`](docs/tools/validate-action.md) | Validate a proposed action against the graph state and OPSEC policy BEFORE executing it. | Execution & approval | Mutating |
+| [`correct_graph`](docs/tools/correct-graph.md) | Repair existing graph state explicitly and transactionally. | Graph & data | Mutating |
+| [`export_graph`](docs/tools/export-graph.md) | Export the complete engagement graph with all nodes, edges, and properties. | Graph & data | Read-only |
+| [`get_evidence`](docs/tools/get-evidence.md) | Retrieve full-fidelity evidence stored during findings. | Graph & data | Read-only |
+| [`get_finding_readiness`](docs/tools/get-finding-readiness.md) | Audit findings for proof readiness before reporting. | Graph & data | Read-only |
+| [`ingest_azurehound`](docs/tools/ingest-azurehound.md) | Parse and ingest AzureHound or ROADtools JSON output into the engagement graph. | Graph & data | Mutating |
+| [`ingest_bloodhound`](docs/tools/ingest-bloodhound.md) | Parse and ingest SharpHound or bloodhound-python JSON output into the engagement graph. | Graph & data | Mutating |
+| [`ingest_json`](docs/tools/ingest-json.md) | Ingest tool output in JSON or JSONL format directly into the engagement graph without a dedicated parser. | Graph & data | Mutating |
+| [`ingest_screenshots`](docs/tools/ingest-screenshots.md) | Read a visual-recon report's PNG files off disk and ingest them so they're VIEWABLE in the dashboard. | Graph & data | Mutating |
+| [`parse_output`](docs/tools/parse-output.md) | Parse raw output from common offensive tools into structured graph data. | Graph & data | Mutating |
+| [`recompute_objectives`](docs/tools/recompute-objectives.md) | Re-evaluate all engagement objectives from the current graph state. | Graph & data | Mutating |
+| [`report_finding`](docs/tools/report-finding.md) | Report a discovery from agent execution. | Graph & data | Mutating |
+| [`suggest_inference_rule`](docs/tools/suggest-inference-rule.md) | Propose a new inference rule to add to the engagement's active rule set. | Graph & data | Mutating |
+| [`acknowledge_agent_directive`](docs/tools/acknowledge-agent-directive.md) | Sub-agents call this to confirm they received a steering directive (delivered via the pending_directive field on agent_heartbeat). | Agents & planning | Mutating |
+| [`agent_heartbeat`](docs/tools/agent-heartbeat.md) | Sub-agents call this periodically (recommended every 30–60 seconds) to signal liveness. | Agents & planning | Mutating |
+| [`ask_operator`](docs/tools/ask-operator.md) | Escalate a decision to the human operator and WAIT for their answer. | Agents & planning | Mutating |
+| [`dispatch_agents`](docs/tools/dispatch-agents.md) | Batch-register sub-agent tasks from the current filtered frontier. | Agents & planning | Mutating |
+| [`dispatch_campaign_agents`](docs/tools/dispatch-campaign-agents.md) | Dispatch sub-agents for each item in a campaign, using campaign-aware scoping. | Agents & planning | Mutating |
+| [`dispatch_subnet_agents`](docs/tools/dispatch-subnet-agents.md) | Dispatch one sub-agent per scope CIDR for parallel network enumeration. | Agents & planning | Mutating |
+| [`get_agent_context`](docs/tools/get-agent-context.md) | Returns the scoped subgraph view for a registered agent. | Agents & planning | Read-only |
+| [`manage_agent_directive`](docs/tools/manage-agent-directive.md) | Steer a running sub-agent. | Agents & planning | Mutating |
+| [`manage_campaign`](docs/tools/manage-campaign.md) | Create, control, and manage campaigns. | Agents & planning | Mutating |
+| [`propose_plan`](docs/tools/propose-plan.md) | Submit a plan of operator operations for the human operator to confirm. | Agents & planning | Mutating |
+| [`register_agent`](docs/tools/register-agent.md) | Register a new sub-agent task. | Agents & planning | Mutating |
+| [`research_cve`](docs/tools/research-cve.md) | Record the outcome of operator-style CVE/exploit research for a versioned service. | Agents & planning | Mutating |
+| [`submit_agent_transcript`](docs/tools/transcripts.md) | Sub-agent wrap-up: hand the primary session a short summary plus an optional raw transcript blob. | Agents & planning | Mutating |
+| [`update_agent`](docs/tools/update-agent.md) | Update the status of a running agent task. | Agents & planning | Mutating |
+| [`complete_playbook_attempt`](docs/tools/cloud-playbooks.md) | Record a pre-execution failure or the durable outcome and evidence/finding references for an attempt that crossed the instrumented execution boundary. | Credentials & playbooks | Mutating |
+| [`connect_postgres`](docs/tools/postgres.md) | Establish a read-only connection to an operator-controlled PostgreSQL database. | Credentials & playbooks | Mutating |
+| [`exchange_refresh_token`](docs/tools/cloud-playbooks.md) | Generate a step to exchange a captured Entra refresh token for a fresh access token via Microsoft's /oauth2/v2.0/token endpoint. | Credentials & playbooks | Mutating |
+| [`expand_aws_credential`](docs/tools/cloud-playbooks.md) | Generate a dependency-aware AWS reconnaissance plan for a captured credential. | Credentials & playbooks | Mutating |
+| [`expand_entra_credential`](docs/tools/cloud-playbooks.md) | Generate a tenant-dump recon plan for a captured Entra access token. | Credentials & playbooks | Mutating |
+| [`expand_github_credential`](docs/tools/cloud-playbooks.md) | Generate a structured recon plan for a captured GitHub credential (PAT / OAuth token / fine-grained PAT / GitHub App installation token). | Credentials & playbooks | Mutating |
+| [`expand_oidc_capture`](docs/tools/cloud-playbooks.md) | For a captured OIDC token (GitHub Actions / GitLab CI / CircleCI), walk the inferred ASSUMES_ROLE edges (from OIDC_FEDERATION_PIVOT) and emit one validate_token_credential step per candidate cloud role. | Credentials & playbooks | Mutating |
+| [`get_playbook_run`](docs/tools/cloud-playbooks.md) | Inspect one durable credential-playbook run, including every retained plan revision and attempt. | Credentials & playbooks | Read-only |
+| [`ingest_postgres_table`](docs/tools/postgres.md) | Read rows from a postgres table and ingest them into the engagement graph. | Credentials & playbooks | Mutating |
+| [`interrupt_playbook_attempt`](docs/tools/cloud-playbooks.md) | Release an active step claim that will not be executed or completed. | Credentials & playbooks | Mutating |
+| [`list_playbook_runs`](docs/tools/cloud-playbooks.md) | List durable credential-playbook runs, their step states, and append-only attempts. | Credentials & playbooks | Read-only |
+| [`list_postgres_tables`](docs/tools/postgres.md) | List tables and columns in the connected postgres database. | Credentials & playbooks | Read-only |
+| [`resume_playbook_run`](docs/tools/cloud-playbooks.md) | Re-open interrupted steps after restart. | Credentials & playbooks | Mutating |
+| [`retry_playbook_step`](docs/tools/cloud-playbooks.md) | Append a new attempt for a failed or interrupted step and return its resolved execution descriptor. | Credentials & playbooks | Mutating |
+| [`skip_playbook_step`](docs/tools/cloud-playbooks.md) | Skip one non-terminal step while retaining the reason and every prior attempt. | Credentials & playbooks | Mutating |
+| [`start_playbook_step`](docs/tools/cloud-playbooks.md) | Reserve exactly one ready playbook step and return its resolved execution descriptor. | Credentials & playbooks | Mutating |
+| [`test_webapp_credential`](docs/tools/test-webapp-credential.md) | Test a credential already in the graph against a web application in one call, then record the result so credential coverage retires and authenticated re-scan fires. | Credentials & playbooks | Mutating |
+| [`validate_token_credential`](docs/tools/token-credential.md) | Probe an IdP / cloud API with a captured token credential to confirm it actually authenticates, then update the credential's status + emit a VALID_FOR_APP edge based on the response. | Credentials & playbooks | Mutating |
+| [`close_session`](docs/tools/sessions.md) | Close and destroy a session. | Sessions & runtime | Mutating |
+| [`list_sessions`](docs/tools/sessions.md) | List all sessions with metadata (no output buffers). | Sessions & runtime | Read-only |
+| [`open_session`](docs/tools/sessions.md) | Create a new persistent interactive session. | Sessions & runtime | Mutating |
+| [`read_session`](docs/tools/sessions.md) | Read output from a session buffer using cursor-based positioning. | Sessions & runtime | Read-only |
+| [`register_mock_service`](docs/tools/register-mock-service.md) | Register an operator-controlled decoy / listener / relay as a first-class node in the engagement graph. | Sessions & runtime | Mutating |
+| [`resize_session`](docs/tools/sessions.md) | Resize terminal dimensions. | Sessions & runtime | Mutating |
+| [`resume_session`](docs/tools/sessions.md) | Explicitly rebind a recovered rearm socket listener. | Sessions & runtime | Mutating |
+| [`send_to_session`](docs/tools/sessions.md) | Run a command in a persistent session with full action-lifecycle instrumentation. | Sessions & runtime | Mutating |
+| [`signal_session`](docs/tools/sessions.md) | Send a signal to the session process. | Sessions & runtime | Mutating |
+| [`update_session`](docs/tools/sessions.md) | Update session metadata: capabilities, title, notes, or ownership. | Sessions & runtime | Mutating |
+| [`write_session`](docs/tools/sessions.md) | Write raw bytes to a session. | Sessions & runtime | Mutating |
+| [`add_objective`](docs/tools/add-objective.md) | Add an objective (goal) to the ACTIVE engagement. | Configuration & scope | Mutating |
+| [`create_engagement`](docs/tools/create-engagement.md) | Build + persist a new engagement config so nobody hand-edits engagement.json. | Configuration & scope | Mutating |
+| [`list_engagements`](docs/tools/list-engagements.md) | List the persisted engagement configs (engagements/.json) and which one is currently active. | Configuration & scope | Read-only |
+| [`resolve_config_divergence`](docs/tools/resolve-config-divergence.md) | Explicitly choose file or durable-state authority when active configuration representations diverge. | Configuration & scope | Mutating |
+| [`set_opsec`](docs/tools/set-opsec.md) | Update the ACTIVE engagement's OPSEC policy (noise ceiling, enforcement, approval mode, time window, technique blacklist) — no hand-edited config. | Configuration & scope | Mutating |
+| [`update_scope`](docs/tools/update-scope.md) | Expand or contract the engagement scope at runtime. | Configuration & scope | Mutating |
+| [`bundle_engagement`](docs/tools/bundle-engagement.md) | Package all engagement artefacts into a single portable .tar.gz archive. | Audit & reporting | Mutating |
+| [`explain_action`](docs/tools/explain-action.md) | Returns the full "why" for any action_id: the frontier item that motivated it, the agent's recorded thoughts and considered alternatives, prior action references, validation and approval state, and the terminal outcome. | Audit & reporting | Read-only |
+| [`generate_report`](docs/tools/generate-report.md) | Generate a comprehensive penetration test report from the engagement graph and activity history. | Audit & reporting | Mutating |
+| [`get_decision_log`](docs/tools/get-decision-log.md) | Returns the derived decision log: each entry is one decision (frontier item or action) with its full chain of stages — frontier_emitted → agent_picked → log_thought → validated → approved/denied → started → completed/… | Audit & reporting | Read-only |
+| [`get_history`](docs/tools/get-history.md) | Returns paginated activity log entries for the engagement. | Audit & reporting | Read-only |
+| [`get_timeline`](docs/tools/get-timeline.md) | Returns per-node and per-edge timeline entries. | Audit & reporting | Read-only |
+| [`ingest_transcript`](docs/tools/transcripts.md) | Pull an external chat/IDE transcript JSONL into the engagement after the fact. | Audit & reporting | Mutating |
+| [`register_tape_session`](docs/tools/tape-sessions.md) | Register an external JSON-RPC tape (produced by overwatch-mcp-tape) with this engagement. | Audit & reporting | Mutating |
+| [`run_retrospective`](docs/tools/run-retrospective.md) | Perform a structured post-engagement retrospective analysis. | Audit & reporting | Mutating |
+| [`verify_activity_chain`](docs/tools/verify-activity-chain.md) | Verify the tamper-evident hash chain over the engagement's live activity log. | Audit & reporting | Read-only |
+<!-- END:tool-inventory -->

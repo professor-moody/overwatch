@@ -1,12 +1,13 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   BUILD_INFO_FILE,
   buildInputFingerprint,
   currentGitSha,
 } from './build-fingerprint.mjs';
 
-const root = resolve(dirname(new URL(import.meta.url).pathname), '..');
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const input = buildInputFingerprint(root);
 const output = join(root, BUILD_INFO_FILE);
 mkdirSync(dirname(output), { recursive: true });

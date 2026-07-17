@@ -692,7 +692,7 @@ export interface EngagementConfig {
   max_prompt_tokens?: number;     // Token budget for system prompt generation (default 8000)
   iam_assume_depth?: number;      // Max ASSUMES_ROLE hops for IAM simulation (default 5)
   hash_chain_enabled?: boolean;   // Enable tamper-evident hash chain over agent/system events (default TRUE for new engagements; legacy engagements without the flag set keep their original behavior)
-  /** Optional signing key identifier used to sign chain checkpoints. Implementation stub today. */
+  /** Compatibility metadata for a checkpoint signing key. Active signing keys are loaded from the documented environment variables. */
   engagement_signing_key_id?: string;
   /**
    * P1.2: per-engagement nonce (32 random bytes hex-encoded). Generated
@@ -704,14 +704,9 @@ export interface EngagementConfig {
    */
   engagement_nonce?: string;
   /**
-   * P4.2: where sub-agents run.
-   *  - 'in_process' (default) — current behavior: sub-agents share memory
-   *    with the engine and call MCP tools directly.
-   *  - 'process' — sub-agents run in a child Node process and communicate
-   *    over JSON-over-stdio per `subagent-ipc.ts`. Per the scoping
-   *    decision, this is scaffolded and proven on the recon-scoping
-   *    role; other roles fall back to in_process even when the flag
-   *    is set, until follow-up work fills out coverage.
+   * Compatibility setting for the legacy Node IPC sub-agent scaffold.
+   * Current daemon-managed agents use supervised headless MCP workers and do
+   * not select their backend through this field.
    */
   subagent_isolation?: 'in_process' | 'process';
   /**
@@ -896,8 +891,8 @@ export const engagementConfigSchema = z.object({
   // throw, but engagement creation will populate it for new engagements.
   // 64-char hex (32 bytes). The runtime treats absence as "stay on UUIDs."
   engagement_nonce: z.string().regex(/^[0-9a-f]{64}$/).optional(),
-  // P4.2: sub-agent isolation mode. Default keeps the in-process path
-  // every existing engagement uses today.
+  // Compatibility setting for the legacy Node IPC scaffold. Current managed
+  // Claude workers select their backend through task execution instead.
   subagent_isolation: z.enum(['in_process', 'process']).default('in_process'),
   // P2: CVE research toggle. Default enabled; set false for air-gapped engagements.
   cve_research: z.object({ enabled: z.boolean().optional() }).optional(),

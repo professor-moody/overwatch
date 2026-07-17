@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OperatorCommandBar } from '../OperatorCommandBar';
 import { POLL } from '../../../lib/polling';
@@ -43,6 +43,7 @@ const plan: api.ProposedPlan = {
 describe('OperatorCommandBar durable planner rendering', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.clearAllMocks();
     sessionStorage.clear();
     vi.mocked(api.getActiveApplicationCommands).mockResolvedValue({ commands: [accepted] });
     vi.mocked(api.getApplicationCommand).mockResolvedValue({ command: accepted });
@@ -72,5 +73,52 @@ describe('OperatorCommandBar durable planner rendering', () => {
     });
     expect(screen.getByText(/Planner proposed:/)).toHaveTextContent(plan.summary);
     expect(screen.getByRole('button', { name: 'Confirm & run' })).toBeInTheDocument();
+  });
+
+  it('does not let late active-command discovery replace a newly submitted planner', async () => {
+    let resolveDiscovery!: (value: { commands: api.ApplicationCommandRecord[] }) => void;
+    vi.mocked(api.getActiveApplicationCommands).mockReturnValue(new Promise(resolve => {
+      resolveDiscovery = resolve;
+    }));
+    const newCommand: api.ApplicationCommandRecord = {
+      ...accepted,
+      command_id: 'planner-command-new',
+      entity_refs: { planner_task_id: 'planner-task-new' },
+    };
+    vi.mocked(api.previewCommand).mockResolvedValue({
+      plan_id: undefined,
+      ops: [],
+      summary: 'Planner requested',
+      unresolved: [{ text: 'investigate the new target', reason: 'planner needed' }],
+      needs_planner: true,
+      planner_task_id: 'planner-task-new',
+      command_id: 'planner-command-new',
+      planner_status: 'accepted',
+      planner_available: true,
+    });
+    vi.mocked(api.getApplicationCommand).mockResolvedValue({ command: newCommand });
+
+    render(<OperatorCommandBar />);
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'investigate the new target' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.getApplicationCommand).toHaveBeenCalledWith(
+      'planner-command-new',
+      expect.any(AbortSignal),
+    );
+
+    await act(async () => {
+      resolveDiscovery({ commands: [accepted] });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(vi.mocked(api.getApplicationCommand).mock.calls
+      .some(([commandId]) => commandId === accepted.command_id)).toBe(false);
+    expect(screen.getByText(/Planner is queued/)).toBeInTheDocument();
   });
 });

@@ -35,7 +35,7 @@ This helps coordinate async work — agents can check if their scans are done be
 ## Usage Notes
 
 - Track any long-running scan to coordinate with `check_processes`
-- Process state is persisted — survives server restarts
+- The tracking descriptor is persisted and its physical identity is reverified after restart
 - Associate with `target_node` for graph context
 - `task_id` and `action_id` can link the process to canonical coordination and action records
 - Adopted processes are observed, not owned: Overwatch never signals them after restart

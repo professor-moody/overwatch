@@ -98,13 +98,15 @@ Overwatch survives compaction because the graph lives outside the context window
 
 1. Claude Code starts a fresh context
 2. The `AGENTS.md` instructions tell it to call `get_state()` first
-3. `get_state()` reconstructs a complete briefing from the graph:
+3. `get_state()` reconstructs the current operational briefing from durable state:
     - Scope and objectives
     - All discoveries and access
     - Current frontier items
     - Active agents
     - Recent activity
-4. The LLM receives the durable operational truth needed to continue. Live
+4. The LLM receives the durable operational truth needed to continue. Full
+   evidence bodies, long history, and external artifacts remain separately
+   retrievable; the briefing is intentionally bounded. Live
    runtime handles are reported honestly as interrupted or resume-available
    rather than being presented as still connected.
 
@@ -166,7 +168,7 @@ The `action_id` links all steps together. This enables:
 - **RLVR training traces** — state→action→outcome triplets
 - **Audit trail** — every graph change is attributable to a specific action
 
-**Action ID determinism.** Engagements created with an `engagement_nonce` (the strict-migration boundary; see [Configuration](configuration.md#deterministic-id-and-replay)) get **deterministic** `action_id`s of the form `act_<16hex>` derived from `sha256(nonce | agent_id | timestamp | command_signature | sequence)`. Same inputs always produce the same `action_id`. Legacy engagements (no nonce) keep `uuidv4` IDs.
+**Action ID determinism.** Engagements created with an `engagement_nonce` (the strict-migration boundary; see [Configuration](configuration.md#durable-transactions-deterministic-ids-and-replay)) get **deterministic** `action_id`s of the form `act_<16hex>` derived from `sha256(nonce | agent_id | timestamp | command_signature | sequence)`. Same inputs always produce the same `action_id`. Legacy engagements (no nonce) keep `uuidv4` IDs.
 
 **Frontier leases.** When an agent claims a frontier item via `register_agent`, the engine takes a TTL lease (default 600s). A second agent attempting to claim the same item gets `lease_conflict` rather than racing. Heartbeats extend the lease; terminal status releases it; the [agent watchdog](#agent-heartbeat-and-watchdog) reaps expired leases.
 

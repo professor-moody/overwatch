@@ -28,6 +28,23 @@ git log --date=short --pretty=format:'| `%h` | %ad | AREA | %s | RESULT |' --max
 
 | Commit | Date | Area | Work Step | Operator-Visible Result |
 |--------|------|------|-----------|-------------------------|
+| PR15 release | 2026-07-17 | Public contracts/docs | Generated tool schemas, categories, archetype inventories, capability counts, and drift gates; made shared-daemon setup the default and reconciled public architecture/recovery claims. | New operators reach the one-daemon workflow by default, terminal Claude and dashboard workers coexist without sharing sessions, and stale public inventories fail CI. |
+| `8a25fc7` | 2026-07-17 | Reliability gates | Added deterministic semantic journeys, crash/restart coverage, and mandatory browser CI. | Recovery, command, campaign, playbook, token, and reconnect behavior now fail CI when their operator journeys regress. |
+| `ee5d37f` | 2026-07-17 | Architecture/performance | Decomposed stabilized hotspots and bounded dashboard projection/delta work. | Large engagements avoid unnecessary full-state work and the initial dashboard bundle is held to a budget. |
+| `1881cd3` | 2026-07-16 | Playbooks | Added durable playbook definitions, runs, steps, attempts, ownership, and retry/resume operations. | Terminal and dashboard operators can coordinate credential expansion without overwriting evidence or claiming the same step. |
+| `38ca6d2` | 2026-07-16 | Planner startup | Added build-freshness and runtime diagnostics around planner startup. | A stale daemon/build is reported instead of masquerading as a current planner that times out or returns old UI text. |
+| `028f641` | 2026-07-16 | Planner isolation | Isolated managed Claude workers from interactive terminal Claude project settings. | Dashboard-deployed planners and agents can run beside the operator's terminal Claude without sharing process-local configuration. |
+| `02ada7a` | 2026-07-16 | Dashboard contracts | Established shared compatibility contracts, endpoint/WS manifests, and authoritative projectors. | REST, full-state, and WebSocket views agree on agents, campaigns, graph state, and console events. |
+| `20698fe` | 2026-07-16 | Application commands | Introduced transport-neutral, idempotent command services. | MCP, dashboard, CLI, planners, and runners use one durable mutation boundary and duplicate commands return their original outcome. |
+| `a2d0c44` | 2026-07-16 | Sessions | Persisted listener intent and connection generations with explicit resume. | Restarts no longer present dead sockets as live; rearmed listeners require an operator Resume and new connections get fresh generations. |
+| `284f42b` | 2026-07-16 | Process ownership | Added durable runtime-run ownership and supervisor handshakes. | Startup can distinguish verified orphans from reused/unverifiable PIDs and finalize interrupted work once. |
+| `755f1ab` | 2026-07-16 | Agent coordination | Normalized task identity and persisted proposals, questions, answers, and lifecycle state. | Agent attribution survives restart without guessing ambiguous labels, and open operator decisions return to the inbox. |
+| `3257e16` | 2026-07-16 | Transaction journal | Established transaction journal v2 and the canonical mutation applier. | Only checksum-valid committed transactions replay; post-commit apply failures stop writes and recover through the same applier. |
+| `bbb6cd3` | 2026-07-16 | State migration | Added explicit persisted-state versions, backup-first migration, and compatibility checks. | Legacy engagements can be checked/migrated without silent reseeding, while newer unsupported formats open read-only. |
+| `c7cc7d5` | 2026-07-15 | Config/scope durability | Made active config, state, scope promotion, and recovery revisioned and crash-consistent. | Config divergence is explicit and reconcilable without discarding the current engagement graph. |
+| `a9da490` | 2026-07-15 | Dashboard correctness | Corrected frontier, campaign, agent, graph, settings, health, objective, token, and socket semantics. | The operator dashboard reflects backend state, supports remote-token mode, and reconnects without duplicate sockets. |
+| `53c7870` | 2026-07-15 | Parser/playbooks | Unified parser context/outcomes and repaired AWS, GitHub, and Entra expansion. | A zero-yield requested parse is visible as failure, context survives every execution path, and cloud steps land what they advertise. |
+| `98ee0f0` | 2026-07-15 | WAL recovery | Made base selection and WAL replay non-destructive. | Malformed or unknown records preserve their remaining tail, and a missing valid base enters degraded read-only recovery rather than creating an empty engagement. |
 | `b16514f` | 2026-05-27 | Operator trust surfaces | Added `/api/trust-signals`, dashboard trust summaries, graph inspector signals, report verification notes, and route-smoke/demo coverage. | Operators can see when a no-finding, no-path, IAM decision, parser output, or CVSS score needs verification across Overview, Activity, Findings, Graph, Smoke, and reports. |
 | `29c7e34` | 2026-05-27 | Dashboard trust signals | Surfaced correctness caveats from parser, ingest, path, IAM, and CVSS work in dashboard panels and deferred Bedrock integration to a separate plan. | Activity and Findings now show compact trust labels instead of burying uncertainty in raw JSON. |
 | `837d4d2` | 2026-05-27 | Durability/testing | Added regression coverage for state persistence, parsers, process edge cases, and correctness fixes. | The reliability sprint has tests around crash-safe persistence, parser edge cases, and subprocess failure modes. |
@@ -63,6 +80,17 @@ git log --date=short --pretty=format:'| `%h` | %ad | AREA | %s | RESULT |' --max
 | `9bbebf6` | 2026-05-14 | Roadmap phase | Added ingest expansion, report commands, graph zoom fixes, Postgres support, and docs. | The tool gained broader ingestion/reporting capability and corresponding operator documentation. |
 
 ## Milestone Narrative
+
+### Reliability, Workflow, And Architecture Program (PR1–PR15)
+
+Commits `98ee0f0` through `8a25fc7` form the July reliability train. The work
+first closed destructive recovery, parser, dashboard, and config correctness
+gaps; then versioned durable state and established one committed transaction
+boundary. It subsequently made coordination, process ownership, sessions,
+commands, dashboard contracts, and playbooks restart-truthful before adding
+performance bounds and semantic crash/browser gates. The PR15 release closes
+the train with generated public inventories, shared-daemon startup defaults,
+and documentation aligned to the resulting runtime.
 
 ### Ingest, Reporting, And Bundle Foundations
 

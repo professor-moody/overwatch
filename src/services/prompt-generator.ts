@@ -9,6 +9,8 @@ import { inferProfile } from '../types.js';
 import { timeToExpiry } from './credential-utils.js';
 import { doneTestFor, getArchetype, isArchetypeId } from './agent-archetypes.js';
 import type { TechniqueStats } from './knowledge-base.js';
+import type { ToolEntry } from './tool-descriptor-registry.js';
+export type { ToolEntry } from './tool-descriptor-registry.js';
 
 interface PromptContext {
   state: EngagementState;
@@ -103,17 +105,6 @@ interface PrioritizedSection {
   priority: SectionPriority;
   label: string;
   summarizable?: boolean;  // can be replaced with a summary when over budget
-}
-
-export interface ToolEntry {
-  name: string;
-  title?: string;
-  description: string;
-  category?: string;
-  read_only?: boolean;
-  destructive?: boolean;
-  idempotent?: boolean;
-  open_world?: boolean;
 }
 
 export function generateSystemPrompt(
@@ -577,7 +568,7 @@ function generateIdentitySection(config: EngagementConfig): string {
   const lines = [
     '# Overwatch — Primary Session Instructions',
     '',
-    'Authorized offensive-engagement operator. Your state + memory are the Overwatch MCP graph — it holds everything, so you do not carry engagement state in context.',
+    'Authorized offensive-engagement operator. Durable engagement truth lives in Overwatch, so do not rely on conversation context as the source of record.',
     '',
     '## Engagement Briefing',
     '',
@@ -613,7 +604,7 @@ function generateCoreLoopSection(profile: LabProfile, opsecEnabled: boolean): st
   const opsecScoringLine = opsecEnabled ? "\n   - What's the risk/reward ratio given our OPSEC profile?" : '';
   const base = `## Core Loop
 
-1. **Start every session** (including after compaction) by calling \`get_state()\`. This gives you the complete engagement briefing from the graph — scope, discoveries, access, objectives, frontier.
+1. **Start every session** (including after compaction) by calling \`get_state()\`. This gives you the current operational briefing from durable state — scope, discoveries, access, objectives, frontier.
 
 2. **Assess the frontier** by calling \`next_task()\`. You'll receive candidate actions pre-filtered by the deterministic layer (${vetoNote}). Everything else is yours to score.
 
@@ -714,7 +705,7 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
   const lines = [
     '## Key Principles',
     '',
-    '- **The graph is your memory.** After compaction, `get_state()` reconstructs everything. The default invocation is now genuinely read-only — pass `{ snapshot: true }` at session bootstrap or when you want the call to also persist a state snapshot for retrospective fidelity.',
+    '- **Durable state is your operational memory.** After compaction, `get_state()` rebuilds the briefing needed to continue; use evidence, history, transcripts, and bundles for full-fidelity artifacts. Live PTYs, sockets, process objects, database connections, and unsaved UI state are not reconstructed. The default invocation is read-only — pass `{ snapshot: true }` when you also want to persist a retrospective snapshot.',
     '- **Report early, report often.** Every `report_finding()` call triggers inference rules.',
     '- **Use structured action logging.** `validate_action()` → `log_action_event()` for causal linkage.',
     '- **Thread `frontier_item_id` through every call.** Pass it to `validate_action`, `log_action_event`, `parse_output`, and `report_finding`. Without it, retrospective attribution falls back to text heuristics. The `validate_action` response returns `frontier_item_id` and `frontier_type` for easy reference.',

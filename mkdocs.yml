@@ -94,9 +94,10 @@ nav:
     - Overview: architecture.md
     - Drivers (Decision Record): deployment-architecture.md
     - Tape Recording: tape-recording.md
-    - Architecture Review: architecture-review.md
-    - Prompt Architecture Review: prompt-architecture-review.md
     - Prompt Step (b) — Lean Sub-Agent: prompt-stepb-design.md
+    - Archived Reviews:
+      - Architecture Review (2026-04-04 snapshot): architecture-review.md
+      - Prompt Architecture Review (2026-06-28): prompt-architecture-review.md
   - Tool Reference:
     - tools/index.md
     - Engagement Setup:

@@ -1,12 +1,29 @@
-# Overwatch — Architecture & Codebase Review
+# Archived: Overwatch Architecture & Codebase Review
+
+!!! warning "Historical review — do not use as the current architecture reference"
+    This review is a snapshot begun on **2026-03-23** and last reconciled on
+    **2026-04-04**. It predates the July 2026 reliability and architecture train
+    (PR1–PR14). Its service boundaries, counts, persistence model, dashboard
+    mutability, and recovery claims are retained for historical context. Use
+    [Architecture](architecture.md), [Runtime Model](runtime-model.md), the
+    generated [Tool Reference](tools/index.md), and
+    [Development Timeline](development-timeline.md) for current behavior.
 
 > Offensive security engagement orchestrator — MCP server with graph-based state management
 
 ## Executive Summary
 
-Overwatch is an MCP (Model Context Protocol) server that acts as the persistent state layer and reasoning substrate for LLM-powered penetration testing. Rather than stuffing engagement state into prompts, the LLM calls into a **persistent graph engine** that tracks every discovery, relationship, and hypothesis. After context compaction, a single `get_state()` call reconstructs a complete operational briefing with zero information loss.
+At the time of this review, Overwatch was described as an MCP server backed by a
+persistent graph engine. The old text overstated `get_state` as lossless recovery.
+In the current product, `get_state` is an operational briefing; full evidence,
+history, artifacts, and portable state use their dedicated read/export surfaces,
+and live runtime handles are not reconstructed after restart.
 
-The server exposes **83 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, operator infrastructure, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
+This snapshot counted **83 MCP tools**. That number is historical; the current
+count and schemas are generated from the runtime registry and drift-checked. A
+**directed property graph** (built on graphology) models the attack surface:
+hosts, services, credentials, users, groups, AD objects, operator infrastructure,
+and their relationships.
 
 ---
 
@@ -31,7 +48,7 @@ The server exposes **83 MCP tools** covering the full engagement lifecycle — f
 │  └──────────────┘  └──────────────┘  └────────────────────┘   │
 │                                                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │              83 MCP Tools (Zod-validated)                  │  │
+│  │       Historical tool inventory (83 at this snapshot)      │  │
 │  │  state · findings · scoring · exploration · agents ·       │  │
 │  │  logging · parsing · bloodhound · azurehound · inference   │  │
 │  │  remediation · skills · toolcheck · processes · sessions   │  │
@@ -52,7 +69,7 @@ The server exposes **83 MCP tools** covering the full engagement lifecycle — f
 
 ### Design Principles
 
-- **Graph-as-memory** — All engagement state lives in the graph. After context compaction, `get_state()` reconstructs everything. No information loss across sessions.
+- **Historical graph-as-memory framing** — The current model distinguishes durable truth, durable coordination/descriptors, referenced artifacts, and ephemeral live handles. `get_state()` is the operational briefing, not a lossless export.
 - **Deterministic guardrails, LLM reasoning** — Scope checks, deduplication, and OPSEC vetoes are enforced deterministically. The LLM handles attack chain reasoning, scoring, and sequencing.
 - **Report early, report often** — Every `report_finding()` triggers inference rules → new frontier items → reactive re-planning.
 - **Identity resolution** — Nodes are canonicalized on ingest. BloodHound SIDs, hostname variants, and credential fingerprints are merged automatically.
@@ -220,7 +237,10 @@ Local TF-IDF search over 43 markdown skill files. No external vector DB — runs
 
 ### Dashboard Server (`src/services/dashboard-server.ts`)
 
-HTTP + WebSocket server on port 8384 (configurable). Serves a sigma.js WebGL dashboard SPA. Broadcasts graph deltas to connected clients with 500ms debounced batching via `DeltaAccumulator`. Read-only — no mutations from browser. API endpoints: `/api/state`, `/api/graph`.
+At this snapshot the HTTP + WebSocket server was documented as a read-only
+sigma.js graph viewer. That description is obsolete: the current authenticated
+dashboard is an operator client whose mutations run through shared application
+commands and compatibility contracts.
 
 ### Lab Preflight (`src/services/lab-preflight.ts`)
 
@@ -236,7 +256,7 @@ Three transport implementations: `LocalPtyAdapter` (node-pty spawn), `SshAdapter
 
 ---
 
-## MCP Tools (83)
+## Historical MCP Tool Inventory (83 at review time)
 
 All tools are wrapped in `withErrorBoundary` — unhandled errors return structured MCP error responses instead of crashing the server.
 
@@ -390,8 +410,8 @@ The `run_retrospective` tool produces five structured outputs:
 
 | Area | Files | Coverage |
 |------|-------|----------|
-| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap (83 tools) |
-| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 83 tools via stdio + HTTP/SSE transport |
+| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and the tool inventory that existed at review time |
+| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | The review-time inventory over stdio + HTTP/SSE transport |
 | Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity, cold store integration |
 | Services | 24 test files | CIDR, BloodHound, parsers (21), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager, community detection, prompt generator, report generator, parser utils + sprint test suites (compaction, web surface, hardening, cloud graph, Linux/network, architecture prep) |
 | Tools | 10+ test files | Tool handlers: agents, findings, scoring, state, reporting, instructions, remediation, sessions, parse-output, activity logging, error boundary, processes |

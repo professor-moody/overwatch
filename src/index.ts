@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   if (existing.running) {
     throw new Error(
       'Another Overwatch instance is already running. Do not launch a second stdio writer for the same working copy. '
-      + 'Run `npm run setup -- --daemon` so terminal Claude connects to the existing /mcp daemon, or stop the existing instance first.',
+      + 'Run `npm run setup` so terminal Claude connects to the existing /mcp daemon, or stop the existing instance first.',
     );
   }
   app = createAppOrExit();

@@ -360,11 +360,30 @@ const ToolsResponseSchema = z.object({
 }).passthrough();
 const McpToolsResponseSchema = z.object({
   total: z.number().int().nonnegative(),
+  registry_sha256: z.string().regex(/^[a-f0-9]{64}$/),
   categories: z.record(z.number().int().nonnegative()),
   tools: z.array(z.object({
     name: z.string(),
+    title: z.string().optional(),
     description: z.string(),
     category: z.string(),
+    category_label: z.string(),
+    category_order: z.number().int().nonnegative(),
+    read_only: z.boolean(),
+    destructive: z.boolean(),
+    idempotent: z.boolean(),
+    open_world: z.boolean(),
+    input_schema_sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    output_schema_sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    documentation: z.object({
+      path: z.string(),
+      purpose: z.string(),
+    }).passthrough(),
+    archetype_exposure: z.array(z.string()),
+    persistence: z.object({
+      mode: z.enum(['read', 'write', 'conditional']),
+      allowed_during_recovery: z.boolean(),
+    }).passthrough(),
   }).passthrough()),
 }).passthrough();
 const ReadinessResponseSchema = z.object({

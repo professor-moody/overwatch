@@ -36,29 +36,29 @@
   <line x1="360" y1="136" x2="360" y2="160" class="arr" marker-end="url(#arr)"/>
 
   <!-- Two-track persistence: snapshot + WAL -->
-  <g class="n-gray"><rect x="40" y="160" width="320" height="60" rx="8"/><text class="th" x="200" y="180" text-anchor="middle" dominant-baseline="central">Periodic snapshot</text><text class="ts" x="200" y="198" text-anchor="middle" dominant-baseline="central">Atomic write-rename → state.json</text><text class="tx" x="200" y="212" text-anchor="middle" dominant-baseline="central">snapshot rotation (cap 5)</text></g>
-  <g class="n-emerald"><rect x="380" y="160" width="300" height="60" rx="8"/><text class="th" x="530" y="180" text-anchor="middle" dominant-baseline="central">Mutation journal (WAL)</text><text class="ts" x="530" y="198" text-anchor="middle" dominant-baseline="central">journal.jsonl — append-only per mutation</text><text class="tx" x="530" y="212" text-anchor="middle" dominant-baseline="central">truncates after each new snapshot</text></g>
+  <g class="n-gray"><rect x="40" y="160" width="320" height="60" rx="8"/><text class="th" x="200" y="180" text-anchor="middle" dominant-baseline="central">Write-triggered snapshot</text><text class="ts" x="200" y="198" text-anchor="middle" dominant-baseline="central">Atomic write-rename → state.json</text><text class="tx" x="200" y="212" text-anchor="middle" dominant-baseline="central">eligible after 30s · retained cap 5</text></g>
+  <g class="n-emerald"><rect x="380" y="160" width="300" height="60" rx="8"/><text class="th" x="530" y="180" text-anchor="middle" dominant-baseline="central">EngineTransaction V2 WAL</text><text class="ts" x="530" y="198" text-anchor="middle" dominant-baseline="central">tx_begin + chunks + checked tx_commit</text><text class="tx" x="530" y="212" text-anchor="middle" dominant-baseline="central">complete commits replay through one applier</text></g>
 
   <line x1="200" y1="220" x2="200" y2="246" class="arr" marker-end="url(#arr)"/>
   <line x1="530" y1="220" x2="530" y2="246" class="arr" marker-end="url(#arr)"/>
 
   <!-- Recovery -->
-  <g class="n-blue"><rect x="40" y="246" width="640" height="56" rx="8"/><text class="th" x="360" y="266" text-anchor="middle" dominant-baseline="central">Recovery: load latest snapshot, then replay journal entries with sequence &gt; snapshot.sequence</text><text class="ts" x="360" y="284" text-anchor="middle" dominant-baseline="central">Survives kill -9 mid-mutation; graph matches non-killed control byte-for-byte</text></g>
+  <g class="n-blue"><rect x="40" y="246" width="640" height="56" rx="8"/><text class="th" x="360" y="266" text-anchor="middle" dominant-baseline="central">Recovery: newest valid base + newer complete committed transactions</text><text class="ts" x="360" y="284" text-anchor="middle" dominant-baseline="central">Malformed or unknown tails are preserved; service stops writable instead of skipping</text></g>
   <line x1="360" y1="302" x2="360" y2="328" class="arr" marker-end="url(#arr)"/>
 
   <!-- get_state -->
-  <g class="n-blue"><rect x="100" y="328" width="520" height="40" rx="7"/><text class="th" x="360" y="348" text-anchor="middle" dominant-baseline="central">get_state() reconstructs complete briefing</text></g>
+  <g class="n-blue"><rect x="100" y="328" width="520" height="40" rx="7"/><text class="th" x="360" y="348" text-anchor="middle" dominant-baseline="central">get_state() rebuilds operational briefing</text></g>
   <line x1="360" y1="368" x2="360" y2="392" class="arr" marker-end="url(#arr)"/>
 
   <!-- Reconstructed state -->
-  <g class="n-purple"><rect x="40" y="392" width="640" height="80" rx="12"/><text class="th" x="360" y="412" text-anchor="middle" dominant-baseline="central">Reconstructed engagement state</text></g>
+  <g class="n-purple"><rect x="40" y="392" width="640" height="80" rx="12"/><text class="th" x="360" y="412" text-anchor="middle" dominant-baseline="central">Bounded operational briefing</text></g>
   <g class="n-purple"><rect x="62" y="428" width="100" height="30" rx="5"/><text class="ts" x="112" y="443" text-anchor="middle" dominant-baseline="central">Scope + config</text></g>
-  <g class="n-purple"><rect x="174" y="428" width="100" height="30" rx="5"/><text class="ts" x="224" y="443" text-anchor="middle" dominant-baseline="central">All discoveries</text></g>
+  <g class="n-purple"><rect x="174" y="428" width="100" height="30" rx="5"/><text class="ts" x="224" y="443" text-anchor="middle" dominant-baseline="central">Discovery summary</text></g>
   <g class="n-purple"><rect x="286" y="428" width="100" height="30" rx="5"/><text class="ts" x="336" y="443" text-anchor="middle" dominant-baseline="central">Frontier items</text></g>
-  <g class="n-purple"><rect x="398" y="428" width="100" height="30" rx="5"/><text class="ts" x="448" y="443" text-anchor="middle" dominant-baseline="central">Active agents</text></g>
-  <g class="n-purple"><rect x="510" y="428" width="150" height="30" rx="5"/><text class="ts" x="585" y="443" text-anchor="middle" dominant-baseline="central">Recent activity + chain</text></g>
+  <g class="n-purple"><rect x="398" y="428" width="100" height="30" rx="5"/><text class="ts" x="448" y="443" text-anchor="middle" dominant-baseline="central">Agent status</text></g>
+  <g class="n-purple"><rect x="510" y="428" width="150" height="30" rx="5"/><text class="ts" x="585" y="443" text-anchor="middle" dominant-baseline="central">Recent activity + warnings</text></g>
 
-  <!-- Golden master -->
-  <g class="n-emerald"><rect x="40" y="494" width="640" height="50" rx="10"/><text class="th" x="360" y="513" text-anchor="middle" dominant-baseline="central">Replay equivalence: golden-master tape + engagement_nonce → byte-identical graph</text><text class="ts" x="360" y="531" text-anchor="middle" dominant-baseline="central">replayTape() + hashGraph() — CI gate against silent regressions in parsers, ingest, inference</text></g>
+  <!-- Full fidelity -->
+  <g class="n-emerald"><rect x="40" y="494" width="640" height="50" rx="10"/><text class="th" x="360" y="513" text-anchor="middle" dominant-baseline="central">Full fidelity remains separately retrievable</text><text class="ts" x="360" y="531" text-anchor="middle" dominant-baseline="central">evidence · complete history · transcripts · reports · tapes · portable bundle</text></g>
 
 </svg>

@@ -297,10 +297,31 @@ export function listArchetypes(): AgentArchetype[] {
 export function generateSubAgentArchetypeReference(): string {
   return listArchetypes()
     .map((a) => {
-      const readOnly = isTargetFacing(a.id) ? '' : ' _(read-only)_';
-      return `- **${a.label}** (\`${a.id}\`)${readOnly} — ${a.description} _Done when:_ ${doneTestFor(a.id)}.`;
+      const targetAccess = isTargetFacing(a.id) ? '' : ' _(no target execution)_';
+      return `- **${a.label}** (\`${a.id}\`)${targetAccess} — ${a.description} _Done when:_ ${doneTestFor(a.id)}.`;
     })
     .join('\n');
+}
+
+/** Browser/operator documentation table generated from the same archetype
+ * registry that controls the actual headless `--allowedTools` boundary. */
+export function generateOperatorCockpitArchetypeTable(): string {
+  const rows = listArchetypes().map(archetype => {
+    const surface = archetype.tools.full
+      ? 'full Overwatch MCP surface'
+      : `${archetype.tools.overwatch.length} Overwatch tools${archetype.tools.native.length > 0
+        ? ` + ${archetype.tools.native.join(', ')}`
+        : ''}`;
+    const targetAccess = isTargetFacing(archetype.id)
+      ? 'target-executing'
+      : 'no target execution';
+    return `| \`${archetype.id}\` | ${archetype.description} | ${surface}; **${targetAccess}** | \`${archetype.defaultSkill ?? '—'}\` |`;
+  });
+  return [
+    '| Agent type | What it does | Enforced tool surface | Default skill |',
+    '|------------|--------------|-----------------------|---------------|',
+    ...rows,
+  ].join('\n');
 }
 
 export function getArchetype(id: string | undefined | null): AgentArchetype {

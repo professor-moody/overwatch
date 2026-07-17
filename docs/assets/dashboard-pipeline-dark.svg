@@ -24,27 +24,27 @@
 <rect width="100%" height="100%" fill="transparent" rx="6"/>
 <defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 
-  <g class="n-teal"><rect x="40" y="10" width="600" height="170" rx="12"/><text class="th" x="340" y="30" text-anchor="middle" dominant-baseline="central">MCP server process</text></g>
-  <g class="n-amber"><rect x="80" y="44" width="200" height="38" rx="7"/><text class="th" x="180" y="63" text-anchor="middle" dominant-baseline="central">GraphEngine.persist()</text></g>
+  <g class="n-teal"><rect x="40" y="10" width="600" height="170" rx="12"/><text class="th" x="340" y="30" text-anchor="middle" dominant-baseline="central">Overwatch daemon</text></g>
+  <g class="n-amber"><rect x="80" y="44" width="200" height="38" rx="7"/><text class="th" x="180" y="63" text-anchor="middle" dominant-baseline="central">EngineTransaction applied</text></g>
   <line x1="280" y1="63" x2="314" y2="63" class="arr" marker-end="url(#arr)"/>
-  <g class="n-coral"><rect x="314" y="44" width="200" height="38" rx="7"/><text class="th" x="414" y="63" text-anchor="middle" dominant-baseline="central">onUpdate callback</text></g>
+  <g class="n-coral"><rect x="314" y="44" width="200" height="38" rx="7"/><text class="th" x="414" y="63" text-anchor="middle" dominant-baseline="central">Consolidated update</text></g>
   <line x1="414" y1="82" x2="414" y2="102" class="arr" marker-end="url(#arr)"/>
   <g class="n-purple"><rect x="260" y="102" width="240" height="38" rx="7"/><text class="th" x="380" y="121" text-anchor="middle" dominant-baseline="central">Delta accumulator (debounced)</text></g>
   <line x1="280" y1="140" x2="220" y2="152" class="arr" marker-end="url(#arr)"/><line x1="480" y1="140" x2="500" y2="152" class="arr" marker-end="url(#arr)"/>
   <g class="n-blue"><rect x="80" y="152" width="220" height="26" rx="5"/><text class="ts" x="190" y="165" text-anchor="middle" dominant-baseline="central">New conn → full_state</text></g>
   <g class="n-blue"><rect x="400" y="152" width="220" height="26" rx="5"/><text class="ts" x="510" y="165" text-anchor="middle" dominant-baseline="central">Existing → graph_update delta</text></g>
   <line x1="340" y1="180" x2="340" y2="210" class="arr" marker-end="url(#arr)"/>
-  <text class="ts" x="355" y="198" text-anchor="start">WebSocket + HTTP poll fallback</text>
+  <text class="ts" x="355" y="198" text-anchor="start">generation-owned WebSocket + guarded HTTP fallback</text>
   <g class="n-purple"><rect x="40" y="210" width="600" height="156" rx="12"/><text class="th" x="340" y="230" text-anchor="middle" dominant-baseline="central">Browser (:8384)</text></g>
-  <g class="n-amber"><rect x="68" y="244" width="130" height="44" rx="6"/><text class="th" x="133" y="260" text-anchor="middle" dominant-baseline="central">graph.js</text><text class="ts" x="133" y="276" text-anchor="middle" dominant-baseline="central">sigma + FA2</text></g>
-  <g class="n-teal"><rect x="214" y="244" width="130" height="44" rx="6"/><text class="th" x="279" y="260" text-anchor="middle" dominant-baseline="central">ui.js</text><text class="ts" x="279" y="276" text-anchor="middle" dominant-baseline="central">Sidebar + detail</text></g>
-  <g class="n-blue"><rect x="360" y="244" width="120" height="44" rx="6"/><text class="th" x="420" y="260" text-anchor="middle" dominant-baseline="central">ws.js</text><text class="ts" x="420" y="276" text-anchor="middle" dominant-baseline="central">Reconnect</text></g>
-  <g class="n-gray"><rect x="496" y="244" width="120" height="44" rx="6"/><text class="th" x="556" y="260" text-anchor="middle" dominant-baseline="central">node-display</text><text class="ts" x="556" y="276" text-anchor="middle" dominant-baseline="central">Labels + types</text></g>
-  <g class="n-gray"><rect x="68" y="302" width="90" height="24" rx="5"/><text class="ts" x="113" y="314" text-anchor="middle" dominant-baseline="central">Drag+hover</text></g>
-  <g class="n-gray"><rect x="170" y="302" width="100" height="24" rx="5"/><text class="ts" x="220" y="314" text-anchor="middle" dominant-baseline="central">Path highlight</text></g>
-  <g class="n-gray"><rect x="282" y="302" width="100" height="24" rx="5"/><text class="ts" x="332" y="314" text-anchor="middle" dominant-baseline="central">Hull overlays</text></g>
-  <g class="n-gray"><rect x="394" y="302" width="80" height="24" rx="5"/><text class="ts" x="434" y="314" text-anchor="middle" dominant-baseline="central">Minimap</text></g>
-  <g class="n-gray"><rect x="486" y="302" width="100" height="24" rx="5"/><text class="ts" x="536" y="314" text-anchor="middle" dominant-baseline="central">SVG export</text></g>
-  <g class="n-amber"><rect x="68" y="338" width="160" height="22" rx="5"/><text class="ts" x="148" y="349" text-anchor="middle" dominant-baseline="central">New nodes pulse 2s</text></g>
-  <g class="n-amber"><rect x="242" y="338" width="180" height="22" rx="5"/><text class="ts" x="332" y="349" text-anchor="middle" dominant-baseline="central">Pin-and-resume on delta</text></g>
+  <g class="n-amber"><rect x="68" y="244" width="130" height="44" rx="6"/><text class="th" x="133" y="260" text-anchor="middle" dominant-baseline="central">Graph projector</text><text class="ts" x="133" y="276" text-anchor="middle" dominant-baseline="central">raw → view model</text></g>
+  <g class="n-teal"><rect x="214" y="244" width="130" height="44" rx="6"/><text class="th" x="279" y="260" text-anchor="middle" dominant-baseline="central">React cockpit</text><text class="ts" x="279" y="276" text-anchor="middle" dominant-baseline="central">operator panels</text></g>
+  <g class="n-blue"><rect x="360" y="244" width="120" height="44" rx="6"/><text class="th" x="420" y="260" text-anchor="middle" dominant-baseline="central">Auth transport</text><text class="ts" x="420" y="276" text-anchor="middle" dominant-baseline="central">HTTP · blob · WS</text></g>
+  <g class="n-gray"><rect x="496" y="244" width="120" height="44" rx="6"/><text class="th" x="556" y="260" text-anchor="middle" dominant-baseline="central">State reducers</text><text class="ts" x="556" y="276" text-anchor="middle" dominant-baseline="central">full + delta</text></g>
+  <g class="n-gray"><rect x="68" y="302" width="90" height="24" rx="5"/><text class="ts" x="113" y="314" text-anchor="middle" dominant-baseline="central">Graph</text></g>
+  <g class="n-gray"><rect x="170" y="302" width="100" height="24" rx="5"/><text class="ts" x="220" y="314" text-anchor="middle" dominant-baseline="central">Campaigns</text></g>
+  <g class="n-gray"><rect x="282" y="302" width="100" height="24" rx="5"/><text class="ts" x="332" y="314" text-anchor="middle" dominant-baseline="central">Agents</text></g>
+  <g class="n-gray"><rect x="394" y="302" width="80" height="24" rx="5"/><text class="ts" x="434" y="314" text-anchor="middle" dominant-baseline="central">Recovery</text></g>
+  <g class="n-gray"><rect x="486" y="302" width="100" height="24" rx="5"/><text class="ts" x="536" y="314" text-anchor="middle" dominant-baseline="central">Playbooks</text></g>
+  <g class="n-amber"><rect x="68" y="338" width="160" height="22" rx="5"/><text class="ts" x="148" y="349" text-anchor="middle" dominant-baseline="central">Validated commands</text></g>
+  <g class="n-amber"><rect x="242" y="338" width="180" height="22" rx="5"/><text class="ts" x="332" y="349" text-anchor="middle" dominant-baseline="central">Full-state resync gate</text></g>
 </svg>

@@ -35,8 +35,8 @@
   <line x1="290" y1="108" x2="290" y2="126" class="arr" marker-end="url(#arr)"/>
   <line x1="440" y1="108" x2="440" y2="126" class="arr" marker-end="url(#arr)"/>
   <line x1="580" y1="108" x2="580" y2="126" class="arr" marker-end="url(#arr)"/>
-  <g class="n-teal"><rect x="68" y="126" width="148" height="44" rx="6"/><text class="th" x="142" y="142" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="142" y="158" text-anchor="middle" dominant-baseline="central">64 rules, selectors</text></g>
-  <g class="n-blue"><rect x="226" y="126" width="148" height="44" rx="6"/><text class="th" x="300" y="142" text-anchor="middle" dominant-baseline="central">Frontier + leases</text><text class="ts" x="300" y="158" text-anchor="middle" dominant-baseline="central">5 item types · TTL claims</text></g>
+  <g class="n-teal"><rect x="68" y="126" width="148" height="44" rx="6"/><text class="th" x="142" y="142" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="142" y="158" text-anchor="middle" dominant-baseline="central">rules + selectors</text></g>
+  <g class="n-blue"><rect x="226" y="126" width="148" height="44" rx="6"/><text class="th" x="300" y="142" text-anchor="middle" dominant-baseline="central">Frontier + leases</text><text class="ts" x="300" y="158" text-anchor="middle" dominant-baseline="central">canonical kinds · TTL claims</text></g>
   <g class="n-purple"><rect x="384" y="126" width="148" height="44" rx="6"/><text class="th" x="458" y="142" text-anchor="middle" dominant-baseline="central">Path analyzer</text><text class="ts" x="458" y="158" text-anchor="middle" dominant-baseline="central">BFS, objectives</text></g>
   <g class="n-coral"><rect x="542" y="126" width="148" height="44" rx="6"/><text class="th" x="616" y="142" text-anchor="middle" dominant-baseline="central">State persistence</text><text class="ts" x="616" y="158" text-anchor="middle" dominant-baseline="central">Atomic + WAL replay</text></g>
 
@@ -72,7 +72,7 @@
   <g class="n-pink"><rect x="564" y="486" width="120" height="36" rx="5"/><text class="ts" x="624" y="504" text-anchor="middle" dominant-baseline="central">Process tracker</text></g>
 
   <text class="th" x="360" y="546" text-anchor="middle" dominant-baseline="central">Transport + UI</text>
-  <g class="n-blue"><rect x="68" y="560" width="170" height="36" rx="6"/><text class="ts" x="153" y="578" text-anchor="middle" dominant-baseline="central">stdio (MCP default)</text></g>
-  <g class="n-blue"><rect x="258" y="560" width="200" height="36" rx="6"/><text class="ts" x="358" y="578" text-anchor="middle" dominant-baseline="central">HTTP/SSE (streamable)</text></g>
+  <g class="n-blue"><rect x="68" y="560" width="170" height="36" rx="6"/><text class="ts" x="153" y="578" text-anchor="middle" dominant-baseline="central">stdio (solo mode)</text></g>
+  <g class="n-blue"><rect x="258" y="560" width="200" height="36" rx="6"/><text class="ts" x="358" y="578" text-anchor="middle" dominant-baseline="central">Streamable HTTP (default)</text></g>
   <g class="n-blue"><rect x="478" y="560" width="200" height="36" rx="6"/><text class="ts" x="578" y="578" text-anchor="middle" dominant-baseline="central">Dashboard (WS + sigma.js)</text></g>
 </svg>

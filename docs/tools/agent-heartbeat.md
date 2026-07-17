@@ -6,7 +6,7 @@ Sub-agent liveness ping for the watchdog.
 
 ## Description
 
-Long-running sub-agents call `agent_heartbeat` periodically to signal they're still working. The runtime watchdog ([`AgentWatchdog`](../architecture.md#component-overview)) walks running tasks on an interval and marks any whose `heartbeat_at` is older than `heartbeat_ttl_seconds` (default 120) as `interrupted`, releasing their frontier leases at the same moment.
+Long-running sub-agents call `agent_heartbeat` periodically to signal they're still working. The runtime watchdog (see the [architecture component map](../architecture.md#component-map)) walks running tasks on an interval and marks any whose `heartbeat_at` is older than `heartbeat_ttl_seconds` (default 120) as `interrupted`, releasing their frontier leases at the same moment.
 
 Tasks that **never** heartbeat are exempt from the watchdog. Tools that complete in a single MCP turn don't need to call this.
 

@@ -46,6 +46,7 @@ export function OperatorCommandBar() {
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollGenerationRef = useRef(0);
   const pollAbortRef = useRef<AbortController | null>(null);
+  const operatorIntentGenerationRef = useRef(0);
 
   const clearPoll = useCallback(() => {
     pollGenerationRef.current += 1;
@@ -148,6 +149,7 @@ export function OperatorCommandBar() {
   }, [clearPoll, clearStoredPlanner]);
 
   useEffect(() => {
+    const intentGeneration = operatorIntentGenerationRef.current;
     let restoredFromBrowser = false;
     try {
       const raw = sessionStorage.getItem(ACTIVE_PLANNER_COMMAND_KEY);
@@ -171,7 +173,11 @@ export function OperatorCommandBar() {
     void api.getActiveApplicationCommands(controller.signal)
       .then(({ commands }) => {
         const activeCommand = commands[0];
-        if (!activeCommand || controller.signal.aborted) return;
+        if (
+          !activeCommand
+          || controller.signal.aborted
+          || operatorIntentGenerationRef.current !== intentGeneration
+        ) return;
         const projected = projectPlannerCommand(activeCommand);
         if (projected.kind !== 'planning') return;
         startPolling(activeCommand.command_id, projected.plannerTaskId);
@@ -183,6 +189,9 @@ export function OperatorCommandBar() {
   const submit = useCallback(async () => {
     const text = command.trim();
     if (!text) return;
+    // A mount-time discovery request must not replace this newer command if
+    // the old response arrives after the operator has already submitted it.
+    operatorIntentGenerationRef.current += 1;
     setPhase({ kind: 'previewing' });
     try {
       const res = await api.previewCommand(text);

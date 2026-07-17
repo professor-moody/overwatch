@@ -38,6 +38,7 @@ import {
   PlaybookStepClaimResponseSchema,
 } from '../../contracts/dashboard-v1.js';
 import { PlaybookRunService } from '../playbook-run-service.js';
+import { buildToolDescriptor } from '../tool-descriptor-registry.js';
 
 let dashboard: DashboardServer;
 let engine: GraphEngine;
@@ -143,15 +144,24 @@ beforeAll(async () => {
   // Ephemeral port; loopback => mutations don't require a token.
   dashboard = new DashboardServer(engine, 0, '127.0.0.1', undefined, undefined);
   dashboard.attachMcpTools([
-    { name: 'get_state', description: 'state' },
-    { name: 'validate_action', description: 'validate' },
-    { name: 'run_bash', description: 'bash' },
-    { name: 'parse_output', description: 'parse' },
-    { name: 'report_finding', description: 'report' },
-    { name: 'get_system_prompt', description: 'prompt' },
-    { name: 'get_recovery_status', description: 'recovery status' },
-    { name: 'resolve_config_divergence', description: 'config reconciliation' },
-  ]);
+    ['get_state', 'state'],
+    ['validate_action', 'validate'],
+    ['run_bash', 'bash'],
+    ['parse_output', 'parse'],
+    ['report_finding', 'report'],
+    ['get_system_prompt', 'prompt'],
+    ['get_recovery_status', 'recovery status'],
+    ['resolve_config_divergence', 'config reconciliation'],
+  ].map(([name, description]) => buildToolDescriptor(name, {
+    description,
+    inputSchema: {},
+    annotations: {
+      readOnlyHint: name.startsWith('get_'),
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  })));
   const result = await dashboard.start();
   if (!result.started) throw new Error(`dashboard failed to start: ${result.error}`);
   baseUrl = dashboard.address;
@@ -421,15 +431,16 @@ describe('GET /api/tools', () => {
 
 describe('GET /api/mcp-tools', () => {
   it('returns the registered MCP tool surface separately from host tools', async () => {
-    const { status, body } = await getJson<{ total: number; categories: Record<string, number>; tools: Array<{ name: string; category: string }> }>('/api/mcp-tools');
+    const { status, body } = await getJson<{ total: number; registry_sha256: string; categories: Record<string, number>; tools: Array<{ name: string; category: string }> }>('/api/mcp-tools');
     expect(status).toBe(200);
     expect(Array.isArray(body.tools)).toBe(true);
     expect(body.total).toBe(body.tools.length);
+    expect(body.registry_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(body.tools.map(tool => tool.name)).toContain('get_state');
     expect(body.categories).toHaveProperty('state-readiness');
     expect(body.tools).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'get_recovery_status', category: 'state-readiness' }),
-      expect.objectContaining({ name: 'resolve_config_divergence', category: 'state-readiness' }),
+      expect.objectContaining({ name: 'resolve_config_divergence', category: 'config-scope' }),
     ]));
   });
 });

@@ -38,9 +38,9 @@ Overwatch models engagements as directed property graphs using [graphology](http
 | `email` | A harvested email / person (the person anchor; breaches recorded as evidence) | `email_address`, `person_name`, `email_source`, `breach_names`, `email_verified` |
 
 > **OSINT / external-recon tier** (`subdomain`, `asn`, `organization`, `email`) models
-> the passive external attack surface distinctly from the internal/AD topology. The schema
-> ships in Phase 2A; parsers and frontier work that populate it land in later phases of the
-> OSINT capability.
+> the passive external attack surface distinctly from the internal/AD topology. The parser,
+> inference, frontier, and OSINT agent surfaces populate this tier without folding passive
+> observations into the internal/AD topology.
 
 ### Common Node Properties
 
@@ -99,7 +99,7 @@ Stale or expired credentials have their outbound `POTENTIAL_AUTH` edges degraded
 
 Identity resolution runs automatically on ingest. Alias nodes sharing identity markers are merged into canonicals — edges are retargeted and properties merged.
 
-For engagements with `engagement_nonce` populated, action and event IDs are deterministically derived (`act_<16hex>` / `evt_<16hex>` from `sha256(nonce | agent | ts | cmd | seq)`); see [Configuration → Deterministic ID and Replay](configuration.md#deterministic-id-and-replay). Node and edge canonical IDs (e.g. `host-10-10-10-5`, `cred-…`) remain content-derived from the node's properties as before.
+For engagements with `engagement_nonce` populated, action and event IDs are deterministically derived (`act_<16hex>` / `evt_<16hex>` from `sha256(nonce | agent | ts | cmd | seq)`); see [Configuration → Durable Transactions, Deterministic IDs, and Replay](configuration.md#durable-transactions-deterministic-ids-and-replay). Node and edge canonical IDs (e.g. `host-10-10-10-5`, `cred-…`) remain content-derived from the node's properties as before.
 
 ### Host Enrichment Properties (Linux)
 

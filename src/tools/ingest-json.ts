@@ -198,6 +198,12 @@ in the graph or be created by an earlier mapping in the same call.
         label: z.string().optional()
           .describe('Human-readable description that appears in the activity log (defaults to a generated summary).'),
       },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
     withErrorBoundary('ingest_json', async ({ content, file_path, mappings, agent_id, label }) => {
       if (!content && !file_path) {

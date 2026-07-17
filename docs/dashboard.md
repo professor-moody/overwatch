@@ -1,10 +1,23 @@
 # Live Dashboard
 
-Overwatch includes a real-time graph visualization dashboard built with [sigma.js](https://www.sigmajs.org/) (WebGL) and [graphology](https://graphology.github.io/). The dashboard provides an interactive, read-only view of the engagement graph with live updates as findings are ingested.
+Overwatch includes a real-time operator dashboard built with [sigma.js](https://www.sigmajs.org/) (WebGL), [graphology](https://graphology.github.io/), and React. It is not merely a read-only graph viewer: operators can inspect the engagement, dispatch and steer agents, approve actions, manage campaigns and playbooks, edit active settings/scope, reconcile recovery, and generate reports. Every durable action goes through the same validated application-command and persistence boundary used by MCP and the CLI.
 
 ## Access
 
-The dashboard starts automatically on port **8384** (configurable via `OVERWATCH_DASHBOARD_PORT`). No additional setup required — it runs in the same process as the MCP server.
+The dashboard starts on port **8384** (configurable via
+`OVERWATCH_DASHBOARD_PORT`) in the same process as the MCP server. The
+recommended startup is one shared daemon:
+
+```bash
+npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm run build
+npm run doctor
+npm run start:daemon
+```
+
+Leave that command running. Do not start a second Overwatch process for the
+browser; terminal Claude, the dashboard, the CLI, and managed agents all attach
+to this owner.
 
 ```
 http://localhost:8384
@@ -15,6 +28,31 @@ To disable the dashboard, set the port to `0`:
 ```bash
 OVERWATCH_DASHBOARD_PORT=0
 ```
+
+### Remote token mode
+
+Loopback access needs no dashboard token. When binding the dashboard to a
+non-loopback host, set `OVERWATCH_DASHBOARD_TOKEN` and enter through a URL such
+as `https://ops.example.test/?token=<token>`.
+
+The browser captures the landing token in `sessionStorage` under
+`overwatch.dashboard.token`, removes every `token` query parameter from the
+visible URL with `history.replaceState`, and preserves the route, other query
+parameters, and hash. The shared transport then sends `Authorization: Bearer
+<token>` on JSON/API, evidence-image, report, bundle, smoke, and download
+requests. Protected media and downloads are loaded through authenticated blob
+URLs. The main-state, session-terminal, and action-output WebSockets receive an
+encoded `token` query parameter because browser WebSocket handshakes cannot set
+an Authorization header.
+
+If browser storage is unavailable, the captured credential remains in memory
+for that page lifetime. Reloading then requires a fresh token-bearing landing
+URL. Use TLS (normally a reverse proxy) whenever the dashboard is reachable
+beyond the local machine.
+
+Browser HTTP and WebSocket requests must also be same-origin with the served
+dashboard host. Different ports are accepted only when both authorities are
+loopback; foreign origins are rejected.
 
 ## Graph Interactions
 
@@ -219,11 +257,12 @@ A compact minimap in the bottom-right overlay shows the full graph at a glance w
 ![Dashboard Pipeline](assets/dashboard-pipeline-light.svg#only-light)
 ![Dashboard Pipeline](assets/dashboard-pipeline-dark.svg#only-dark)
 
-- **HTTP** serves the Vite-built React dashboard from `dist/dashboard-next/`
-- **WebSocket** broadcasts graph deltas on every `persist()` call; full state on connect
-- **HTTP polling** fallback every 5 seconds if WebSocket disconnects
-- **Auto-reconnect** attempts every 3 seconds on WebSocket close
-- **Dashboard mutations** are limited to explicit operator actions such as tape toggles, approvals, corrections, and report generation; graph inspection remains read-mostly.
+- **HTTP** serves the Vite-built React dashboard from `dist/dashboard-next/` and the authenticated operator API.
+- **Main WebSocket** connects immediately and is not considered synchronized until it receives a fresh `full_state` within five seconds.
+- **Reconnect ownership** permits at most one physical main socket and one retry timer, with one-shot backoff at 1, 2, 4, 8, 16, then 30 seconds. Generation tags discard callbacks from replaced sockets.
+- **HTTP fallback** polls every five seconds only while the main socket is unsynchronized. A newer socket generation aborts a stale poll so it cannot overwrite fresh state.
+- **Session and action-output WebSockets** are component-owned and do not reconnect themselves; all three channels use the shared authenticated socket factory.
+- **Dashboard mutations** are explicit operator commands routed through the same validation, idempotency, and durable transaction services used by MCP and the CLI.
 
 ### File Structure
 
@@ -253,6 +292,20 @@ Approve/deny here routes through the same canonical path as the terminal; resolv
 - A **subtle recommended cue** (a left-edge tint / soft ring on the suggested button) from the engine's risk / defensive-signals / noise-budget — a *visual hint only*, never a pre-selection.
 
 See **[Operator Cockpit](operator-cockpit.md)** for the full model (NL command two-phase, the planner role, the directive substrate, escalation, and the safety invariant).
+
+Free-form commands that need a planner are represented as durable application
+commands. The UI follows that server-owned command rather than imposing a
+browser-side planning timeout, so a page reload does not manufacture a failed
+plan while its worker is still thinking. A planner that really exits without a
+proposal reports that terminal outcome explicitly.
+
+Dashboard-managed planners and agents run as isolated headless Claude workers.
+Each worker receives a temporary task-specific MCP configuration, a bounded
+tool surface, `--strict-mcp-config`, user-only setting sources, and no Claude
+session persistence. It therefore shares Overwatch's engine, task leases, and
+findings, but not the human terminal Claude session's project MCP servers,
+project hooks/settings, or resume history. Keep using terminal Claude normally;
+the shared daemon coordinates ownership between both surfaces.
 
 ### Deploy
 
@@ -306,12 +359,17 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/api/evidence/:id/image` | GET | Serve a `screenshot` evidence blob as raw image bytes — raster only (PNG/JPEG/GIF/WebP; SVG excluded), 25 MB cap, `nosniff` + inline disposition. 404 if absent, 415 if not a viewable image |
 | `/api/actions/:id/reparse` | POST | Re-parse a run's output — preview (`ingest:false`) or promote (`ingest:true`) to the graph |
 | `/api/parsers` | GET | Supported parser names for the re-parse picker |
-| `ws://` | WebSocket | Live graph delta + `agent_console_update` / `agent_query` push stream |
+| `ws://…/ws` | WebSocket | Live graph delta + `agent_console_update` / `agent_query` push stream |
+| `ws://…/ws/session/:id` | WebSocket | Component-owned interactive-session terminal channel |
 | `ws://…/ws/actions/:id/output` | WebSocket | Live stdout/stderr stream of a running action (Analysis) |
 
 ## Verifying Dashboard Status
 
-Use [`run_lab_preflight`](tools/run-lab-preflight.md) to check dashboard readiness:
+Run `npm run doctor` before startup to verify the local build, configuration,
+Claude CLI compatibility, and port ownership. Run it again with the daemon
+active to compare the running PID/build identity with the checkout. Use
+[`run_lab_preflight`](tools/run-lab-preflight.md) to check engagement-level
+dashboard readiness:
 
 ```json
 {
@@ -323,4 +381,7 @@ Use [`run_lab_preflight`](tools/run-lab-preflight.md) to check dashboard readine
 }
 ```
 
-Note: [`get_state`](tools/get-state.md) returns engagement state only and does not include dashboard status. Use `run_lab_preflight` for dashboard readiness checks.
+Note: [`get_state`](tools/get-state.md) is an operational engagement briefing;
+it neither reports dashboard readiness nor replaces full history/evidence
+retrieval. Use `run_lab_preflight` for dashboard readiness, `get_history` and
+`get_evidence` for detail, and `bundle_engagement` for a portable archive.

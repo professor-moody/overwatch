@@ -226,7 +226,7 @@ Note that `run_retrospective` doesn't *execute* anything — it doesn't replay t
 Tapes are **audit artifacts, not re-execution scripts**. Replaying a recorded tape against a live target would re-run every action — including destructive ones — because the JSON-RPC frames carry the original commands. For that reason:
 
 - Tapes are read-only by design when consumed by retrospective and audit tooling.
-- Golden-master regression tests use **synthetic fixtures**, not recorded tapes against live targets. See `src/__tests__/golden-master/fixtures/` for the canonical shape: a typed list of operations + pinned timestamps. The replay harness asserts byte-identical state hashes across runs (depends on [`engagement_nonce`](configuration.md#deterministic-id-and-replay) for deterministic IDs and `withClock` for pinned timestamps).
+- Golden-master regression tests use **synthetic fixtures**, not recorded tapes against live targets. See `src/__tests__/golden-master/fixtures/` for the canonical shape: a typed list of operations + pinned timestamps. The replay harness asserts byte-identical state hashes across runs (depends on [`engagement_nonce`](configuration.md#durable-transactions-deterministic-ids-and-replay) for deterministic IDs and `withClock` for pinned timestamps).
 - For engagements with `engagement_nonce`, the JSON-RPC tape combined with the engagement's config and the activity log is sufficient to reconstruct an audit trail bit-for-bit. Without the nonce (legacy engagements), tapes are still useful for retrospective narration but not for byte-equality checks.
 
 ### Tapes vs golden-master fixtures
@@ -238,4 +238,4 @@ There are two artifacts in the repo that share the word "tape" but model differe
 | **JSON-RPC tape** (this doc) | Recorded wire frames between MCP client and server. Captures the historical session. | `run_retrospective`, audit |
 | **Golden-master fixture** (`src/__tests__/golden-master/fixtures/`) | Synthetic, hand-authored list of typed graph operations + pinned timestamps + expected state hash. | CI determinism check |
 
-A JSON-RPC tape can be sanitized into a fixture for regression tests, but the formats are not interchangeable. See [Determinism and replay](configuration.md#deterministic-id-and-replay) for how the golden-master harness uses the engagement nonce.
+A JSON-RPC tape can be sanitized into a fixture for regression tests, but the formats are not interchangeable. See [Determinism and replay](configuration.md#durable-transactions-deterministic-ids-and-replay) for how the golden-master harness uses the engagement nonce.

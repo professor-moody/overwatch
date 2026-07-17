@@ -1,6 +1,6 @@
 # Skills Library
 
-Overwatch includes 43 offensive methodology guides searchable via TF-IDF through the [`get_skill`](../tools/get-skill.md) tool.
+Overwatch includes 44 offensive methodology guides searchable via TF-IDF through the [`get_skill`](../tools/get-skill.md) tool. The generated capability inventory on the [documentation home](../index.md) is the canonical count.
 
 ## Available Skills
 

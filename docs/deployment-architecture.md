@@ -1,139 +1,174 @@
-# Deployment Architecture: One Engine, Many Drivers
+# Deployment Architecture: One Engine, Many Adapters
 
-> **Status:** Accepted (June 2026). The **MCP driver** is in production and is the
-> driver for external lab work. The **no-MCP internal driver** is planned, not yet
-> built — recorded here so the path is ready when internal engagements need it.
+> **Status:** Accepted and implemented for the shared-daemon, stdio, dashboard,
+> CLI, planner, and runner paths (updated July 2026).
 >
-> This is the **decision record** (why MCP is a driver, not the platform). For the
-> user-facing version of the runtime — one engine, the terminal + dashboard
-> surfaces, and how they tie together — see the [Runtime Model](runtime-model.md).
-
-This is the decision record for how Overwatch reaches a model and how a model
-reaches Overwatch's tools — across environments that allow MCP and environments
-that do not. It complements the [Bedrock Integration Plan](bedrock-integration-plan.md)
-and the [Operator Cockpit](operator-cockpit.md) runtime description.
+> This is the decision record for transport ownership. For the operator-facing
+> startup and coexistence model, see the [Runtime Model](runtime-model.md).
 
 ## Context
 
-Overwatch has to run in two environments with different constraints:
+Overwatch has several callers with different ergonomics:
 
-- **External lab** (assessing our own external footprint): MCP is permitted. The
-  current architecture is fine and is what we will use for external testing.
-- **Internal**: only *approved* MCP servers may be used. Overwatch is not approved
-  and will not be for some time, so **MCP is effectively unavailable internally.**
+- an operator's Claude session using MCP;
+- the browser dashboard using HTTP and WebSockets;
+- the `overwatch` terminal CLI using HTTP;
+- daemon-managed headless Claude workers using task-scoped MCP;
+- deterministic scripted runners; and
+- planner and automation workflows that may retry after a disconnect.
 
-Two more constraints shape the answer:
-
-- **Easiest thing to run wins**, and it should reuse model access we already have
-  approved — internally that is **Claude Code and Claude headless** (`claude -p`).
-- **No control over Bedrock model settings.** We cannot rely on constructing
-  arbitrary Bedrock payloads or enabling provider-native tool-use, so an embedded
-  loop that builds its own Bedrock request is not a path we control.
-
-## What we already have
-
-The decision is cheap because the engine is already transport-agnostic — verified
-in code, not aspirational:
-
-- The full action lifecycle (validate → approve → `action_started` → execute →
-  evidence → parse/report → `action_completed` → graph/frontier → event) lives in
-  `runInstrumentedProcess` (`src/tools/_process-runner.ts`) and `GraphEngine`.
-  Its inputs are plain objects with **zero MCP types**.
-- **Two non-MCP callers already exist and prove it:** the dashboard
-  (`dashboard-server.ts` calls engine methods directly over HTTP/WS) and the
-  scripted agent runner (`scripted-agent-runner.ts` calls `runInstrumentedProcess`
-  directly). Both emit the same audit events as the MCP path.
-- **MCP is load-bearing in exactly one place:** the headless reasoning agent's
-  *return path* — `claude -p` connects back to `/mcp` to invoke tools
-  (`headless-mcp-runner.ts`). The operator's primary model also drives via MCP.
-  Tool registration and the stdio/HTTP transports are thin edges (`src/app.ts`).
-
-So MCP is not the brain. The domain engine + action lifecycle is the brain and the
-single executor; transports are **drivers** that route into it.
+Those callers must not become independent executors or writers. If each owned
+its own graph state, timeout policy, or retry semantics, terminal work and
+dashboard-deployed work could race, duplicate target actions, or report
+different recovery truth.
 
 ## Decision
 
-1. **The engine is the system of record and the one executor. MCP is one driver,
-   not the platform.** Every driver routes through the same `runInstrumentedProcess`
-   + `GraphEngine` lifecycle, so scope, OPSEC, approval, evidence, and audit apply
-   uniformly regardless of how the action arrived.
-2. **Keep the MCP driver as-is.** It is correct, it is what external lab testing
-   needs soon, and it stays first-class.
-3. **Add a no-MCP internal driver** that reuses Claude headless: `claude -p` driving
-   Overwatch through a thin `overwatch` CLI / local HTTP surface, with **no MCP
-   server to approve.** Same executor, same lifecycle, same audit trail.
-4. **Drivers are selected per environment.** The engine, dashboard, lifecycle, and
-   archetype tool-surfaces are identical across them.
+1. **The engine and its persistence layer are the system of record.** A
+   deployment has one writable `GraphEngine` for an engagement.
+2. **Transports are adapters.** MCP, dashboard HTTP/WS, CLI, planner, scripted
+   runners, and headless runners parse requests and format responses. They do
+   not own durable mutation logic.
+3. **Mutations use transport-neutral application commands.** Domain command
+   services validate input, attach actor and action/frontier references, enforce
+   actor-scoped idempotency, record durable outcomes, and draft the underlying
+   state changes.
+4. **`EngineTransaction` V2 is the mutation boundary.** A complete transaction
+   is journaled and `fsync`ed before the canonical applier changes live state.
+   Recovery uses the same operation semantics.
+5. **The shared HTTP daemon is the recommended multi-surface deployment.**
+   Terminal Claude, the CLI, browser, planner, and deployed agents connect to
+   that one process. MCP stdio remains a supported solo fallback, not a second
+   process to run beside the daemon for the same engagement.
 
-## The drivers
+## Shipped adapters
 
-| Driver | Environment | How the model reaches tools | Status |
-|--------|-------------|-----------------------------|--------|
-| **MCP** | External lab (where approved) | Primary + headless agents speak MCP to `/mcp` | Shipped |
-| **Headless Claude + CLI** | Internal (MCP blocked) | `claude -p` with Bash limited to the `overwatch` CLI → local execution endpoints → executor | Planned |
-| **Human-only console** | Any | Operator drives the dashboard + scripted automation, no reasoning agent | Available today (once operator target-exec endpoints land) |
-| **Embedded native-tool loop** | Only with raw model-API control | Overwatch builds the model request with provider-native tool-use | Not pursued — we do not control Bedrock settings |
+| Adapter | Route into the engine | Intended use |
+|---|---|---|
+| **MCP HTTP** | Streamable HTTP `/mcp` → registered tools → application commands/queries | Terminal Claude and daemon-managed headless agents sharing one daemon |
+| **MCP stdio** | stdio MCP → registered tools → application commands/queries | One Claude session owning a solo process |
+| **Dashboard** | HTTP contract registry + three WebSocket channels | Browser projections, plans, approvals, questions, dispatch, sessions, playbooks, recovery |
+| **Terminal CLI** | `/api/*` through the same dashboard contract surface | Human operation from a second terminal pane |
+| **Planner** | Durable planner application command + restricted worker | Natural-language proposal; confirmation executes ordinary commands |
+| **Headless runner** | Isolated `claude -p` → task-scoped MCP HTTP | Archetype/role-bounded reasoning work |
+| **Scripted runner** | In-process command services | Deterministic automation without a reasoning worker |
 
-The launching of headless Claude was never the MCP part — the runner already spawns
-`claude -p` in-process next to the engine. Only the **return path** (how the agent
-invokes instrumented tools) uses MCP today. The internal driver swaps that return
-path for the CLI; nothing else about the agent runtime changes.
+The dashboard WebSockets are projection/event channels, not alternate write
+stores. Dashboard mutations use HTTP application commands. Likewise, the CLI is
+not a parallel engine; it is another client of the daemon API.
 
-## Consequences and tradeoffs
+## Shared command contract
 
-- **One codebase, environment-keyed drivers.** The MCP investment is preserved, and
-  the internal path reuses already-approved Claude headless — nothing new to get
-  approved.
-- **CLI driver is clunkier for the model than MCP.** Structured tool schemas become
-  CLI strings plus parsed (JSON) output, so the model needs a clear tool contract.
-  Manageable, but more prompt/contract upkeep than MCP's auto-discovery.
-- **The per-archetype tool boundary moves.** Today it is `--allowedTools
-  mcp__overwatch__*`; under the CLI driver it becomes `--allowedTools
-  "Bash(overwatch:*)"` plus CLI-side enforcement of the archetype's scope. Still a
-  real boundary, enforced differently.
-- **The Bash-guard hook flips meaning.** Today it blocks raw target-facing Bash;
-  under the CLI driver it must *allow* the `overwatch` CLI while still blocking other
-  target-facing shell.
+Every durable command record identifies:
 
-!!! note "Open question — refines the driver, does not block the decision"
-    Is the internal restriction on **MCP-the-protocol**, or only on **registering
-    non-approved MCP servers** in the client? If it is the latter, the Claude Agent
-    SDK's in-process tools (`createSdkMcpServer` — in-memory, no network server,
-    nothing to register) would give *structured* tools without an approvable server,
-    which is cleaner than CLI strings. We believe it is the latter but are not
-    certain; confirm with the platform/policy owners before building the CLI driver.
+- command kind and validated input hash;
+- command ID and actor-scoped idempotency key;
+- origin transport and actor task;
+- optional action, frontier item, and plan linkage;
+- accepted/running/terminal status; and
+- stored result or structured error plus affected entity references.
 
-## Future implementation (when internal need arrives)
+If the same actor retries the same key with identical input, the adapter returns
+the original outcome. Reusing the key for different input is an idempotency
+conflict. In-progress work remains queryable by command ID, which lets a browser
+or CLI reconnect without converting a local polling timeout into a false domain
+failure.
 
-Sequenced so each step is independently useful:
+The command service then composes one or more deterministic engine operations.
+The WAL records a complete checksum-protected transaction before those
+operations apply. If journal commit succeeds and apply fails, the writable
+service stops; another adapter cannot continue against partial memory.
 
-1. **Local execution surface** — `POST /api/actions/run` (+ `run_tool`, sessions) on
-   the dashboard server → `runInstrumentedProcess`. This also completes the
-   **human-only console**: operators get target execution without MCP.
-2. **`overwatch` CLI** — a thin client over that surface (repoint the existing
-   [CLI Adapter](playbook/cli-adapter.md) from `/mcp` to the local HTTP). Emits clean
-   JSON for the model to parse.
-3. **Runner driver swap** — `headless-mcp-runner.ts` gains a non-MCP mode: drop
-   `--mcp-config`, set `--allowedTools "Bash(overwatch:*)"`, inject the CLI tool
-   contract into the system prompt.
-4. **Hook update** — the Bash-guard allows `overwatch …` and blocks other
-   target-facing Bash.
-5. **Parity tests** — assert the non-MCP driver produces identical
-   `action_started` / evidence / `action_completed` audit events to the MCP driver.
+## Deployment shapes
+
+### Shared daemon (recommended)
+
+`npm run setup` writes an HTTP MCP client configuration for terminal
+Claude. `npm run start:daemon` starts the MCP endpoint, dashboard/API, task
+execution service, and WebSocket hubs around one engine. Dashboard-deployed
+workers receive their own isolated MCP configuration pointing back to this
+daemon.
+
+This is the supported shape when any two of terminal Claude, dashboard, CLI,
+planner, or dispatched agents are used together. The filesystem writer lease
+also rejects an accidental second writer.
+
+### Stdio solo fallback
+
+With explicit `npm run setup:stdio` (or `npm run setup -- --stdio`), Claude can
+spawn Overwatch over stdio. That process may
+serve the dashboard associated with the solo runtime, but it remains owned by
+that one Claude launch. Do not separately start the daemon against the same
+engagement directory.
+
+### Remote daemon
+
+The same engine shape can bind beyond loopback. MCP and dashboard/API
+authentication remain separate configured bearer-token boundaries. The browser
+transport captures a landing token into session storage, removes it from the
+visible URL/history, and applies it to HTTP, protected blobs/downloads, and all
+WebSocket channels. A reverse proxy does not change command or durability
+ownership.
+
+## Headless worker isolation
+
+Launching `claude -p` is local process management; the worker's tool return path
+uses the daemon's HTTP MCP adapter. The worker receives a generated task-specific
+MCP configuration and allowed-tool set. It does not load the operator terminal's
+project MCP configuration, hooks, or resumable Claude session identity.
+
+That separation lets terminal Claude and dashboard-deployed agents run
+concurrently without fighting over Claude configuration. Coordination occurs in
+Overwatch through durable task identity, leases, directives, questions,
+application-command idempotency, and playbook attempt ownership.
+
+## No-MCP environments
+
+The human `overwatch` CLI and dashboard already operate without being MCP
+clients; they call the daemon API. A future policy-constrained **reasoning
+worker** could be restricted to that CLI instead of MCP, but this model-driver
+variant is not required by or implemented in the current runtime. If added, it
+must call the same application commands and pass parity tests for validation,
+approval, evidence, audit events, idempotency, and transaction recovery. It may
+not introduce a second executor.
+
+An embedded provider-native tool loop is also outside the current deployment
+contract. The architecture does not assume control of Bedrock or another
+provider's model request settings.
+
+## Consequences
+
+- **One recovery truth.** WAL, config convergence, process ownership, and
+  session reconciliation expose one status to every adapter.
+- **One policy path.** Scope, OPSEC, approval, evidence capture, and audit
+  linkage do not vary by transport.
+- **Safe coexistence.** Terminal and dashboard work share leases and durable
+  ownership rather than relying on browser timers or process-local memory.
+- **Retryable clients.** Disconnects can replay completed command outcomes
+  without repeating the mutation.
+- **Adapter simplicity.** New transports must map to existing commands and
+  contracts; they do not gain permission to mutate `GraphEngine` internals.
+- **Explicit live-state limits.** Process and session descriptors may survive
+  restart, but live handles do not. Recovery reports interrupted, unknown, or
+  resume-available state rather than fabricating liveness.
 
 ## Non-goals
 
-- Not removing or deprecating MCP — it is the external-lab driver and stays
-  first-class.
-- Not adopting LangGraph, Temporal, or A2A as part of this decision.
-- Not depending on Bedrock-specific APIs or on controlling Bedrock model settings.
+- Removing or deprecating MCP.
+- Running multiple writable engines over one engagement.
+- Persisting PTYs, sockets, process objects, WebSocket clients, or model session
+  identity.
+- Adopting LangGraph, Temporal, A2A, or a provider-specific orchestration layer
+  as part of this decision.
 
 ## See also
 
-- [Architecture Overview](architecture.md) — component map and the executor seam.
-- [Operator Cockpit](operator-cockpit.md#roles) — the headless multi-agent runtime
-  and per-role tool surfaces.
-- [Bedrock Integration Plan](bedrock-integration-plan.md) — system-contract and
-  middleware work for enterprise Bedrock clients.
-- [CLI Adapter](playbook/cli-adapter.md) — the shell surface the internal driver
-  builds on.
+- [Runtime Model](runtime-model.md) — one-daemon operator workflow and worker
+  isolation.
+- [Architecture](architecture.md) — command, transaction, persistence, and state
+  taxonomy.
+- [Getting Started](getting-started.md) — daemon and stdio startup paths.
+- [Terminal CLI](cli.md) — the human shell adapter.
+- [Operator Cockpit](operator-cockpit.md) — planner and deployed-agent behavior.
+- [Bedrock Integration Plan](bedrock-integration-plan.md) — enterprise model
+  integration considerations.

@@ -1,6 +1,6 @@
 # Getting Started
 
-This page gets you from a clean clone to "AI is doing recon on my lab" in about five minutes. There are [**two ways to run Overwatch**](#two-ways-to-run-overwatch). The Quick Start uses the shared daemon because it is the straightforward path for terminal Claude, the dashboard, the CLI, and dispatched agents to work together without competing writers. Stdio remains the supported solo fallback.
+This page gets you from a clean clone to "AI is doing recon on my lab" in about five minutes. There are [**two ways to run Overwatch**](#two-ways-to-run-overwatch). Setup defaults to the shared daemon because it is the straightforward path for terminal Claude, the dashboard, the CLI, and dispatched agents to work together without competing writers. Stdio remains an explicit solo compatibility mode.
 
 !!! tip "Already past setup?"
     Jump to the [Operator Playbook](playbook/index.md) for what to actually do once Overwatch is running, or the [End-to-End Walkthrough](playbook/walkthrough.md) for a narrated lab engagement. Working a specific engagement type? Start from an **Assessment Guide**: [Web Assessment](assessments/web-assessment.md) or [Internal AD / Network](assessments/internal-ad-network.md).
@@ -11,15 +11,15 @@ This page gets you from a clean clone to "AI is doing recon on my lab" in about 
 
 Overwatch is **one engine** — the same graph, tools, and dashboard either way. What differs is how clients attach to it:
 
-| | **stdio** *(solo fallback)* | **HTTP daemon** *(recommended)* |
+| | **stdio** *(solo compatibility)* | **HTTP daemon** *(recommended default)* |
 |---|---|---|
-| How it starts | `claude` launches Overwatch as a child process | You run `npm start -- --http`; it stays up on its own |
+| Setup/start | `npm run setup:stdio`, then `claude` launches Overwatch | `npm run setup`, then `npm run start:daemon` once |
 | Lifetime | Lives and dies with that one `claude` session | Long-lived; survives client restarts |
 | Clients | One Claude Code session | Many at once — the dashboard, a terminal `claude`, the [`overwatch` CLI](cli.md), and dispatched sub-agents, all on the *same* engagement |
 | Dashboard | Yes, on `:8384` | Yes, on `:8384` |
 | Best for | Solo operator, fastest first run | Dashboard-driven ops, multi-agent dispatch, the `overwatch` CLI, remote/shared instances |
 
-Both bring up the live dashboard. Pick the **daemon** whenever you use the dashboard, CLI, planner, dispatched agents, or more than one Claude client. Pick **stdio** only when one Claude session should own the entire process.
+Both bring up the live dashboard. Keep the default **daemon** whenever you use the dashboard, CLI, planner, dispatched agents, or more than one Claude client. Select **stdio** explicitly only when one Claude session should own the entire process.
 
 ---
 
@@ -31,7 +31,7 @@ Both bring up the live dashboard. Pick the **daemon** whenever you use the dashb
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install
-npm run setup -- --daemon --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
 npm run build
 npm run doctor
 npm run start:daemon
@@ -49,14 +49,14 @@ need, then use the `check_tools` MCP tool as a preflight.
 Start with the general-purpose **`ctf.json`** template — it has no OPSEC constraints, auto-approves everything, and works for any lab, CTF, HTB box, or "I just want to try Overwatch" scenario. It's the friendliest first run.
 
 ```bash
-npm run setup -- --daemon --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
 ```
 
 This creates a local `engagement.json` from the template, fills in the CIDR,
 adds a fresh `engagement_nonce`, and writes an authenticated HTTP `.mcp.json`,
 `.overwatch-mcp-token`, and `.claude/settings.json`. Leave
 `npm run start:daemon` running, open `http://127.0.0.1:8384`, and start `claude`
-in another terminal. Re-running `setup -- --daemon` keeps an existing
+in another terminal. Re-running the default `npm run setup` keeps an existing
 `engagement.json`; it only refreshes the shared-client wiring.
 
 If you prefer to edit manually, copy `engagement.example.json` or a template to
@@ -127,7 +127,7 @@ The daemon form looks like this:
 }
 ```
 
-`setup -- --daemon` preserves any other MCP servers already present in this
+The default daemon setup preserves any other MCP servers already present in this
 file and updates only `mcpServers.overwatch`.
 
 !!! important "Do not skip hooks"
@@ -152,10 +152,23 @@ checkout. After a pull, a stale or missing build is rebuilt automatically before
 the daemon starts; `npm run doctor` reports the same freshness status without
 changing any files.
 
-Claude Code connects to the already-running Overwatch engine and reads
+The first pre-start doctor run may warn that the configured daemon is not
+running; that is expected. With the daemon active, run `npm run doctor` again
+from the second terminal to verify its PID/build identity, MCP token, Claude CLI
+worker flags, and port ownership.
+
+Terminal Claude connects to the already-running Overwatch engine and reads
 [`AGENTS.md`](https://github.com/professor-moody/overwatch/blob/main/AGENTS.md)
 as the primary session prompt. The dashboard, CLI, Claude, and dispatched agents
-now share the same state.
+now share the same durable commands, state, leases, and playbook ownership.
+
+Dashboard-managed Claude workers are separate headless processes, not copies of
+your terminal session. Each gets a temporary task-specific MCP configuration,
+a restricted tool surface, strict MCP isolation, user-only Claude settings, and
+no Claude session persistence. User settings remain available for
+authentication, while this project's terminal hooks/settings, MCP servers, and
+resume history do not leak into the worker. You can therefore keep using
+terminal Claude while deploying agents from the dashboard.
 
 ### 5. Open the dashboard
 
@@ -191,13 +204,42 @@ For a fully narrated example, read the [End-to-End Walkthrough](playbook/walkthr
 
 ## Verify Setup
 
-If something looks off, ask Claude:
+First run the local/runtime check (with the daemon active, it also verifies the
+running build):
+
+```bash
+npm run doctor
+```
+
+Then ask Claude:
 
 1. **`get_state`** — confirms the server is up and the engagement loaded.
 2. **`run_lab_preflight`** — checks tools, graph health, dashboard.
 3. **`check_tools`** — lists which offensive tools are installed (`nmap`, `nxc`, `bloodhound-python`, etc.).
 
 All three returning clean output means you're good.
+
+### After pulling an update
+
+Stop the old daemon, then use the same predictable refresh path:
+
+```bash
+git pull --ff-only origin main
+npm ci
+npm run build
+npm run doctor
+npm run start:daemon
+```
+
+This rebuilds dependencies and compiled assets; it does not replace
+`engagement.json`, state/WAL/snapshots, evidence, or reports. Hard-reload the
+dashboard after the new daemon starts. If `doctor` identifies another PID or a
+different build, stop that owner instead of starting a second daemon.
+
+If startup reports read-only recovery, preserve the engagement files and run
+`overwatch recovery` (or inspect **Settings → Recovery**). A configuration
+divergence is an explicit reconciliation decision; it is not a reason to delete
+the current graph or reseed the engagement.
 
 ---
 
@@ -208,7 +250,7 @@ the [`overwatch` CLI](cli.md), terminal Claude, and dispatched sub-agents share
 the same live engagement. This section explains the wiring and how to switch an
 older solo stdio setup.
 
-`setup -- --daemon` already wires Claude to this endpoint and creates the same
+The default setup already wires Claude to this endpoint and creates the same
 stable token the daemon will reuse:
 
 ```bash
@@ -231,7 +273,7 @@ If you started with solo stdio mode, switch safely without replacing the
 engagement:
 
 ```bash
-npm run setup -- --daemon
+npm run setup
 ```
 
 ```json
@@ -240,7 +282,7 @@ npm run setup -- --daemon
     "overwatch": {
       "type": "http",
       "url": "http://127.0.0.1:3000/mcp",
-      "headers": { "Authorization": "Bearer ${OVERWATCH_MCP_TOKEN}" }
+      "headers": { "Authorization": "Bearer <local setup token>" }
     }
   }
 }
@@ -249,7 +291,8 @@ npm run setup -- --daemon
 The `/mcp` endpoint requires a bearer token by default, even on loopback.
 Setup writes it into the local `.mcp.json` and stores the same value `0600` in
 `.overwatch-mcp-token`; daemon restarts reuse that file automatically. You can
-still provide `OVERWATCH_MCP_TOKEN` explicitly when managing secrets externally.
+still provide `OVERWATCH_MCP_TOKEN` explicitly when managing secrets externally;
+in that manual form, use `Bearer ${OVERWATCH_MCP_TOKEN}` in client configuration.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
