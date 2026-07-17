@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@overwatch/dashboard-contracts': fileURLToPath(new URL('./src/contracts/dashboard-v1.ts', import.meta.url)),
+      '@overwatch/dashboard-api-contracts': fileURLToPath(new URL('./src/contracts/dashboard-api-v1.ts', import.meta.url)),
     },
   },
   test: {

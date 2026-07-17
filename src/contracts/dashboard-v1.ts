@@ -4,12 +4,9 @@ import { EDGE_TYPES, NODE_TYPES, edgeTypeSchema, nodeTypeSchema } from '../types
 const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 
 /**
- * Browser-safe runtime contracts for the dashboard correctness slice.
- *
- * This is intentionally not the full endpoint registry planned for PR11. It
- * freezes the existing v1 wire envelopes for the surfaces corrected in PR3 so
- * the Node server and browser client validate the same shapes. Response
- * objects remain additive via passthrough(); mutation inputs are strict.
+ * Browser-safe runtime contracts for the compatibility-v1 dashboard API.
+ * Response objects remain additive via passthrough(); mutation inputs are
+ * strict where the public operation is defined as a strict mutation.
  */
 
 export const FRONTIER_TYPES = [
@@ -151,25 +148,6 @@ export type RawGraphNodeDto = z.infer<typeof RawGraphNodeDtoSchema>;
 export type RawGraphEdgeDto = z.infer<typeof RawGraphEdgeDtoSchema>;
 export type ColdNodeDto = z.infer<typeof ColdNodeDtoSchema>;
 export type RawGraphDto = z.infer<typeof RawGraphDtoSchema>;
-
-export interface GraphNodeViewModel extends Record<string, unknown> {
-  id: string;
-  type: string;
-  label: string;
-}
-
-export interface GraphEdgeViewModel extends Record<string, unknown> {
-  id?: string;
-  source: string;
-  target: string;
-  type: string;
-}
-
-export interface GraphViewModel {
-  nodes: GraphNodeViewModel[];
-  edges: GraphEdgeViewModel[];
-  coldInventory: ColdNodeDto[];
-}
 
 export const CAMPAIGN_STRATEGIES = [
   'credential_spray',
@@ -358,6 +336,513 @@ export const AgentListResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 }).passthrough();
 export type AgentListResponse = z.infer<typeof AgentListResponseSchema>;
+
+export const DispatchedAgentTaskSchema = z.object({
+  task_id: z.string().optional(),
+  agent_label: z.string().optional(),
+  id: z.string(),
+  agent_id: z.string(),
+  assigned_at: z.string(),
+  status: AgentStatusSchema,
+  subgraph_node_ids: z.array(z.string()),
+  frontier_item_id: z.string().optional(),
+  campaign_id: z.string().optional(),
+  archetype: z.string().optional(),
+  skill: z.string().optional(),
+  objective: z.string().optional(),
+  model: z.string().optional(),
+}).passthrough();
+export type DispatchedAgentTask = z.infer<typeof DispatchedAgentTaskSchema>;
+
+const DashboardCommandMetadataShape = {
+  command_id: z.string(),
+  idempotency_key: z.string(),
+  replayed: z.boolean(),
+};
+
+const DispatchRefusalSchema = z.object({
+  dispatched: z.literal(false),
+  reason: z.string(),
+  existing_task_id: z.string().optional(),
+  existing_agent_id: z.string().optional(),
+  node_id: z.string().optional(),
+  cap_scope: z.string().optional(),
+  cap_key: z.string().optional(),
+  limit: z.number().int().nonnegative().optional(),
+  current: z.number().int().nonnegative().optional(),
+  ...DashboardCommandMetadataShape,
+}).passthrough();
+
+const DispatchErrorResponseSchema = z.object({
+  error: z.string(),
+  code: z.string().optional(),
+  reason: z.string().optional(),
+  command_id: z.string().optional(),
+}).passthrough();
+
+export const DispatchAgentResponseSchema = z.union([
+  z.object({
+    dispatched: z.literal(true),
+    task: DispatchedAgentTaskSchema,
+    skipped_existing: z.boolean().optional(),
+    scope_warning: z.string().optional(),
+    ...DashboardCommandMetadataShape,
+  }).passthrough(),
+  DispatchRefusalSchema,
+  DispatchErrorResponseSchema,
+]);
+export type DispatchAgentResponse = z.infer<typeof DispatchAgentResponseSchema>;
+
+export const DispatchBatchResponseSchema = z.object({
+  dispatched: z.array(z.object({
+    node_ids: z.array(z.string()),
+    task_id: z.string(),
+    agent_id: z.string(),
+    archetype: z.string().optional(),
+  }).passthrough()),
+  skipped: z.array(z.object({
+    node_ids: z.array(z.string()),
+    reason: z.string(),
+    existing_agent_id: z.string().optional(),
+  }).passthrough()),
+  deferred: z.array(z.object({
+    node_ids: z.array(z.string()),
+    reason: z.string(),
+  }).passthrough()),
+  summary: z.object({
+    dispatched: z.number().int().nonnegative(),
+    skipped: z.number().int().nonnegative(),
+    deferred: z.number().int().nonnegative(),
+    groups: z.number().int().nonnegative(),
+  }).passthrough(),
+  ...DashboardCommandMetadataShape,
+}).passthrough();
+export type DispatchBatchResponse = z.infer<typeof DispatchBatchResponseSchema>;
+
+export const QuickDeployResponseSchema = z.union([
+  z.object({
+    dispatched: z.literal(true),
+    task: DispatchedAgentTaskSchema,
+    archetype: z.string(),
+    scope: z.object({
+      added_cidrs: z.array(z.string()),
+      added_domains: z.array(z.string()),
+      affected_node_count: z.number().int().nonnegative(),
+    }).passthrough(),
+    ...DashboardCommandMetadataShape,
+  }).passthrough(),
+  DispatchRefusalSchema,
+  DispatchErrorResponseSchema,
+]);
+export type QuickDeployResponse = z.infer<typeof QuickDeployResponseSchema>;
+
+export const AgentArchetypeSummarySchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string(),
+  role: z.string(),
+  defaultSkill: z.string().optional(),
+  suitableFor: z.object({
+    frontierTypes: z.array(z.string()).optional(),
+    nodeTypes: z.array(z.string()).optional(),
+    rawTarget: z.boolean().optional(),
+  }).passthrough(),
+}).passthrough();
+export type AgentArchetypeSummary = z.infer<typeof AgentArchetypeSummarySchema>;
+export const AgentArchetypesResponseSchema = z.object({
+  archetypes: z.array(AgentArchetypeSummarySchema),
+  models: z.object({
+    available: z.array(z.string()),
+    default: z.string().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+export type AgentArchetypesResponse = z.infer<typeof AgentArchetypesResponseSchema>;
+
+export const OperatorOpSchema = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('directive'),
+    task_id: z.string(),
+    agent_label: z.string(),
+    kind: z.string(),
+    node_ids: z.array(z.string()).optional(),
+    frontier_types: z.array(z.string()).optional(),
+    note: z.string().optional(),
+  }).passthrough(),
+  z.object({
+    op: z.literal('scope'),
+    add_cidrs: z.array(z.string()).optional(),
+    add_domains: z.array(z.string()).optional(),
+    add_exclusions: z.array(z.string()).optional(),
+  }).passthrough(),
+  z.object({ op: z.literal('approve'), action_id: z.string(), notes: z.string().optional() }).passthrough(),
+  z.object({ op: z.literal('deny'), action_id: z.string(), reason: z.string().optional() }).passthrough(),
+  z.object({
+    op: z.literal('dispatch'),
+    target_node_ids: z.array(z.string()),
+    archetype: z.string().optional(),
+    skill: z.string().optional(),
+    objective: z.string().optional(),
+  }).passthrough(),
+]);
+export type OperatorOpDto = z.infer<typeof OperatorOpSchema>;
+
+export const CommandOpResultSchema = z.object({
+  op: OperatorOpSchema,
+  ok: z.boolean(),
+  detail: z.string().optional(),
+  error: z.string().optional(),
+}).passthrough();
+export type CommandOpResultDto = z.infer<typeof CommandOpResultSchema>;
+
+export const QueryAnswerSchema = z.object({
+  kind: z.enum([
+    'changes_since',
+    'timeline',
+    'list_nodes',
+    'finding_readiness',
+    'find_paths',
+    'retrospective',
+    'unanswerable',
+  ]),
+  summary: z.string(),
+  rows: z.array(z.string()).optional(),
+  total: z.number().int().nonnegative().optional(),
+  note: z.string().optional(),
+}).passthrough();
+export type QueryAnswerDto = z.infer<typeof QueryAnswerSchema>;
+
+export const ProposedPlanSchema = z.object({
+  plan_id: z.string(),
+  command_id: z.string().optional(),
+  command: z.string(),
+  ops: z.array(OperatorOpSchema),
+  summary: z.string(),
+  rationale: z.string().optional(),
+  owner_task_id: z.string().optional(),
+  owner_agent_label: z.string().optional(),
+  source_task_id: z.string().optional(),
+  source_agent_id: z.string().optional(),
+  scope_preview: z.object({}).passthrough().optional(),
+  created_at: z.number(),
+  expires_at: z.number(),
+  status: z.enum(['open', 'confirmed', 'denied', 'expired']),
+  resolved_at: z.number().optional(),
+  confirmed_at: z.number().optional(),
+  denied_at: z.number().optional(),
+  expired_at: z.number().optional(),
+  acknowledged_at: z.number().optional(),
+  execution_outcome: z.object({
+    status: z.enum(['succeeded', 'partial', 'failed']),
+    completed_at: z.number(),
+    results: z.array(z.unknown()),
+  }).passthrough().optional(),
+  recovery_warning: z.string().optional(),
+}).passthrough();
+export type ProposedPlanDto = z.infer<typeof ProposedPlanSchema>;
+
+export const CommandPreviewSchema = z.object({
+  plan_id: z.string().optional(),
+  ops: z.array(OperatorOpSchema),
+  summary: z.string(),
+  unresolved: z.array(z.object({ text: z.string(), reason: z.string() }).passthrough()),
+  needs_planner: z.boolean(),
+  planner_task_id: z.string().optional(),
+  command_id: z.string().optional(),
+  planner_status: z.string().optional(),
+  planner_available: z.boolean().optional(),
+  planner_plan: ProposedPlanSchema.optional(),
+  query_answer: QueryAnswerSchema.optional(),
+}).passthrough();
+export type CommandPreviewDto = z.infer<typeof CommandPreviewSchema>;
+
+export const CommandExecutionResponseSchema = z.object({
+  executed: z.literal(true),
+  results: z.array(CommandOpResultSchema),
+  command_id: z.string(),
+  idempotency_key: z.string(),
+  replayed: z.boolean(),
+}).passthrough();
+export const CommandDenialResponseSchema = z.object({
+  denied: z.literal(true),
+  plan_id: z.string(),
+  command_id: z.string(),
+  idempotency_key: z.string(),
+  replayed: z.boolean(),
+}).passthrough();
+export const InterpretCommandResponseSchema = z.union([
+  CommandPreviewSchema,
+  CommandExecutionResponseSchema,
+  CommandDenialResponseSchema,
+]);
+
+export const ProposedPlansResponseSchema = z.object({
+  plans: z.array(ProposedPlanSchema),
+}).passthrough();
+
+export const ApplicationCommandRecordSchema = z.object({
+  command_id: z.string(),
+  idempotency_key: z.string(),
+  input_sha256: Sha256Schema,
+  validated_input: z.unknown(),
+  command_kind: z.string(),
+  transport: z.enum(['mcp', 'dashboard', 'cli', 'planner', 'scripted_runner', 'headless_runner', 'system']),
+  actor_task_id: z.string().nullable(),
+  action_id: z.string().optional(),
+  frontier_item_id: z.string().optional(),
+  plan_id: z.string().optional(),
+  status: z.enum(['accepted', 'running', 'succeeded', 'failed', 'interrupted']),
+  created_at: z.string(),
+  started_at: z.string().optional(),
+  completed_at: z.string().optional(),
+  result: z.unknown().optional(),
+  error: z.object({
+    code: z.string().optional(),
+    message: z.string(),
+    details: z.unknown().optional(),
+  }).passthrough().optional(),
+  entity_refs: z.record(z.union([z.string(), z.array(z.string())])).optional(),
+}).passthrough();
+export type ApplicationCommandRecordDto = z.infer<typeof ApplicationCommandRecordSchema>;
+export const ApplicationCommandResponseSchema = z.object({
+  command: ApplicationCommandRecordSchema,
+}).passthrough();
+export const ActiveApplicationCommandsResponseSchema = z.object({
+  commands: z.array(ApplicationCommandRecordSchema),
+}).passthrough();
+
+/**
+ * Repair the presentation of the legacy registration message that interpolated
+ * an absent frontier id. The persisted activity row remains byte-for-byte
+ * unchanged; HTTP snapshots and browser views use this display-only text.
+ */
+export function normalizeLegacyAgentDispatchDescription(entry: {
+  event_type?: string;
+  description: string;
+  details?: Record<string, unknown>;
+}): string {
+  if (entry.event_type !== 'agent_registered' || !/\sfor undefined\s*$/i.test(entry.description)) {
+    return entry.description;
+  }
+  const withoutUndefined = entry.description.replace(/\sfor undefined\s*$/i, '').trim();
+  return entry.details?.role === 'planner'
+    ? `${withoutUndefined} as operator planner`
+    : withoutUndefined;
+}
+
+export const AgentQuerySchema = z.object({
+  query_id: z.string(),
+  owner_task_id: z.string().optional(),
+  owner_agent_label: z.string().optional(),
+  task_id: z.string().optional(),
+  agent_id: z.string().optional(),
+  question: z.string(),
+  options: z.array(z.string()).optional(),
+  status: z.enum(['open', 'answered', 'expired']),
+  answer: z.string().optional(),
+  created_at: z.number(),
+  expires_at: z.number(),
+  answered_at: z.number().optional(),
+  delivered_at: z.number().optional(),
+  acknowledged_at: z.number().optional(),
+  expired_at: z.number().optional(),
+  recovery_warning: z.string().optional(),
+}).passthrough();
+export type AgentQueryDto = z.infer<typeof AgentQuerySchema>;
+export const AgentQueriesResponseSchema = z.object({
+  queries: z.array(AgentQuerySchema),
+}).passthrough();
+
+export const SessionStateSchema = z.enum([
+  'pending',
+  'connected',
+  'resume_available',
+  'interrupted',
+  'closed',
+  'error',
+]);
+
+export const SessionDtoSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  adapter: z.string().optional(),
+  transport: z.string(),
+  state: SessionStateSchema,
+  listener_id: z.string().optional(),
+  connection_generation: z.number().int().nonnegative().optional(),
+  connection_id: z.string().optional(),
+  connection_started_at: z.string().optional(),
+  last_connection_id: z.string().optional(),
+  last_connection_state: z.enum(['disconnected', 'interrupted', 'closed']).optional(),
+  last_connection_closed_at: z.string().optional(),
+  resume_policy: z.enum(['none', 'manual']).optional(),
+  mode: z.enum(['connect', 'listen']).optional(),
+  bind_host: z.string().optional(),
+  advertise_host: z.string().optional(),
+  accept_mode: z.enum(['single', 'rearm']).optional(),
+  reachability_warnings: z.array(z.string()).optional(),
+  auth_status: z.enum(['shell_confirmed', 'connected_unconfirmed', 'auth_prompt', 'auth_failed']).optional(),
+  title: z.string(),
+  host: z.string().optional(),
+  user: z.string().optional(),
+  port: z.number().int().optional(),
+  pid: z.number().int().optional(),
+  owner: z.string().optional(),
+  agent_id: z.string().optional(),
+  target_node: z.string().optional(),
+  principal_node: z.string().optional(),
+  credential_node: z.string().optional(),
+  action_id: z.string().optional(),
+  frontier_item_id: z.string().optional(),
+  claimed_by: z.string().optional(),
+  created_at: z.string().optional(),
+  started_at: z.string(),
+  last_activity_at: z.string(),
+  closed_at: z.string().optional(),
+  capabilities: z.object({
+    has_stdin: z.boolean().optional(),
+    has_stdout: z.boolean().optional(),
+    supports_resize: z.boolean().optional(),
+    supports_signals: z.boolean().optional(),
+    tty_quality: z.string().optional(),
+  }).passthrough(),
+  buffer_end_pos: z.number().int().nonnegative(),
+  notes: z.string().optional(),
+  default_validation: z.object({
+    technique: z.string().optional(),
+    target_ip: z.string().optional(),
+    target_url: z.string().optional(),
+    allow_unverified_scope: z.boolean().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+export type SessionDto = z.infer<typeof SessionDtoSchema>;
+
+export const SessionBufferResponseSchema = z.object({
+  session_id: z.string(),
+  connection_id: z.string().optional(),
+  connection_generation: z.number().int().nonnegative().optional(),
+  start_pos: z.number().int().nonnegative(),
+  end_pos: z.number().int().nonnegative(),
+  text: z.string(),
+  truncated: z.boolean(),
+  cursor_reset: z.boolean().optional(),
+}).passthrough();
+export type SessionBufferResponseDto = z.infer<typeof SessionBufferResponseSchema>;
+
+export const SessionCloseResponseSchema = z.object({
+  metadata: SessionDtoSchema,
+  final: z.object({
+    session_id: z.string(),
+    connection_id: z.string().optional(),
+    connection_generation: z.number().int().nonnegative().optional(),
+    start_pos: z.number().int().nonnegative(),
+    end_pos: z.number().int().nonnegative(),
+    text: z.string(),
+    truncated: z.boolean(),
+  }).passthrough(),
+}).passthrough();
+export const SessionResumeResponseSchema = z.object({
+  resumed: z.literal(true),
+  metadata: SessionDtoSchema,
+}).passthrough();
+export const SessionUpdateResponseSchema = z.object({
+  metadata: SessionDtoSchema,
+}).passthrough();
+
+export const PendingActionDtoSchema = z.object({
+  action_id: z.string(),
+  technique: z.string().optional(),
+  target: z.string().optional(),
+  target_node: z.string().optional(),
+  target_ip: z.string().optional(),
+  target_cidr: z.string().optional(),
+  noise_level: z.number().optional(),
+  description: z.string(),
+  defense_context: z.string().optional(),
+  submitted_at: z.string(),
+  timeout_at: z.string().optional(),
+  resolved_at: z.string().optional(),
+  status: z.enum(['pending', 'approved', 'denied', 'timeout', 'aborted']).optional(),
+  operator_notes: z.string().optional(),
+  reason: z.string().optional(),
+  auto_approved: z.boolean().optional(),
+  unattended_execute: z.boolean().optional(),
+  frontier_item_id: z.string().optional(),
+  task_id: z.string().optional(),
+  agent_label: z.string().optional(),
+  agent_id: z.string().optional(),
+  recovery_warning: z.string().optional(),
+  validation_result: z.string().optional(),
+  opsec_context: z.object({
+    noise_level: z.number().optional(),
+    noise_budget_remaining: z.number().optional(),
+    recommended_approach: z.string().optional(),
+    defensive_signals: z.array(z.object({
+      type: z.enum(['lockout', 'connection_reset', 'honeypot', 'rate_limit', 'block']),
+      host_id: z.string().optional(),
+      domain: z.string().optional(),
+      detected_at: z.string(),
+      description: z.string(),
+    }).passthrough()).optional(),
+  }).passthrough().optional(),
+}).passthrough();
+export type PendingActionDto = z.infer<typeof PendingActionDtoSchema>;
+
+export const ActivityEntryDtoSchema = z.object({
+  event_id: z.string(),
+  id: z.string().optional(),
+  timestamp: z.string(),
+  event_type: z.string().optional(),
+  description: z.string(),
+  action_id: z.string().optional(),
+  agent_id: z.string().optional(),
+  linked_agent_task_id: z.string().optional(),
+  details: z.record(z.unknown()).optional(),
+  source_kind: z.enum(['primary', 'subagent', 'runner', 'system', 'dashboard']).optional(),
+  operator_model: z.string().optional(),
+  operator_name: z.string().optional(),
+  operator_session_id: z.string().optional(),
+  frontier_item_id: z.string().optional(),
+  target_node_ids: z.array(z.string()).optional(),
+  result_classification: z.enum(['success', 'failure', 'partial', 'neutral']).optional(),
+  validation_result: z.string().optional(),
+}).passthrough();
+export type ActivityEntryDto = z.infer<typeof ActivityEntryDtoSchema>;
+
+export const AgentConsoleKindSchema = z.enum([
+  'thought',
+  'action',
+  'approval',
+  'finding',
+  'session',
+  'transcript',
+  'system',
+  'command',
+]);
+export const AgentConsoleSeveritySchema = z.enum(['info', 'success', 'warning', 'error']);
+export const AgentConsoleEventDtoSchema = z.object({
+  id: z.string(),
+  timestamp: z.string(),
+  agent_id: z.string(),
+  source_kind: z.enum(['primary', 'subagent', 'runner', 'system', 'dashboard']).optional(),
+  source_label: z.string().optional(),
+  operator_name: z.string().optional(),
+  operator_model: z.string().optional(),
+  kind: AgentConsoleKindSchema,
+  severity: AgentConsoleSeveritySchema,
+  title: z.string(),
+  summary: z.string(),
+  status: z.string().optional(),
+  links: z.object({
+    action_id: z.string().optional(),
+    frontier_item_id: z.string().optional(),
+    evidence_id: z.string().optional(),
+    session_id: z.string().optional(),
+    finding_ids: z.array(z.string()).optional(),
+    node_ids: z.array(z.string()).optional(),
+  }).passthrough().optional(),
+  raw: z.record(z.unknown()).optional(),
+}).passthrough();
+export type AgentConsoleEventDto = z.infer<typeof AgentConsoleEventDtoSchema>;
 
 export const CampaignDetailResponseSchema = z.object({
   campaign: DashboardCampaignDtoSchema,
@@ -554,6 +1039,34 @@ export const DashboardErrorSchema = z.object({
   code: z.string().optional(),
 }).passthrough();
 
+const ScopeConfigResponseSchema = z.object({
+  cidrs: z.array(z.string()),
+  domains: z.array(z.string()),
+  exclusions: z.array(z.string()),
+}).passthrough();
+
+export const EngagementConfigResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  created_at: z.string(),
+  config_revision: z.number().int().positive().optional(),
+  config_hash: Sha256Schema.optional(),
+  scope: ScopeConfigResponseSchema,
+  objectives: z.array(ObjectiveDtoSchema),
+  opsec: z.object({}).passthrough(),
+  config_path: z.string().optional(),
+  state_path: z.string().optional(),
+}).passthrough();
+export type EngagementConfigResponseDto = z.infer<typeof EngagementConfigResponseSchema>;
+
+export const EngagementConfigUpdateResponseSchema = z.object({
+  updated: z.boolean(),
+  config: EngagementConfigResponseSchema,
+  command_id: z.string(),
+  idempotency_key: z.string(),
+  replayed: z.boolean(),
+}).passthrough();
+
 export const ConfigRecoveryStatusSchema = z.object({
   status: z.enum(['unmanaged', 'in_sync', 'recovered', 'diverged', 'write_incomplete']),
   resolution_required: z.boolean(),
@@ -678,3 +1191,437 @@ export const ConfigDivergenceResolveResponseSchema = z.object({
   recovery: ConfigRecoveryStatusSchema,
 }).passthrough();
 export type ConfigDivergenceResolveResponse = z.infer<typeof ConfigDivergenceResolveResponseSchema>;
+
+export const DashboardStateDtoSchema = z.object({
+  engagement: z.object({
+    id: z.string(),
+    name: z.string(),
+    profile: z.string().optional(),
+    template: z.string().optional(),
+    created_at: z.string().optional(),
+  }).passthrough().optional(),
+  config: z.object({
+    id: z.string(),
+    name: z.string(),
+    profile: z.string().optional(),
+    created_at: z.string().optional(),
+    scope: z.object({}).passthrough().optional(),
+    opsec: z.object({}).passthrough().optional(),
+  }).passthrough(),
+  access_summary: z.object({
+    compromised_hosts: z.array(z.string()),
+    valid_credentials: z.array(z.string()),
+    current_access_level: z.string(),
+  }).passthrough(),
+  graph_summary: z.object({
+    total_nodes: z.number().int().nonnegative(),
+    total_edges: z.number().int().nonnegative(),
+    confirmed_edges: z.number().int().nonnegative(),
+    inferred_edges: z.number().int().nonnegative(),
+    nodes_by_type: z.record(z.number().int().nonnegative()),
+  }).passthrough(),
+  objectives: z.array(ObjectiveDtoSchema),
+  frontier: FrontierListDtoSchema,
+  frontier_hidden: z.object({
+    total: z.number().int().nonnegative(),
+    by_reason: z.object({
+      lease: z.number().int().nonnegative(),
+      opsec: z.number().int().nonnegative(),
+      dead_host: z.number().int().nonnegative(),
+      scope: z.number().int().nonnegative(),
+    }).passthrough(),
+  }).passthrough(),
+  active_agents: z.array(z.object({}).passthrough()),
+  agents: z.array(AgentDtoSchema),
+  recent_activity: z.array(z.object({
+    event_id: z.string(),
+    timestamp: z.string(),
+    description: z.string(),
+  }).passthrough()),
+  campaigns: z.array(DashboardCampaignDtoSchema),
+  sessions: z.array(SessionDtoSchema),
+  pending_actions: z.array(PendingActionDtoSchema),
+  access_level: z.string().optional(),
+  history_count: z.number().int().nonnegative().optional(),
+  warnings: z.object({}).passthrough(),
+  scope_suggestions: z.array(z.object({}).passthrough()),
+  phases: z.array(z.object({}).passthrough()),
+  lab_readiness: z.object({
+    status: z.string(),
+    top_issues: z.array(z.string()),
+  }).passthrough(),
+  persistence_recovery: RecoveryStatusDtoSchema.optional(),
+}).passthrough();
+export type DashboardStateDto = z.infer<typeof DashboardStateDtoSchema>;
+
+export interface DashboardStateResponse {
+  state: DashboardStateDto;
+  graph: RawGraphDto;
+  history_count: number;
+  [key: string]: unknown;
+}
+export const DashboardStateResponseSchema: z.ZodType<DashboardStateResponse> = z.object({
+  state: DashboardStateDtoSchema,
+  graph: RawGraphDtoSchema,
+  history_count: z.number().int().nonnegative(),
+}).passthrough();
+
+export const GraphUpdateDetailDtoSchema = z.object({
+  new_nodes: z.array(z.string()).optional(),
+  updated_nodes: z.array(z.string()).optional(),
+  new_edges: z.array(z.string()).optional(),
+  updated_edges: z.array(z.string()).optional(),
+  inferred_edges: z.array(z.string()).optional(),
+  removed_nodes: z.array(z.string()).optional(),
+  removed_edges: z.array(z.string()).optional(),
+}).passthrough();
+
+export const GraphDeltaDtoSchema = z.object({
+  nodes: z.array(RawGraphNodeDtoSchema),
+  edges: z.array(RawGraphEdgeDtoSchema),
+  removed_nodes: z.array(z.string()),
+  removed_edges: z.array(z.string()),
+  cold_nodes: z.array(ColdNodeDtoSchema).optional(),
+}).passthrough();
+
+export interface GraphUpdateDataDto {
+  state: DashboardStateDto;
+  history_count: number;
+  detail: z.infer<typeof GraphUpdateDetailDtoSchema>;
+  delta: z.infer<typeof GraphDeltaDtoSchema>;
+  [key: string]: unknown;
+}
+export const GraphUpdateDataDtoSchema: z.ZodType<GraphUpdateDataDto> = z.object({
+  state: DashboardStateDtoSchema,
+  history_count: z.number().int().nonnegative(),
+  detail: GraphUpdateDetailDtoSchema,
+  delta: GraphDeltaDtoSchema,
+}).passthrough();
+
+const timestampedMainEvent = <T extends string, S extends z.ZodTypeAny>(type: T, data: S) => z.object({
+  type: z.literal(type),
+  timestamp: z.string(),
+  data,
+}).passthrough();
+
+export type MainWebSocketEvent =
+  | { type: 'full_state'; timestamp: string; data: DashboardStateResponse; [key: string]: unknown }
+  | { type: 'graph_update'; timestamp: string; data: GraphUpdateDataDto; [key: string]: unknown }
+  | { type: 'agent_console_update'; timestamp: string; data: { events: AgentConsoleEventDto[]; [key: string]: unknown }; [key: string]: unknown }
+  | { type: 'action_pending'; timestamp: string; data: PendingActionDto; [key: string]: unknown }
+  | { type: 'action_resolved'; timestamp: string; data: { action_id: string; status: 'approved' | 'denied' | 'timeout' | 'aborted'; resolved_at: string; operator_notes?: string; reason?: string; auto_approved?: boolean; unattended_execute?: boolean; [key: string]: unknown }; [key: string]: unknown }
+  | { type: 'session_update'; timestamp: string; data: { type: 'session_created' | 'session_updated' | 'session_closed'; session: SessionDto; sessions: SessionDto[]; [key: string]: unknown }; [key: string]: unknown }
+  | { type: 'agent_query'; timestamp: string; data: Record<string, unknown>; [key: string]: unknown };
+
+export const MainWebSocketEventSchema: z.ZodType<MainWebSocketEvent> = z.discriminatedUnion('type', [
+  timestampedMainEvent('full_state', DashboardStateResponseSchema),
+  timestampedMainEvent('graph_update', GraphUpdateDataDtoSchema),
+  timestampedMainEvent('agent_console_update', z.object({
+    events: z.array(AgentConsoleEventDtoSchema),
+  }).passthrough()),
+  timestampedMainEvent('action_pending', PendingActionDtoSchema),
+  timestampedMainEvent('action_resolved', z.object({
+    action_id: z.string(),
+    status: z.enum(['approved', 'denied', 'timeout', 'aborted']),
+    resolved_at: z.string(),
+    operator_notes: z.string().optional(),
+    reason: z.string().optional(),
+    auto_approved: z.boolean().optional(),
+    unattended_execute: z.boolean().optional(),
+  }).passthrough()),
+  timestampedMainEvent('session_update', z.object({
+    type: z.enum(['session_created', 'session_updated', 'session_closed']),
+    session: SessionDtoSchema,
+    sessions: z.array(SessionDtoSchema),
+  }).passthrough()),
+  timestampedMainEvent('agent_query', z.record(z.unknown())),
+]);
+
+export const SessionWebSocketClientEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('input'), data: z.string() }).strict(),
+  z.object({
+    type: z.literal('resize'),
+    cols: z.number().int().positive(),
+    rows: z.number().int().positive(),
+  }).strict(),
+]);
+export type SessionWebSocketClientEvent = z.infer<typeof SessionWebSocketClientEventSchema>;
+
+export const SessionWebSocketServerEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('session_meta'), data: SessionDtoSchema }).passthrough(),
+  z.object({
+    type: z.literal('output'),
+    text: z.string(),
+    end_pos: z.number().int().nonnegative(),
+  }).passthrough(),
+  z.object({
+    type: z.literal('session_closed'),
+    connection_id: z.string().optional(),
+  }).passthrough(),
+  z.object({
+    type: z.literal('error'),
+    op: z.string().optional(),
+    code: z.string().optional(),
+    error: z.string(),
+    recovery: RecoveryStatusDtoSchema.optional(),
+  }).passthrough(),
+]);
+export type SessionWebSocketServerEvent = z.infer<typeof SessionWebSocketServerEventSchema>;
+
+export const ActionOutputWebSocketEventSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('output'),
+    stream: z.enum(['stdout', 'stderr']),
+    text: z.string(),
+    end_pos: z.number().int().nonnegative(),
+    dropped: z.boolean(),
+  }).passthrough(),
+  z.object({ type: z.literal('action_done') }).passthrough(),
+]);
+export type ActionOutputWebSocketEvent = z.infer<typeof ActionOutputWebSocketEventSchema>;
+
+export const ActionOutputStreamDtoSchema = z.object({
+  evidence_id: z.string().nullable(),
+  text: z.string(),
+  total_bytes: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  head_truncated: z.boolean(),
+  dropped_bytes: z.number().int().nonnegative(),
+  missing: z.boolean().optional(),
+  capture_failed: z.boolean().optional(),
+}).passthrough();
+
+export const ActionOutputResponseSchema = z.object({
+  action_id: z.string(),
+  status: z.enum(['success', 'failure', 'partial', 'neutral', 'running']),
+  event_type: z.string().optional(),
+  timestamp: z.string().optional(),
+  tool_name: z.string().optional(),
+  command_repr: z.string().optional(),
+  technique: z.string().optional(),
+  invoking_tool: z.string().optional(),
+  exit_code: z.number().int().optional(),
+  signal: z.string().optional(),
+  duration_ms: z.number().nonnegative().optional(),
+  timed_out: z.boolean().optional(),
+  target_node_ids: z.array(z.string()).optional(),
+  target_ips: z.array(z.string()).optional(),
+  target_cidrs: z.array(z.string()).optional(),
+  agent_id: z.string().optional(),
+  frontier_item_id: z.string().optional(),
+  linked_finding_ids: z.array(z.string()).optional(),
+  max_bytes: z.number().int().nonnegative(),
+  stdout: ActionOutputStreamDtoSchema.nullable(),
+  stderr: ActionOutputStreamDtoSchema.nullable(),
+  capture_error: z.unknown().optional(),
+}).passthrough();
+export type ActionOutputResponseDto = z.infer<typeof ActionOutputResponseSchema>;
+
+export const EvidenceRawResponseSchema = z.object({
+  evidence_id: z.string().nullable(),
+  text: z.string(),
+  total_bytes: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  bytes_read: z.number().int().nonnegative(),
+  eof: z.boolean(),
+  evidence_type: z.string().optional(),
+  capture_error: z.string().optional(),
+  action_id: z.string().optional(),
+  finding_id: z.string().optional(),
+}).passthrough();
+export type EvidenceRawResponseDto = z.infer<typeof EvidenceRawResponseSchema>;
+
+export const FindingClassificationSchema = z.object({
+  cwe: z.string().optional(),
+  cwe_name: z.string().optional(),
+  owasp_category: z.string().optional(),
+  nist_controls: z.array(z.string()),
+  pci_requirements: z.array(z.string()),
+  attack_techniques: z.array(z.object({ id: z.string(), name: z.string() }).passthrough()),
+}).passthrough();
+
+export const FindingPresentationSchema = z.object({
+  title: z.string(),
+  short_title: z.string().optional(),
+  summary: z.string(),
+  impact: z.string(),
+  evidence_claim: z.string().optional(),
+  technical_context: z.string().optional(),
+  remediation_steps: z.array(z.string()),
+}).passthrough();
+
+export const FindingDtoSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
+  category: z.string(),
+  tier: z.string().optional(),
+  description: z.string(),
+  affected_assets: z.array(z.string()),
+  evidence: z.array(z.object({}).passthrough()),
+  remediation: z.string(),
+  presentation: FindingPresentationSchema.optional(),
+  risk_score: z.number(),
+  cvss_score: z.number().optional(),
+  cvss_vector: z.string().optional(),
+  cvss_estimated: z.boolean().optional(),
+  classification: FindingClassificationSchema.optional(),
+}).passthrough();
+export type FindingDto = z.infer<typeof FindingDtoSchema>;
+
+export const FindingSeveritySummarySchema = z.object({
+  critical: z.number().int().nonnegative(),
+  high: z.number().int().nonnegative(),
+  medium: z.number().int().nonnegative(),
+  low: z.number().int().nonnegative(),
+  info: z.number().int().nonnegative(),
+}).passthrough();
+
+export const FindingsResponseSchema = z.object({
+  findings: z.array(FindingDtoSchema),
+  total: z.number().int().nonnegative(),
+  severity_summary: FindingSeveritySummarySchema,
+}).passthrough();
+export type FindingsResponseDto = z.infer<typeof FindingsResponseSchema>;
+
+export const ReportRecordSchema = z.object({
+  id: z.string(),
+  generated_at: z.string(),
+  format: z.enum(['markdown', 'html', 'json', 'pdf']),
+  redaction_mode: z.enum(['operator', 'client_safe']),
+  profile: z.enum(['operator', 'client']).optional(),
+  evidence_style: z.enum(['proof_cards', 'appendix', 'full_inline']).optional(),
+  findings_count: z.number().int().nonnegative().optional(),
+  evidence_count: z.number().int().nonnegative().optional(),
+  filename: z.string(),
+  size_bytes: z.number().int().nonnegative(),
+  content_sha256: Sha256Schema,
+  options: z.record(z.unknown()),
+}).passthrough();
+export type ReportRecordDto = z.infer<typeof ReportRecordSchema>;
+
+export const ReportsListResponseSchema = z.object({
+  reports: z.array(ReportRecordSchema),
+  total: z.number().int().nonnegative(),
+  total_bytes: z.number().int().nonnegative(),
+}).passthrough();
+export type ReportsListResponseDto = z.infer<typeof ReportsListResponseSchema>;
+
+export const ReportRenderResponseSchema = z.object({
+  report: ReportRecordSchema,
+  findings_count: z.number().int().nonnegative(),
+  evidence_count: z.number().int().nonnegative(),
+  severity_summary: FindingSeveritySummarySchema,
+}).passthrough();
+export type ReportRenderResponseDto = z.infer<typeof ReportRenderResponseSchema>;
+
+export const ReparseResponseSchema = z.object({
+  parsed: z.boolean(),
+  parse_status: z.enum(['ok', 'no_data', 'validation_failed', 'parser_exception', 'partial', 'no_parser']),
+  parse_outcome: z.enum(['ok', 'no_data', 'validation_failed', 'parser_exception', 'partial']),
+  isError: z.boolean(),
+  tool: z.string(),
+  action_id: z.string(),
+  evidence_id: z.string().nullable().optional(),
+  finding_id: z.string().optional(),
+  nodes_parsed: z.number().int().nonnegative(),
+  edges_parsed: z.number().int().nonnegative(),
+  ingested: z.union([
+    z.literal(false),
+    z.object({
+      new_nodes: z.number().int().nonnegative(),
+      new_edges: z.number().int().nonnegative(),
+      inferred_edges: z.number().int().nonnegative(),
+    }).passthrough(),
+  ]).optional(),
+  validation_errors: z.array(z.unknown()).optional(),
+  warnings: z.array(z.string()).optional(),
+  error: z.string().optional(),
+  parser_exception: z.string().optional(),
+  supported_parsers: z.array(z.string()).optional(),
+  failure_stage: z.enum(['context', 'parser_selection', 'finding_validation']).optional(),
+  partial: z.literal(true).optional(),
+  partial_reason: z.string().optional(),
+  parse_stream: z.enum(['stdout', 'stderr', 'combined']).optional(),
+  parsed_from_evidence: z.boolean().optional(),
+  evidence_read_error: z.string().optional(),
+  exit_code: z.number().int().nullable().optional(),
+}).passthrough();
+export type ReparseResponseDto = z.infer<typeof ReparseResponseSchema>;
+
+export interface DashboardWebSocketDefinition {
+  operation_id: string;
+  path: string;
+  client_events?: z.ZodTypeAny;
+  server_events: z.ZodTypeAny;
+}
+
+export const DashboardWebSocketRegistry: Readonly<Record<'main' | 'session' | 'action_output', DashboardWebSocketDefinition>> = {
+  main: {
+    operation_id: 'dashboardMainSocket',
+    path: '/ws',
+    server_events: MainWebSocketEventSchema,
+  },
+  session: {
+    operation_id: 'dashboardSessionSocket',
+    path: '/ws/session/{session_id}',
+    client_events: SessionWebSocketClientEventSchema,
+    server_events: SessionWebSocketServerEventSchema,
+  },
+  action_output: {
+    operation_id: 'dashboardActionOutputSocket',
+    path: '/ws/actions/{action_id}/output',
+    server_events: ActionOutputWebSocketEventSchema,
+  },
+} as const;
+
+export type DashboardWebSocketChannel = keyof typeof DashboardWebSocketRegistry;
+export interface DashboardWebSocketPathInputs {
+  main: Record<string, never>;
+  session: { session_id: string };
+  action_output: { action_id: string };
+}
+
+export function buildDashboardWebSocketPath<T extends DashboardWebSocketChannel>(
+  channel: T,
+  input: DashboardWebSocketPathInputs[T],
+): string {
+  const params = input as Record<string, string>;
+  return DashboardWebSocketRegistry[channel].path.replace(
+    /\{([^}]+)\}/g,
+    (_whole, name: string) => {
+      const value = params[name];
+      if (!value) throw new Error(`Missing WebSocket path parameter: ${name}`);
+      return encodeURIComponent(value);
+    },
+  );
+}
+
+export interface MatchedDashboardWebSocketPath {
+  channel: DashboardWebSocketChannel;
+  params: Record<string, string>;
+}
+
+export function matchDashboardWebSocketPath(pathname: string): MatchedDashboardWebSocketPath | null {
+  if (pathname === DashboardWebSocketRegistry.main.path) return { channel: 'main', params: {} };
+  const candidates: Array<{
+    channel: Exclude<DashboardWebSocketChannel, 'main'>;
+    pattern: RegExp;
+    parameter: string;
+  }> = [
+    { channel: 'session', pattern: /^\/ws\/session\/([^/]+)$/, parameter: 'session_id' },
+    { channel: 'action_output', pattern: /^\/ws\/actions\/([^/]+)\/output$/, parameter: 'action_id' },
+  ];
+  for (const candidate of candidates) {
+    const match = candidate.pattern.exec(pathname);
+    if (!match) continue;
+    try {
+      const value = decodeURIComponent(match[1]);
+      if (!value) return null;
+      return { channel: candidate.channel, params: { [candidate.parameter]: value } };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}

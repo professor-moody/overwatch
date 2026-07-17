@@ -1,0 +1,1748 @@
+{
+  "compatibility_version": 1,
+  "routes": [
+    {
+      "operation_id": "getRecovery",
+      "method": "GET",
+      "path": "/api/recovery",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read persistence and configuration recovery status"
+    },
+    {
+      "operation_id": "resolveConfigDivergence",
+      "method": "POST",
+      "path": "/api/recovery/config/resolve",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Resolve configuration divergence"
+    },
+    {
+      "operation_id": "getState",
+      "method": "GET",
+      "path": "/api/state",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read the authoritative dashboard snapshot"
+    },
+    {
+      "operation_id": "getGraph",
+      "method": "GET",
+      "path": "/api/graph",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read the raw graph"
+    },
+    {
+      "operation_id": "getHistory",
+      "method": "GET",
+      "path": "/api/history",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read activity history"
+    },
+    {
+      "operation_id": "getDecisionLog",
+      "method": "GET",
+      "path": "/api/decision-log",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read decision traces"
+    },
+    {
+      "operation_id": "getTimeline",
+      "method": "GET",
+      "path": "/api/timeline",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read entity timeline entries"
+    },
+    {
+      "operation_id": "findPaths",
+      "method": "GET",
+      "path": "/api/find-paths",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Find graph paths"
+    },
+    {
+      "operation_id": "getSessions",
+      "method": "GET",
+      "path": "/api/sessions",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List sessions"
+    },
+    {
+      "operation_id": "getAgents",
+      "method": "GET",
+      "path": "/api/agents",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List projected agents"
+    },
+    {
+      "operation_id": "dispatchAgent",
+      "method": "POST",
+      "path": "/api/agents/dispatch",
+      "response_kind": "json",
+      "success_statuses": [
+        201,
+        409,
+        429
+      ],
+      "summary": "Dispatch one agent"
+    },
+    {
+      "operation_id": "dispatchAgentBatch",
+      "method": "POST",
+      "path": "/api/agents/dispatch-batch",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Dispatch a batch of agents"
+    },
+    {
+      "operation_id": "quickDeployAgent",
+      "method": "POST",
+      "path": "/api/agents/quick-deploy",
+      "response_kind": "json",
+      "success_statuses": [
+        201,
+        409,
+        429
+      ],
+      "summary": "Scope a raw target and dispatch an agent"
+    },
+    {
+      "operation_id": "getAgentArchetypes",
+      "method": "GET",
+      "path": "/api/agent-archetypes",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List agent archetypes and models"
+    },
+    {
+      "operation_id": "issueFleetDirective",
+      "method": "POST",
+      "path": "/api/fleet/directive",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Steer the running fleet"
+    },
+    {
+      "operation_id": "dismissFleetAgents",
+      "method": "POST",
+      "path": "/api/fleet/dismiss",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Dismiss terminal agents"
+    },
+    {
+      "operation_id": "approveActionsBatch",
+      "method": "POST",
+      "path": "/api/actions/approve-batch",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Approve pending actions in bulk"
+    },
+    {
+      "operation_id": "denyActionsBatch",
+      "method": "POST",
+      "path": "/api/actions/deny-batch",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Deny pending actions in bulk"
+    },
+    {
+      "operation_id": "interpretCommand",
+      "method": "POST",
+      "path": "/api/commands",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Preview, confirm, or deny an operator command"
+    },
+    {
+      "operation_id": "getActiveApplicationCommands",
+      "method": "GET",
+      "path": "/api/commands/active",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List active durable planner commands"
+    },
+    {
+      "operation_id": "getProposedPlans",
+      "method": "GET",
+      "path": "/api/plans",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List open proposed plans"
+    },
+    {
+      "operation_id": "getAgentQueries",
+      "method": "GET",
+      "path": "/api/agent-queries",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List operator questions from agents"
+    },
+    {
+      "operation_id": "answerAgentQueriesBatch",
+      "method": "POST",
+      "path": "/api/agent-queries/answer-batch",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Answer multiple agent questions"
+    },
+    {
+      "operation_id": "getTemplates",
+      "method": "GET",
+      "path": "/api/templates",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List engagement templates"
+    },
+    {
+      "operation_id": "getSettings",
+      "method": "GET",
+      "path": "/api/settings",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read dashboard settings"
+    },
+    {
+      "operation_id": "updateSettings",
+      "method": "PATCH",
+      "path": "/api/settings",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Update dashboard settings"
+    },
+    {
+      "operation_id": "getConfig",
+      "method": "GET",
+      "path": "/api/config",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read active engagement configuration"
+    },
+    {
+      "operation_id": "updateConfig",
+      "method": "PATCH",
+      "path": "/api/config",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Update active engagement configuration"
+    },
+    {
+      "operation_id": "previewScope",
+      "method": "POST",
+      "path": "/api/config/scope/preview",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Preview a scope replacement"
+    },
+    {
+      "operation_id": "updateScope",
+      "method": "PATCH",
+      "path": "/api/config/scope",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Replace engagement scope"
+    },
+    {
+      "operation_id": "createObjective",
+      "method": "POST",
+      "path": "/api/config/objectives",
+      "response_kind": "json",
+      "success_statuses": [
+        201
+      ],
+      "summary": "Create an objective"
+    },
+    {
+      "operation_id": "getFrontierWeights",
+      "method": "GET",
+      "path": "/api/frontier/weights",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read frontier weights"
+    },
+    {
+      "operation_id": "updateFrontierWeights",
+      "method": "PATCH",
+      "path": "/api/frontier/weights",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Update frontier weights"
+    },
+    {
+      "operation_id": "resetFrontierWeights",
+      "method": "POST",
+      "path": "/api/frontier/weights/reset",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Reset frontier weights"
+    },
+    {
+      "operation_id": "getOpsecBudget",
+      "method": "GET",
+      "path": "/api/opsec/budget",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read OPSEC budget"
+    },
+    {
+      "operation_id": "getHealth",
+      "method": "GET",
+      "path": "/api/health",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read graph health"
+    },
+    {
+      "operation_id": "listEngagements",
+      "method": "GET",
+      "path": "/api/engagements",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List engagements"
+    },
+    {
+      "operation_id": "createEngagement",
+      "method": "POST",
+      "path": "/api/engagements",
+      "response_kind": "json",
+      "success_statuses": [
+        201
+      ],
+      "summary": "Create an engagement"
+    },
+    {
+      "operation_id": "createEngagementFromTemplate",
+      "method": "POST",
+      "path": "/api/engagements/from-template",
+      "response_kind": "json",
+      "success_statuses": [
+        201
+      ],
+      "summary": "Create an engagement from a template"
+    },
+    {
+      "operation_id": "createCampaign",
+      "method": "POST",
+      "path": "/api/campaigns",
+      "response_kind": "json",
+      "success_statuses": [
+        201
+      ],
+      "summary": "Create a campaign"
+    },
+    {
+      "operation_id": "listCampaigns",
+      "method": "GET",
+      "path": "/api/campaigns",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List campaigns"
+    },
+    {
+      "operation_id": "getPhases",
+      "method": "GET",
+      "path": "/api/phases",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read engagement phases"
+    },
+    {
+      "operation_id": "getPendingActions",
+      "method": "GET",
+      "path": "/api/actions/pending",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List pending actions"
+    },
+    {
+      "operation_id": "getTools",
+      "method": "GET",
+      "path": "/api/tools",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Check local tools"
+    },
+    {
+      "operation_id": "getParsers",
+      "method": "GET",
+      "path": "/api/parsers",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List output parsers"
+    },
+    {
+      "operation_id": "getMcpTools",
+      "method": "GET",
+      "path": "/api/mcp-tools",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List MCP tools"
+    },
+    {
+      "operation_id": "getReadiness",
+      "method": "GET",
+      "path": "/api/readiness",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read dashboard readiness"
+    },
+    {
+      "operation_id": "getTrustSignals",
+      "method": "GET",
+      "path": "/api/trust-signals",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read trust signals"
+    },
+    {
+      "operation_id": "getInferenceRules",
+      "method": "GET",
+      "path": "/api/inference-rules",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List inference rules"
+    },
+    {
+      "operation_id": "getTelemetry",
+      "method": "GET",
+      "path": "/api/telemetry",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read telemetry"
+    },
+    {
+      "operation_id": "exportGraph",
+      "method": "POST",
+      "path": "/api/graph/export",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Export the raw graph"
+    },
+    {
+      "operation_id": "correctGraph",
+      "method": "POST",
+      "path": "/api/graph/correct",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Apply graph corrections"
+    },
+    {
+      "operation_id": "getTapeStatus",
+      "method": "GET",
+      "path": "/api/tape",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read tape status"
+    },
+    {
+      "operation_id": "toggleTape",
+      "method": "POST",
+      "path": "/api/tape/toggle",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Toggle tape capture"
+    },
+    {
+      "operation_id": "getFindings",
+      "method": "GET",
+      "path": "/api/findings",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List findings"
+    },
+    {
+      "operation_id": "listReports",
+      "method": "GET",
+      "path": "/api/reports",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List reports"
+    },
+    {
+      "operation_id": "renderReport",
+      "method": "POST",
+      "path": "/api/reports/render",
+      "response_kind": "json",
+      "success_statuses": [
+        201
+      ],
+      "summary": "Render a report"
+    },
+    {
+      "operation_id": "bundleEngagement",
+      "method": "GET",
+      "path": "/api/bundle",
+      "response_kind": "binary",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Download an engagement bundle"
+    },
+    {
+      "operation_id": "getOperatorConsole",
+      "method": "GET",
+      "path": "/api/console",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read server-projected operator console events"
+    },
+    {
+      "operation_id": "getApplicationCommand",
+      "method": "GET",
+      "path": "/api/commands/{command_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read a durable application command"
+    },
+    {
+      "operation_id": "getAgentContext",
+      "method": "GET",
+      "path": "/api/agents/{task_id}/context",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read agent context"
+    },
+    {
+      "operation_id": "getAgentHistory",
+      "method": "GET",
+      "path": "/api/agents/{task_id}/history",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read agent activity history"
+    },
+    {
+      "operation_id": "getAgentConsole",
+      "method": "GET",
+      "path": "/api/agents/{task_id}/console",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read server-projected agent console events"
+    },
+    {
+      "operation_id": "cancelAgent",
+      "method": "POST",
+      "path": "/api/agents/{task_id}/cancel",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Cancel an agent"
+    },
+    {
+      "operation_id": "dismissAgent",
+      "method": "POST",
+      "path": "/api/agents/{task_id}/dismiss",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Dismiss an agent"
+    },
+    {
+      "operation_id": "issueAgentDirective",
+      "method": "POST",
+      "path": "/api/agents/{task_id}/directive",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Steer an agent"
+    },
+    {
+      "operation_id": "answerAgentQuery",
+      "method": "POST",
+      "path": "/api/agent-queries/{query_id}/answer",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Answer one agent question"
+    },
+    {
+      "operation_id": "updateObjective",
+      "method": "PATCH",
+      "path": "/api/config/objectives/{objective_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Update an objective"
+    },
+    {
+      "operation_id": "deleteObjective",
+      "method": "DELETE",
+      "path": "/api/config/objectives/{objective_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Delete an objective"
+    },
+    {
+      "operation_id": "getCampaign",
+      "method": "GET",
+      "path": "/api/campaigns/{campaign_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read campaign detail"
+    },
+    {
+      "operation_id": "updateCampaign",
+      "method": "PATCH",
+      "path": "/api/campaigns/{campaign_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Update a campaign"
+    },
+    {
+      "operation_id": "deleteCampaign",
+      "method": "DELETE",
+      "path": "/api/campaigns/{campaign_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Delete a campaign"
+    },
+    {
+      "operation_id": "actOnCampaign",
+      "method": "POST",
+      "path": "/api/campaigns/{campaign_id}/action",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Change campaign lifecycle"
+    },
+    {
+      "operation_id": "dispatchCampaign",
+      "method": "POST",
+      "path": "/api/campaigns/{campaign_id}/dispatch",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Dispatch campaign items"
+    },
+    {
+      "operation_id": "cloneCampaign",
+      "method": "POST",
+      "path": "/api/campaigns/{campaign_id}/clone",
+      "response_kind": "json",
+      "success_statuses": [
+        201
+      ],
+      "summary": "Clone a campaign"
+    },
+    {
+      "operation_id": "splitCampaign",
+      "method": "POST",
+      "path": "/api/campaigns/{campaign_id}/split",
+      "response_kind": "json",
+      "success_statuses": [
+        201
+      ],
+      "summary": "Split a campaign"
+    },
+    {
+      "operation_id": "getCampaignChildren",
+      "method": "GET",
+      "path": "/api/campaigns/{campaign_id}/children",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read campaign children"
+    },
+    {
+      "operation_id": "explainAction",
+      "method": "GET",
+      "path": "/api/actions/{action_id}/explain",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        404
+      ],
+      "summary": "Explain an action"
+    },
+    {
+      "operation_id": "getActionOutput",
+      "method": "GET",
+      "path": "/api/actions/{action_id}/output",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read durable action output"
+    },
+    {
+      "operation_id": "reparseAction",
+      "method": "POST",
+      "path": "/api/actions/{action_id}/reparse",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Reparse durable action output"
+    },
+    {
+      "operation_id": "getEvidenceRaw",
+      "method": "GET",
+      "path": "/api/evidence/{evidence_id}/raw",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read raw evidence text"
+    },
+    {
+      "operation_id": "getEvidenceImage",
+      "method": "GET",
+      "path": "/api/evidence/{evidence_id}/image",
+      "response_kind": "binary",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read image evidence"
+    },
+    {
+      "operation_id": "approveAction",
+      "method": "POST",
+      "path": "/api/actions/{action_id}/approve",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Approve an action"
+    },
+    {
+      "operation_id": "denyAction",
+      "method": "POST",
+      "path": "/api/actions/{action_id}/deny",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Deny an action"
+    },
+    {
+      "operation_id": "closeSession",
+      "method": "POST",
+      "path": "/api/sessions/{session_id}/close",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Close a session"
+    },
+    {
+      "operation_id": "resumeSession",
+      "method": "POST",
+      "path": "/api/sessions/{session_id}/resume",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Resume a session listener"
+    },
+    {
+      "operation_id": "getSessionBuffer",
+      "method": "GET",
+      "path": "/api/sessions/{session_id}/buffer",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read session output"
+    },
+    {
+      "operation_id": "updateSession",
+      "method": "PATCH",
+      "path": "/api/sessions/{session_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Update session metadata"
+    },
+    {
+      "operation_id": "getEvidenceChains",
+      "method": "GET",
+      "path": "/api/evidence-chains/{node_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read evidence chains"
+    },
+    {
+      "operation_id": "getObjectivePaths",
+      "method": "GET",
+      "path": "/api/paths/{objective_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read paths to an objective"
+    },
+    {
+      "operation_id": "getFindingContext",
+      "method": "GET",
+      "path": "/api/findings/{finding_id}/context",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read finding context"
+    },
+    {
+      "operation_id": "downloadReport",
+      "method": "GET",
+      "path": "/api/reports/{report_id}",
+      "response_kind": "binary",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Download or open a report"
+    },
+    {
+      "operation_id": "deleteReport",
+      "method": "DELETE",
+      "path": "/api/reports/{report_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        404
+      ],
+      "summary": "Delete a report"
+    },
+    {
+      "operation_id": "getEngagement",
+      "method": "GET",
+      "path": "/api/engagements/{engagement_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read engagement configuration"
+    },
+    {
+      "operation_id": "updateEngagement",
+      "method": "PATCH",
+      "path": "/api/engagements/{engagement_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Update engagement configuration"
+    }
+  ],
+  "schemas": {
+    "getRecovery": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "5bd357398ecac0eee36299f9744bb20fbdbc16e33631c3f8fd99d46958222efa"
+      }
+    },
+    "resolveConfigDivergence": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "d8aaf6eb2d60fa20ff10490ee587d7625062105473004a79c7054a1552c96cd8",
+      "responses": {
+        "200": "0845247bdf8f9e69d1f37bfa0569e1ea635721847b27b52be955c35ec097eb8e"
+      }
+    },
+    "getState": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "d18a33fbf99a10367360fcbeb509fcbaae3c23bd67b7da5beb2098224dd4bfa2"
+      }
+    },
+    "getGraph": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "b95290cbb345c2ad589e611cf443aaf2d809b4eebe9400c7220174f1ef21ccff"
+      }
+    },
+    "getHistory": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "b69209721e5f5743665ea9920cfb831fa8c9889ba39644706410dcd432e7d09c",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "f00c38a371e9b05d1adabc824ed2993a10711bab2499a1d561b2b18ef7ec5826"
+      }
+    },
+    "getDecisionLog": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "2bc00237190b8faa5a612737f9de2be57a358eb08605312d1daa4d7541b6f0f0",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "ffaa2a51761ad43a561601749c5a118be885a248e561b6782089c2283d702097"
+      }
+    },
+    "getTimeline": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "2ac47d607abd24b1a8c96ff10820426a0f4c12d404cbc62a669034b022bce3a1",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "507021638cb38339b5e657a93b6e726c50cd8d43c828c5d52b6962064074aa31"
+      }
+    },
+    "findPaths": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "4a63c6d521ae12b92d8e069c58dbfb67611ccabdb4ffe6eb547fdc193e2b944a",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "6c6a270af25d9da4665b4f6bc2f37fa057ef8c83c57e3a848ff645668324c62d"
+      }
+    },
+    "getSessions": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "36e2eb579bbf5ed5ae64ad548363fd93533b238a1996993e8fc5025f9ab1d521"
+      }
+    },
+    "getAgents": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "4674607359c48ec85f70727689e2c8607058d9d0bf51ee102cb7da982afb85c4"
+      }
+    },
+    "dispatchAgent": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "c80c6e71d2b15be0085884a28292116d4828c2fe28fba5c2452c4f80ab8c3493",
+      "responses": {
+        "201": "a73a5fbd94aa86b836f943e4f028505873f1c7b56a92174800649b021f71bfbb",
+        "409": "a73a5fbd94aa86b836f943e4f028505873f1c7b56a92174800649b021f71bfbb",
+        "429": "a73a5fbd94aa86b836f943e4f028505873f1c7b56a92174800649b021f71bfbb"
+      }
+    },
+    "dispatchAgentBatch": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "c5c2c3eb0f02445aff51f79b259451a7f1cd4b6397745ef1153f80fd795aa2a8",
+      "responses": {
+        "200": "e868b1b2db49d1926b3c740d7ae60a5a540557ae619de798a703de96e2f30516"
+      }
+    },
+    "quickDeployAgent": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "f7a186fc994fa293aab231c183e8940a5ccee4084bbd87f276879d82b8842d1b",
+      "responses": {
+        "201": "3b9b538a7cee7746b934446417734566d5e02dc5e2f4481ea4cc75a279386bbe",
+        "409": "3b9b538a7cee7746b934446417734566d5e02dc5e2f4481ea4cc75a279386bbe",
+        "429": "3b9b538a7cee7746b934446417734566d5e02dc5e2f4481ea4cc75a279386bbe"
+      }
+    },
+    "getAgentArchetypes": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "526cdee6abfcd3e74c3095930cd28d617972dcc6db9d65a0f5f713863e63f30b"
+      }
+    },
+    "issueFleetDirective": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "3536a35c520d2aea41162cf8496469269288e91903ac60cd7d38aead277ef2ba",
+      "responses": {
+        "200": "281a3b64e9c5d383998744ec1ae6788e753cb89bd484a958288b1a1b21b2ac9e"
+      }
+    },
+    "dismissFleetAgents": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "48877e1132cfea4b0953566ec1aad133f96eba789eeec9047a43cfd3ba8a1c4c",
+      "responses": {
+        "200": "74fd52cb7a3486c0223f7f25d048a0babc075e3a4366c9c14e7d9e336a70646c"
+      }
+    },
+    "approveActionsBatch": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "38e364506a6f7a774644934092d10b55c5a435ca59bffe12d438656db0d5cd57",
+      "responses": {
+        "200": "d4d325f609f734b89f5b7dd8159bdfe3fb6c0ee94dba6a74297a4480af20636c"
+      }
+    },
+    "denyActionsBatch": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "7a43ae7e9e04d5ddb7208e062c0848c422a277926dfc9fa829f0c1c7bac92c35",
+      "responses": {
+        "200": "d4d325f609f734b89f5b7dd8159bdfe3fb6c0ee94dba6a74297a4480af20636c"
+      }
+    },
+    "interpretCommand": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "2f2cdaf63b444ad407d152708890a560b520d2d5448779c7dfbeeef61b1cf441",
+      "responses": {
+        "200": "c8a1e08406aad3fbb37a9c00009164ad19795fab7670d7081289f0c347795df8"
+      }
+    },
+    "getActiveApplicationCommands": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "b36bf06ef9108510ef50bcd64231a8ed1c7878f629148c32d01693107bf83245"
+      }
+    },
+    "getProposedPlans": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "b68238aba46d38e9338f04514d9ac3255d7cc685bbda7884523829d5bede9e44"
+      }
+    },
+    "getAgentQueries": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "f0c52a9188c29e1cc17011800a84423f3d7441944b5afafb15d4f0f59231f90f"
+      }
+    },
+    "answerAgentQueriesBatch": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "20bcaa7950a36522547481eba58f4348d015ed10a3bb1e4519c9962865ce905c",
+      "responses": {
+        "200": "c59ce0e297f0def8af560f41cf96bec5551e47375a7ca9e8be359eeac762ead2"
+      }
+    },
+    "getTemplates": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "73041c4af83af6a7eb8fa1b9837e0da1a4e204d0d6512dc6934aead06f63b686"
+      }
+    },
+    "getSettings": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "1051f50fcaa1c6016f3158aa4bce829d64df22b8a5f85739189b7cadc675e9d7"
+      }
+    },
+    "updateSettings": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "52eadbe5dfeafaa1855f41838e2845a2615b4f8b7a81d3a13f19e3267f96478a",
+      "responses": {
+        "200": "3c5cfa98cf47d3921a4bd272d1808372c014b6d79775b923d694c554aba3f7a2"
+      }
+    },
+    "getConfig": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "d36d6ba3f25bb82897d78aacd89065290207975b9417b4bd700420b4c77206fe"
+      }
+    },
+    "updateConfig": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "0d9e7094895c7591181c0541ffc9e13083377874a297c34e22f1036bef724fc5",
+      "responses": {
+        "200": "135ffe2ffdaa0a51efda95a3000e233572b254ab80b52942b3e30db3b7973bca"
+      }
+    },
+    "previewScope": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "c075043e4a435783af3ce1de7cdec39d4ff52066c7b6faabf2d97e9e89cf7e1f",
+      "responses": {
+        "200": "b3a5f06e2a42a1303f1df91556089e1c1d3ebfe818c382ef17b0a339978546f0"
+      }
+    },
+    "updateScope": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "c075043e4a435783af3ce1de7cdec39d4ff52066c7b6faabf2d97e9e89cf7e1f",
+      "responses": {
+        "200": "537befd3b386ca2dc695b1c4a29370915551be1c7bd33a756ac268a9597f8151"
+      }
+    },
+    "createObjective": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "99f86836e553e140b136ac0daf8bfef5a42225f85fcd25ac75491352d92c9cd3",
+      "responses": {
+        "201": "f33e6a9c80641fd98cd617b39cc9a02cf62cd408d502f82895a6b067247ba079"
+      }
+    },
+    "getFrontierWeights": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "cf488f81404b2edf72307afef82f96fdc21c7e356986d857df444d2fd990e305"
+      }
+    },
+    "updateFrontierWeights": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "9176ac788f4f88fe0f40c67a031b44451e8912fa884929280ac4abf83a1fd55d",
+      "responses": {
+        "200": "5330f046674369e51aee915227aba63fa523c79aa83934e4e6581cbe2ee3a291"
+      }
+    },
+    "resetFrontierWeights": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "45b86fe82f97a2603b917f9a30fcfb16fba0195edc6ddfa42459d20ce8a1e10e"
+      }
+    },
+    "getOpsecBudget": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "45647dde5b68ac235ec95110c00f0c13d0cab411b1b00ce86a2cec9d5cf45583"
+      }
+    },
+    "getHealth": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "7cf5d274bce26ece6ef4a4267e63ace8ed19ad9e8d189ab9cef978d222f66749"
+      }
+    },
+    "listEngagements": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "71f9afd48abe06381ff48ec2380eca8182ae41d606be4a8d0766b96539399d70"
+      }
+    },
+    "createEngagement": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "c5839438ef8d02dfd1c9da5a578565654801c5a3bfb1abd0de3661ee68877264",
+      "responses": {
+        "201": "e676a7e494484526195f4d36d7025fdeced4483eeb4e7d3d1af74540ac8ed9c9"
+      }
+    },
+    "createEngagementFromTemplate": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "524748c32685256e46b99a5d31f19d2379689a99fa5f44bfad01de8d634c59fb",
+      "responses": {
+        "201": "e24594e0620bcca9726d39465fe342fc2bdd1556cfac5639d86c716e16b26ab4"
+      }
+    },
+    "createCampaign": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "81283f6820f51c8efa2fbe3daf6528eb252a16b8bacc9e1ca87e57cc190163a4",
+      "responses": {
+        "201": "527f98693453770647640b9beb97970a1bde89a60c47f51a3e8dfa590398fa93"
+      }
+    },
+    "listCampaigns": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "d04cdacc102ede67a5fe898b79f91a7baf80723efe872fba1c4113375971b7df"
+      }
+    },
+    "getPhases": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "dee93103d4e90c08cc75a271891bc1beed37ef27650d2a311e037f6364063bf9"
+      }
+    },
+    "getPendingActions": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "491a0d179e120ab4762e4a70b71319227385424a8f57584a41a1f7673d0846e5"
+      }
+    },
+    "getTools": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "d5216b42e8518f38a6852dcc7439ef79aa19f96580409363fb3fbc2dec52d386"
+      }
+    },
+    "getParsers": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "61b03101aba1f105a76ae01a5abd5d8185d40a1c0ce553d2c2b4cbc76d9eb360"
+      }
+    },
+    "getMcpTools": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "66aceb5e6c3bd09486bd6a209803be25254c1db33a0eb847523c094480940e64"
+      }
+    },
+    "getReadiness": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "7073a5f649714b8957e409b70c687301e4aa2524981df9135c0ba33398905e35"
+      }
+    },
+    "getTrustSignals": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "17a804ba8c1ddcb8f70bc5ebec24b847b923479f2aeb8e5a44ee0902d3a7f664",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "d939b339befc2cb8bd596d00e1f6935fcc433b15a8b34e24e2c76d32c3238ab8"
+      }
+    },
+    "getInferenceRules": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "1931f9d9d04bd0925c8fe7a35e9508058b706e91d82e90794505072811096464"
+      }
+    },
+    "getTelemetry": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "e1daae8791bf3cb0dc9e89d6fd6bcd0cf83c6749b212f916f07b0b869810788b"
+      }
+    },
+    "exportGraph": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "310d667e92dace7c2938023daec225653753e89080d1f63fba9912c472d05d1c",
+      "responses": {
+        "200": "b95290cbb345c2ad589e611cf443aaf2d809b4eebe9400c7220174f1ef21ccff"
+      }
+    },
+    "correctGraph": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "6eb6374e6504b3801e9af47fae9352abfa6a6bbe1e1fce81d3765355f1ac100e",
+      "responses": {
+        "200": "eaa7f96c8cc9fe80aaf99498d30772a5e50f007549f698f12c99b1079a9c0380"
+      }
+    },
+    "getTapeStatus": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "5438b0b1cf4a1acee84a8227441fe27a3e7917dfb0aa5e638b4a3701a7c330dd"
+      }
+    },
+    "toggleTape": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "99066800be0a3264491cdfd6801feaf745962b44221025a5fdaca0313706bdbd",
+      "responses": {
+        "200": "5438b0b1cf4a1acee84a8227441fe27a3e7917dfb0aa5e638b4a3701a7c330dd"
+      }
+    },
+    "getFindings": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "cd09642834600db5d94dff153ed91ef21272dda794bce01bbdbcfe2e086d3be7"
+      }
+    },
+    "listReports": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "344e640782fcca4b1aa6b3ed206daa52510b92230252043fa68b3babef60a048"
+      }
+    },
+    "renderReport": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "ec54876ef36bddc8d449746164a6e7b7c89ee28b4233e9c24b0e3c4c48c61128",
+      "responses": {
+        "201": "6a16a76e6c7333a842634eddf5667d093ccd7edce00c605ef5b5fadc8c0be5ee"
+      }
+    },
+    "bundleEngagement": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "beeb3661e92754d6131eb14bb38c9a96a10ad6166020559075d22bc3858a0bef"
+      }
+    },
+    "getOperatorConsole": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "fe9274fc8ab6022620c7982b47c06652968072d46aa351b534e3638b921eb876",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "5fcd516faf40f12829a6eb7251f6ef82971ffba152e1317833060a45f7d6aeeb"
+      }
+    },
+    "getApplicationCommand": {
+      "path": "3da0e2e6cbe919540e5f8f789cd9687e44fee8a1f073436067f45550074ea35f",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "251ea1827d3db6c42682370c14f97e6eab67f4a3603ad71df073006190ae24d5"
+      }
+    },
+    "getAgentContext": {
+      "path": "aec5817a2e4c7fcb21d68290a4ef06718e55fd34f28523b42cd223aa5a2969ea",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "70a6774e47065a3b3f4094251b41ad584b26f3d7a66215c0f8ddc6085498a4c1"
+      }
+    },
+    "getAgentHistory": {
+      "path": "aec5817a2e4c7fcb21d68290a4ef06718e55fd34f28523b42cd223aa5a2969ea",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "f00c38a371e9b05d1adabc824ed2993a10711bab2499a1d561b2b18ef7ec5826"
+      }
+    },
+    "getAgentConsole": {
+      "path": "aec5817a2e4c7fcb21d68290a4ef06718e55fd34f28523b42cd223aa5a2969ea",
+      "query": "fe9274fc8ab6022620c7982b47c06652968072d46aa351b534e3638b921eb876",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "5fcd516faf40f12829a6eb7251f6ef82971ffba152e1317833060a45f7d6aeeb"
+      }
+    },
+    "cancelAgent": {
+      "path": "aec5817a2e4c7fcb21d68290a4ef06718e55fd34f28523b42cd223aa5a2969ea",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "310d667e92dace7c2938023daec225653753e89080d1f63fba9912c472d05d1c",
+      "responses": {
+        "200": "9d1b4e23eb828cbc1ed1897abef15751a026abe8319f4f5f63e32909803a6035"
+      }
+    },
+    "dismissAgent": {
+      "path": "aec5817a2e4c7fcb21d68290a4ef06718e55fd34f28523b42cd223aa5a2969ea",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "844574cc9c070e6eb2872084fc19da4074d612b4ef2a72a61e27086e1c85b51a",
+      "responses": {
+        "200": "cebd646612e08b2217b064145b0bc9139e6294f881363b2522c0091ab376b4ba"
+      }
+    },
+    "issueAgentDirective": {
+      "path": "aec5817a2e4c7fcb21d68290a4ef06718e55fd34f28523b42cd223aa5a2969ea",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "e385692f767c8455ba97ede9c84e1327d00fe7ecbfda252e5b13f6306b230127",
+      "responses": {
+        "200": "abcaa6947f525a55fed767948203a2408692c20c3c0e65f1a59d55c44946cc83"
+      }
+    },
+    "answerAgentQuery": {
+      "path": "83ae2702eeef899214069ff07f4361442b85c103ae1f412750079ff6babce335",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "301050863cfdf679272cdd4b9943ed191c03cc5659c0594a4b20fc937d3906db",
+      "responses": {
+        "200": "9d1b4e23eb828cbc1ed1897abef15751a026abe8319f4f5f63e32909803a6035"
+      }
+    },
+    "updateObjective": {
+      "path": "a0c801185ddcb38cf74da503b1c3048a5bb0dbd407065341a8334cbe9b8b8a62",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "bf6f7d2a36ef6d358de829047cc2ac963ff6c8ce7ddc5d47faafa6db591b0b09",
+      "responses": {
+        "200": "528fd7c47316817b024dbd6777bcc273967a5600e92c1bce89656718266c9f76"
+      }
+    },
+    "deleteObjective": {
+      "path": "a0c801185ddcb38cf74da503b1c3048a5bb0dbd407065341a8334cbe9b8b8a62",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "382ff0e9c6d02385863c471c281bfa0ca606b8b828dba0c43c1960baa0814ecd"
+      }
+    },
+    "getCampaign": {
+      "path": "a708530a77d8afa4c5357709845071bf3fda6c0c0e8c6294456d69ffc3831bc1",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "244d559511305cebf0f1479cb6f93031f0f322755629bf3e48f732dd83f2d0c1"
+      }
+    },
+    "updateCampaign": {
+      "path": "a708530a77d8afa4c5357709845071bf3fda6c0c0e8c6294456d69ffc3831bc1",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "b7fd14e2e04fa3d98e221bcf941fcfca4e92061554d349651cfab7f25fe74aa0",
+      "responses": {
+        "200": "527f98693453770647640b9beb97970a1bde89a60c47f51a3e8dfa590398fa93"
+      }
+    },
+    "deleteCampaign": {
+      "path": "a708530a77d8afa4c5357709845071bf3fda6c0c0e8c6294456d69ffc3831bc1",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "382ff0e9c6d02385863c471c281bfa0ca606b8b828dba0c43c1960baa0814ecd"
+      }
+    },
+    "actOnCampaign": {
+      "path": "a708530a77d8afa4c5357709845071bf3fda6c0c0e8c6294456d69ffc3831bc1",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "df8ef433749e8a4ce708b04cfb7b165e0b771b63ffd9a5e689f7cc23db017622",
+      "responses": {
+        "200": "64695c2ac4fcd27e8c51d2ae1b353d17bf426b979da52af5d6289d842397ec9a"
+      }
+    },
+    "dispatchCampaign": {
+      "path": "a708530a77d8afa4c5357709845071bf3fda6c0c0e8c6294456d69ffc3831bc1",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "64b1ec551e14db3ca2122aa7ebc09fcebd339928dacf07711dcb85e318ee0dd6",
+      "responses": {
+        "200": "113a1a68d6f541ec59d5e8d44c44ce747d3cb1f3cab4f1c7fd91a7b2e2c38bb7"
+      }
+    },
+    "cloneCampaign": {
+      "path": "a708530a77d8afa4c5357709845071bf3fda6c0c0e8c6294456d69ffc3831bc1",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "310d667e92dace7c2938023daec225653753e89080d1f63fba9912c472d05d1c",
+      "responses": {
+        "201": "527f98693453770647640b9beb97970a1bde89a60c47f51a3e8dfa590398fa93"
+      }
+    },
+    "splitCampaign": {
+      "path": "a708530a77d8afa4c5357709845071bf3fda6c0c0e8c6294456d69ffc3831bc1",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "d98bb71bef96fa3262cf732e37cf87f728b5bd0d0a2be2b939095553beca5eb6",
+      "responses": {
+        "201": "cb200af6acf4dabad0c99b9779d1a0f82630de122fc58eba027250e7c4cb8e31"
+      }
+    },
+    "getCampaignChildren": {
+      "path": "a708530a77d8afa4c5357709845071bf3fda6c0c0e8c6294456d69ffc3831bc1",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "ce01d8973f31322458675cfb90658cbd829226779ba3a801bf28eb2f94e78148"
+      }
+    },
+    "explainAction": {
+      "path": "41c0eb940e64d10f794b279c88ede52cac569723fb53cebb1fe0395e29e5980f",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "337c59cb3c7053f5206fa1746297f33f50e65a7ed72379dbd7b377e30071e916",
+        "404": "337c59cb3c7053f5206fa1746297f33f50e65a7ed72379dbd7b377e30071e916"
+      }
+    },
+    "getActionOutput": {
+      "path": "41c0eb940e64d10f794b279c88ede52cac569723fb53cebb1fe0395e29e5980f",
+      "query": "cdc0b97137918ef0b1b60d9b6f4c5e3f74663c7a670b136493a6dd86805a8d52",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "73fda9d4d9a83d9168ed10f52a62f4e88f9dc6b5f3fa3201bd1912e80e53e682"
+      }
+    },
+    "reparseAction": {
+      "path": "41c0eb940e64d10f794b279c88ede52cac569723fb53cebb1fe0395e29e5980f",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "2ec2aef34cc731fa309af837abf318ac0e6730bf16bf32341b225943bf91c75e",
+      "responses": {
+        "200": "003531996e3b8d1b3c4a0eb00df16972e2b39dc3f495913d680f2cbcbb01d7e0"
+      }
+    },
+    "getEvidenceRaw": {
+      "path": "078ae90b2457d399281508bb3c341124cb1b073c66dd86dbe447a2159a2a7750",
+      "query": "9cd37249c63c9218933ca042e1a39c91795b963ee6dbdcf1874869c8951f3a75",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "034b2413fbca3d51ef6f50878851f4f57fdddcd1f04761302fc5b783e9fd9352"
+      }
+    },
+    "getEvidenceImage": {
+      "path": "078ae90b2457d399281508bb3c341124cb1b073c66dd86dbe447a2159a2a7750",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "beeb3661e92754d6131eb14bb38c9a96a10ad6166020559075d22bc3858a0bef"
+      }
+    },
+    "approveAction": {
+      "path": "41c0eb940e64d10f794b279c88ede52cac569723fb53cebb1fe0395e29e5980f",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "eba258003db46d5aa69389894cff14b4adc29ae1b1a81db1cea48756c858b3ba",
+      "responses": {
+        "200": "0f775dcf1f39aac433c455b4b812c9f4169a816a602dc71981c61be862b6f5ba"
+      }
+    },
+    "denyAction": {
+      "path": "41c0eb940e64d10f794b279c88ede52cac569723fb53cebb1fe0395e29e5980f",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "616c69312a9f8dc9fce67c764e6411ff6f0e7c657994c58e5bc216a6c1308360",
+      "responses": {
+        "200": "0f775dcf1f39aac433c455b4b812c9f4169a816a602dc71981c61be862b6f5ba"
+      }
+    },
+    "closeSession": {
+      "path": "d410c3c449db9af8162637e4e472553c4ba078044204568b34b73aac88380a3c",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "310d667e92dace7c2938023daec225653753e89080d1f63fba9912c472d05d1c",
+      "responses": {
+        "200": "ffad981e8c29f0b2cdd037ef21e39e8ef8f327bb259d4256a2c7fbc0830df482"
+      }
+    },
+    "resumeSession": {
+      "path": "d410c3c449db9af8162637e4e472553c4ba078044204568b34b73aac88380a3c",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "310d667e92dace7c2938023daec225653753e89080d1f63fba9912c472d05d1c",
+      "responses": {
+        "200": "5f507b14f10b07a3efdd9db04deb5c20eddbddd8a9b46299dc99e41611c938f0"
+      }
+    },
+    "getSessionBuffer": {
+      "path": "d410c3c449db9af8162637e4e472553c4ba078044204568b34b73aac88380a3c",
+      "query": "4767ea1a88717a55c40a4e535c8ab6fbe41e1b97eb22b49d17cda82c12857598",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "a4debc53a84899f7b5764b776e4ebc68c5bf7614b808c9248367ec02d44ff40e"
+      }
+    },
+    "updateSession": {
+      "path": "d410c3c449db9af8162637e4e472553c4ba078044204568b34b73aac88380a3c",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "6aeea7e06a74ba748dfef798e22d6516a29ed9b341115710542584f38cf1c81c",
+      "responses": {
+        "200": "256fc383ff5ebb5957637da91ca1f46bdcb3c8a649dc7cc8725c4222b331995d"
+      }
+    },
+    "getEvidenceChains": {
+      "path": "33cbf23f07e857cdd0e1738ce0cd7974a5dae274049c50dc96f89154dd67b2ec",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "5f637ee446cb86a02e3e9a56038319c6c6e1e686562ceb2ddea2287b776210fb"
+      }
+    },
+    "getObjectivePaths": {
+      "path": "a0c801185ddcb38cf74da503b1c3048a5bb0dbd407065341a8334cbe9b8b8a62",
+      "query": "9be954bd4d7839ab964d76f006a2ac58aa0f6cf29a4a22827f878e08c07ee0b2",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "167aa414eef7b1e2fd25b24a4499d6ee8b87db1df88cf1564374178c2e2ee926"
+      }
+    },
+    "getFindingContext": {
+      "path": "42692a551019d8bef570655f3566153a22715df5f210feafb09d6508ffba7f3e",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "45b891c01f8f4ae0ad5d588edf092d27752add62cea243f36b47cf5550923d59"
+      }
+    },
+    "downloadReport": {
+      "path": "6a7c8f27e9673c877cb4f8655e295542cd5a317ad36ff869ad0df62e7fa3588b",
+      "query": "08fe33effea51a2f8285340d11d330a0dcf29fae4fb216b3754cc60433c014b9",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "beeb3661e92754d6131eb14bb38c9a96a10ad6166020559075d22bc3858a0bef"
+      }
+    },
+    "deleteReport": {
+      "path": "6a7c8f27e9673c877cb4f8655e295542cd5a317ad36ff869ad0df62e7fa3588b",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "262ea0865369dc7f1340aac7e91145bb55e71483c5647db33e1a5d50342e1c29",
+        "404": "262ea0865369dc7f1340aac7e91145bb55e71483c5647db33e1a5d50342e1c29"
+      }
+    },
+    "getEngagement": {
+      "path": "4ed4e7a61d5307ec381645b091d9659dc0259ea8756a32408e470cb73c3a1471",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "d36d6ba3f25bb82897d78aacd89065290207975b9417b4bd700420b4c77206fe"
+      }
+    },
+    "updateEngagement": {
+      "path": "4ed4e7a61d5307ec381645b091d9659dc0259ea8756a32408e470cb73c3a1471",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "0d9e7094895c7591181c0541ffc9e13083377874a297c34e22f1036bef724fc5",
+      "responses": {
+        "200": "ad8f3dcebbd7cea030609fa13ba54cb73e786b81e74662368994efae06d10f19"
+      }
+    }
+  },
+  "websockets": {
+    "main": {
+      "operation_id": "dashboardMainSocket",
+      "path": "/ws",
+      "server_events": "784115a55a7815b8bb2597dcb0f749357370e0c9664f2e629f657088266bc716"
+    },
+    "session": {
+      "operation_id": "dashboardSessionSocket",
+      "path": "/ws/session/{session_id}",
+      "client_events": "dddd7a6ad36d8a6df46d3fd15106f5fea136ebfac3c58fef630b77f58efc27a1",
+      "server_events": "de2cce44bce62a24cc6e1f66568b764ba131f682358bb072faf5cde27b1ca58d"
+    },
+    "action_output": {
+      "operation_id": "dashboardActionOutputSocket",
+      "path": "/ws/actions/{action_id}/output",
+      "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
+    }
+  },
+  "schema_hash": "d69a567a349a7fa9ed4b398574765f4ae0b8c86fa5d31292e6af0789a66e13b2"
+}
