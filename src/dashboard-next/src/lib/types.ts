@@ -1,19 +1,23 @@
 import type {
   AgentDto,
+  AgentConsoleEventDto,
   CampaignAbortCondition,
   CampaignDto,
   ColdNodeDto,
   FrontierItemDto,
   FrontierWeightsDto,
-  GraphEdgeViewModel,
-  GraphNodeViewModel,
-  GraphViewModel,
+  GraphUpdateDataDto,
   HealthDto,
+  MainWebSocketEvent,
   ObjectiveDto,
+  PendingActionDto,
   RawGraphDto,
-  RawGraphEdgeDto,
-  RawGraphNodeDto,
+  SessionBufferResponseDto,
+  SessionDto,
 } from '@overwatch/dashboard-contracts';
+import type { GraphEdgeViewModel, GraphNodeViewModel, GraphViewModel } from './ui-models';
+
+export type { GraphEdgeViewModel, GraphNodeViewModel, GraphViewModel } from './ui-models';
 
 export type { ColdNodeDto, RawGraphDto, RawGraphEdgeDto, RawGraphNodeDto } from '@overwatch/dashboard-contracts';
 
@@ -75,41 +79,10 @@ export type Objective = ObjectiveDto;
 
 export type AgentInfo = AgentDto;
 
-export type AgentConsoleKind =
-  | 'thought'
-  | 'action'
-  | 'approval'
-  | 'finding'
-  | 'session'
-  | 'transcript'
-  | 'system'
-  | 'command';
-
-export type AgentConsoleSeverity = 'info' | 'success' | 'warning' | 'error';
-
-export interface AgentConsoleLinks {
-  action_id?: string;
-  frontier_item_id?: string;
-  evidence_id?: string;
-  session_id?: string;
-  finding_ids?: string[];
-  node_ids?: string[];
-}
-
-export interface AgentConsoleEvent {
-  id: string;
-  timestamp: string;
-  agent_id: string;
-  source_kind?: 'primary' | 'subagent' | 'runner' | 'system' | 'dashboard';
-  source_label?: string;
-  kind: AgentConsoleKind;
-  severity: AgentConsoleSeverity;
-  title: string;
-  summary: string;
-  status?: string;
-  links?: AgentConsoleLinks;
-  raw?: Record<string, unknown>;
-}
+export type AgentConsoleEvent = AgentConsoleEventDto;
+export type AgentConsoleKind = AgentConsoleEventDto['kind'];
+export type AgentConsoleSeverity = AgentConsoleEventDto['severity'];
+export type AgentConsoleLinks = NonNullable<AgentConsoleEventDto['links']>;
 
 // --- Campaigns ---
 
@@ -131,105 +104,14 @@ export type AbortCondition = CampaignAbortCondition;
 
 // --- Sessions ---
 
-export interface SessionInfo {
-  id: string;
-  kind: string;
-  adapter?: string;
-  transport?: string;
-  state: 'pending' | 'connected' | 'resume_available' | 'interrupted' | 'closed' | 'error';
-  listener_id?: string;
-  connection_generation?: number;
-  connection_id?: string;
-  connection_started_at?: string;
-  last_connection_id?: string;
-  last_connection_state?: 'disconnected' | 'interrupted' | 'closed';
-  last_connection_closed_at?: string;
-  resume_policy?: 'none' | 'manual';
-  mode?: 'connect' | 'listen';
-  bind_host?: string;
-  advertise_host?: string;
-  accept_mode?: 'single' | 'rearm';
-  reachability_warnings?: string[];
-  auth_status?: 'shell_confirmed' | 'connected_unconfirmed' | 'auth_prompt' | 'auth_failed';
-  title?: string;
-  host?: string;
-  user?: string;
-  port?: number;
-  pid?: number;
-  owner?: string;
-  agent_id?: string;
-  target_node?: string;
-  principal_node?: string;
-  credential_node?: string;
-  action_id?: string;
-  frontier_item_id?: string;
-  claimed_by?: string;
-  created_at?: string;
-  started_at?: string;
-  last_activity_at?: string;
-  closed_at?: string;
-  capabilities?: {
-    has_stdin?: boolean;
-    has_stdout?: boolean;
-    supports_resize?: boolean;
-    supports_signals?: boolean;
-    tty_quality?: string;
-  };
-  buffer_end_pos?: number;
-  notes?: string;
-  default_validation?: {
-    technique?: string;
-    target_ip?: string;
-    target_url?: string;
-    allow_unverified_scope?: boolean;
-  };
-}
-
-export interface SessionBufferResponse {
-  session_id: string;
-  connection_id?: string;
-  connection_generation?: number;
-  start_pos: number;
-  end_pos: number;
-  text: string;
-  truncated: boolean;
-  cursor_reset?: boolean;
-}
+export type SessionInfo = SessionDto;
+export type SessionBufferResponse = SessionBufferResponseDto;
 
 // --- Pending Actions ---
 
-export interface PendingAction {
-  action_id: string;
-  technique?: string;
-  target?: string;
-  target_node?: string;
-  target_ip?: string;
-  target_cidr?: string;
-  noise_level?: number;
-  description: string;
-  defense_context?: string;
-  submitted_at: string;
-  timeout_at?: string;
-  resolved_at?: string;
-  status?: 'pending' | 'approved' | 'denied' | 'timeout' | 'aborted';
-  operator_notes?: string;
-  reason?: string;
-  auto_approved?: boolean;
-  unattended_execute?: boolean;
-  frontier_item_id?: string;
-  task_id?: string;
-  agent_label?: string;
-  agent_id?: string;
-  recovery_warning?: string;
-  validation_result?: string;
-  opsec_context?: {
-    noise_level?: number;
-    noise_budget_remaining?: number;
-    recommended_approach?: string;
-    defensive_signals?: string[];
-  };
+export type PendingAction = PendingActionDto & {
   _formType?: 'approve' | 'deny';
-}
+};
 
 // --- Activity Log ---
 
@@ -442,55 +324,18 @@ export interface OpsecConfig {
 
 // --- WebSocket Messages ---
 
-export type WsMessageType =
-  | 'full_state'
-  | 'graph_update'
-  | 'agent_update'
-  | 'agent_console_update'
-  | 'objective_update'
-  | 'session_update'
-  | 'action_pending'
-  | 'action_resolved'
-  | 'campaign_update'
-  | 'agent_query'
-  // Phase 4 (enterprise): identity-tier graph updates carry their own
-  // message type so the dashboard can refresh just the IdentityPanel
-  // without forcing a full graph re-render. The payload mirrors
-  // `graph_update` shape but is filtered to idp_* node types and the
-  // identity-tier edges.
-  | 'identity_update';
-
-export interface WsMessage {
-  type: WsMessageType;
-  timestamp: string;
-  data: unknown;
-}
-
+export type WsMessage = MainWebSocketEvent;
+export type WsMessageType = MainWebSocketEvent['type'];
 export interface FullStateData {
   state: EngagementState;
   graph: RawGraphDto;
   history_count: number;
 }
-
 export interface GraphUpdateData {
   state: EngagementState;
   history_count: number;
-  detail: {
-    new_nodes?: string[];
-    updated_nodes?: string[];
-    new_edges?: string[];
-    updated_edges?: string[];
-    inferred_edges?: string[];
-    removed_nodes?: string[];
-    removed_edges?: string[];
-  };
-  delta: {
-    nodes: RawGraphNodeDto[];
-    edges: RawGraphEdgeDto[];
-    removed_nodes: string[];
-    removed_edges: string[];
-    cold_nodes?: ColdNodeDto[];
-  };
+  detail: GraphUpdateDataDto['detail'];
+  delta: GraphUpdateDataDto['delta'];
 }
 
 // --- OPSEC Budget ---

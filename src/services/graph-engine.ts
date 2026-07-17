@@ -7622,8 +7622,12 @@ export class GraphEngine {
     return false;
   }
 
-  onUpdate(callback: GraphUpdateCallback): void {
+  onUpdate(callback: GraphUpdateCallback): () => void {
     this.ctx.updateCallbacks.push(callback);
+    return () => {
+      const index = this.ctx.updateCallbacks.indexOf(callback);
+      if (index >= 0) this.ctx.updateCallbacks.splice(index, 1);
+    };
   }
 
   private resolveFrontierSeeds(frontierItemId: string): string[] {

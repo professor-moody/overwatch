@@ -17,6 +17,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - run: npm run check:dashboard-api
       - run: npx tsc --noEmit
       # The root tsconfig excludes src/dashboard-next, so the dashboard needs its
       # own typecheck pass — vite build is esbuild and never reports type errors.

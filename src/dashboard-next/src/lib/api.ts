@@ -48,8 +48,13 @@ import {
   CampaignSplitResponseSchema,
   CampaignUpdateRequestSchema,
   CampaignUpdateResponseSchema,
+  CommandDenialResponseSchema,
+  CommandExecutionResponseSchema,
+  CommandPreviewSchema,
   ConfigDivergenceResolveRequestSchema,
   ConfigDivergenceResolveResponseSchema,
+  FindingDtoSchema,
+  FindingsResponseSchema,
   FrontierWeightsPatchSchema,
   FrontierWeightsResetResultSchema,
   FrontierWeightsUpdateResultSchema,
@@ -64,90 +69,84 @@ import {
   SettingsDtoSchema,
   SettingsPatchSchema,
   SettingsUpdateResultSchema,
+  normalizeLegacyAgentDispatchDescription,
   type AgentListResponse,
+  type AgentArchetypeSummary as ContractAgentArchetypeSummary,
+  type AgentQueryDto,
+  type ApplicationCommandRecordDto,
+  type ActivityEntryDto,
   type CampaignDetailResponse,
   type CampaignDispatchResponse,
+  type CommandOpResultDto,
+  type CommandPreviewDto,
   type ConfigDivergenceResolveRequest,
   type ConfigDivergenceResolveResponse,
   type GraphCorrectionOperationDto,
   type GraphCorrectionResultDto,
+  type FindingsResponseDto,
   type ObjectiveCreateRequest,
   type ObjectiveUpdateRequest,
   type RawGraphDto,
+  type ProposedPlanDto,
+  type ReportRecordDto,
+  type ReportsListResponseDto,
   type RecoveryStatusDto,
   type SettingsDto,
 } from '@overwatch/dashboard-contracts';
-import { createDashboardCommandId, dashboardFetch } from './dashboard-transport';
+import { buildDashboardPath } from '@overwatch/dashboard-api-contracts';
+import {
+  DashboardApiError,
+  requestDashboardEndpoint,
+  setDashboardApiErrorObserver,
+  type GeneratedDashboardOutput,
+  type GeneratedDashboardOperationId,
+  type GeneratedDashboardRequestFor,
+} from './api.generated';
+import { createDashboardCommandId } from './dashboard-transport';
 import { useEngagementStore } from '../stores/engagement-store';
 
 const BASE = '';
 
 /** Same-origin URL for a screenshot evidence blob, rendered as an `<img>`. */
 export function evidenceImageUrl(evidenceId: string): string {
-  return `${BASE}/api/evidence/${encodeURIComponent(evidenceId)}/image`;
+  return `${BASE}${buildDashboardPath('getEvidenceImage', { evidence_id: evidenceId })}`;
 }
 
-export class DashboardApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly code?: string,
-    readonly body?: unknown,
-  ) {
-    super(message);
-    this.name = 'DashboardApiError';
-  }
-}
+export { DashboardApiError };
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const res = await dashboardFetch(`${BASE}${url}`, {
-    ...init,
-    headers,
+setDashboardApiErrorObserver(error => {
+  const body = error.body;
+  if (!body || typeof body !== 'object' || !('recovery' in body)) return;
+  const parsed = RecoveryStatusResponseSchema.safeParse({
+    recovery: (body as { recovery?: unknown }).recovery,
   });
-  if (!res.ok) {
-    const raw = await res.text().catch(() => '');
-    let body: unknown;
-    try {
-      body = raw ? JSON.parse(raw) : undefined;
-    } catch {
-      body = raw;
-    }
-    if (body && typeof body === 'object' && 'recovery' in body) {
-      const parsed = RecoveryStatusResponseSchema.safeParse({
-        recovery: (body as { recovery?: unknown }).recovery,
-      });
-      if (parsed.success) {
-        // A mutation can discover config divergence or trip the persistence
-        // gate while the main WebSocket remains synchronized. Publish the
-        // structured 503 state immediately so the global recovery banner can
-        // never remain falsely healthy until a reconnect.
-        useEngagementStore.getState().setPersistenceRecovery(parsed.data.recovery);
-      }
-    }
-    const record = body && typeof body === 'object' ? body as Record<string, unknown> : undefined;
-    const detail = typeof record?.error === 'string' ? record.error : raw;
-    const prefix = `${res.status}${res.statusText ? ` ${res.statusText}` : ''}`;
-    throw new DashboardApiError(
-      `${prefix}${detail ? `: ${detail}` : ''}`,
-      res.status,
-      typeof record?.code === 'string' ? record.code : undefined,
-      body,
-    );
+  if (parsed.success) {
+    // A mutation can discover config divergence while the main WebSocket is
+    // synchronized. Publish the structured 503 state immediately.
+    useEngagementStore.getState().setPersistenceRecovery(parsed.data.recovery);
   }
-  return res.json() as Promise<T>;
+});
+
+async function request<T extends GeneratedDashboardOperationId>(
+  operationId: T,
+  input: GeneratedDashboardRequestFor<T> = {},
+): Promise<GeneratedDashboardOutput<T>> {
+  return requestDashboardEndpoint(operationId, input);
 }
 
 // --- State ---
 
 export async function getState(signal?: AbortSignal): Promise<{ state: EngagementState; graph: RawGraphDto; history_count: number }> {
-  const response = await fetchJson<{ state: EngagementState; graph: unknown; history_count: number }>('/api/state', { signal });
-  return { ...response, graph: RawGraphDtoSchema.parse(response.graph) };
+  const response = await request('getState', { signal });
+  return {
+    ...response,
+    state: response.state as unknown as EngagementState,
+    graph: RawGraphDtoSchema.parse(response.graph),
+  };
 }
 
 export async function getGraph(): Promise<RawGraphDto> {
-  return RawGraphDtoSchema.parse(await fetchJson('/api/graph'));
+  return RawGraphDtoSchema.parse(await request('getGraph'));
 }
 
 // --- History ---
@@ -156,17 +155,32 @@ export async function getHistory(params?: {
   limit?: number;
   after?: string;
   before?: string;
+  order?: 'asc' | 'desc';
   /** Restrict to these event types before the limit is applied — so `limit` counts
    *  the matching events, not the whole (heartbeat/thought-diluted) stream. */
   eventTypes?: string[];
 }): Promise<{ entries: ActivityEntry[]; total: number }> {
-  const qs = new URLSearchParams();
-  if (params?.limit) qs.set('limit', String(params.limit));
-  if (params?.after) qs.set('after', params.after);
-  if (params?.before) qs.set('before', params.before);
-  if (params?.eventTypes?.length) qs.set('event_types', params.eventTypes.join(','));
-  const q = qs.toString();
-  return fetchJson(`/api/history${q ? `?${q}` : ''}`);
+  const response = await request('getHistory', { query: {
+    limit: params?.limit,
+    after: params?.after,
+    before: params?.before,
+    order: params?.order,
+    event_types: params?.eventTypes?.join(','),
+  } });
+  return { ...response, entries: normalizeActivityEntries(response.entries) };
+}
+
+function normalizeActivityEntries(entries: ActivityEntryDto[]): ActivityEntry[] {
+  return entries.map(entry => ({
+    ...entry,
+    id: entry.id ?? entry.event_id,
+    event_type: entry.event_type ?? 'system',
+    description: normalizeLegacyAgentDispatchDescription({
+      event_type: entry.event_type,
+      description: entry.description,
+      details: entry.details,
+    }),
+  }));
 }
 
 export async function getDecisionLog(params?: {
@@ -176,18 +190,11 @@ export async function getDecisionLog(params?: {
   agent_id?: string;
   outcome?: string;
 }): Promise<{ decisions: DecisionLogEntry[]; total: number }> {
-  const qs = new URLSearchParams();
-  if (params?.limit) qs.set('limit', String(params.limit));
-  if (params?.action_id) qs.set('action_id', params.action_id);
-  if (params?.frontier_item_id) qs.set('frontier_item_id', params.frontier_item_id);
-  if (params?.agent_id) qs.set('agent_id', params.agent_id);
-  if (params?.outcome) qs.set('outcome', params.outcome);
-  const q = qs.toString();
-  return fetchJson(`/api/decision-log${q ? `?${q}` : ''}`);
+  return request('getDecisionLog', { query: params }) as unknown as Promise<{ decisions: DecisionLogEntry[]; total: number }>;
 }
 
 export async function explainAction(id: string): Promise<ActionExplanation> {
-  return fetchJson(`/api/actions/${encodeURIComponent(id)}/explain`);
+  return request('explainAction', { path: { action_id: id } }) as unknown as Promise<ActionExplanation>;
 }
 
 export async function getTimeline(params?: {
@@ -197,35 +204,25 @@ export async function getTimeline(params?: {
   since?: string;
   at?: string;
 }): Promise<{ entries: TimelineEntry[]; total: number }> {
-  const qs = new URLSearchParams();
-  if (params?.limit) qs.set('limit', String(params.limit));
-  if (params?.entity_id) qs.set('entity_id', params.entity_id);
-  if (params?.kind) qs.set('kind', params.kind);
-  if (params?.since) qs.set('since', params.since);
-  if (params?.at) qs.set('at', params.at);
-  const q = qs.toString();
-  return fetchJson(`/api/timeline${q ? `?${q}` : ''}`);
+  return request('getTimeline', { query: params }) as unknown as Promise<{ entries: TimelineEntry[]; total: number }>;
 }
 
 // --- Sessions ---
 
 export async function getSessions(): Promise<{ sessions: SessionInfo[]; total: number; active: number }> {
-  return fetchJson('/api/sessions');
+  return request('getSessions');
 }
 
 export async function closeSession(id: string): Promise<{ metadata: SessionInfo; final: { text: string; end_pos: number } }> {
-  return fetchJson(`/api/sessions/${id}/close`, { method: 'POST' });
+  return request('closeSession', { path: { session_id: id } });
 }
 
 export async function resumeSession(id: string): Promise<{ resumed: true; metadata: SessionInfo }> {
-  return fetchJson(`/api/sessions/${id}/resume`, { method: 'POST' });
+  return request('resumeSession', { path: { session_id: id } });
 }
 
 export async function updateSession(id: string, body: { title?: string; notes?: string }): Promise<{ metadata: SessionInfo }> {
-  return fetchJson(`/api/sessions/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify(body),
-  });
+  return request('updateSession', { path: { session_id: id }, body });
 }
 
 export async function getSessionBuffer(id: string, params?: {
@@ -234,29 +231,29 @@ export async function getSessionBuffer(id: string, params?: {
   connectionId?: string;
   connectionGeneration?: number;
 }): Promise<SessionBufferResponse> {
-  const qs = new URLSearchParams();
-  if (params?.from !== undefined) qs.set('from', String(params.from));
-  if (params?.tailBytes !== undefined) qs.set('tail_bytes', String(params.tailBytes));
-  if (params?.connectionId !== undefined) qs.set('connection_id', params.connectionId);
-  if (params?.connectionGeneration !== undefined) {
-    qs.set('connection_generation', String(params.connectionGeneration));
-  }
-  const q = qs.toString();
-  return fetchJson(`/api/sessions/${id}/buffer${q ? `?${q}` : ''}`);
+  return request('getSessionBuffer', {
+    path: { session_id: id },
+    query: {
+      from: params?.from,
+      tail_bytes: params?.tailBytes,
+      connection_id: params?.connectionId,
+      connection_generation: params?.connectionGeneration,
+    },
+  });
 }
 
 // --- Agents ---
 
 export async function getAgents(): Promise<AgentListResponse> {
-  return AgentListResponseSchema.parse(await fetchJson('/api/agents'));
+  return AgentListResponseSchema.parse(await request('getAgents'));
 }
 
 export async function getAgentContext(agentId: string): Promise<unknown> {
-  return fetchJson(`/api/agents/${agentId}/context`);
+  return request('getAgentContext', { path: { task_id: agentId } });
 }
 
 export async function cancelAgent(agentId: string): Promise<{ ok: boolean }> {
-  return fetchJson(`/api/agents/${agentId}/cancel`, { method: 'POST' });
+  return request('cancelAgent', { path: { task_id: agentId } });
 }
 
 export type DirectiveKind = 'pause' | 'resume' | 'stop' | 'narrow_scope' | 'skip_types' | 'prioritize' | 'instruct';
@@ -271,9 +268,9 @@ export async function issueDirective(
   kind: DirectiveKind,
   opts: { node_ids?: string[]; frontier_types?: string[]; note?: string } = {},
 ): Promise<{ ok: boolean; results: unknown[] }> {
-  return fetchJson(`/api/agents/${encodeURIComponent(taskId)}/directive`, {
-    method: 'POST',
-    body: JSON.stringify({ kind, ...opts }),
+  return request('issueAgentDirective', {
+    path: { task_id: taskId },
+    body: { kind, ...opts },
   });
 }
 
@@ -282,10 +279,7 @@ export async function fleetDirective(
   kind: 'pause' | 'resume' | 'stop',
   campaignId?: string,
 ): Promise<{ ok: boolean; applied: number; total: number }> {
-  return fetchJson('/api/fleet/directive', {
-    method: 'POST',
-    body: JSON.stringify({ kind, campaign_id: campaignId }),
-  });
+  return request('issueFleetDirective', { body: { kind, campaign_id: campaignId } });
 }
 
 /** Broadcast a free-text instruction to ALL running agents (the "All agents" command scope). */
@@ -293,19 +287,16 @@ export async function fleetInstruct(
   note: string,
   campaignId?: string,
 ): Promise<{ ok: boolean; applied: number; total: number }> {
-  return fetchJson('/api/fleet/directive', {
-    method: 'POST',
-    body: JSON.stringify({ kind: 'instruct', note, campaign_id: campaignId }),
-  });
+  return request('issueFleetDirective', { body: { kind: 'instruct', note, campaign_id: campaignId } });
 }
 
 /** Remove a terminal (completed/failed/interrupted) agent from the roster. 409 if it's still live. */
 export async function dismissAgent(taskId: string, opts?: { force?: boolean }): Promise<{ dismissed: boolean; task_id: string; forced?: boolean }> {
   // force:true force-terminates a still-running/pending agent and removes it in one
   // step (the escape hatch for a wedged sub-agent that won't cancel cleanly).
-  return fetchJson(`/api/agents/${encodeURIComponent(taskId)}/dismiss`, {
-    method: 'POST',
-    ...(opts?.force ? { body: JSON.stringify({ force: true }) } : {}),
+  return request('dismissAgent', {
+    path: { task_id: taskId },
+    ...(opts?.force ? { body: { force: true } } : {}),
   });
 }
 
@@ -313,10 +304,7 @@ export async function dismissAgent(taskId: string, opts?: { force?: boolean }): 
 export async function fleetDismiss(
   campaignId?: string,
 ): Promise<{ ok: boolean; dismissed: number; total: number }> {
-  return fetchJson('/api/fleet/dismiss', {
-    method: 'POST',
-    body: JSON.stringify({ campaign_id: campaignId }),
-  });
+  return request('dismissFleetAgents', { body: { campaign_id: campaignId } });
 }
 
 export interface DispatchAgentResult {
@@ -342,18 +330,11 @@ export function dispatchedAgentLabel(
     ?? 'Agent queued';
 }
 
-export interface AgentArchetypeSummary {
-  id: string;
-  label: string;
-  description: string;
-  role: string;
-  defaultSkill?: string;
-  suitableFor: { frontierTypes?: string[]; nodeTypes?: string[]; rawTarget?: boolean };
-}
+export type AgentArchetypeSummary = ContractAgentArchetypeSummary;
 
 /** The agent-type catalog for the Deploy picker (Phase 5c), plus the model choices. */
 export async function getArchetypes(): Promise<{ archetypes: AgentArchetypeSummary[]; models?: { available: string[]; default?: string } }> {
-  return fetchJson('/api/agent-archetypes');
+  return request('getAgentArchetypes');
 }
 
 export interface QuickDeployResult {
@@ -377,20 +358,20 @@ export interface QuickDeployResult {
  *  client regex let through) is normalized to a non-dispatched result with the
  *  server's message; only unexpected statuses throw. */
 export async function quickDeploy(body: { target: string; archetype?: string; model?: string }): Promise<QuickDeployResult> {
-  const res = await dashboardFetch(`${BASE}/api/agents/quick-deploy`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (res.status === 201 || res.status === 409) {
-    return res.json() as Promise<QuickDeployResult>;
+  try {
+    const result = await request('quickDeployAgent', { body });
+    if (typeof result.dispatched === 'boolean') return result as unknown as QuickDeployResult;
+    return {
+      dispatched: false,
+      reason: String(result.reason ?? result.error ?? 'Agent could not be deployed'),
+    };
+  } catch (error) {
+    if (error instanceof DashboardApiError && error.status === 400) {
+      const record = error.body && typeof error.body === 'object' ? error.body as Record<string, unknown> : {};
+      return { dispatched: false, reason: String(record.reason ?? record.error ?? 'invalid request') };
+    }
+    throw error;
   }
-  if (res.status === 400) {
-    const j = await res.json().catch(() => ({})) as { error?: string; reason?: string };
-    return { dispatched: false, reason: j.reason || j.error || 'invalid request' };
-  }
-  const text = await res.text().catch(() => '');
-  throw new Error(`${res.status} ${res.statusText}: ${text}`);
 }
 
 export async function dispatchAgent(body: {
@@ -407,24 +388,15 @@ export async function dispatchAgent(body: {
   // when the concurrency cap is hit. Treat both as STRUCTURED results (not
   // exceptions) so callers can show "already being worked" / "cap reached — retry
   // later" cleanly; other non-2xx still throw.
-  const res = await dashboardFetch(`${BASE}/api/agents/dispatch`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (res.status === 201 || res.status === 409 || res.status === 429) {
-    return res.json() as Promise<DispatchAgentResult>;
-  }
-  const text = await res.text().catch(() => '');
-  throw new Error(`${res.status} ${res.statusText}: ${text}`);
+  const result = await request('dispatchAgent', { body });
+  if (typeof result.dispatched === 'boolean') return result as unknown as DispatchAgentResult;
+  return {
+    dispatched: false,
+    reason: String(result.reason ?? result.error ?? 'Agent could not be dispatched'),
+  };
 }
 
-export interface DispatchBatchResult {
-  dispatched: Array<{ node_ids: string[]; task_id: string; agent_id: string; archetype?: string }>;
-  skipped: Array<{ node_ids: string[]; reason: string; existing_agent_id?: string }>;
-  deferred: Array<{ node_ids: string[]; reason: string }>;
-  summary: { dispatched: number; skipped: number; deferred: number; groups: number };
-}
+export type DispatchBatchResult = import('@overwatch/dashboard-contracts').DispatchBatchResponse;
 
 /** Fan out N agents across a selection of nodes without overlap. `per-node`
  *  (default) = one agent per node; `per-batch` groups up to `batch_size` nodes
@@ -438,16 +410,7 @@ export async function dispatchBatch(body: {
   model?: string;
   objective?: string;
 }): Promise<DispatchBatchResult> {
-  const res = await dashboardFetch(`${BASE}/api/agents/dispatch-batch`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`${res.status} ${res.statusText}: ${text}`);
-  }
-  return res.json() as Promise<DispatchBatchResult>;
+  return request('dispatchAgentBatch', { body });
 }
 
 // --- NL operator cockpit (Phase 3A) ---
@@ -457,12 +420,7 @@ export interface OperatorOp {
   [key: string]: unknown;
 }
 
-export interface CommandOpResult {
-  op: OperatorOp;
-  ok: boolean;
-  detail?: string;
-  error?: string;
-}
+export type CommandOpResult = CommandOpResultDto;
 
 /** A read-only query answer rendered inline in the command bar (no confirm). */
 export interface QueryAnswer {
@@ -473,163 +431,93 @@ export interface QueryAnswer {
   note?: string;
 }
 
-export interface CommandPreview {
-  plan_id?: string;
-  ops: OperatorOp[];
-  summary: string;
-  unresolved: { text: string; reason: string }[];
-  needs_planner: boolean;
-  planner_task_id?: string;
-  command_id?: string;
-  planner_status?: string;
-  planner_available?: boolean;
-  planner_plan?: ProposedPlan;
-  /** Present when the input was a read-only query; render directly, no confirm. */
-  query_answer?: QueryAnswer;
-}
+export type CommandPreview = CommandPreviewDto;
 
-export interface ProposedPlan {
-  plan_id: string;
-  command: string;
-  ops: OperatorOp[];
-  summary: string;
-  rationale?: string;
-  owner_task_id?: string;
-  owner_agent_label?: string;
-  source_task_id?: string;
-  source_agent_id?: string;
-  created_at: number;
-  expires_at?: number;
-  status: string;
-  resolved_at?: number;
-  confirmed_at?: number;
-  denied_at?: number;
-  expired_at?: number;
-  acknowledged_at?: number;
-  execution_outcome?: {
-    status: 'succeeded' | 'partial' | 'failed';
-    completed_at: number;
-    results: unknown[];
-  };
-  recovery_warning?: string;
-}
+export type ProposedPlan = ProposedPlanDto;
 
 /** Phase 1: interpret a free-form command into a previewable plan (no mutation). */
 export async function previewCommand(command: string): Promise<CommandPreview> {
   const commandId = createDashboardCommandId();
-  return fetchJson('/api/commands', {
-    method: 'POST',
+  return CommandPreviewSchema.parse(await request('interpretCommand', {
     headers: {
       'Idempotency-Key': `operator-plan:${commandId}`,
       'X-Overwatch-Command-Id': commandId,
     },
-    body: JSON.stringify({ command }),
-  });
+    body: { command },
+  }));
 }
 
 /** Phase 2: confirm + execute a previewed/proposed plan by id. */
 export async function confirmCommand(planId: string): Promise<{ executed: boolean; results: CommandOpResult[] }> {
-  return fetchJson('/api/commands', {
-    method: 'POST',
+  return CommandExecutionResponseSchema.parse(await request('interpretCommand', {
     headers: {
       'Idempotency-Key': `plan-confirm:${planId}`,
       'X-Overwatch-Command-Id': createDashboardCommandId(),
     },
-    body: JSON.stringify({ confirm: true, plan_id: planId }),
-  });
+    body: { confirm: true, plan_id: planId },
+  }));
 }
 
 /** Dismiss a planner-proposed plan without executing it. */
 export async function denyCommandPlan(planId: string): Promise<{ denied: boolean }> {
-  return fetchJson('/api/commands', {
-    method: 'POST',
+  return CommandDenialResponseSchema.parse(await request('interpretCommand', {
     headers: {
       'Idempotency-Key': `plan-deny:${planId}`,
       'X-Overwatch-Command-Id': createDashboardCommandId(),
     },
-    body: JSON.stringify({ deny: true, plan_id: planId }),
-  });
+    body: { deny: true, plan_id: planId },
+  }));
 }
 
 /** Open planner-proposed plans awaiting operator confirmation. */
 export async function getProposedPlans(): Promise<{ plans: ProposedPlan[] }> {
-  return fetchJson('/api/plans');
+  return request('getProposedPlans');
 }
 
-export interface ApplicationCommandRecord {
-  command_id: string;
-  idempotency_key: string;
-  command_kind: string;
-  validated_input: unknown;
-  status: 'accepted' | 'running' | 'succeeded' | 'failed' | 'interrupted';
-  created_at: string;
-  started_at?: string;
-  completed_at?: string;
-  plan_id?: string;
-  result?: unknown;
-  error?: { code?: string; message: string; details?: unknown };
-  entity_refs?: Record<string, string | string[]>;
+export type ApplicationCommandRecord = ApplicationCommandRecordDto;
+
+export async function getActiveApplicationCommands(
+  signal?: AbortSignal,
+): Promise<{ commands: ApplicationCommandRecord[] }> {
+  return request('getActiveApplicationCommands', { signal });
 }
 
 export async function getApplicationCommand(
   commandId: string,
   signal?: AbortSignal,
 ): Promise<{ command: ApplicationCommandRecord }> {
-  return fetchJson(`/api/commands/${encodeURIComponent(commandId)}`, { signal });
+  return request('getApplicationCommand', { path: { command_id: commandId }, signal });
 }
 
 // --- Agent→operator question inbox (Phase 3D) ---
 
-export interface AgentQuery {
-  query_id: string;
-  owner_task_id?: string;
-  owner_agent_label?: string;
-  task_id?: string;
-  agent_id?: string;
-  question: string;
-  options?: string[];
-  status: string;
-  answer?: string;
-  created_at: number;
-  expires_at?: number;
-  answered_at?: number;
-  delivered_at?: number;
-  acknowledged_at?: number;
-  expired_at?: number;
-  recovery_warning?: string;
-}
+export type AgentQuery = AgentQueryDto;
 
 /** Open questions agents are waiting on. */
 export async function getAgentQueries(): Promise<{ queries: AgentQuery[] }> {
-  return fetchJson('/api/agent-queries');
+  return request('getAgentQueries');
 }
 
 /** Answer an agent's question — delivered to the agent on its next heartbeat. */
 export async function answerAgentQuery(queryId: string, answer: string): Promise<{ ok: boolean }> {
-  return fetchJson(`/api/agent-queries/${encodeURIComponent(queryId)}/answer`, {
-    method: 'POST',
-    body: JSON.stringify({ answer }),
-  });
+  return request('answerAgentQuery', { path: { query_id: queryId }, body: { answer } });
 }
 
 /** Answer-once fan-out: resolve a cluster of identical questions (asked by
  *  several agents) with one answer. Each still-running agent picks it up on its
  *  next heartbeat. */
 export async function answerAgentQueryBatch(queryIds: string[], answer: string): Promise<{ ok: boolean; answered: number }> {
-  return fetchJson('/api/agent-queries/answer-batch', {
-    method: 'POST',
-    body: JSON.stringify({ query_ids: queryIds, answer }),
-  });
+  return request('answerAgentQueriesBatch', { body: { query_ids: queryIds, answer } });
 }
 
 // --- Campaigns ---
 
 export async function getCampaigns(): Promise<{ campaigns: Campaign[]; total: number }> {
-  return CampaignListResponseSchema.parse(await fetchJson('/api/campaigns'));
+  return CampaignListResponseSchema.parse(await request('listCampaigns'));
 }
 
 export async function getCampaign(id: string): Promise<CampaignDetailResponse> {
-  return CampaignDetailResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}`));
+  return CampaignDetailResponseSchema.parse(await request('getCampaign', { path: { campaign_id: id } }));
 }
 
 export async function createCampaign(body: {
@@ -638,11 +526,8 @@ export async function createCampaign(body: {
   item_ids: string[];
   abort_conditions?: Array<{ type: 'consecutive_failures' | 'total_failures_pct' | 'opsec_noise_ceiling' | 'time_limit_seconds'; threshold: number }>;
 }): Promise<Campaign> {
-  const request = CampaignCreateRequestSchema.parse(body);
-  const res = CampaignCreateResponseSchema.parse(await fetchJson('/api/campaigns', {
-    method: 'POST',
-    body: JSON.stringify(request),
-  }));
+  const parsed = CampaignCreateRequestSchema.parse(body);
+  const res = CampaignCreateResponseSchema.parse(await request('createCampaign', { body: parsed }));
   return res.campaign;
 }
 
@@ -652,24 +537,18 @@ export async function updateCampaign(id: string, body: {
   add_items?: string[];
   remove_items?: string[];
 }): Promise<Campaign> {
-  const request = CampaignUpdateRequestSchema.parse(body);
-  const res = CampaignUpdateResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify(request),
-  }));
+  const parsed = CampaignUpdateRequestSchema.parse(body);
+  const res = CampaignUpdateResponseSchema.parse(await request('updateCampaign', { path: { campaign_id: id }, body: parsed }));
   return res.campaign;
 }
 
 export async function deleteCampaign(id: string): Promise<{ deleted: true }> {
-  return CampaignDeleteResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}`, { method: 'DELETE' }));
+  return CampaignDeleteResponseSchema.parse(await request('deleteCampaign', { path: { campaign_id: id } }));
 }
 
 export async function campaignAction(id: string, action: 'activate' | 'pause' | 'resume' | 'abort'): Promise<Campaign> {
-  const request = CampaignActionRequestSchema.parse({ action });
-  const res = CampaignActionResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}/action`, {
-    method: 'POST',
-    body: JSON.stringify(request),
-  }));
+  const parsed = CampaignActionRequestSchema.parse({ action });
+  const res = CampaignActionResponseSchema.parse(await request('actOnCampaign', { path: { campaign_id: id }, body: parsed }));
   return res.campaign;
 }
 
@@ -678,90 +557,68 @@ export async function dispatchCampaign(id: string, body?: {
   hops?: number;   // server reads `hops` (was sent as scope_hops → ignored)
   skill?: string;
 }): Promise<CampaignDispatchResponse> {
-  const request = CampaignDispatchRequestSchema.parse(body ?? {});
-  return CampaignDispatchResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}/dispatch`, {
-    method: 'POST',
-    body: JSON.stringify(request),
-  }));
+  const parsed = CampaignDispatchRequestSchema.parse(body ?? {});
+  return CampaignDispatchResponseSchema.parse(await request('dispatchCampaign', { path: { campaign_id: id }, body: parsed }));
 }
 
 export async function cloneCampaign(id: string): Promise<Campaign> {
-  const res = CampaignCloneResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}/clone`, { method: 'POST' }));
+  const res = CampaignCloneResponseSchema.parse(await request('cloneCampaign', { path: { campaign_id: id } }));
   return res.campaign;
 }
 
 export async function splitCampaign(id: string, body: { count: number }): Promise<{ parent_id: string; children: Campaign[]; count: number }> {
-  const request = CampaignSplitRequestSchema.parse(body);
-  return CampaignSplitResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}/split`, {
-    method: 'POST',
-    body: JSON.stringify(request),
-  }));
+  const parsed = CampaignSplitRequestSchema.parse(body);
+  return CampaignSplitResponseSchema.parse(await request('splitCampaign', { path: { campaign_id: id }, body: parsed }));
 }
 
 export async function getCampaignChildren(id: string) {
-  return CampaignChildrenResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}/children`));
+  return CampaignChildrenResponseSchema.parse(await request('getCampaignChildren', { path: { campaign_id: id } }));
 }
 
 // --- Pending Actions ---
 
 export async function getPendingActions(): Promise<{ pending: PendingAction[]; recent?: PendingAction[]; diagnostics?: ActionQueueDiagnostics }> {
-  return fetchJson('/api/actions/pending');
+  return request('getPendingActions');
 }
 
 export async function approveAction(id: string, modifications?: Record<string, unknown>): Promise<unknown> {
-  return fetchJson(`/api/actions/${id}/approve`, {
-    method: 'POST',
-    body: JSON.stringify(modifications || {}),
-  });
+  return request('approveAction', { path: { action_id: id }, body: modifications || {} });
 }
 
 export async function denyAction(id: string, reason?: string): Promise<unknown> {
-  return fetchJson(`/api/actions/${id}/deny`, {
-    method: 'POST',
-    body: JSON.stringify({ reason }),
-  });
+  return request('denyAction', { path: { action_id: id }, body: { reason } });
 }
 
 /** Bulk approve — routes each id through the same canonical resolve as the single path. */
 export async function approveBatch(actionIds: string[], notes?: string): Promise<{ ok: boolean; resolved: number; total: number }> {
-  return fetchJson('/api/actions/approve-batch', {
-    method: 'POST',
-    body: JSON.stringify({ action_ids: actionIds, notes }),
-  });
+  return request('approveActionsBatch', { body: { action_ids: actionIds, notes } });
 }
 
 /** Bulk deny — one shared reason for all (required). */
 export async function denyBatch(actionIds: string[], reason: string): Promise<{ ok: boolean; resolved: number; total: number }> {
-  return fetchJson('/api/actions/deny-batch', {
-    method: 'POST',
-    body: JSON.stringify({ action_ids: actionIds, reason }),
-  });
+  return request('denyActionsBatch', { body: { action_ids: actionIds, reason } });
 }
 
 // --- Config / Settings ---
 
 export async function getRecovery(): Promise<RecoveryStatusDto> {
-  return RecoveryStatusResponseSchema.parse(await fetchJson('/api/recovery', { cache: 'no-store' })).recovery;
+  return RecoveryStatusResponseSchema.parse(await request('getRecovery', { cache: 'no-store' })).recovery;
 }
 
 export async function resolveConfigDivergence(
   body: ConfigDivergenceResolveRequest,
 ): Promise<ConfigDivergenceResolveResponse> {
-  const request = ConfigDivergenceResolveRequestSchema.parse(body);
-  return ConfigDivergenceResolveResponseSchema.parse(await fetchJson('/api/recovery/config/resolve', {
-    method: 'POST',
-    body: JSON.stringify(request),
-  }));
+  const parsed = ConfigDivergenceResolveRequestSchema.parse(body);
+  return ConfigDivergenceResolveResponseSchema.parse(await request('resolveConfigDivergence', { body: parsed }));
 }
 
 export async function getConfig(): Promise<EngagementConfig> {
-  return fetchJson('/api/config');
+  return request('getConfig');
 }
 
 export async function updateConfig(body: Partial<EngagementConfig>): Promise<{ updated: boolean }> {
-  return fetchJson('/api/config', {
-    method: 'PATCH',
-    body: JSON.stringify(body),
+  return request('updateConfig', {
+    body: body as GeneratedDashboardRequestFor<'updateConfig'>['body'],
   });
 }
 
@@ -784,113 +641,99 @@ export interface ScopeUpdateResult {
 
 /** Read-only dry-run: what would change if `body` (full-replacement scope) were applied. */
 export async function previewScope(body: Partial<ScopeConfig>): Promise<ScopeChangePreview> {
-  return fetchJson('/api/config/scope/preview', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+  return request('previewScope', { body });
 }
 
 export async function updateScope(body: Partial<ScopeConfig>): Promise<ScopeUpdateResult> {
-  return fetchJson('/api/config/scope', {
-    method: 'PATCH',
-    body: JSON.stringify(body),
-  });
+  return request('updateScope', { body });
 }
 
 export async function addObjective(body: ObjectiveCreateRequest) {
-  const request = ObjectiveCreateRequestSchema.parse(body);
-  return ObjectiveCreateResponseSchema.parse(await fetchJson('/api/config/objectives', {
-    method: 'POST',
-    body: JSON.stringify(request),
-  }));
+  const parsed = ObjectiveCreateRequestSchema.parse(body);
+  return ObjectiveCreateResponseSchema.parse(await request('createObjective', { body: parsed }));
 }
 
 export async function updateObjective(id: string, body: ObjectiveUpdateRequest) {
-  const request = ObjectiveUpdateRequestSchema.parse(body);
-  return ObjectiveUpdateResponseSchema.parse(await fetchJson(`/api/config/objectives/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify(request),
-  }));
+  const parsed = ObjectiveUpdateRequestSchema.parse(body);
+  return ObjectiveUpdateResponseSchema.parse(await request('updateObjective', { path: { objective_id: id }, body: parsed }));
 }
 
 export async function deleteObjective(id: string) {
-  return ObjectiveDeleteResponseSchema.parse(await fetchJson(`/api/config/objectives/${encodeURIComponent(id)}`, { method: 'DELETE' }));
+  return ObjectiveDeleteResponseSchema.parse(await request('deleteObjective', { path: { objective_id: id } }));
 }
 
 export async function getSettings(): Promise<SettingsDto> {
-  return SettingsDtoSchema.parse(await fetchJson('/api/settings'));
+  return SettingsDtoSchema.parse(await request('getSettings'));
 }
 
 export async function updateSettings(body: Partial<OpsecConfig>) {
-  const request = SettingsPatchSchema.parse(body);
-  return SettingsUpdateResultSchema.parse(await fetchJson('/api/settings', {
-    method: 'PATCH',
-    body: JSON.stringify(request),
-  }));
+  const parsed = SettingsPatchSchema.parse(body);
+  return SettingsUpdateResultSchema.parse(await request('updateSettings', { body: parsed }));
 }
 
 export async function getFrontierWeights(): Promise<FrontierWeights> {
-  return fetchJson('/api/frontier/weights');
+  return request('getFrontierWeights');
 }
 
 export async function updateFrontierWeights(body: Partial<FrontierWeights>) {
-  const request = FrontierWeightsPatchSchema.parse(body);
-  return FrontierWeightsUpdateResultSchema.parse(await fetchJson('/api/frontier/weights', {
-    method: 'PATCH',
-    body: JSON.stringify(request),
-  }));
+  const parsed = FrontierWeightsPatchSchema.parse(body);
+  return FrontierWeightsUpdateResultSchema.parse(await request('updateFrontierWeights', { body: parsed }));
 }
 
 export async function resetFrontierWeights() {
-  return FrontierWeightsResetResultSchema.parse(await fetchJson('/api/frontier/weights/reset', { method: 'POST' }));
+  return FrontierWeightsResetResultSchema.parse(await request('resetFrontierWeights'));
 }
 
 // --- OPSEC Budget ---
 
 export async function getOpsecBudget(): Promise<OpsecBudget> {
-  return fetchJson('/api/opsec/budget');
+  return request('getOpsecBudget');
 }
 
 // --- Agent History ---
 
 export async function getAgentHistory(taskId: string): Promise<{ entries: ActivityEntry[]; total: number }> {
-  return fetchJson(`/api/agents/${taskId}/history`);
+  const response = await request('getAgentHistory', { path: { task_id: taskId } });
+  return { ...response, entries: normalizeActivityEntries(response.entries) };
 }
 
 export async function getAgentConsole(taskId: string, params?: {
   limit?: number;
   after?: string;
 }): Promise<{ events: AgentConsoleEvent[]; total: number }> {
-  const qs = new URLSearchParams();
-  if (params?.limit) qs.set('limit', String(params.limit));
-  if (params?.after) qs.set('after', params.after);
-  const q = qs.toString();
-  return fetchJson(`/api/agents/${taskId}/console${q ? `?${q}` : ''}`);
+  return request('getAgentConsole', { path: { task_id: taskId }, query: params });
+}
+
+export async function getOperatorConsole(params?: {
+  limit?: number;
+  after?: string;
+}): Promise<{ events: AgentConsoleEvent[]; total: number }> {
+  return request('getOperatorConsole', { query: params });
 }
 
 // --- Health ---
 
 export async function getHealth(): Promise<HealthStatus> {
-  return HealthDtoSchema.parse(await fetchJson('/api/health'));
+  return HealthDtoSchema.parse(await request('getHealth'));
 }
 
 // --- Templates ---
 
 export async function getTemplates(): Promise<{ templates: EngagementTemplate[]; total: number }> {
-  return fetchJson('/api/templates');
+  return request('getTemplates');
 }
 
 // --- Engagements ---
 
 export async function getEngagements(): Promise<{ engagements: EngagementListItem[]; active_id?: string }> {
-  return fetchJson('/api/engagements');
+  const response = await request('listEngagements');
+  return { ...response, active_id: response.active_id ?? undefined };
 }
 
-export async function createEngagement(body: Record<string, unknown>): Promise<EngagementListItem> {
-  return fetchJson('/api/engagements', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+export async function createEngagement(
+  body: NonNullable<GeneratedDashboardRequestFor<'createEngagement'>['body']>,
+): Promise<EngagementListItem> {
+  return request('createEngagement', { body });
 }
 
 export async function createEngagementFromTemplate(
@@ -899,33 +742,27 @@ export async function createEngagementFromTemplate(
 ): Promise<{ config: unknown; persisted: boolean; engagement?: EngagementListItem }> {
   // The endpoint persists the built config and returns { config, persisted, engagement }
   // — not a bare EngagementListItem.
-  return fetchJson('/api/engagements/from-template', {
-    method: 'POST',
-    body: JSON.stringify({ template_id: templateId, overrides }),
-  });
+  return request('createEngagementFromTemplate', { body: { template_id: templateId, overrides } });
 }
 
 export async function getEngagement(id: string): Promise<EngagementDetail> {
-  return fetchJson(`/api/engagements/${encodeURIComponent(id)}`);
+  return request('getEngagement', { path: { engagement_id: id } });
 }
 
 export async function updateEngagement(id: string, body: Record<string, unknown>): Promise<{ updated: boolean }> {
-  return fetchJson(`/api/engagements/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify(body),
-  });
+  return request('updateEngagement', { path: { engagement_id: id }, body });
 }
 
 // --- Phases ---
 
 export async function getPhases(): Promise<unknown> {
-  return fetchJson('/api/phases');
+  return request('getPhases');
 }
 
 // --- Evidence ---
 
 export async function getEvidenceChains(nodeId: string): Promise<EvidenceChainResponse> {
-  return fetchJson(`/api/evidence-chains/${encodeURIComponent(nodeId)}`);
+  return request('getEvidenceChains', { path: { node_id: nodeId } });
 }
 
 // --- Action output (Analysis workspace) ---
@@ -1011,44 +848,35 @@ export interface ReparseResponse {
 }
 
 export async function getParsers(): Promise<{ parsers: string[] }> {
-  return fetchJson('/api/parsers');
+  return request('getParsers');
 }
 
 export async function reparseAction(
   actionId: string,
   opts: { tool_name: string; evidence_id?: string; ingest?: boolean; context?: Record<string, unknown> },
 ): Promise<ReparseResponse> {
-  return fetchJson(`/api/actions/${encodeURIComponent(actionId)}/reparse`, {
-    method: 'POST',
-    body: JSON.stringify(opts),
-  });
+  return request('reparseAction', { path: { action_id: actionId }, body: opts });
 }
 
 export async function getActionOutput(actionId: string, maxBytes?: number): Promise<ActionOutputResponse> {
-  const qs = maxBytes ? `?max_bytes=${maxBytes}` : '';
-  return fetchJson(`/api/actions/${encodeURIComponent(actionId)}/output${qs}`);
+  return request('getActionOutput', { path: { action_id: actionId }, query: { max_bytes: maxBytes } });
 }
 
 export async function getEvidenceRaw(
   evidenceId: string,
   opts?: { maxBytes?: number; offset?: number },
 ): Promise<EvidenceRawResponse> {
-  const qs = new URLSearchParams();
-  if (opts?.maxBytes) qs.set('max_bytes', String(opts.maxBytes));
-  if (opts?.offset) qs.set('offset', String(opts.offset));
-  const q = qs.toString();
-  return fetchJson(`/api/evidence/${encodeURIComponent(evidenceId)}/raw${q ? `?${q}` : ''}`);
+  return request('getEvidenceRaw', {
+    path: { evidence_id: evidenceId },
+    query: { max_bytes: opts?.maxBytes, offset: opts?.offset },
+  });
 }
 
 export async function getPaths(objectiveId: string, params?: {
   limit?: number;
   optimize?: 'confidence' | 'stealth' | 'balanced';
 }): Promise<{ paths: AttackPath[] }> {
-  const qs = new URLSearchParams();
-  if (params?.limit) qs.set('limit', String(params.limit));
-  if (params?.optimize) qs.set('optimize', params.optimize);
-  const q = qs.toString();
-  return fetchJson(`/api/paths/${encodeURIComponent(objectiveId)}${q ? `?${q}` : ''}`);
+  return request('getObjectivePaths', { path: { objective_id: objectiveId }, query: params });
 }
 
 /** Structured path finder (the Attack Paths "Custom path" picker). Returns 200
@@ -1061,27 +889,21 @@ export async function findPaths(params: {
   optimize?: 'confidence' | 'stealth' | 'balanced';
   max?: number;
 }): Promise<FindPathsResponse> {
-  const qs = new URLSearchParams();
-  if (params.from) qs.set('from', params.from);
-  if (params.to) qs.set('to', params.to);
-  if (params.objective) qs.set('objective', params.objective);
-  if (params.optimize) qs.set('optimize', params.optimize);
-  if (params.max) qs.set('max', String(params.max));
-  return fetchJson(`/api/find-paths?${qs.toString()}`);
+  return request('findPaths', { query: params });
 }
 
 // --- Tools ---
 
 export async function getTools(): Promise<ToolCheckResult> {
-  return fetchJson('/api/tools');
+  return request('getTools');
 }
 
 export async function getMcpTools(): Promise<McpToolRegistryResponse> {
-  return fetchJson('/api/mcp-tools');
+  return request('getMcpTools');
 }
 
 export async function getReadiness(): Promise<DashboardReadinessSummary> {
-  return fetchJson('/api/readiness');
+  return request('getReadiness') as unknown as Promise<DashboardReadinessSummary>;
 }
 
 export type TrustSignalSeverity = 'error' | 'warning' | 'info';
@@ -1119,25 +941,19 @@ export async function getTrustSignals(params?: {
   finding_id?: string;
   severity?: TrustSignalSeverity;
 }): Promise<TrustSignalsResponse> {
-  const qs = new URLSearchParams();
-  if (params?.limit) qs.set('limit', String(params.limit));
-  if (params?.node_id) qs.set('node_id', params.node_id);
-  if (params?.finding_id) qs.set('finding_id', params.finding_id);
-  if (params?.severity) qs.set('severity', params.severity);
-  const q = qs.toString();
-  return fetchJson(`/api/trust-signals${q ? `?${q}` : ''}`);
+  return request('getTrustSignals', { query: params }) as unknown as Promise<TrustSignalsResponse>;
 }
 
 // --- Inference Rules ---
 
 export async function getInferenceRules(): Promise<{ rules: InferenceRuleInfo[]; total: number }> {
-  return fetchJson('/api/inference-rules');
+  return request('getInferenceRules') as unknown as Promise<{ rules: InferenceRuleInfo[]; total: number }>;
 }
 
 // --- Graph Export ---
 
 export async function exportGraphJson(): Promise<RawGraphDto> {
-  return fetchJson('/api/graph/export', { method: 'POST' });
+  return request('exportGraph');
 }
 
 // --- Graph Correct ---
@@ -1149,11 +965,7 @@ export async function correctGraph(
   reason: string,
   operations: GraphCorrectionOperation[],
 ): Promise<GraphCorrectionResult> {
-  return fetchJson('/api/graph/correct', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason, operations }),
-  });
+  return request('correctGraph', { body: { reason, operations } });
 }
 
 // --- Telemetry ---
@@ -1176,7 +988,7 @@ export interface TelemetryResponse {
 }
 
 export async function getTelemetry(): Promise<TelemetryResponse> {
-  return fetchJson('/api/telemetry');
+  return request('getTelemetry') as unknown as Promise<TelemetryResponse>;
 }
 
 // --- Tape recorder ---
@@ -1191,7 +1003,7 @@ export interface TapeStatus {
 }
 
 export async function getTapeStatus(): Promise<TapeStatus> {
-  return fetchJson('/api/tape');
+  return request('getTapeStatus');
 }
 
 export async function toggleTape(opts?: {
@@ -1200,10 +1012,7 @@ export async function toggleTape(opts?: {
   file?: string;
   session_id?: string;
 }): Promise<TapeStatus> {
-  return fetchJson('/api/tape/toggle', {
-    method: 'POST',
-    body: JSON.stringify(opts ?? {}),
-  });
+  return request('toggleTape', { body: opts ?? {} });
 }
 
 // --- B.2 / B.3 Findings + Reports ---
@@ -1249,37 +1058,56 @@ export interface FindingsResponse {
   severity_summary: { critical: number; high: number; medium: number; low: number; info: number };
 }
 
+function normalizeFinding(
+  { classification, ...finding }: FindingsResponseDto['findings'][number],
+): FindingDto {
+  return {
+    ...finding,
+    classification: classification
+      ? {
+          cwe: classification.cwe
+            ? { id: classification.cwe, name: classification.cwe_name ?? classification.cwe }
+            : undefined,
+          owasp_top_10: classification.owasp_category
+            ? {
+                id: classification.owasp_category.split(/\s+/, 1)[0],
+                name: classification.owasp_category,
+              }
+            : undefined,
+          nist_800_53: classification.nist_controls.map(id => ({ id, name: id })),
+          pci_dss: classification.pci_requirements.map(requirement => ({
+            id: requirement,
+            requirement,
+          })),
+          attack_techniques: classification.attack_techniques,
+        }
+      : undefined,
+  };
+}
+
+export function normalizeFindingsResponse(wire: FindingsResponseDto): FindingsResponse {
+  return {
+    ...wire,
+    findings: wire.findings.map(normalizeFinding),
+  };
+}
+
 export async function getFindings(): Promise<FindingsResponse> {
-  return fetchJson('/api/findings');
+  const wire = FindingsResponseSchema.parse(await request('getFindings'));
+  return normalizeFindingsResponse(wire);
 }
 
 export async function getFindingContext(id: string): Promise<FindingContextResponse> {
-  return fetchJson(`/api/findings/${encodeURIComponent(id)}/context`);
+  const response = await request('getFindingContext', { path: { finding_id: id } });
+  const finding = normalizeFinding(FindingDtoSchema.parse(response.finding));
+  return { ...response, finding } as unknown as FindingContextResponse;
 }
 
-export interface ReportRecord {
-  id: string;
-  generated_at: string;
-  format: 'markdown' | 'html' | 'json' | 'pdf';
-  redaction_mode: 'operator' | 'client_safe';
-  profile?: 'operator' | 'client';
-  evidence_style?: 'proof_cards' | 'appendix' | 'full_inline';
-  findings_count?: number;
-  evidence_count?: number;
-  filename: string;
-  size_bytes: number;
-  content_sha256: string;
-  options: Record<string, unknown>;
-}
-
-export interface ReportsListResponse {
-  reports: ReportRecord[];
-  total: number;
-  total_bytes: number;
-}
+export type ReportRecord = ReportRecordDto;
+export type ReportsListResponse = ReportsListResponseDto;
 
 export async function listReports(): Promise<ReportsListResponse> {
-  return fetchJson('/api/reports');
+  return request('listReports');
 }
 
 export interface RenderReportBody {
@@ -1297,22 +1125,19 @@ export interface RenderReportBody {
 }
 
 export async function renderReport(body: RenderReportBody): Promise<{ report: ReportRecord; findings_count: number; evidence_count: number; severity_summary: FindingsResponse['severity_summary'] }> {
-  return fetchJson('/api/reports/render', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+  return request('renderReport', { body });
 }
 
 /** Returns the absolute URL — caller can use `window.location.href = url` or `<a download>`. */
 export function reportDownloadUrl(id: string): string {
-  return `/api/reports/${id}`;
+  return buildDashboardPath('downloadReport', { report_id: id });
 }
 
 /** Returns an inline URL for browser-readable report formats. */
 export function reportOpenUrl(id: string): string {
-  return `/api/reports/${id}?disposition=inline`;
+  return `${buildDashboardPath('downloadReport', { report_id: id })}?disposition=inline`;
 }
 
 export async function deleteReport(id: string): Promise<{ deleted: boolean }> {
-  return fetchJson(`/api/reports/${id}`, { method: 'DELETE' });
+  return request('deleteReport', { path: { report_id: id } });
 }

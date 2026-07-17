@@ -1,0 +1,125 @@
+import { describe, expect, it } from 'vitest';
+import type { AgentTask, Campaign, ExportedGraph } from '../../types.js';
+import {
+  projectCampaignDtos,
+  projectDashboardSnapshot,
+  projectGraphDelta,
+} from '../dashboard-projectors.js';
+
+const progress = (total: number, completed: number) => ({
+  total,
+  completed,
+  succeeded: completed,
+  failed: 0,
+  consecutive_failures: 0,
+});
+
+const campaign = (overrides: Partial<Campaign> = {}): Campaign => ({
+  id: 'campaign-parent',
+  name: 'Parent',
+  strategy: 'custom',
+  status: 'active',
+  items: ['fi-1', 'fi-2'],
+  abort_conditions: [],
+  progress: progress(2, 0),
+  created_at: '2026-07-16T00:00:00.000Z',
+  findings: ['finding-shared'],
+  ...overrides,
+});
+
+const agent = (overrides: Partial<AgentTask> = {}): AgentTask => ({
+  id: 'task-1',
+  agent_id: 'agent-1',
+  assigned_at: '2026-07-16T00:00:00.000Z',
+  status: 'running',
+  subgraph_node_ids: [],
+  campaign_id: 'campaign-parent',
+  ...overrides,
+});
+
+const graph = (): ExportedGraph => ({
+  nodes: [
+    { id: 'node-new', properties: { id: 'node-new', type: 'host', label: 'New host', confidence: 1, discovered_at: 'now' } },
+    { id: 'node-stable', properties: { id: 'node-stable', type: 'host', label: 'Stable host', confidence: 1, discovered_at: 'now' } },
+  ],
+  edges: [
+    { id: 'edge-new', source: 'node-new', target: 'node-stable', properties: { type: 'REACHABLE', confidence: 1, discovered_at: 'now' } },
+    { id: 'edge-stable', source: 'node-stable', target: 'node-new', properties: { type: 'REACHABLE', confidence: 1, discovered_at: 'now' } },
+  ],
+  cold_nodes: [{
+    id: 'cold-1',
+    type: 'host',
+    label: 'Cold host',
+    discovered_at: 'now',
+    last_seen_at: 'now',
+  }],
+});
+
+describe('dashboard pure projectors', () => {
+  it('aggregates parent progress and deduplicates child findings and agents', () => {
+    const parent = campaign();
+    const child = campaign({
+      id: 'campaign-child',
+      name: 'Child',
+      parent_id: parent.id,
+      items: ['fi-1'],
+      progress: progress(1, 1),
+      findings: ['finding-shared', 'finding-child'],
+    });
+    const projected = projectCampaignDtos({
+      campaigns: [parent, child],
+      selected: [parent],
+      agents: [agent(), agent({ id: 'task-2', agent_id: 'agent-2', campaign_id: child.id, status: 'completed' })],
+      parent_progress: new Map([[parent.id, progress(2, 1)]]),
+      parent_status: new Map([[parent.id, 'active']]),
+      campaign_noise: new Map([[parent.id, 0.1], [child.id, 0.2]]),
+      opsec: { noise_budget_remaining: 0.7, recommended_approach: 'normal' },
+      max_noise: 1,
+    })[0];
+
+    expect(projected.findings).toEqual(['finding-shared', 'finding-child']);
+    expect(projected.findings_count).toBe(2);
+    expect(projected.completion_pct).toBe(50);
+    expect(projected.agent_count).toBe(2);
+    expect(projected.running_agents).toBe(1);
+    expect(projected.child_count).toBe(1);
+    expect(projected.opsec.global_noise_spent).toBeCloseTo(0.3);
+    expect(parent.findings).toEqual(['finding-shared']);
+  });
+
+  it('projects only changed IDs while retaining removals and replacing cold inventory', () => {
+    const inputGraph = graph();
+    const projected = projectGraphDelta(
+      { marker: 'state' },
+      inputGraph,
+      {
+        new_nodes: ['node-new'],
+        updated_edges: ['edge-new'],
+        removed_nodes: ['node-removed'],
+        removed_edges: ['edge-removed'],
+      },
+      12,
+    );
+
+    expect(projected.delta.nodes.map(node => node.id)).toEqual(['node-new']);
+    expect(projected.delta.edges.map(edge => edge.id)).toEqual(['edge-new']);
+    expect(projected.delta.removed_nodes).toEqual(['node-removed']);
+    expect(projected.delta.removed_edges).toEqual(['edge-removed']);
+    expect(projected.delta.cold_nodes).toEqual(inputGraph.cold_nodes);
+    expect(projected.delta.cold_nodes).not.toBe(inputGraph.cold_nodes);
+  });
+
+  it('clones full snapshots so consumers cannot mutate engine-owned inputs', () => {
+    const inputState = { nested: { value: 1 } };
+    const inputGraph = graph();
+    const snapshot = projectDashboardSnapshot(inputState, inputGraph, 3);
+
+    snapshot.state.nested.value = 99;
+    snapshot.graph.nodes[0].properties.label = 'Changed in UI';
+    snapshot.graph.cold_nodes![0].label = 'Changed cold node';
+
+    expect(inputState.nested.value).toBe(1);
+    expect(inputGraph.nodes[0].properties.label).toBe('New host');
+    expect(inputGraph.cold_nodes![0].label).toBe('Cold host');
+  });
+});

@@ -84,7 +84,18 @@ describe('relationship helpers', () => {
 
     const relationships = deriveNodeRelationships('host-1', {
       graph,
-      sessions: [{ id: 's1', kind: 'pty', state: 'connected', title: 'shell', target_node: 'host-1' }],
+      sessions: [{
+        id: 's1',
+        kind: 'pty',
+        transport: 'pty',
+        state: 'connected',
+        title: 'shell',
+        target_node: 'host-1',
+        started_at: 'now',
+        last_activity_at: 'now',
+        capabilities: {},
+        buffer_end_pos: 0,
+      }],
       pendingActions: [{ action_id: 'a1', technique: 'nmap', target: 'host-1', noise_level: 0.2, description: 'scan', submitted_at: 'now' }],
       frontier: [{ id: 'f1', type: 'incomplete_node', description: 'enrich', node_id: 'host-1', graph_metrics: { hops_to_objective: 1, fan_out_estimate: 1, node_degree: 1, confidence: 1 }, opsec_noise: 0.2, staleness_seconds: 0 }],
       findings: [finding],

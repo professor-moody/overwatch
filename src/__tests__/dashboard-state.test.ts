@@ -47,6 +47,13 @@ describe.skipIf(!supportsLocalListen)('dashboard state API', () => {
         title: 'operator shell',
         started_at: '2026-05-15T10:00:00Z',
         last_activity_at: '2026-05-15T10:00:00Z',
+        capabilities: {
+          has_stdin: true,
+          has_stdout: true,
+          supports_resize: true,
+          supports_signals: true,
+        },
+        buffer_end_pos: 0,
       }],
     } as unknown as SessionManager;
     const campaign = engine.createCampaign({

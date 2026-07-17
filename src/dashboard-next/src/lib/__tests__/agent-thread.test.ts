@@ -7,7 +7,7 @@ function ev(o: Partial<AgentConsoleEvent> & { id: string; timestamp: string }): 
   return { agent_id: 'recon-1', kind: 'action', severity: 'info', title: 'Event', summary: '', ...o } as AgentConsoleEvent;
 }
 function q(o: Partial<AgentQuery> = {}): AgentQuery {
-  return { query_id: 'q1', task_id: 'task-1', agent_id: 'recon-1', question: 'spray creds?', status: 'open', created_at: Date.UTC(2026, 5, 17, 12, 0, 30), ...o };
+  return { query_id: 'q1', task_id: 'task-1', agent_id: 'recon-1', question: 'spray creds?', status: 'open', created_at: Date.UTC(2026, 5, 17, 12, 0, 30), expires_at: Date.UTC(2026, 5, 17, 12, 30, 30), ...o };
 }
 const OPTS = { agentId: 'task-1', agentLabel: 'recon-1' };
 

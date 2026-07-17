@@ -303,6 +303,16 @@ describe('/api/commands — headless planner fallback', () => {
       status: 'accepted',
       entity_refs: { planner_task_id: r.planner_task_id },
     });
+    const active = await (
+      await fetch(`${baseUrl}/api/commands/active`)
+    ).json();
+    expect(active.commands).toEqual([
+      expect.objectContaining({
+        command_id: r.command_id,
+        status: 'accepted',
+        entity_refs: { planner_task_id: r.planner_task_id },
+      }),
+    ]);
   });
 
   it('re-issuing the same free-form command reuses the in-flight planner (no duplicate)', async () => {
@@ -413,7 +423,7 @@ describe('/api/commands — headless planner fallback', () => {
     engine.recordApplicationCommand({
       command_id: 'legacy-planner-command',
       idempotency_key: 'legacy-planner-idempotency',
-      input_sha256: 'legacy-input',
+      input_sha256: 'a'.repeat(64),
       command_kind: 'operator.plan',
       validated_input: { command: plan.command },
       transport: 'dashboard',

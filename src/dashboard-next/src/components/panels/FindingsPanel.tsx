@@ -262,7 +262,7 @@ function FindingRow({
           {cls && (
             <div className="flex flex-wrap gap-1 mt-1.5">
               {cls.cwe && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-elevated border border-border">CWE-{cls.cwe.id} {cls.cwe.name}</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-elevated border border-border">{cls.cwe.id} {cls.cwe.name}</span>
               )}
               {cls.owasp_top_10 && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-elevated border border-border">OWASP {cls.owasp_top_10.id}</span>

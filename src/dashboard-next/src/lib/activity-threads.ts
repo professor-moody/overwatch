@@ -4,8 +4,8 @@ import type { AgentConsoleEvent } from './types';
 // high-signal threads. Events that share an action_id (directive → acknowledged
 // → action_started → action_completed, or validate → approve → execute) fold
 // into one collapsible thread whose head is the latest event; everything else
-// stays a standalone single-event thread. Pure transform over the events the
-// console already builds (operator-console.ts / the agent console endpoint).
+// stays a standalone single-event thread. Pure transform over the canonical
+// events projected by the server console endpoint and WebSocket stream.
 
 export type ConsoleSeverity = AgentConsoleEvent['severity'];
 

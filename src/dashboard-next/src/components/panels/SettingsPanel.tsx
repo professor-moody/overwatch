@@ -41,6 +41,7 @@ import {
   type SettingsDto,
 } from '@overwatch/dashboard-contracts';
 import { downloadDashboardResource } from '../../lib/dashboard-transport';
+import { buildDashboardPath } from '@overwatch/dashboard-api-contracts';
 import { recoveryPresentation } from '../../lib/recovery-presentation';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { ActionButton, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
@@ -1051,7 +1052,7 @@ function BundleSection() {
     setStatus('building');
     setDetail(null);
     try {
-      const result = await downloadDashboardResource('/api/bundle');
+      const result = await downloadDashboardResource(buildDashboardPath('bundleEngagement', {}));
       const sizeMB = result.bytes > 0 ? `${(result.bytes / 1024 / 1024).toFixed(2)} MB — ` : '';
       setStatus('done');
       setDetail(`${sizeMB}${result.filename}`);

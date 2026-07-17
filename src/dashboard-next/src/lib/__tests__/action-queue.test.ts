@@ -30,7 +30,10 @@ describe('action queue helpers', () => {
     expect(computeActionRisk(action({ noise_level: 1.5, validation_result: 'warning_only' })).label).toBe('MED');
     expect(computeActionRisk(action({
       noise_level: 2,
-      opsec_context: { defensive_signals: ['edr', 'rate-limit'] },
+      opsec_context: { defensive_signals: [
+        { type: 'block', detected_at: '2026-05-15T10:00:00Z', description: 'EDR blocked execution' },
+        { type: 'rate_limit', detected_at: '2026-05-15T10:00:01Z', description: 'Rate limit observed' },
+      ] },
     })).label).toBe('HIGH');
   });
 
@@ -40,7 +43,12 @@ describe('action queue helpers', () => {
     // HIGH risk → deny
     expect(recommendedDecision(action({ noise_level: 3 }))).toBe('deny');
     // defensive signals fired (even if low noise) → deny
-    expect(recommendedDecision(action({ noise_level: 0.1, opsec_context: { defensive_signals: ['edr'] } }))).toBe('deny');
+    expect(recommendedDecision(action({
+      noise_level: 0.1,
+      opsec_context: { defensive_signals: [
+        { type: 'block', detected_at: '2026-05-15T10:00:00Z', description: 'EDR blocked execution' },
+      ] },
+    }))).toBe('deny');
     // a validation warning → deny
     expect(recommendedDecision(action({ noise_level: 0.1, validation_result: 'warning_only' }))).toBe('deny');
     // MED, ambiguous → no cue

@@ -11,6 +11,11 @@ import type { SessionInfo } from '../../lib/types';
 import { deriveNodeRelationships } from '../../lib/relationships';
 import { createDashboardWebSocket } from '../../lib/dashboard-transport';
 import {
+  buildDashboardWebSocketPath,
+  SessionWebSocketClientEventSchema,
+  SessionWebSocketServerEventSchema,
+} from '@overwatch/dashboard-contracts';
+import {
   SESSION_GROUP_LABELS,
   addAttachedSession,
   cleanTerminalText,
@@ -174,7 +179,7 @@ export function SessionsPanel() {
       connection_generation: String(connectionGeneration),
     });
     const ws = createDashboardWebSocket(
-      `/ws/session/${encodeURIComponent(sessionId)}?${socketQuery.toString()}`,
+      `${buildDashboardWebSocketPath('session', { session_id: sessionId })}?${socketQuery.toString()}`,
     );
 
     ws.binaryType = 'arraybuffer';
@@ -189,9 +194,9 @@ export function SessionsPanel() {
         term.write(new Uint8Array(event.data));
       } else {
         try {
-          const msg = JSON.parse(event.data as string);
-          if (msg.type === 'output' && (msg.text || msg.data)) {
-            term.write(msg.text || msg.data);
+          const msg = SessionWebSocketServerEventSchema.parse(JSON.parse(event.data as string));
+          if (msg.type === 'output' && msg.text) {
+            term.write(msg.text);
           } else if (msg.type === 'error' && msg.error) {
             term.write(`\r\n\x1b[31m${msg.error}\x1b[0m\r\n`);
           } else if (msg.type === 'session_closed') {
@@ -215,13 +220,13 @@ export function SessionsPanel() {
 
     term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'input', data }));
+        ws.send(JSON.stringify(SessionWebSocketClientEventSchema.parse({ type: 'input', data })));
       }
     });
 
     term.onResize(({ cols, rows }) => {
       if (canResize && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+        ws.send(JSON.stringify(SessionWebSocketClientEventSchema.parse({ type: 'resize', cols, rows })));
       }
     });
 

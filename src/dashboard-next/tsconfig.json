@@ -20,7 +20,8 @@
     "paths": {
       "@/*": ["src/*"],
       "@overwatch/types": ["../types.ts"],
-      "@overwatch/dashboard-contracts": ["../contracts/dashboard-v1.ts"]
+      "@overwatch/dashboard-contracts": ["../contracts/dashboard-v1.ts"],
+      "@overwatch/dashboard-api-contracts": ["../contracts/dashboard-api-v1.ts"]
     }
   },
   "include": ["src/**/*", "*.ts"],

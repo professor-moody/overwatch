@@ -259,7 +259,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
 }) {
   const [name, setName] = useState('');
   const [templateId, setTemplateId] = useState('');
-  const [profile, setProfile] = useState('network');
+  const [profile, setProfile] = useState<'goad_ad' | 'single_host' | 'network' | 'web_app' | 'cloud' | 'hybrid'>('network');
   const [creating, setCreating] = useState(false);
 
   // Scope
@@ -274,7 +274,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
 
   // OPSEC
   const [maxNoise, setMaxNoise] = useState(0.7);
-  const [approvalMode, setApprovalMode] = useState('approve-critical');
+  const [approvalMode, setApprovalMode] = useState<'auto-approve' | 'approve-critical' | 'approve-all'>('approve-critical');
   const [approvalTimeout, setApprovalTimeout] = useState(300);
   const [twStart, setTwStart] = useState('');
   const [twEnd, setTwEnd] = useState('');
@@ -300,9 +300,13 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
     if (!id) return;
     const tmpl = templates.find(t => t.id === id);
     if (!tmpl) return;
-    if (tmpl.profile) setProfile(tmpl.profile);
+    if (tmpl.profile && PROFILES.includes(tmpl.profile as typeof PROFILES[number])) {
+      setProfile(tmpl.profile as typeof PROFILES[number]);
+    }
     if (tmpl.opsec?.max_noise != null) setMaxNoise(tmpl.opsec.max_noise);
-    if (tmpl.opsec?.approval_mode) setApprovalMode(tmpl.opsec.approval_mode);
+    if (tmpl.opsec?.approval_mode && APPROVAL_MODES.some(mode => mode.value === tmpl.opsec?.approval_mode)) {
+      setApprovalMode(tmpl.opsec.approval_mode as typeof APPROVAL_MODES[number]['value']);
+    }
     if (tmpl.opsec?.blacklisted_techniques?.length) setBlacklist(tmpl.opsec.blacklisted_techniques.join('\n'));
     // Preserve the template's objective id when present — the template's phase criteria
     // (objective_achieved) reference those ids, so regenerating them would dangle.
@@ -387,7 +391,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
       </div>
 
       <Field label="Profile">
-        <select value={profile} onChange={e => setProfile(e.target.value)} className="settings-input w-full">
+        <select value={profile} onChange={e => setProfile(e.target.value as typeof PROFILES[number])} className="settings-input w-full">
           {PROFILES.map(p => <option key={p} value={p}>{PROFILE_LABELS[p]}</option>)}
         </select>
       </Field>
@@ -420,7 +424,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Approval Mode">
-            <select value={approvalMode} onChange={e => setApprovalMode(e.target.value)} className="settings-input w-full">
+            <select value={approvalMode} onChange={e => setApprovalMode(e.target.value as typeof APPROVAL_MODES[number]['value'])} className="settings-input w-full">
               {APPROVAL_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
             </select>
           </Field>
