@@ -12,7 +12,7 @@ import { ActionButton } from '../shared/primitives';
 // targets route to /api/agents/dispatch. Supersedes the old skill-only modal.
 
 export function DeployModal({ onClose, onDeployed }: { onClose: () => void; onDeployed: () => void }) {
-  const graphNodes = useEngagementStore(s => s.graph.nodes);
+  const graphNodes = useEngagementStore(s => s.graph).nodes;
   const addToast = useToastStore(s => s.addToast);
   const [text, setText] = useState('');
   const [override, setOverride] = useState('');

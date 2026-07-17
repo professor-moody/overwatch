@@ -418,7 +418,7 @@ function StreamBanners({ stream, onLoadMore }: { stream: OutputStreamView; onLoa
 }
 
 function DeployFromRun({ nodeIds, rawTarget }: { nodeIds: string[]; rawTarget: string | null }) {
-  const graphNodes = useEngagementStore(s => s.graph.nodes);
+  const graphNodes = useEngagementStore(s => s.graph).nodes;
   const addToast = useToastStore(s => s.addToast);
   const [archetypes, setArchetypes] = useState<api.AgentArchetypeSummary[]>([]);
   const [override, setOverride] = useState('');

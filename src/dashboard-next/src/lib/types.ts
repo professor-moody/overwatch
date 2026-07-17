@@ -334,12 +334,23 @@ export interface FullStateData {
   state: EngagementState;
   graph: RawGraphDto;
   history_count: number;
+  runtime_build?: {
+    git_sha?: string | null;
+    input_sha256: string;
+    runtime_pid: number;
+    runtime_started_at: string;
+  };
 }
 export interface GraphUpdateData {
   state: EngagementState;
   history_count: number;
   detail: GraphUpdateDataDto['detail'];
   delta: GraphUpdateDataDto['delta'];
+}
+export interface StateRefreshData {
+  state: EngagementState;
+  history_count: number;
+  community_ids?: Record<string, number>;
 }
 
 // --- OPSEC Budget ---

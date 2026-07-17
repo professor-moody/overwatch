@@ -257,6 +257,11 @@ export class GraphEngine {
   private campaignPlanner: CampaignPlanner;
   private healthReportCache: HealthReport | null = null;
   private frontierCache: { passed: FrontierItem[]; all: FrontierItem[]; campaigns: import('../types.js').Campaign[]; hidden: import('../types.js').FrontierHiddenSummary } | null = null;
+  /** Last committed community projection plus changes not yet published by the
+   * dashboard hub. The detector records changes while building its result, so
+   * taking a WebSocket patch is O(changed IDs), not O(all graph nodes). */
+  private communityAssignments = new Map<string, number>();
+  private pendingCommunityChanges = new Map<string, number>();
   private evidenceStore!: EvidenceStore;
   private actionOutputBuffer = new ActionOutputBuffer();
   /** Shared skill methodology index (attached at app construction); null in bare/test contexts. */
@@ -2214,11 +2219,36 @@ export class GraphEngine {
 
   getCommunities(): Map<string, number> {
     if (this.ctx.communityCache) return this.ctx.communityCache;
+    const previous = this.communityAssignments;
+    const trackChanges = !this.ctx.isDraftingTransaction();
     const communities = detectCommunities(this.ctx.graph, {
       resolution: this.ctx.config.community_resolution,
+      onAssignment: trackChanges
+        ? (nodeId, communityId) => {
+            if (previous.get(nodeId) !== communityId) {
+              this.pendingCommunityChanges.set(nodeId, communityId);
+            }
+          }
+        : undefined,
     });
     this.ctx.communityCache = communities;
+    if (trackChanges) this.communityAssignments = communities;
     return communities;
+  }
+
+  /** Snapshot community assignments waiting for dashboard publication. */
+  peekCommunityChanges(): Map<string, number> {
+    return new Map(this.pendingCommunityChanges);
+  }
+
+  /** Acknowledge only the exact assignments that were successfully published.
+   * A newer value for the same node remains queued for the next refresh. */
+  acknowledgeCommunityChanges(changes: ReadonlyMap<string, number>): void {
+    for (const [nodeId, communityId] of changes) {
+      if (this.pendingCommunityChanges.get(nodeId) === communityId) {
+        this.pendingCommunityChanges.delete(nodeId);
+      }
+    }
   }
 
   private getCommunityStats(): { community_count: number; largest_community_size: number; unexplored_community_count: number } {
@@ -4254,15 +4284,33 @@ export class GraphEngine {
     const edgesByType: Record<string, number> = {};
     let confirmedEdges = 0;
     let inferredEdges = 0;
+    const liveHosts: Array<{ id: string; label: string }> = [];
+    const accessedHostIds = new Set<string>();
+    const validCreds: string[] = [];
 
-    this.ctx.graph.forEachNode((_, attrs) => {
+    this.ctx.graph.forEachNode((id, attrs) => {
       if (attrs.identity_status === 'superseded') return;
       nodesByType[attrs.type] = (nodesByType[attrs.type] || 0) + 1;
+      if (attrs.type === 'host') liveHosts.push({ id, label: attrs.label });
+      if (attrs.type === 'credential' && attrs.confidence >= 0.9 && isCredentialUsableForAuth(attrs)) {
+        validCreds.push(`${getCredentialDisplayKind(attrs)}: ${attrs.cred_user || attrs.label}`);
+      }
     });
 
     this.ctx.graph.forEachEdge((_edgeId, attrs, source, target) => {
       const srcAttrs = this.ctx.graph.getNodeAttributes(source);
       const tgtAttrs = this.ctx.graph.getNodeAttributes(target);
+      const grantsAccess = attrs.confidence >= 0.9 && (
+        attrs.type === 'ADMIN_TO'
+        || (attrs.type === 'HAS_SESSION' && attrs.session_live === true)
+      );
+      // Match the prior per-host incident-edge predicate: a live host remains
+      // accessed even when the opposite endpoint has since been superseded.
+      // Superseded hosts themselves are absent from liveHosts above.
+      if (grantsAccess) {
+        if (srcAttrs?.type === 'host') accessedHostIds.add(source);
+        if (tgtAttrs?.type === 'host') accessedHostIds.add(target);
+      }
       if (srcAttrs?.identity_status === 'superseded' || tgtAttrs?.identity_status === 'superseded') return;
       edgesByType[attrs.type] = (edgesByType[attrs.type] || 0) + 1;
       // P3.3: distinguish confirmed vs inferred by provenance, not raw
@@ -4277,26 +4325,12 @@ export class GraphEngine {
       if (isInferred) inferredEdges++;
       else confirmedEdges++;
     });
-
-    // Compute access summary
-    const compromised: string[] = [];
-    const validCreds: string[] = [];
-
-    this.ctx.graph.forEachNode((id, attrs) => {
-      if (attrs.identity_status === 'superseded') return;
-      if (attrs.type === 'host') {
-        const hasAccess = this.ctx.graph.edges(id).some(e => {
-          const ep = this.ctx.graph.getEdgeAttributes(e);
-          if (ep.type === 'ADMIN_TO' && ep.confidence >= 0.9) return true;
-          if (ep.type === 'HAS_SESSION' && ep.confidence >= 0.9 && ep.session_live === true) return true;
-          return false;
-        });
-        if (hasAccess) compromised.push(attrs.label);
-      }
-      if (attrs.type === 'credential' && attrs.confidence >= 0.9 && isCredentialUsableForAuth(attrs)) {
-        validCreds.push(`${getCredentialDisplayKind(attrs)}: ${attrs.cred_user || attrs.label}`);
-      }
-    });
+    // Preserve graph node order while avoiding a second full node traversal and
+    // one incident-edge lookup per host. The edge summary above already visits
+    // every relationship needed to derive the same access predicate.
+    const compromised = liveHosts
+      .filter(host => accessedHostIds.has(host.id))
+      .map(host => host.label);
 
     const rawHealthReport = this.runHealthChecks();
     const profile = inferProfile(this.ctx.config);
@@ -4344,6 +4378,20 @@ export class GraphEngine {
       credential_coverage: this.getCredentialCoverage(),
     };
     return detached(state);
+  }
+
+  /** Compact graph-stage projection used by the live state briefing. Keeping
+   * this separate from exportGraph avoids materializing a complete graph merely
+   * to distinguish an empty/config-seeded engagement from one with real data. */
+  getGraphStage(): 'empty' | 'seeded' | 'mid_run' {
+    if (this.ctx.graph.order === 0) return 'empty';
+    if (this.ctx.graph.size > 0) return 'mid_run';
+    const seedNodeTypes = new Set(['host', 'domain', 'objective', 'subnet']);
+    let seededOnly = true;
+    this.ctx.graph.forEachNode((_id, attributes) => {
+      if (!seedNodeTypes.has(attributes.type)) seededOnly = false;
+    });
+    return seededOnly ? 'seeded' : 'mid_run';
   }
 
   // --- Phase orchestration ---
@@ -7473,7 +7521,10 @@ export class GraphEngine {
 
     this.ctx.graph.forEachNode((id, attrs) => {
       if (!includeSuperseded && attrs.identity_status === 'superseded') return;
-      const properties = this.projectNodeProperties(id, attrs, withCommunities);
+      // Build shallow record wrappers during traversal and detach the complete
+      // export once below. One large structured clone is substantially cheaper
+      // than paying clone setup cost for every node and edge at 50k scale.
+      const properties = this.projectNodeProperties(id, attrs, withCommunities, false);
       if (withTrust) properties.source_trust = sourceTrust(attrs);
       nodes.push({ id, properties });
     });
@@ -7484,7 +7535,7 @@ export class GraphEngine {
         const tgtAttrs = this.ctx.graph.getNodeAttributes(target);
         if (srcAttrs?.identity_status === 'superseded' || tgtAttrs?.identity_status === 'superseded') return;
       }
-      const properties = detached(attrs);
+      const properties = { ...attrs } as EdgeProperties;
       if (withTrust) properties.source_trust = sourceTrust(attrs);
       edges.push({ id: edgeId, source, target, properties });
     });
@@ -7502,7 +7553,110 @@ export class GraphEngine {
       if (records.length > 0) cold_nodes = records;
     }
 
-    return cold_nodes ? { nodes, edges, cold_nodes } : { nodes, edges };
+    return detached(cold_nodes ? { nodes, edges, cold_nodes } : { nodes, edges });
+  }
+
+  /** Project only the graph records named by an incremental update. This path
+   * deliberately avoids exportGraph/forEachNode/forEachEdge so its work scales
+   * with changed IDs (plus incident edges needed for visibility correctness). */
+  exportGraphSelection(options: {
+    node_ids?: Iterable<string>;
+    edge_ids?: Iterable<string>;
+    includeIncidentEdges?: boolean;
+    incident_node_ids?: Iterable<string>;
+    includeCold?: boolean;
+    sourceTrust?: boolean;
+    includeDerivedCommunities?: boolean;
+  }): import('../types.js').ExportedGraphSelection {
+    const includeIncidentEdges = options.includeIncidentEdges ?? true;
+    const incidentNodeIds = new Set(options.incident_node_ids ?? []);
+    const includeDerivedCommunities = options.includeDerivedCommunities ?? false;
+    const withTrust = options.sourceTrust ?? false;
+    if (includeDerivedCommunities) this.getCommunities();
+
+    const nodeIds = [...new Set(options.node_ids ?? [])];
+    const edgeIds = new Set(options.edge_ids ?? []);
+    const nodes: import('../types.js').ExportedGraphNode[] = [];
+    const edges: import('../types.js').ExportedGraphEdge[] = [];
+    const hiddenNodeIds = new Set<string>();
+    const hiddenEdgeIds = new Set<string>();
+
+    for (const id of nodeIds) {
+      if (!this.ctx.graph.hasNode(id)) {
+        hiddenNodeIds.add(id);
+        continue;
+      }
+      const attrs = this.ctx.graph.getNodeAttributes(id);
+      if (attrs.identity_status === 'superseded') {
+        hiddenNodeIds.add(id);
+        for (const edgeId of this.ctx.graph.edges(id)) hiddenEdgeIds.add(edgeId);
+        continue;
+      }
+      const properties = this.projectNodeProperties(id, attrs, includeDerivedCommunities);
+      if (withTrust) properties.source_trust = sourceTrust(attrs);
+      nodes.push({ id, properties });
+      if (includeIncidentEdges || incidentNodeIds.has(id)) {
+        for (const edgeId of this.ctx.graph.edges(id)) edgeIds.add(edgeId);
+      }
+    }
+
+    for (const edgeId of edgeIds) {
+      if (!this.ctx.graph.hasEdge(edgeId)) {
+        hiddenEdgeIds.add(edgeId);
+        continue;
+      }
+      const source = this.ctx.graph.source(edgeId);
+      const target = this.ctx.graph.target(edgeId);
+      const sourceAttrs = this.ctx.graph.getNodeAttributes(source);
+      const targetAttrs = this.ctx.graph.getNodeAttributes(target);
+      if (
+        sourceAttrs.identity_status === 'superseded'
+        || targetAttrs.identity_status === 'superseded'
+      ) {
+        hiddenEdgeIds.add(edgeId);
+        continue;
+      }
+      const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
+      const properties = detached(attrs);
+      if (withTrust) properties.source_trust = sourceTrust(attrs);
+      edges.push({ id: edgeId, source, target, properties });
+    }
+
+    const coldNodes = options.includeCold
+      ? this.ctx.coldStore.export().map(record => ({ ...record }))
+      : undefined;
+    return {
+      nodes,
+      edges,
+      hidden_node_ids: [...hiddenNodeIds],
+      hidden_edge_ids: [...hiddenEdgeIds],
+      ...(coldNodes ? { cold_nodes: coldNodes } : {}),
+    };
+  }
+
+  getColdInventoryRevision(): number {
+    return this.ctx.coldStore.getRevision();
+  }
+
+  /** Initial visibility baseline for incremental dashboard projection. This is
+   * paid once per hub rather than on every update. */
+  getSupersededNodeIds(): string[] {
+    const ids: string[] = [];
+    this.ctx.graph.forEachNode((id, attrs) => {
+      if (attrs.identity_status === 'superseded') ids.push(id);
+    });
+    return ids;
+  }
+
+  getHistoryCount(): number {
+    return this.ctx.activityLog.length;
+  }
+
+  getProjectionRevisions(): { state: number; graph: number } {
+    return {
+      state: this.ctx.projectionRevision,
+      graph: this.ctx.graphProjectionRevision,
+    };
   }
 
   private runHealthChecks(): HealthReport {
@@ -7539,8 +7693,11 @@ export class GraphEngine {
     id: string,
     attrs: NodeProperties,
     includeDerivedCommunity = true,
+    detachProperties = true,
   ): NodeProperties {
-    const properties = detached(attrs);
+    const properties = detachProperties
+      ? detached(attrs)
+      : { ...attrs } as NodeProperties;
     // community_id is a topology-derived presentation field. Strip any
     // legacy materialized value and project the current cached assignment.
     delete properties.community_id;

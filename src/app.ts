@@ -901,7 +901,10 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
 
 export async function startStdioApp(app: OverwatchApp): Promise<void> {
   if (app.dashboard) {
-    await app.dashboard.start();
+    const dashboard = await app.dashboard.start();
+    if (!dashboard.started) {
+      throw new Error(`Dashboard ownership could not be acquired: ${dashboard.error || 'unknown error'}`);
+    }
   }
   app.taskExecution.start();
 
@@ -1105,7 +1108,10 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
 
   // Start dashboard (on its own port as before)
   if (app.dashboard) {
-    await app.dashboard.start();
+    const dashboard = await app.dashboard.start();
+    if (!dashboard.started) {
+      throw new Error(`Dashboard ownership could not be acquired: ${dashboard.error || 'unknown error'}`);
+    }
   }
   app.taskExecution.start();
 

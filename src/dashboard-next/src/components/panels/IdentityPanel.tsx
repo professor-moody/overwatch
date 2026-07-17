@@ -110,14 +110,15 @@ export function identityTokenSummaries(nodes: ExportedNode[], nowMs: number = Da
 
 export function IdentityPanel() {
   const graph = useEngagementStore((s) => s.graph);
+  const graphVersion = useEngagementStore((s) => s.graphVersion);
   const initialized = useEngagementStore((s) => s.initialized);
   const [searchParams] = useSearchParams();
   const selectedItem = searchParams.get('item');
   const { navigateToPanel } = useNavigation();
 
   const nowMs = Date.now();
-  const groups = useMemo(() => groupByIdp(graph.nodes, graph.edges), [graph.nodes, graph.edges]);
-  const tokens = useMemo(() => identityTokenSummaries(graph.nodes, nowMs), [graph.nodes, nowMs]);
+  const groups = useMemo(() => groupByIdp(graph.nodes, graph.edges), [graph.nodes, graph.edges, graphVersion]);
+  const tokens = useMemo(() => identityTokenSummaries(graph.nodes, nowMs), [graph.nodes, graphVersion, nowMs]);
   const appCount = groups.reduce((sum, group) => sum + group.apps.length, 0);
   const principalCount = groups.reduce((sum, group) => sum + group.principals.length, 0);
   const mfaSatisfied = tokens.filter(t => t.status === 'MFA satisfied').length;

@@ -5,9 +5,8 @@
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { readFileSync, existsSync, statSync } from 'fs';
-import { join, dirname, extname, relative, isAbsolute } from 'path';
-import { fileURLToPath } from 'url';
+import { readFileSync, existsSync } from 'fs';
+import { extname } from 'path';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { GraphEngine } from './graph-engine.js';
@@ -103,6 +102,9 @@ import {
 } from './dashboard-session-ws-hub.js';
 import { DashboardActionOutputWebSocketHub } from './dashboard-action-output-ws-hub.js';
 import { DashboardMainWebSocketHub } from './dashboard-main-ws-hub.js';
+import { readRuntimeBuildInfo } from './runtime-build-info.js';
+import { DashboardProjectionService } from './dashboard-projection-service.js';
+import { DashboardStaticServer } from './dashboard-static-server.js';
 import {
   AgentListResponseSchema,
   CampaignActionRequestSchema,
@@ -151,9 +153,6 @@ import {
   type MatchedDashboardEndpoint,
 } from '../contracts/dashboard-api-v1.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 function categorizeMcpTool(name: string): string {
   if (['get_state', 'next_task', 'get_system_prompt', 'run_lab_preflight', 'run_graph_health', 'get_recovery_status', 'resolve_config_divergence'].includes(name)) {
     return 'state-readiness';
@@ -198,12 +197,6 @@ function categorizeMcpTool(name: string): string {
 export interface DashboardStartResult {
   started: boolean;
   error?: string;
-}
-
-interface CachedStaticAsset {
-  content: string | Buffer;
-  mtimeMs: number;
-  size: number;
 }
 
 class DashboardRequestContractError extends Error {
@@ -295,6 +288,8 @@ export class DashboardServer {
   private readonly parseCommands: ParseCommandService;
   private readonly playbookRuns: PlaybookRunService;
   private readonly playbookCommands: PlaybookCommandService;
+  private readonly runtimeBuild = readRuntimeBuildInfo();
+  private readonly dashboardProjections: DashboardProjectionService;
 
   constructor(
     engine: GraphEngine,
@@ -305,6 +300,7 @@ export class DashboardServer {
     applicationCommands?: ApplicationCommandService,
   ) {
     this.engine = engine;
+    this.dashboardProjections = new DashboardProjectionService(engine);
     this.applicationCommands = applicationCommands ?? new ApplicationCommandService(engine);
     this.dispatchCommands = new DispatchCommandService(engine, this.applicationCommands);
     this.operatorCommands = new OperatorCommandService(engine, this.applicationCommands);
@@ -347,6 +343,8 @@ export class DashboardServer {
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.mainHub = new DashboardMainWebSocketHub(engine, this.sessionManager, {
       buildState: () => this.buildFrontendState(),
+      buildGraph: () => this.dashboardProjections.getFullGraph(),
+      runtimeBuild: this.runtimeBuild,
     });
     this.wss = this.mainHub.server;
     this.sessionHub = new DashboardSessionWebSocketHub(engine, this.sessionManager);
@@ -527,76 +525,12 @@ export class DashboardServer {
     this.actionOutputHub.handleConnection(ws, actionId);
   }
 
-  private static readonly MIME_TYPES: Record<string, string> = {
-    '.html': 'text/html; charset=utf-8',
-    '.css':  'text/css; charset=utf-8',
-    '.js':   'application/javascript; charset=utf-8',
-    '.json': 'application/json',
-    '.png':  'image/png',
-    '.svg':  'image/svg+xml',
-  };
-
-  private dashboardDir: string | null = null;
-  private fileCache: Map<string, CachedStaticAsset> = new Map();
-
-  private isTextAsset(ext: string): boolean {
-    return ['.html', '.css', '.js', '.json', '.svg'].includes(ext);
-  }
-
-  private resolveDashboardDir(): string {
-    if (this.dashboardDir) return this.dashboardDir;
-
-    // The dashboard-next (React + Vite) BUILD always has an `assets/`
-    // subdirectory; the source tree does not. We use that as the
-    // "is-this-a-built-bundle" marker so that demos running via
-    // `npx tsx` (where __dirname is src/services/) don't accidentally
-    // serve the source `src/dashboard-next/index.html` — which references
-    // `/src/main.tsx` and renders blank because no Vite is serving it.
-
-    const candidates = [
-      // tsx / source-execution case: __dirname is src/services/, so
-      // src/services/../../dist/dashboard-next is the project's built bundle.
-      join(__dirname, '..', '..', 'dist', 'dashboard-next'),
-      // Compiled-services case: __dirname is dist/services/, sibling dir
-      // is dist/dashboard-next/.
-      join(__dirname, '..', 'dashboard-next'),
-    ];
-    // Preferred: a path that has both index.html AND assets/ (a real build).
-    for (const dir of candidates) {
-      if (existsSync(join(dir, 'index.html')) && existsSync(join(dir, 'assets'))) {
-        this.dashboardDir = dir;
-        return dir;
-      }
-    }
-    // Fallback: any candidate with at least an index.html. This keeps the
-    // unit-tests CI job working (it doesn't build the dashboard before
-    // running `npm run test:source`) and tolerates compiled-but-not-Vite-built
-    // deployments. The serve path will still surface a useful page.
-    for (const dir of candidates) {
-      if (existsSync(join(dir, 'index.html'))) {
-        this.dashboardDir = dir;
-        return dir;
-      }
-    }
-    // Last fallback: the source tree under src/dashboard-next/. Always present
-    // in a checkout; never throws "Dashboard build not found" anymore. Demos
-    // running from this path will render blank without a Vite dev server, but
-    // the routing surface (SPA fallthrough) still works for test purposes.
-    const srcDir = join(__dirname, '..', '..', 'src', 'dashboard-next');
-    if (existsSync(join(srcDir, 'index.html'))) {
-      this.dashboardDir = srcDir;
-      return srcDir;
-    }
-    const compiledSrcDir = join(__dirname, '..', 'dashboard-next');
-    if (existsSync(join(compiledSrcDir, 'index.html'))) {
-      this.dashboardDir = compiledSrcDir;
-      return compiledSrcDir;
-    }
-
-    throw new Error(
-      'Dashboard build not found. Run `npm run build:dashboard-next` (or `npm run build`) before starting the server.',
-    );
-  }
+  private readonly staticServer = new DashboardStaticServer();
+  /** Compatibility seams retained for focused server tests while static-file
+   * ownership lives in DashboardStaticServer. */
+  private readonly fileCache = this.staticServer.fileCache;
+  private get dashboardDir(): string | null { return this.staticServer.dashboardDir; }
+  private set dashboardDir(value: string | null) { this.staticServer.dashboardDir = value; }
 
   /** True when an Origin header matches the request Host.
    *  Shared by the HTTP CORS gate and the WebSocket upgrade CSWSH check. */
@@ -816,6 +750,7 @@ export class DashboardServer {
       resetFrontierWeights: () => this.handleResetFrontierWeights(req, res),
       getOpsecBudget: () => this.serveOpsecBudget(res),
       getHealth: () => this.serveHealth(res),
+      getRuntime: () => this.sendContractedJson(res, 200, { runtime_build: this.runtimeBuild }),
       listEngagements: () => this.serveEngagements(res),
       createEngagement: () => { void this.handleCreateEngagement(req, res); },
       createEngagementFromTemplate: () => this.handleCreateFromTemplate(req, res),
@@ -941,70 +876,10 @@ export class DashboardServer {
   }
 
   private serveStaticFile(url: string, res: ServerResponse): void {
-    // React SPA: serve index.html for all non-asset routes (React Router
-    // handles `/`, `/operator`, `/graph`, `/index.html`, `/operator.html`,
-    // and any future client routes). Paths with file extensions fall
-    // through to disk lookup so static assets (.js, .css, .png, ...) work.
-    const pathname = url.split('?')[0];
-    const hasExt = extname(pathname) !== '';
-    const filePath = hasExt ? pathname : '/index.html';
-
-    // Security: prevent directory traversal (including percent-encoded variants).
-    // decodeURIComponent can throw URIError on malformed escapes (e.g. `%E0`),
-    // so guard it explicitly rather than letting it crash the request handler.
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(filePath);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'text/plain' });
-      res.end('Bad request');
-      return;
-    }
-    if (filePath.includes('..') || decoded.includes('..')) {
-      res.writeHead(403, { 'Content-Type': 'text/plain' });
-      res.end('Forbidden');
-      return;
-    }
-
-    // Strip leading slash and query string
-    const cleanPath = filePath.replace(/^\//, '').split('?')[0];
-    const ext = extname(cleanPath);
-    const mime = DashboardServer.MIME_TYPES[ext] || 'application/octet-stream';
-
-    try {
-      const dashDir = this.resolveDashboardDir();
-      const fullPath = join(dashDir, cleanPath);
-
-      // Security: ensure resolved path is within dashboard dir
-      const rel = relative(dashDir, fullPath);
-      if (rel.startsWith('..') || isAbsolute(rel)) {
-        res.writeHead(403, { 'Content-Type': 'text/plain' });
-        res.end('Forbidden');
-        return;
-      }
-
-      const stat = statSync(fullPath);
-      const cached = this.fileCache.get(cleanPath);
-      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
-        res.end(cached.content);
-        return;
-      }
-
-      const content = this.isTextAsset(ext)
-        ? readFileSync(fullPath, 'utf-8')
-        : readFileSync(fullPath);
-      this.fileCache.set(cleanPath, {
-        content,
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
-      });
-      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
-      res.end(content);
-    } catch {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not found');
-    }
+    // Read through the compatibility accessor so test-provided directories are
+    // forwarded to the extracted owner before it resolves the bundle.
+    this.staticServer.dashboardDir = this.dashboardDir;
+    this.staticServer.serve(url, res);
   }
 
   // ---- Template endpoints ----
@@ -1841,6 +1716,7 @@ export class DashboardServer {
         },
         ad_context: adContext,
         health_checks: health,
+        runtime_build: this.runtimeBuild,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
@@ -1911,10 +1787,15 @@ export class DashboardServer {
 
   private serveState(res: ServerResponse): void {
     const state = this.buildFrontendState();
-    const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
-    const historyCount = this.engine.getFullHistory().length;
+    const graph = this.dashboardProjections.getFullGraph();
+    const historyCount = this.engine.getHistoryCount();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(projectDashboardSnapshot(state, graph, historyCount)));
+    res.end(JSON.stringify(projectDashboardSnapshot(
+      state,
+      graph,
+      historyCount,
+      this.runtimeBuild,
+    )));
   }
 
   private serveRecovery(res: ServerResponse): void {

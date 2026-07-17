@@ -24,6 +24,7 @@ export function OverviewPanel() {
   const { navigateToGraph, navigateToGraphFilter, navigateToGraphTarget, navigateToPanel, navigateToEvidence } = useNavigation();
   const graphSummary = useEngagementStore((s) => s.graphSummary);
   const graph = useEngagementStore((s) => s.graph);
+  const graphVersion = useEngagementStore((s) => s.graphVersion);
   const objectives = useEngagementStore((s) => s.objectives);
   const frontier = useEngagementStore((s) => s.frontier);
   const agents = useEngagementStore((s) => s.agents);
@@ -85,7 +86,7 @@ export function OverviewPanel() {
     readinessIssues: readiness?.issues || [],
     credentialNodes: graph.nodes,
     sessions,
-  }), [graph.nodes, pendingActions, readiness, sessions]);
+  }), [graph.nodes, graphVersion, pendingActions, readiness, sessions]);
 
   const nextItems = useMemo(() => deriveNextActionItems(frontier, 5), [frontier]);
   const accessFacts = useMemo(() => deriveAccessFacts(accessSummary, sessions, campaigns), [accessSummary, campaigns, sessions]);

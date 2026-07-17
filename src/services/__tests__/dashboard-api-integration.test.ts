@@ -370,6 +370,10 @@ describe('GET /api/health', () => {
     expect(health.health_checks).toHaveProperty('status');
     expect(health.health_checks).toHaveProperty('counts_by_severity');
     expect(Array.isArray(health.health_checks.issues)).toBe(true);
+    expect(health.runtime_build).toMatchObject({
+      input_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      runtime_pid: process.pid,
+    });
   });
 
   it('preserves critical status, severity counts, and issues', async () => {
@@ -386,6 +390,21 @@ describe('GET /api/health', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('GET /api/runtime', () => {
+  it('returns build identity without running graph health or export work', async () => {
+    const healthSpy = vi.spyOn(engine, 'getHealthReport');
+    const exportSpy = vi.spyOn(engine, 'exportGraph');
+    const { status, body } = await getJson<{ runtime_build?: { input_sha256?: string; runtime_pid?: number } }>('/api/runtime');
+    expect(status).toBe(200);
+    expect(body.runtime_build).toMatchObject({
+      input_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      runtime_pid: process.pid,
+    });
+    expect(healthSpy).not.toHaveBeenCalled();
+    expect(exportSpy).not.toHaveBeenCalled();
   });
 });
 

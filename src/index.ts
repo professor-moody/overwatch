@@ -3,35 +3,49 @@
 // ============================================================
 
 import { createAppOrExit, shutdownOverwatchApp, startStdioApp, startHttpApp } from './app.js';
+import {
+  probeRunningDashboard,
+  readRuntimeBuildInfo,
+  type RuntimeBuildInfo,
+} from './services/runtime-build-info.js';
 
 let app: ReturnType<typeof createAppOrExit> | undefined;
 const transport = process.env.OVERWATCH_TRANSPORT
   || (process.argv.includes('--http') ? 'http' : 'stdio');
 
-async function sharedDaemonAlreadyRunning(): Promise<boolean> {
-  const port = Number(process.env.OVERWATCH_DASHBOARD_PORT || '8384');
-  if (!Number.isFinite(port)) return false;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1_500);
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
-      signal: controller.signal,
-    });
-    if (!response.ok) return false;
-    const body = await response.json() as Record<string, unknown>;
-    return 'health_checks' in body || 'status' in body || 'issues' in body;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
+function describeBuild(build: RuntimeBuildInfo | undefined): string {
+  if (!build) return 'unknown legacy build';
+  const revision = build.git_sha?.slice(0, 8) || build.input_sha256.slice(0, 12);
+  return `${revision} (PID ${build.runtime_pid || 'unknown'})`;
 }
 
 // ============================================================
 // Start Server
 // ============================================================
 async function main(): Promise<void> {
-  if (transport !== 'http' && await sharedDaemonAlreadyRunning()) {
+  const dashboardPort = Number(process.env.OVERWATCH_DASHBOARD_PORT || '8384');
+  const dashboardHost = process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
+  const dashboardToken = process.env.OVERWATCH_DASHBOARD_TOKEN;
+  const existing = await probeRunningDashboard(
+    dashboardPort,
+    fetch,
+    undefined,
+    dashboardToken ? `Bearer ${dashboardToken}` : undefined,
+    dashboardHost,
+  );
+  if (existing.running && transport === 'http') {
+    const localBuild = readRuntimeBuildInfo();
+    const mismatch = localBuild && existing.runtime_build
+      && localBuild.input_sha256 !== existing.runtime_build.input_sha256;
+    throw new Error(
+      `An Overwatch daemon is already running on dashboard port ${dashboardPort} `
+      + `(${describeBuild(existing.runtime_build)}). `
+      + (mismatch
+        ? `It does not match this checkout (${describeBuild(localBuild)}). Stop the old daemon, then start again and reload the dashboard tab.`
+        : 'Reuse it, or stop it before starting another daemon.'),
+    );
+  }
+  if (existing.running) {
     throw new Error(
       'Another Overwatch instance is already running. Do not launch a second stdio writer for the same working copy. '
       + 'Run `npm run setup -- --daemon` so terminal Claude connects to the existing /mcp daemon, or stop the existing instance first.',

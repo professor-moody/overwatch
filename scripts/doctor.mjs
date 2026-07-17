@@ -20,37 +20,40 @@ function statusRank(status) {
   return status === 'fail' ? 2 : status === 'warn' ? 1 : 0;
 }
 
-async function isPortFree(port) {
+async function isPortFree(port, host) {
   return new Promise((resolveFree) => {
     const server = createServer();
     server.once('error', () => resolveFree(false));
     server.once('listening', () => {
       server.close(() => resolveFree(true));
     });
-    server.listen(port, '127.0.0.1');
+    server.listen(port, host);
   });
 }
 
-async function probeDashboard(port) {
+function dashboardProbeHost(host) {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]') return '127.0.0.1';
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+}
+
+async function probeDashboard(port, authorization, host) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+    const response = await fetch(`http://${dashboardProbeHost(host)}:${port}/api/runtime`, {
+      ...(authorization ? { headers: { Authorization: authorization } } : {}),
       signal: controller.signal,
     });
-    if (!response.ok) return false;
+    if (!response.ok) return null;
     const body = await response.json();
     return Boolean(
       body
       && typeof body === 'object'
-      && (
-        'health_checks' in body
-        || 'status' in body
-        || 'issues' in body
-      )
-    );
+      && 'runtime_build' in body
+    ) ? body : null;
   } catch {
-    return false;
+    return null;
   } finally {
     clearTimeout(timer);
   }
@@ -232,12 +235,58 @@ if (config) {
 }
 
 const dashboardPort = Number(process.env.OVERWATCH_DASHBOARD_PORT || '8384');
+const dashboardHost = process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
 if (Number.isFinite(dashboardPort)) {
-  const free = await isPortFree(dashboardPort);
-  const runningDashboard = !free && await probeDashboard(dashboardPort);
+  const free = await isPortFree(dashboardPort, dashboardHost);
+  const dashboardToken = process.env.OVERWATCH_DASHBOARD_TOKEN;
+  const authorization = dashboardToken ? `Bearer ${dashboardToken}` : undefined;
+  const runningDashboard = !free ? await probeDashboard(dashboardPort, authorization, dashboardHost) : null;
   const mcpProbe = mcpMode === 'http'
     ? await probeMcp(overwatchMcpConfig)
     : undefined;
+  if (runningDashboard) {
+    const daemonBuild = runningDashboard.runtime_build;
+    const localHash = buildFreshness.info?.input_sha256;
+    const daemonHash = daemonBuild?.input_sha256;
+    if (typeof localHash === 'string' && typeof daemonHash === 'string') {
+      if (localHash === daemonHash) {
+        add(
+          'pass',
+          'Running daemon build',
+          `${String(daemonBuild.git_sha || daemonHash).slice(0, 12)} (PID ${daemonBuild.runtime_pid || 'unknown'}) matches this checkout`,
+        );
+      } else {
+        add(
+          'fail',
+          'Running daemon build',
+          `${String(daemonBuild.git_sha || daemonHash).slice(0, 12)} (PID ${daemonBuild.runtime_pid || 'unknown'}) does not match local ${String(buildFreshness.info?.git_sha || localHash).slice(0, 12)}`,
+          'Stop the old daemon, run npm run start:daemon, then reload the dashboard tab.',
+        );
+      }
+    } else if (!daemonBuild) {
+      add(
+        'fail',
+        'Running daemon build',
+        'the running dashboard does not expose build identity and is older than this checkout',
+        'Stop the old daemon, run npm run start:daemon, then reload the dashboard tab.',
+      );
+    } else {
+      add(
+        'warn',
+        'Running daemon build',
+        'the running daemon is identifiable, but the local build is not current enough to compare',
+        'Run npm run build, then rerun npm run doctor.',
+      );
+    }
+  }
+  if (!free && !runningDashboard) {
+    add(
+      'fail',
+      'Dashboard port ownership',
+      `port ${dashboardPort} is occupied, but its runtime identity could not be read`,
+      'Stop the process using the dashboard port before starting Overwatch, or refresh the daemon token with npm run setup -- --daemon.',
+    );
+  }
   if (mcpProbe?.status === 'reachable') {
     add('pass', 'MCP daemon endpoint', mcpProbe.detail);
   } else if (mcpProbe?.status === 'unauthorized') {

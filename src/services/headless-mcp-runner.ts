@@ -464,15 +464,21 @@ export class HeadlessMcpRunner {
         exit_signal: targetSignal,
       });
       this.processTracker.update(`headless-${task.id}`, ok ? 'completed' : 'failed');
-      this.engine.logActionEvent({
-        description: `Headless sub-agent exited (code=${targetCode ?? 'null'}, signal=${targetSignal ?? 'null'})`,
-        event_type: 'instrumentation_warning',
-        category: 'system',
-        result_classification: ok ? 'neutral' : 'failure',
-        agent_id: task.agent_id,
-        linked_agent_task_id: task.id,
-        details: { reason: 'headless_exited', exit_code: targetCode, signal: targetSignal },
-      });
+      // A clean process exit after the task recorded its own terminal outcome is
+      // expected, not an instrumentation warning. Keep the warning for unfinished
+      // tasks and abnormal exits so operators are not shown a false interruption
+      // after a planner has already returned a structured conclusion.
+      if (current?.status === 'running' || current?.status === 'interrupted' || !ok) {
+        this.engine.logActionEvent({
+          description: `Headless sub-agent exited (code=${targetCode ?? 'null'}, signal=${targetSignal ?? 'null'})`,
+          event_type: 'instrumentation_warning',
+          category: 'system',
+          result_classification: ok ? 'neutral' : 'failure',
+          agent_id: task.agent_id,
+          linked_agent_task_id: task.id,
+          details: { reason: 'headless_exited', exit_code: targetCode, signal: targetSignal },
+        });
+      }
       // Reconcile: the agent exited while still `running`, i.e. it never closed itself
       // out (no update_agent / submit_agent_transcript). That's abnormal however it
       // ended — a well-behaved agent always reports its own terminal state — so the

@@ -70,6 +70,7 @@ function RowCheckbox({ id, selected, onToggle }: { id: string; selected: Set<str
 
 export function ReconPanel() {
   const graph = useEngagementStore(s => s.graph);
+  const graphVersion = useEngagementStore(s => s.graphVersion);
   const { navigateToGraph } = useNavigation();
   const [segment, setSegment] = useState<Segment>('subdomains');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -81,7 +82,7 @@ export function ReconPanel() {
       if (n.type && m[n.type]) m[n.type].push(n);
     }
     return m;
-  }, [graph.nodes]);
+  }, [graph.nodes, graphVersion]);
 
   const counts = {
     subdomains: byType.subdomain.length,

@@ -21,7 +21,7 @@ export function DeploySelectedModal({
   onClose: () => void;
   onDeployed: () => void;
 }) {
-  const graphNodes = useEngagementStore(s => s.graph.nodes);
+  const graphNodes = useEngagementStore(s => s.graph).nodes;
   const addToast = useToastStore(s => s.addToast);
   const [archetypes, setArchetypes] = useState<api.AgentArchetypeSummary[]>([]);
   const [models, setModels] = useState<{ available: string[]; default?: string }>({ available: [] });

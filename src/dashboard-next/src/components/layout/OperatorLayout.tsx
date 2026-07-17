@@ -1,4 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import {
+  lazy,
+  Suspense,
+  useState,
+  useEffect,
+  useCallback,
+  type ComponentType,
+  type LazyExoticComponent,
+} from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Toolbar } from './Toolbar';
@@ -7,23 +15,6 @@ import { useWs } from '../../providers/ws-provider';
 import { useKeyboardShortcuts, SHORTCUT_HELP } from '../../hooks/useKeyboardShortcuts';
 import { buildPanelPath, isPanelId, parseHash } from '../../hooks/useNavigation';
 import { cn } from '../../lib/utils';
-import { OverviewPanel } from '../panels/OverviewPanel';
-import { CampaignsPanel } from '../panels/CampaignsPanel';
-import { AgentsPanel } from '../panels/AgentsPanel';
-import { SessionsPanel } from '../panels/SessionsPanel';
-import { ActionsPanel } from '../panels/ActionsPanel';
-import { FrontierPanel } from '../panels/FrontierPanel';
-import { ActivityPanel } from '../panels/ActivityPanel';
-import { AnalysisPanel } from '../panels/AnalysisPanel';
-import { EvidencePanel } from '../panels/EvidencePanel';
-import { EngagementsPanel } from '../panels/EngagementsPanel';
-import { SettingsPanel } from '../panels/SettingsPanel';
-import { IdentityPanel } from '../panels/IdentityPanel';
-import { AttackPathsPanel } from '../panels/AttackPathsPanel';
-import { FindingsPanel } from '../panels/FindingsPanel';
-import { CredentialsPanel } from '../panels/CredentialsPanel';
-import { ReconPanel } from '../panels/ReconPanel';
-import { SmokePanel } from '../panels/SmokePanel';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
 import { RecoveryBanner } from '../shared/RecoveryBanner';
 
@@ -46,25 +37,33 @@ export type PanelId =
   | 'smoke'
   | 'settings';
 
-const PANEL_COMPONENTS: Record<PanelId, React.ComponentType> = {
-  overview: OverviewPanel,
-  campaigns: CampaignsPanel,
-  agents: AgentsPanel,
-  sessions: SessionsPanel,
-  actions: ActionsPanel,
-  frontier: FrontierPanel,
-  activity: ActivityPanel,
-  analysis: AnalysisPanel,
-  evidence: EvidencePanel,
-  identity: IdentityPanel,
-  credentials: CredentialsPanel,
-  recon: ReconPanel,
-  paths: AttackPathsPanel,
-  findings: FindingsPanel,
-  engagements: EngagementsPanel,
-  smoke: SmokePanel,
-  settings: SettingsPanel,
+const PANEL_COMPONENTS: Record<PanelId, LazyExoticComponent<ComponentType>> = {
+  overview: lazy(() => import('../panels/OverviewPanel').then(module => ({ default: module.OverviewPanel }))),
+  campaigns: lazy(() => import('../panels/CampaignsPanel').then(module => ({ default: module.CampaignsPanel }))),
+  agents: lazy(() => import('../panels/AgentsPanel').then(module => ({ default: module.AgentsPanel }))),
+  sessions: lazy(() => import('../panels/SessionsPanel').then(module => ({ default: module.SessionsPanel }))),
+  actions: lazy(() => import('../panels/ActionsPanel').then(module => ({ default: module.ActionsPanel }))),
+  frontier: lazy(() => import('../panels/FrontierPanel').then(module => ({ default: module.FrontierPanel }))),
+  activity: lazy(() => import('../panels/ActivityPanel').then(module => ({ default: module.ActivityPanel }))),
+  analysis: lazy(() => import('../panels/AnalysisPanel').then(module => ({ default: module.AnalysisPanel }))),
+  evidence: lazy(() => import('../panels/EvidencePanel').then(module => ({ default: module.EvidencePanel }))),
+  identity: lazy(() => import('../panels/IdentityPanel').then(module => ({ default: module.IdentityPanel }))),
+  credentials: lazy(() => import('../panels/CredentialsPanel').then(module => ({ default: module.CredentialsPanel }))),
+  recon: lazy(() => import('../panels/ReconPanel').then(module => ({ default: module.ReconPanel }))),
+  paths: lazy(() => import('../panels/AttackPathsPanel').then(module => ({ default: module.AttackPathsPanel }))),
+  findings: lazy(() => import('../panels/FindingsPanel').then(module => ({ default: module.FindingsPanel }))),
+  engagements: lazy(() => import('../panels/EngagementsPanel').then(module => ({ default: module.EngagementsPanel }))),
+  smoke: lazy(() => import('../panels/SmokePanel').then(module => ({ default: module.SmokePanel }))),
+  settings: lazy(() => import('../panels/SettingsPanel').then(module => ({ default: module.SettingsPanel }))),
 };
+
+function PanelLoading({ panel }: { panel: PanelId }) {
+  return (
+    <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground" role="status">
+      <span className="animate-pulse">Loading {panel}…</span>
+    </div>
+  );
+}
 
 export function OperatorLayout() {
   const { panelId } = useParams();
@@ -162,7 +161,9 @@ export function OperatorLayout() {
         <Breadcrumb panel={activePanel} item={selectedItem} />
         <div className="p-6 max-w-[1400px]">
           <ErrorBoundary fallbackLabel={activePanel}>
-            <ActiveComponent />
+            <Suspense fallback={<PanelLoading panel={activePanel} />}>
+              <ActiveComponent />
+            </Suspense>
           </ErrorBoundary>
         </div>
       </main>

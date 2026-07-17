@@ -26,6 +26,7 @@ const AgentTranscriptCommandInputSchema = z.object({
   transcript_bytes: z.number().int().nonnegative(),
   key_thought_event_ids: z.array(z.string()).optional(),
   key_finding_ids: z.array(z.string()).optional(),
+  planner_outcome: z.literal('unexpressible').optional(),
 }).strict();
 
 const AgentHeartbeatInputSchema = z.object({
@@ -118,6 +119,7 @@ export interface AgentTranscriptResult extends AgentIdentityResult {
   evidence_id?: string;
   transcript_bytes: number;
   submitted: true;
+  planner_outcome?: 'unexpressible';
 }
 
 export interface AgentHeartbeatResult extends AgentIdentityResult {
@@ -287,6 +289,7 @@ export class AgentLifecycleCommandService {
       transcript_jsonl?: string;
       key_thought_event_ids?: string[];
       key_finding_ids?: string[];
+      planner_outcome?: 'unexpressible';
     },
     metadata: ApplicationCommandMetadata = {},
   ): ApplicationCommandExecution<AgentTranscriptResult> {
@@ -297,6 +300,7 @@ export class AgentLifecycleCommandService {
       transcript_bytes: transcript ? Buffer.byteLength(transcript, 'utf8') : 0,
       key_thought_event_ids: rawInput.key_thought_event_ids,
       key_finding_ids: rawInput.key_finding_ids,
+      planner_outcome: rawInput.planner_outcome,
     };
     // A completed task may have been dismissed after the original transcript
     // landed. Canonical task-id retries must still return that durable result.
@@ -340,7 +344,14 @@ export class AgentLifecycleCommandService {
       input: canonicalInput,
       schema: AgentTranscriptCommandInputSchema,
       metadata: effectiveMetadata,
-      state_keys: ['activity'],
+      state_keys: [
+        'agents',
+        'campaigns',
+        'plans_questions',
+        'approvals',
+        'activity',
+        'frontier',
+      ],
       execute: parsed => {
         const details: Record<string, unknown> = {
           summary: parsed.summary,
@@ -353,6 +364,7 @@ export class AgentLifecycleCommandService {
         if (parsed.key_finding_ids?.length) {
           details.key_finding_ids = parsed.key_finding_ids;
         }
+        if (parsed.planner_outcome) details.planner_outcome = parsed.planner_outcome;
         const event = this.engine.logActionEvent({
           description: `Agent ${task.agent_label ?? task.agent_id} submitted transcript: ${parsed.summary.slice(0, 120)}${parsed.summary.length > 120 ? '…' : ''}`,
           event_type: 'agent_transcript_submitted',
@@ -363,11 +375,53 @@ export class AgentLifecycleCommandService {
           linked_finding_ids: parsed.key_finding_ids,
           details,
         });
+        if (
+          parsed.planner_outcome === 'unexpressible'
+          && task.role === 'planner'
+          && task.application_command_id
+        ) {
+          const owningCommand = this.engine.getApplicationCommandById(task.application_command_id);
+          if (
+            owningCommand
+            && (owningCommand.status === 'accepted' || owningCommand.status === 'running')
+          ) {
+            const message = `Planner could not express this command with the available operations: ${parsed.summary}`;
+            this.engine.recordApplicationCommand({
+              ...owningCommand,
+              status: 'failed',
+              completed_at: this.engine.now(),
+              error: {
+                code: 'PLANNER_UNEXPRESSIBLE',
+                message,
+                details: { planner_summary: parsed.summary },
+              },
+              result: {
+                phase: 'unanswerable',
+                command_id: owningCommand.command_id,
+                planner_task_id: taskId,
+                reason: parsed.summary,
+              },
+              entity_refs: {
+                ...(owningCommand.entity_refs ?? {}),
+                planner_task_id: taskId,
+              },
+            });
+            if (!this.engine.updateAgentStatus(taskId, 'completed', parsed.summary)) {
+              throw new AgentLifecycleCommandError(
+                `Planner task not completed after unexpressible conclusion: ${taskId}`,
+                'PLANNER_CONCLUSION_NOT_APPLIED',
+                409,
+                { task_id: taskId, command_id: owningCommand.command_id },
+              );
+            }
+          }
+        }
         return {
           ...identity(task),
           event_id: event.event_id,
           evidence_id: evidenceId,
           transcript_bytes: parsed.transcript_bytes,
+          ...(parsed.planner_outcome ? { planner_outcome: parsed.planner_outcome } : {}),
           submitted: true as const,
         };
       },

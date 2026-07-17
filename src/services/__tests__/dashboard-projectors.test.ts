@@ -90,9 +90,16 @@ describe('dashboard pure projectors', () => {
 
   it('projects only changed IDs while retaining removals and replacing cold inventory', () => {
     const inputGraph = graph();
+    const selection = {
+      nodes: [inputGraph.nodes[0]],
+      edges: [inputGraph.edges[0]],
+      cold_nodes: inputGraph.cold_nodes,
+      hidden_node_ids: [],
+      hidden_edge_ids: [],
+    };
     const projected = projectGraphDelta(
       { marker: 'state' },
-      inputGraph,
+      selection,
       {
         new_nodes: ['node-new'],
         updated_edges: ['edge-new'],
@@ -106,8 +113,29 @@ describe('dashboard pure projectors', () => {
     expect(projected.delta.edges.map(edge => edge.id)).toEqual(['edge-new']);
     expect(projected.delta.removed_nodes).toEqual(['node-removed']);
     expect(projected.delta.removed_edges).toEqual(['edge-removed']);
-    expect(projected.delta.cold_nodes).toEqual(inputGraph.cold_nodes);
-    expect(projected.delta.cold_nodes).not.toBe(inputGraph.cold_nodes);
+    expect(projected.delta.cold_nodes).toEqual(selection.cold_nodes);
+    expect(projected.delta.cold_nodes).not.toBe(selection.cold_nodes);
+  });
+
+  it('turns final-state hidden graph records into removals', () => {
+    const projected = projectGraphDelta(
+      { marker: 'state' },
+      {
+        nodes: [],
+        edges: [],
+        hidden_node_ids: ['node-superseded'],
+        hidden_edge_ids: ['edge-hidden'],
+      },
+      { updated_nodes: ['node-superseded'], updated_edges: ['edge-hidden'] },
+      13,
+    );
+
+    expect(projected.delta).toMatchObject({
+      nodes: [],
+      edges: [],
+      removed_nodes: ['node-superseded'],
+      removed_edges: ['edge-hidden'],
+    });
   });
 
   it('clones full snapshots so consumers cannot mutate engine-owned inputs', () => {

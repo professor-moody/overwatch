@@ -1,10 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildFindings,
   buildEvidenceChainsForNode,
   buildAllEvidenceChains,
   buildAttackNarrative,
   buildReportEvidenceModel,
+  buildReportDocumentModel,
+  renderFullReportFromModel,
   generateFullReport,
   buildRemediationRanking,
 } from '../report-generator.js';
@@ -392,6 +394,23 @@ describe('buildAttackNarrative', () => {
 // ============================================================
 
 describe('generateFullReport', () => {
+  it('keeps the compatibility wrapper byte-identical to prepared-model rendering', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-16T00:00:00.000Z'));
+    try {
+      const input: ReportInput = {
+        config: makeConfig(), graph: makeGraph(), history: makeHistory(), agents: [],
+      };
+      const options = { include_retrospective: false };
+      const model = buildReportDocumentModel(input, options);
+      expect(generateFullReport(input, options)).toBe(
+        renderFullReportFromModel(input, model, options),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('produces a complete markdown report', () => {
     const input: ReportInput = {
       config: makeConfig(),

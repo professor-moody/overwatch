@@ -11,9 +11,13 @@ import {
 } from './dashboard-projectors.js';
 import { MainWebSocketEventSchema } from '../contracts/dashboard-v1.js';
 import { PlaybookRunService } from './playbook-run-service.js';
+import type { RuntimeBuildInfo } from './runtime-build-info.js';
+import type { ExportedGraph } from '../types.js';
 
 export interface DashboardMainWebSocketHubOptions {
   buildState: () => DashboardState<unknown, unknown>;
+  buildGraph?: () => ExportedGraph;
+  runtimeBuild?: RuntimeBuildInfo;
   debounceMs?: number;
 }
 
@@ -23,10 +27,16 @@ export class DashboardMainWebSocketHub {
   clients = new Set<WebSocket>();
   private readonly accumulator = new DeltaAccumulator();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private stateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private stateRefreshDirty = false;
   private seenConsoleEventIds: Set<string>;
   private readonly disposers: Array<() => void> = [];
   private readonly debounceMs: number;
+  private coldInventoryRevision: number;
+  private readonly hiddenNodeIds: Set<string>;
+  private readonly pendingVisibilityChanges = new Set<string>();
   private disposed = false;
+  private cachedState: DashboardState<unknown, unknown> | undefined;
 
   constructor(
     private readonly engine: GraphEngine,
@@ -34,6 +44,8 @@ export class DashboardMainWebSocketHub {
     private readonly options: DashboardMainWebSocketHubOptions,
   ) {
     this.debounceMs = options.debounceMs ?? 500;
+    this.coldInventoryRevision = engine.getColdInventoryRevision();
+    this.hiddenNodeIds = new Set(engine.getSupersededNodeIds());
     this.seenConsoleEventIds = new Set(engine.getFullHistory().map(entry => entry.event_id));
     this.server.on('error', () => { /* individual socket errors remove their client */ });
     this.server.on('connection', ws => this.attachConnection(ws));
@@ -70,14 +82,31 @@ export class DashboardMainWebSocketHub {
   }
 
   attachConnection(ws: WebSocket): void {
+    const firstConnection = this.clients.size === 0;
     this.clients.add(ws);
     const state = this.options.buildState();
-    const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
+    this.cachedState = state;
+    const graph = this.options.buildGraph?.()
+      ?? this.engine.exportGraph({ includeDerivedCommunities: true });
+    // The first full-state graph is the client's authoritative baseline, so
+    // assignments accumulated before any browser was connected are already
+    // represented and need not be replayed as a follow-up patch.
+    const baselineCommunityChanges = firstConnection
+      ? this.engine.peekCommunityChanges()
+      : undefined;
     this.send(ws, {
       type: 'full_state',
       timestamp: new Date().toISOString(),
-      data: projectDashboardSnapshot(state, graph, this.engine.getFullHistory().length),
+      data: projectDashboardSnapshot(
+        state,
+        graph,
+        this.engine.getHistoryCount(),
+        this.options.runtimeBuild,
+      ),
     });
+    if (baselineCommunityChanges) {
+      this.engine.acknowledgeCommunityChanges(baselineCommunityChanges);
+    }
     const cleanup = () => this.clients.delete(ws);
     ws.on('close', cleanup);
     ws.on('error', cleanup);
@@ -93,6 +122,7 @@ export class DashboardMainWebSocketHub {
 
   onGraphUpdate(detail: GraphUpdateDetail): void {
     const consoleEvents = this.collectNewConsoleEvents();
+    const visibilityChanges = this.refreshNodeVisibility(detail);
     if (this.clients.size === 0) return;
     if (consoleEvents.length > 0) {
       this.broadcast({
@@ -101,6 +131,7 @@ export class DashboardMainWebSocketHub {
         data: { events: consoleEvents },
       });
     }
+    for (const id of visibilityChanges) this.pendingVisibilityChanges.add(id);
     this.accumulator.push(detail);
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => this.flushPendingUpdate(), this.debounceMs);
@@ -115,6 +146,9 @@ export class DashboardMainWebSocketHub {
   closeConnections(): void {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = null;
+    if (this.stateRefreshTimer) clearTimeout(this.stateRefreshTimer);
+    this.stateRefreshTimer = null;
+    this.stateRefreshDirty = false;
     this.accumulator.drain();
     for (const ws of this.clients) ws.close();
     this.clients.clear();
@@ -146,20 +180,95 @@ export class DashboardMainWebSocketHub {
     this.debounceTimer = null;
     if (!detail || this.clients.size === 0) return;
 
-    const state = this.options.buildState();
-    const historyCount = this.engine.getFullHistory().length;
-    const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
+    // A graph delta must remain proportional to changed IDs. Global summaries,
+    // frontier/community projections, and health are coalesced into the
+    // state_refresh that follows instead of blocking this live graph update.
+    const state = this.cachedState ?? this.options.buildState();
+    const historyCount = this.engine.getHistoryCount();
     const nestedDetail = this.accumulator.drain();
     if (nestedDetail) {
       if (this.debounceTimer) clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
       detail = mergeGraphUpdateDetails(detail, nestedDetail);
     }
+    const coldRevision = this.engine.getColdInventoryRevision();
+    const coldNodesChanged = coldRevision !== this.coldInventoryRevision;
+    if (coldNodesChanged) detail = { ...detail, cold_nodes_changed: true };
+    const graph = this.engine.exportGraphSelection({
+      node_ids: [...(detail.new_nodes || []), ...(detail.updated_nodes || [])],
+      edge_ids: [
+        ...(detail.new_edges || []),
+        ...(detail.updated_edges || []),
+        ...(detail.inferred_edges || []),
+      ],
+      includeCold: coldNodesChanged,
+      includeIncidentEdges: false,
+      incident_node_ids: this.pendingVisibilityChanges,
+      includeDerivedCommunities: false,
+    });
+    this.pendingVisibilityChanges.clear();
     this.broadcast({
       type: 'graph_update',
       timestamp: new Date().toISOString(),
       data: projectGraphDelta(state, graph, detail, historyCount),
     });
+    this.coldInventoryRevision = coldRevision;
+    this.scheduleStateRefresh();
+  }
+
+  private scheduleStateRefresh(): void {
+    this.stateRefreshDirty = true;
+    // Throttle from the first dirty update instead of debouncing from the
+    // newest one. Sustained findings therefore cannot starve authoritative
+    // frontier/agent/campaign/objective state indefinitely.
+    if (this.stateRefreshTimer) return;
+    this.stateRefreshTimer = setTimeout(() => {
+      this.stateRefreshTimer = null;
+      if (this.clients.size === 0 || this.disposed || !this.stateRefreshDirty) {
+        this.stateRefreshDirty = false;
+        return;
+      }
+      this.stateRefreshDirty = false;
+      const state = this.options.buildState();
+      this.cachedState = state;
+      // buildState() above has populated the community cache. Taking the
+      // detector-produced patch is proportional only to assignments that
+      // changed since the previous publication.
+      const communityChanges = this.engine.peekCommunityChanges();
+      const communityIds = Object.fromEntries(communityChanges);
+      this.broadcast({
+        type: 'state_refresh',
+        timestamp: new Date().toISOString(),
+        data: {
+          state,
+          history_count: this.engine.getHistoryCount(),
+          // buildState() has already populated the topology-derived cache. Send
+          // only changed assignments so browser work remains proportional to
+          // the derived patch rather than the complete engagement graph.
+          community_ids: communityIds,
+        },
+      });
+      this.engine.acknowledgeCommunityChanges(communityChanges);
+    }, 750);
+    if (typeof this.stateRefreshTimer.unref === 'function') this.stateRefreshTimer.unref();
+  }
+
+  private refreshNodeVisibility(detail: GraphUpdateDetail): string[] {
+    const changed = new Set([
+      ...(detail.new_nodes || []),
+      ...(detail.updated_nodes || []),
+    ]);
+    const transitions: string[] = [];
+    for (const id of changed) {
+      const node = this.engine.getNode(id);
+      const hidden = node?.identity_status === 'superseded';
+      const wasHidden = this.hiddenNodeIds.has(id);
+      if (hidden) this.hiddenNodeIds.add(id);
+      else this.hiddenNodeIds.delete(id);
+      if (hidden !== wasHidden) transitions.push(id);
+    }
+    for (const id of detail.removed_nodes || []) this.hiddenNodeIds.delete(id);
+    return transitions;
   }
 
   private send(ws: WebSocket, event: unknown): void {
@@ -172,7 +281,7 @@ export function mergeGraphUpdateDetails(
   right: GraphUpdateDetail,
 ): GraphUpdateDetail {
   const merged: GraphUpdateDetail = { ...left };
-  const keys: Array<keyof GraphUpdateDetail> = [
+  const keys = [
     'new_nodes',
     'new_edges',
     'updated_nodes',
@@ -180,10 +289,11 @@ export function mergeGraphUpdateDetails(
     'inferred_edges',
     'removed_nodes',
     'removed_edges',
-  ];
+  ] as const;
   for (const key of keys) {
     const values = [...new Set([...(left[key] || []), ...(right[key] || [])])];
     if (values.length > 0) merged[key] = values;
   }
+  if (left.cold_nodes_changed || right.cold_nodes_changed) merged.cold_nodes_changed = true;
   return merged;
 }

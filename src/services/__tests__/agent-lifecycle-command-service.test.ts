@@ -2,12 +2,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import type { AgentTask, EngagementConfig } from '../../types.js';
 import {
   AgentLifecycleCommandError,
   AgentLifecycleCommandService,
 } from '../agent-lifecycle-command-service.js';
 import { GraphEngine } from '../graph-engine.js';
+import { ApplicationCommandService } from '../application-command-service.js';
 
 function config(): EngagementConfig {
   return {
@@ -89,6 +91,54 @@ describe('AgentLifecycleCommandService', () => {
 
     expect(execution.result?.transcript_bytes)
       .toBe(Buffer.byteLength(transcript, 'utf8'));
+  });
+
+  it('settles an unexpressible planner conclusion with its real explanation', () => {
+    const commandId = 'planner-owner-command';
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'do something outside the operation vocabulary' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: { command_id: commandId, idempotency_key: commandId },
+      reserve: () => ({
+        status: 'running',
+        result: { phase: 'planning_running', planner_task_id: 'planner-task' },
+        entity_refs: { planner_task_id: 'planner-task' },
+      }),
+    });
+    expect(engine.registerAgent(task({
+      id: 'planner-task',
+      task_id: 'planner-task',
+      agent_id: 'planner-label',
+      agent_label: 'planner-label',
+      role: 'planner',
+      archetype: 'planner',
+      application_command_id: commandId,
+    })).ok).toBe(true);
+
+    const execution = service.submitTranscript({
+      task_reference: 'planner-task',
+      summary: 'No allowed operation can represent a request to change the local editor theme.',
+      planner_outcome: 'unexpressible',
+    });
+
+    expect(execution.result?.planner_outcome).toBe('unexpressible');
+    expect(engine.getApplicationCommandById(commandId)).toMatchObject({
+      status: 'failed',
+      error: {
+        code: 'PLANNER_UNEXPRESSIBLE',
+        message: expect.stringContaining('change the local editor theme'),
+      },
+      result: {
+        phase: 'unanswerable',
+        planner_task_id: 'planner-task',
+        reason: expect.stringContaining('change the local editor theme'),
+      },
+    });
+    expect(engine.getTask('planner-task')).toMatchObject({
+      status: 'completed',
+      result_summary: expect.stringContaining('change the local editor theme'),
+    });
   });
 
   it('replays a canonical transcript after the task has been dismissed', () => {

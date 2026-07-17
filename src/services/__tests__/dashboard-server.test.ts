@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { DashboardServer } from '../dashboard-server.js';
+import { DashboardMainWebSocketHub } from '../dashboard-main-ws-hub.js';
 import { GraphEngine } from '../graph-engine.js';
 import { InProcessTapeController } from '../in-process-tape.js';
 import type { EngagementConfig } from '../../types.js';
@@ -250,6 +251,254 @@ describe('DashboardServer', () => {
 
     expect(getStateSpy).not.toHaveBeenCalled();
     expect(exportGraphSpy).not.toHaveBeenCalled();
+  });
+
+  it('connected graph deltas resolve changed IDs without a full graph export', () => {
+    const mockClient = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+      close: vi.fn(),
+    };
+    (dashboard as any).clients = new Set([mockClient]);
+    const exportGraphSpy = vi.spyOn(engine, 'exportGraph');
+    const selectionSpy = vi.spyOn(engine, 'exportGraphSelection');
+
+    dashboard.onGraphUpdate({ updated_nodes: ['missing-final-node'] });
+    dashboard.flush();
+
+    expect(exportGraphSpy).not.toHaveBeenCalled();
+    expect(selectionSpy).toHaveBeenCalledWith(expect.objectContaining({
+      node_ids: ['missing-final-node'],
+    }));
+    const update = sentGraphUpdates(mockClient)[0];
+    expect(update.data.delta.removed_nodes).toContain('missing-final-node');
+  });
+
+  it('sends changed-ID deltas before coalescing an expensive state refresh', () => {
+    vi.useFakeTimers();
+    try {
+      const mockClient = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+        on: vi.fn(),
+      };
+      (dashboard as any).mainHub.attachConnection(mockClient);
+      mockClient.send.mockClear();
+      const stateSpy = vi.spyOn(engine, 'getState');
+
+      dashboard.onGraphUpdate({ updated_nodes: ['missing-fast-node'] });
+      dashboard.flush();
+
+      expect(stateSpy).not.toHaveBeenCalled();
+      expect(JSON.parse(String(mockClient.send.mock.calls[0][0])).type).toBe('graph_update');
+
+      vi.advanceTimersByTime(750);
+      expect(stateSpy).toHaveBeenCalledTimes(1);
+      expect(mockClient.send.mock.calls.map(call => JSON.parse(String(call[0])).type)).toContain('state_refresh');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not postpone authoritative state refresh under sustained graph updates', () => {
+    vi.useFakeTimers();
+    try {
+      const mockClient = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+        on: vi.fn(),
+      };
+      (dashboard as any).mainHub.attachConnection(mockClient);
+      mockClient.send.mockClear();
+
+      dashboard.onGraphUpdate({ updated_nodes: ['sustained-1'] });
+      dashboard.flush();
+      vi.advanceTimersByTime(600);
+      dashboard.onGraphUpdate({ updated_nodes: ['sustained-2'] });
+      dashboard.flush();
+      vi.advanceTimersByTime(149);
+      expect(mockClient.send.mock.calls
+        .map(call => JSON.parse(String(call[0])).type))
+        .not.toContain('state_refresh');
+
+      vi.advanceTimersByTime(1);
+      expect(mockClient.send.mock.calls
+        .map(call => JSON.parse(String(call[0])).type))
+        .toContain('state_refresh');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('publishes ten changed communities without scanning a 50k assignment cache', () => {
+    vi.useFakeTimers();
+    const baselineState = (dashboard as any).buildFrontendState();
+    const baselineGraph = engine.exportGraph({ includeDerivedCommunities: true });
+    const hub = new DashboardMainWebSocketHub(engine, null, {
+      buildState: () => baselineState,
+      buildGraph: () => baselineGraph,
+      debounceMs: 0,
+    });
+    try {
+      const mockClient = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+        on: vi.fn(),
+      };
+      hub.attachConnection(mockClient as any);
+      mockClient.send.mockClear();
+
+      const allAssignments = new Map(
+        Array.from({ length: 50_000 }, (_, index) => [`node-${index}`, index % 50] as const),
+      );
+      const scan = vi.spyOn(allAssignments, Symbol.iterator).mockImplementation(() => {
+        throw new Error('full community cache scan attempted');
+      });
+      const changedAssignments = new Map(
+        Array.from({ length: 10 }, (_, index) => [`node-${index * 2}`, index + 100] as const),
+      );
+      (engine as any).ctx.communityCache = allAssignments;
+      (engine as any).communityAssignments = allAssignments;
+      (engine as any).pendingCommunityChanges = changedAssignments;
+
+      hub.onGraphUpdate({ updated_nodes: [baselineGraph.nodes[0].id] });
+      hub.flush();
+      const failedBroadcast = vi.spyOn(hub, 'broadcast').mockImplementationOnce(() => {
+        throw new Error('synthetic socket failure');
+      });
+      expect(() => vi.advanceTimersByTime(750)).toThrow('synthetic socket failure');
+      expect((engine as any).pendingCommunityChanges.size).toBe(10);
+      failedBroadcast.mockRestore();
+
+      hub.onGraphUpdate({ updated_nodes: [baselineGraph.nodes[0].id] });
+      hub.flush();
+      vi.advanceTimersByTime(750);
+
+      const refresh = sentMessages(mockClient)
+        .find(message => message.type === 'state_refresh');
+      expect(scan).not.toHaveBeenCalled();
+      expect(Object.keys(refresh.data.community_ids)).toHaveLength(10);
+      expect(refresh.data.community_ids['node-18']).toBe(109);
+      expect((engine as any).pendingCommunityChanges.size).toBe(0);
+    } finally {
+      hub.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not expand every incident edge for an ordinary high-degree node update', () => {
+    const graph = (engine as any).ctx.graph;
+    graph.addNode('delta-hub', {
+      id: 'delta-hub', type: 'host', label: 'Delta hub',
+      discovered_at: '2026-07-16T00:00:00.000Z', confidence: 1,
+    });
+    for (let index = 0; index < 2_000; index++) {
+      const nodeId = `delta-spoke-${index}`;
+      graph.addNode(nodeId, {
+        id: nodeId, type: 'host', label: nodeId,
+        discovered_at: '2026-07-16T00:00:00.000Z', confidence: 1,
+      });
+      graph.addEdgeWithKey(`delta-edge-${index}`, 'delta-hub', nodeId, {
+        type: 'REACHABLE', confidence: 1, discovered_at: '2026-07-16T00:00:00.000Z',
+      });
+    }
+    const mockClient = { readyState: WebSocket.OPEN, send: vi.fn(), close: vi.fn() };
+    (dashboard as any).clients = new Set([mockClient]);
+
+    dashboard.onGraphUpdate({ updated_nodes: ['delta-hub'] });
+    dashboard.flush();
+
+    const update = sentGraphUpdates(mockClient)[0];
+    expect(update.data.delta.nodes).toHaveLength(1);
+    expect(update.data.delta.edges).toHaveLength(0);
+  });
+
+  it('expands incident edges when a node is superseded and reactivated', () => {
+    const graph = (engine as any).ctx.graph;
+    graph.addNode('visibility-hub', {
+      id: 'visibility-hub', type: 'host', label: 'Visibility hub',
+      discovered_at: '2026-07-16T00:00:00.000Z', confidence: 1,
+    });
+    graph.addNode('visibility-spoke', {
+      id: 'visibility-spoke', type: 'host', label: 'Visibility spoke',
+      discovered_at: '2026-07-16T00:00:00.000Z', confidence: 1,
+    });
+    graph.addEdgeWithKey('visibility-edge', 'visibility-hub', 'visibility-spoke', {
+      type: 'REACHABLE', confidence: 1, discovered_at: '2026-07-16T00:00:00.000Z',
+    });
+    const mockClient = { readyState: WebSocket.OPEN, send: vi.fn(), close: vi.fn() };
+    (dashboard as any).clients = new Set([mockClient]);
+
+    graph.setNodeAttribute('visibility-hub', 'identity_status', 'superseded');
+    dashboard.onGraphUpdate({ updated_nodes: ['visibility-hub'] });
+    dashboard.flush();
+    expect(sentGraphUpdates(mockClient)[0].data.delta.removed_edges).toContain('visibility-edge');
+
+    mockClient.send.mockClear();
+    graph.removeNodeAttribute('visibility-hub', 'identity_status');
+    dashboard.onGraphUpdate({ updated_nodes: ['visibility-hub'] });
+    dashboard.flush();
+    expect(sentGraphUpdates(mockClient)[0].data.delta.edges).toEqual([
+      expect.objectContaining({ id: 'visibility-edge' }),
+    ]);
+  });
+
+  it('replaces cold inventory only when its process-local revision changes', () => {
+    const mockClient = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+      close: vi.fn(),
+    };
+    (dashboard as any).clients = new Set([mockClient]);
+    (engine as any).ctx.coldStore.add({
+      id: 'cold-delta-host',
+      type: 'host',
+      label: '10.10.10.3',
+      discovered_at: '2026-07-16T00:00:00.000Z',
+      last_seen_at: '2026-07-16T00:00:00.000Z',
+    });
+
+    dashboard.onGraphUpdate({});
+    dashboard.flush();
+    dashboard.onGraphUpdate({});
+    dashboard.flush();
+
+    const updates = sentGraphUpdates(mockClient);
+    expect(updates).toHaveLength(2);
+    expect(updates[0].data.detail.cold_nodes_changed).toBe(true);
+    expect(updates[0].data.delta.cold_nodes).toEqual([
+      expect.objectContaining({ id: 'cold-delta-host' }),
+    ]);
+    expect(updates[1].data.detail.cold_nodes_changed).toBeUndefined();
+    expect(updates[1].data.delta.cold_nodes).toBeUndefined();
+  });
+
+  it('does not mark cold inventory changed during an unrelated durable transaction draft', () => {
+    (engine as any).ctx.coldStore.add({
+      id: 'cold-stable-host',
+      type: 'host',
+      label: '10.10.20.3',
+      discovered_at: '2026-07-16T00:00:00.000Z',
+      last_seen_at: '2026-07-16T00:00:00.000Z',
+    });
+    const revision = engine.getColdInventoryRevision();
+
+    engine.ingestFinding({
+      id: 'finding-unrelated-to-cold-store',
+      agent_id: 'test-agent',
+      timestamp: '2026-07-16T00:00:01.000Z',
+      nodes: [{
+        id: 'vuln-unrelated-to-cold-store',
+        type: 'vulnerability',
+        label: 'Unrelated finding',
+      }],
+      edges: [],
+    });
+
+    expect(engine.getColdInventoryRevision()).toBe(revision);
   });
 
   it('flush broadcasts accumulated graph updates through connected clients without sockets', () => {
@@ -804,48 +1053,53 @@ describe('DashboardServer', () => {
     expect((dashboard as any).fileCache.size).toBe(0);
   });
 
-  it('delta nodes contain fresh community_id after graph topology change', () => {
-    const mockClient = {
-      readyState: WebSocket.OPEN,
-      send: vi.fn(),
-      close: vi.fn(),
-    };
-    (dashboard as any).clients = new Set([mockClient]);
+  it('refreshes community IDs after delivering the topology delta', () => {
+    vi.useFakeTimers();
+    try {
+      const mockClient = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+        on: vi.fn(),
+      };
+      (dashboard as any).mainHub.attachConnection(mockClient);
+      mockClient.send.mockClear();
 
-    // Seed two connected hosts so Louvain has edges to work with
-    engine.ingestFinding({
-      id: 'community-delta-seed',
-      agent_id: 'test-agent',
-      timestamp: '2026-03-27T10:00:00Z',
-      nodes: [
-        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
-        { id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
-      ],
-      edges: [
-        { source: 'host-10-10-10-1', target: 'host-10-10-10-2', properties: { type: 'REACHABLE', confidence: 1.0, discovered_at: '2026-03-27T10:00:00Z' } },
-      ],
-    });
+      // Seed two connected hosts so Louvain has edges to work with.
+      engine.ingestFinding({
+        id: 'community-delta-seed',
+        agent_id: 'test-agent',
+        timestamp: '2026-03-27T10:00:00Z',
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'host-10-10-10-2', properties: { type: 'REACHABLE', confidence: 1.0, discovered_at: '2026-03-27T10:00:00Z' } },
+        ],
+      });
 
-    dashboard.onGraphUpdate({
-      new_nodes: ['host-10-10-10-1', 'host-10-10-10-2'],
-      new_edges: ['host-10-10-10-1--REACHABLE--host-10-10-10-2'],
-    });
-    dashboard.flush();
+      dashboard.onGraphUpdate({
+        new_nodes: ['host-10-10-10-1', 'host-10-10-10-2'],
+        new_edges: ['host-10-10-10-1--REACHABLE--host-10-10-10-2'],
+      });
+      dashboard.flush();
 
-    const graphUpdates = sentGraphUpdates(mockClient);
-    expect(graphUpdates).toHaveLength(1);
-    const payload = graphUpdates[0];
-    const deltaNodes = payload.data.delta.nodes;
+      const graphUpdates = sentGraphUpdates(mockClient);
+      expect(graphUpdates).toHaveLength(1);
+      expect(graphUpdates[0].data.delta.nodes.filter((node: any) => node.id.startsWith('host-'))).toHaveLength(2);
 
-    // Every browser delta node should have community_id projected
-    const hostNodes = deltaNodes.filter((n: any) => n.id.startsWith('host-'));
-    expect(hostNodes.length).toBe(2);
-    for (const node of hostNodes) {
-      expect(typeof node.properties.community_id).toBe('number');
+      vi.advanceTimersByTime(750);
+      const refresh = mockClient.send.mock.calls
+        .map(call => JSON.parse(String(call[0])))
+        .find(message => message.type === 'state_refresh');
+      expect(refresh).toBeDefined();
+      const communities = refresh.data.community_ids;
+      expect(typeof communities['host-10-10-10-1']).toBe('number');
+      expect(communities['host-10-10-10-1']).toBe(communities['host-10-10-10-2']);
+    } finally {
+      vi.useRealTimers();
     }
-
-    // Both hosts in the same connected component should share community_id
-    expect(hostNodes[0].properties.community_id).toBe(hostNodes[1].properties.community_id);
   });
 
   it('index.html serves SPA entry point directly', () => {

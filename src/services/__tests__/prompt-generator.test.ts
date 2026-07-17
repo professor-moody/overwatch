@@ -379,6 +379,7 @@ describe('prompt-generator', () => {
       expect(prompt).toContain('Task ID:** planner-task-1');
       expect(prompt).toContain('inspect the odd host');
       expect(prompt).toContain('only after `propose_plan` returns `ok: true`');
+      expect(prompt).toContain('`planner_outcome: "unexpressible"`');
       expect(tableTools).toContain('propose_plan');
       expect(tableTools).toContain('query_graph');
       expect(tableTools).not.toContain('validate_action');

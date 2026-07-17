@@ -46,6 +46,9 @@ export const EDGE_TYPE_WEIGHTS: Record<string, number> = {
 
 export interface CommunityDetectionOptions {
   resolution?: number;     // Louvain resolution parameter (default: 1.0)
+  /** Observe assignments while the result map is already being constructed.
+   * This lets callers derive changed-ID patches without a second O(V) pass. */
+  onAssignment?: (nodeId: string, communityId: number) => void;
 }
 
 /**
@@ -94,7 +97,9 @@ export function detectCommunities(graph: OverwatchGraph, options?: CommunityDete
     const result = new Map<string, number>();
     let i = 0;
     graph.forEachNode((id: string) => {
-      result.set(id, i++);
+      const communityId = i++;
+      result.set(id, communityId);
+      options?.onAssignment?.(id, communityId);
     });
     return result;
   }
@@ -104,7 +109,12 @@ export function detectCommunities(graph: OverwatchGraph, options?: CommunityDete
     resolution,
   });
 
-  return new Map(Object.entries(mapping).map(([k, v]) => [k, v]));
+  const result = new Map<string, number>();
+  for (const [nodeId, communityId] of Object.entries(mapping)) {
+    result.set(nodeId, communityId);
+    options?.onAssignment?.(nodeId, communityId);
+  }
+  return result;
 }
 
 /**

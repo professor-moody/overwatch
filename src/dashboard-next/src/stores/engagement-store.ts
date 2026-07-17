@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { flattenNode, flattenEdge, projectRawGraph } from '../lib/graph-flatten';
+import { GraphDeltaIndex } from '../lib/graph-delta-index';
 import type {
   EngagementState,
   ExportedGraph,
@@ -20,6 +21,7 @@ import type {
   AccessSummary,
   PersistenceRecoveryStatus,
   PlaybookRun,
+  StateRefreshData,
 } from '../lib/types';
 
 export interface EngagementStore {
@@ -38,7 +40,9 @@ export interface EngagementStore {
   graph: ExportedGraph;
   graphSummary: EngagementState['graph_summary'] | null;
   graphVersion: number;
+  communityVersion: number;
   lastDelta: { nodes: ExportedNode[]; edges: ExportedEdge[]; removed_nodes: string[]; removed_edges: string[] } | null;
+  lastCommunityDelta: ExportedNode[] | null;
 
   // Frontier
   frontier: FrontierItem[];
@@ -83,6 +87,7 @@ export interface EngagementStore {
   // Actions
   loadFullState: (data: FullStateData) => void;
   applyGraphUpdate: (data: GraphUpdateData) => void;
+  applyStateRefresh: (data: StateRefreshData) => void;
   updatePendingAction: (type: 'action_pending' | 'action_resolved', data: unknown) => void;
   setAgents: (agents: AgentInfo[]) => void;
   setCampaigns: (campaigns: Campaign[]) => void;
@@ -92,6 +97,8 @@ export interface EngagementStore {
   setPersistenceRecovery: (recovery: PersistenceRecoveryStatus | null) => void;
   setPlaybookRuns: (runs: PlaybookRun[]) => void;
 }
+
+const graphDeltaIndex = new GraphDeltaIndex();
 
 export const useEngagementStore = create<EngagementStore>((set, get) => ({
   // Connection
@@ -109,7 +116,9 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   graph: { nodes: [], edges: [], coldInventory: [] },
   graphSummary: null,
   graphVersion: 0,
+  communityVersion: 0,
   lastDelta: null,
+  lastCommunityDelta: null,
 
   // Frontier
   frontier: [],
@@ -158,6 +167,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
     // same shape (fixes IdentityPanel + AttackPathsPanel rendering
     // empty against real engagements).
     const flatGraph = projectRawGraph(data.graph);
+    graphDeltaIndex.reset(flatGraph);
     set({
       // The backend sends `config` + `access_summary`, NOT top-level `engagement`/
       // `access_level`. Derive the toolbar/layout view-model from the real fields —
@@ -170,6 +180,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       graphSummary: s.graph_summary || null,
       graphVersion: get().graphVersion + 1,
       lastDelta: null,
+      lastCommunityDelta: null,
       frontier: s.frontier || [],
       frontierHidden: s.frontier_hidden || null,
       objectives: s.objectives || [],
@@ -190,41 +201,13 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   applyGraphUpdate: (data: GraphUpdateData) => {
     const s = data.state;
     const prev = get().graph;
-
-    // Merge delta into existing graph. Flatten incoming nodes/edges
-    // so panel code can read flat fields consistently.
-    const nodeMap = new Map<string, ExportedNode>();
-    for (const n of prev.nodes) nodeMap.set(n.id, n);
-    // Remove deleted nodes
-    for (const id of data.delta.removed_nodes || []) nodeMap.delete(id);
-    // Add/update nodes from delta (flattened)
-    for (const n of data.delta.nodes) nodeMap.set(n.id, flattenNode(n));
-
-    const edgeMap = new Map<string, ExportedEdge>();
-    for (const e of prev.edges) {
-      const key = e.id || `${e.source}-${e.type}-${e.target}`;
-      edgeMap.set(key, e);
-    }
-    // Remove deleted edges
-    for (const id of data.delta.removed_edges || []) edgeMap.delete(id);
-    // Add/update edges from delta (flattened)
-    for (const e of data.delta.edges) {
-      const flat = flattenEdge(e);
-      const key = flat.id || `${flat.source}-${flat.type}-${flat.target}`;
-      edgeMap.set(key, flat);
-    }
+    const graph = graphDeltaIndex.apply(prev, data);
 
     set({
       engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : get().engagement,
       accessLevel: s.access_summary?.current_access_level || get().accessLevel,
       historyCount: data.history_count ?? get().historyCount,
-      graph: {
-        nodes: Array.from(nodeMap.values()),
-        edges: Array.from(edgeMap.values()),
-        coldInventory: data.delta.cold_nodes
-          ? [...data.delta.cold_nodes]
-          : prev.coldInventory,
-      },
+      graph,
       graphSummary: s.graph_summary || get().graphSummary,
       graphVersion: get().graphVersion + 1,
       lastDelta: {
@@ -233,6 +216,39 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
         removed_nodes: data.delta.removed_nodes,
         removed_edges: data.delta.removed_edges,
       },
+      frontier: s.frontier || get().frontier,
+      frontierHidden: s.frontier_hidden ?? get().frontierHidden,
+      objectives: s.objectives || get().objectives,
+      agents: s.agents || get().agents,
+      campaigns: s.campaigns || get().campaigns,
+      sessions: s.sessions || get().sessions,
+      pendingActions: s.pending_actions || get().pendingActions,
+      playbookRuns: s.playbook_runs
+        ? s.playbook_runs.filter((run): run is PlaybookRun => run.schema_version === 1)
+        : get().playbookRuns,
+      phases: s.phases || get().phases,
+      readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : get().readiness,
+      persistenceRecovery: s.persistence_recovery ?? get().persistenceRecovery,
+      accessSummary: s.access_summary || get().accessSummary,
+      recentActivity: (s as any).recent_activity || get().recentActivity,
+    });
+  },
+
+  applyStateRefresh: ({ state: s, history_count, community_ids }) => {
+    const graph = get().graph;
+    const communityDelta = community_ids
+      ? graphDeltaIndex.applyCommunityIds(graph, community_ids)
+      : [];
+    set({
+      engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : get().engagement,
+      accessLevel: s.access_summary?.current_access_level || get().accessLevel,
+      historyCount: history_count ?? get().historyCount,
+      ...(communityDelta.length > 0 ? {
+        graph,
+        communityVersion: get().communityVersion + 1,
+        lastCommunityDelta: communityDelta,
+      } : {}),
+      graphSummary: s.graph_summary || get().graphSummary,
       frontier: s.frontier || get().frontier,
       frontierHidden: s.frontier_hidden ?? get().frontierHidden,
       objectives: s.objectives || get().objectives,

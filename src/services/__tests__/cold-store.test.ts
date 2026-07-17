@@ -27,6 +27,27 @@ function makeRecord(overrides: Partial<ColdNodeRecord> = {}): ColdNodeRecord {
 
 describe('ColdStore', () => {
   describe('add / get / has', () => {
+    it('advances a process-local revision only when inventory operations change state', () => {
+      const cs = new ColdStore();
+      const initial = cs.getRevision();
+      cs.add(makeRecord());
+      const afterAdd = cs.getRevision();
+      cs.promote('missing');
+      expect(cs.getRevision()).toBe(afterAdd);
+      cs.promote('host-1');
+      expect(initial).toBe(0);
+      expect(afterAdd).toBe(1);
+      expect(cs.getRevision()).toBe(2);
+    });
+
+    it('does not advance the revision for a semantically identical add', () => {
+      const cs = new ColdStore();
+      cs.add(makeRecord());
+      const revision = cs.getRevision();
+      cs.add({ ...makeRecord() });
+      expect(cs.getRevision()).toBe(revision);
+    });
+
     it('stores and retrieves a record', () => {
       const cs = new ColdStore();
       const rec = makeRecord();
@@ -66,6 +87,26 @@ describe('ColdStore', () => {
       cs.add(makeRecord({ discovered_at: now, last_seen_at: now }));
 
       expect(cs.get('host-1')!.last_seen_at).toBe(later);
+    });
+  });
+
+  describe('import', () => {
+    it('does not advance the revision for identical inventory in another order', () => {
+      const cs = new ColdStore();
+      const first = makeRecord({ id: 'host-1' });
+      const second = makeRecord({ id: 'host-2', ip: '10.0.0.2', label: '10.0.0.2' });
+      cs.import([first, second]);
+      const revision = cs.getRevision();
+      cs.import([{ ...second }, { ...first }]);
+      expect(cs.getRevision()).toBe(revision);
+    });
+
+    it('advances the revision when imported inventory changes', () => {
+      const cs = new ColdStore();
+      cs.import([makeRecord()]);
+      const revision = cs.getRevision();
+      cs.import([makeRecord({ last_seen_at: later })]);
+      expect(cs.getRevision()).toBe(revision + 1);
     });
   });
 

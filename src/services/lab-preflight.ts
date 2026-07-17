@@ -30,7 +30,7 @@ type LabPreflightOptions = {
 
 type SyncReadinessInputs = {
   config: ReturnType<GraphEngine['getConfig']>;
-  graph: ExportedGraph;
+  graph_stage: 'empty' | 'seeded' | 'mid_run';
   health: HealthReport;
 };
 
@@ -207,7 +207,7 @@ export function runLabPreflight(engine: GraphEngine, options: LabPreflightOption
 function getSyncReadinessInputs(engine: GraphEngine): SyncReadinessInputs {
   return {
     config: engine.getConfig(),
-    graph: engine.exportGraph(),
+    graph_stage: engine.getGraphStage(),
     health: engine.getHealthReport(),
   };
 }
@@ -218,7 +218,7 @@ function buildInlineIssues(
   recovery: PersistenceRecoveryStatus | undefined,
 ): string[] {
   const issues: string[] = [];
-  const graphStage = determineGraphStage(inputs.graph);
+  const graphStage = inputs.graph_stage;
   const recoveryAssessment = recovery ? assessPersistenceRecovery(recovery) : undefined;
   const configAssessment = recovery?.config_recovery
     ? assessConfigRecovery(recovery.config_recovery)
