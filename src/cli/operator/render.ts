@@ -428,8 +428,9 @@ export function renderPlaybooks(response: PlaybookListResponse): string {
     ['STATUS', 'RUN', 'PROVIDER', 'CREDENTIAL', 'PROGRESS', 'OWNER', 'REPORT'],
     response.runs.map(run => {
       const steps = run.steps ?? [];
-      const complete = steps.filter(step => step.status === 'succeeded' || step.status === 'skipped').length;
-      const active = steps.flatMap(step => step.attempts ?? []).find(attempt => attempt.status === 'running');
+      const complete = steps.filter(step => step.status === 'succeeded').length;
+      const active = steps.flatMap(step => step.attempts ?? [])
+        .find(attempt => ['claimed', 'awaiting_approval', 'running'].includes(attempt.status ?? ''));
       return [
         run.status ?? 'legacy',
         run.run_id,

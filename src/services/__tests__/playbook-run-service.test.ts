@@ -140,6 +140,7 @@ describe('PlaybookRunService', () => {
       definition,
       credential_id: 'cred-1',
       normalized_inputs: {},
+      bindings: { account_id: '123456789012' },
       steps: baseSteps(true),
     });
     const claim = service.startStep(opened.run.run_id, 'identity');
@@ -157,28 +158,31 @@ describe('PlaybookRunService', () => {
     });
     expect(() => service.startStep(opened.run.run_id, 'inventory')).toThrowError(PlaybookRunError);
 
+    service.beginAttemptExecution(claim.execution);
     const failed = service.finishAttempt(opened.run.run_id, 'identity', claim.attempt.attempt_id, {
       execution_outcome: 'succeeded',
       parse_outcome: 'no_data',
-      action_id: 'act-1',
+      action_id: claim.attempt.execution_action_id,
       evidence_ids: ['ev-1'],
       finding_ids: [],
       error: 'The requested parser yielded no artifacts.',
     });
     expect(failed.status).toBe('failed');
     expect(failed.steps[0].status).toBe('failed');
+    expect(() => service.resume(opened.run.run_id)).toThrow(/cannot be resumed/);
 
     const retry = service.retryStep(opened.run.run_id, 'identity');
+    service.beginAttemptExecution(retry.execution);
     const completed = service.finishAttempt(opened.run.run_id, 'identity', retry.attempt.attempt_id, {
       execution_outcome: 'succeeded',
       parse_outcome: 'ok',
-      action_id: 'act-2',
+      action_id: retry.attempt.execution_action_id,
       evidence_ids: ['ev-2'],
       finding_ids: ['finding-2'],
     });
     expect(completed.steps[0].attempts).toHaveLength(2);
-    expect(completed.steps[0].attempts[0]).toMatchObject({ action_id: 'act-1', evidence_ids: ['ev-1'] });
-    expect(completed.steps[0].attempts[1]).toMatchObject({ action_id: 'act-2', finding_ids: ['finding-2'] });
+    expect(completed.steps[0].attempts[0]).toMatchObject({ action_id: claim.attempt.execution_action_id, evidence_ids: ['ev-1'] });
+    expect(completed.steps[0].attempts[1]).toMatchObject({ action_id: retry.attempt.execution_action_id, finding_ids: ['finding-2'] });
     expect(completed.steps.find(step => step.step_id === 'inventory')?.status).toBe('pending');
   });
 
@@ -188,9 +192,11 @@ describe('PlaybookRunService', () => {
       definition,
       credential_id: 'cred-1',
       normalized_inputs: {},
+      bindings: { account_id: '123456789012' },
       steps: baseSteps(true),
     });
     const claim = service.startStep(opened.run.run_id, 'identity');
+    service.beginAttemptExecution(claim.execution);
     const partial = service.finishAttempt(opened.run.run_id, 'identity', claim.attempt.attempt_id, {
       execution_outcome: 'succeeded',
       parse_outcome: 'partial',
@@ -211,6 +217,7 @@ describe('PlaybookRunService', () => {
       steps: [baseSteps(true)[0]],
     });
     const claim = service.startStep(opened.run.run_id, 'identity');
+    service.beginAttemptExecution(claim.execution);
     const partial = service.finishAttempt(opened.run.run_id, 'identity', claim.attempt.attempt_id, {
       execution_outcome: 'succeeded',
       parse_outcome: 'partial',
@@ -249,9 +256,12 @@ describe('PlaybookRunService', () => {
     }, () => service.retryStep(opened.run.run_id, 'identity'));
     const completed = withApplicationCommandInvocation({
       transport: 'mcp', actor_task_id: 'task-terminal', request_id: 'execute-1',
-    }, () => service.finishAttempt(opened.run.run_id, 'identity', retry.attempt.attempt_id, {
-      execution_outcome: 'succeeded', parse_outcome: 'ok',
-    }));
+    }, () => {
+      service.beginAttemptExecution(retry.execution);
+      return service.finishAttempt(opened.run.run_id, 'identity', retry.attempt.attempt_id, {
+        execution_outcome: 'succeeded', parse_outcome: 'ok',
+      });
+    });
     expect(completed.steps[0].attempts[1]).toMatchObject({
       claimed_via: 'mcp', claimed_by_task_id: 'task-terminal',
       executed_via: 'mcp', executed_by_task_id: 'task-terminal',
@@ -277,7 +287,7 @@ describe('PlaybookRunService', () => {
     expect(runs.getDurable(opened.run.run_id).steps[0].attempts).toHaveLength(1);
   });
 
-  it('retains skips and derives completed reporting when all work is terminal', () => {
+  it('retains skips without reporting an all-skipped run as executed completion', () => {
     const service = new PlaybookRunService(openEngine());
     const opened = service.open({
       definition,
@@ -286,8 +296,10 @@ describe('PlaybookRunService', () => {
       steps: [baseSteps(true)[0]],
     });
     const skipped = service.skipStep(opened.run.run_id, 'identity', 'Not relevant to this engagement.');
-    expect(skipped).toMatchObject({ status: 'succeeded', report_status: 'completed' });
+    expect(skipped).toMatchObject({ status: 'skipped', report_status: 'partial' });
     expect(skipped.steps[0]).toMatchObject({ status: 'skipped', blocked_reason: 'Not relevant to this engagement.' });
+    expect(service.list({ open_only: true })).not.toContainEqual(expect.objectContaining({ run_id: opened.run.run_id }));
+    expect(() => service.skipStep(opened.run.run_id, 'identity', 'Rewrite reason')).toThrow(/already skipped/);
   });
 
   it('atomically marks active attempts interrupted on restart and resumes without rewriting them', () => {
@@ -300,6 +312,28 @@ describe('PlaybookRunService', () => {
       steps: [baseSteps(true)[0]],
     });
     const claim = firstService.startStep(opened.run.run_id, 'identity');
+    firstService.beginAttemptExecution(claim.execution);
+    const recoveredEvidenceId = firstEngine.getEvidenceStore().store({
+      action_id: claim.attempt.execution_action_id,
+      evidence_type: 'command_output',
+      raw_output: 'captured before the terminal playbook write',
+    });
+    firstEngine.logActionEvent({
+      action_id: claim.attempt.execution_action_id,
+      event_type: 'finding_ingested',
+      description: 'Finding committed before restart',
+      category: 'finding',
+      linked_finding_ids: ['finding-before-restart'],
+      result_classification: 'success',
+    });
+    firstEngine.logActionEvent({
+      action_id: claim.attempt.execution_action_id,
+      event_type: 'parse_output',
+      description: 'A failed parse referenced no landed finding',
+      category: 'finding',
+      linked_finding_ids: ['phantom-no-data-finding'],
+      result_classification: 'failure',
+    });
     closeEngine(firstEngine);
 
     const secondEngine = openEngine();
@@ -310,13 +344,16 @@ describe('PlaybookRunService', () => {
       attempt_id: claim.attempt.attempt_id,
       status: 'interrupted',
       execution_outcome: 'interrupted',
+      evidence_ids: [recoveredEvidenceId],
+      finding_ids: ['finding-before-restart'],
     });
     const resumed = secondService.resume(opened.run.run_id);
     expect(resumed.status).toBe('pending');
     expect(resumed.resume_count).toBe(1);
     expect(resumed.steps[0].attempts).toHaveLength(1);
+    expect(resumed.steps[0].completed_at).toBeUndefined();
     const retry = secondService.retryStep(opened.run.run_id, 'identity');
-    expect(retry.attempt).toMatchObject({ attempt_number: 2, status: 'running' });
+    expect(retry.attempt).toMatchObject({ attempt_number: 2, status: 'claimed' });
   });
 
   it('closes a claimed attempt from an instrumented tool response without persisting output', () => {
@@ -329,11 +366,12 @@ describe('PlaybookRunService', () => {
       steps: [baseSteps(true)[0]],
     });
     const claim = service.startStep(opened.run.run_id, 'identity');
+    service.beginAttemptExecution(claim.execution);
     const completed = finishPlaybookAttemptFromToolResponse(engine, claim.execution, {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          action_id: 'act-auto',
+          action_id: claim.attempt.execution_action_id,
           executed: true,
           stdout: 'sensitive output that must not enter playbook state',
           stdout_evidence_id: 'ev-auto',
@@ -346,11 +384,269 @@ describe('PlaybookRunService', () => {
     });
     expect(completed?.steps[0].attempts[0]).toMatchObject({
       status: 'succeeded',
-      action_id: 'act-auto',
+      action_id: claim.attempt.execution_action_id,
       evidence_ids: ['ev-auto'],
       finding_ids: ['finding-auto'],
       parse_outcome: 'ok',
     });
     expect(JSON.stringify(completed)).not.toContain('sensitive output');
+  });
+
+  it('enforces server-resolved binding values even when a descriptor claims readiness', () => {
+    const service = new PlaybookRunService(openEngine());
+    const input = {
+      definition,
+      credential_id: 'cred-1',
+      normalized_inputs: {},
+      steps: [{
+        step: 1,
+        step_id: 'bound-step',
+        description: 'Bound step',
+        command: 'run-bound-step',
+        runner: 'run_bash',
+        ready: true,
+        status: 'ready',
+        required_bindings: ['account_id', 'principal_kind=role'],
+      }],
+    };
+    const blocked = service.open(input);
+    expect(blocked.run.steps[0]).toMatchObject({
+      status: 'blocked',
+      blocked_reason: 'Waiting for bindings: account_id, principal_kind=role',
+      resolved_bindings: {},
+    });
+
+    const rebound = service.open({
+      ...input,
+      bindings: { account_id: '123456789012', principal_kind: 'role' },
+    });
+    expect(rebound).toMatchObject({ created: false, run: { run_id: blocked.run.run_id } });
+    expect(rebound.run.steps[0]).toMatchObject({
+      status: 'pending',
+      resolved_bindings: { account_id: '123456789012', principal_kind: 'role' },
+    });
+  });
+
+  it('reuses a completed logical run when newly discovered bindings extend its immutable plan', () => {
+    const service = new PlaybookRunService(openEngine());
+    const first = service.open({
+      definition,
+      credential_id: 'cred-1',
+      normalized_inputs: { mode: 'discovery' },
+      steps: [baseSteps(true)[0]],
+    });
+    const claim = service.startStep(first.run.run_id, 'identity');
+    service.beginAttemptExecution(claim.execution);
+    const completed = service.finishAttempt(first.run.run_id, 'identity', claim.attempt.attempt_id, {
+      execution_outcome: 'succeeded', parse_outcome: 'ok', finding_ids: ['finding-identity'],
+    });
+    expect(completed.status).toBe('succeeded');
+
+    const extended = service.open({
+      definition,
+      credential_id: 'cred-1',
+      normalized_inputs: { mode: 'discovery' },
+      bindings: { account_id: '123456789012' },
+      steps: [
+        baseSteps(true)[0],
+        {
+          ...baseSteps(true)[1],
+          depends_on: ['identity'],
+          required_bindings: ['account_id'],
+        },
+      ],
+    });
+    expect(extended.created).toBe(false);
+    expect(extended.run.run_id).toBe(first.run.run_id);
+    expect(extended.run.plan_revisions).toHaveLength(2);
+    expect(extended.run.steps[0].status).toBe('succeeded');
+    expect(extended.run.steps[1].status).toBe('pending');
+  });
+
+  it('ties a retained step retry to the latest immutable revision that actually defines it', () => {
+    const service = new PlaybookRunService(openEngine());
+    const first = service.open({
+      definition, credential_id: 'cred-1', normalized_inputs: {},
+      steps: [{ ...baseSteps(true)[0], step_id: 'step-a', command: 'command-a' }],
+    });
+    const claim = service.startStep(first.run.run_id, 'step-a');
+    service.beginAttemptExecution(claim.execution);
+    service.finishAttempt(first.run.run_id, 'step-a', claim.attempt.attempt_id, {
+      execution_outcome: 'failed', error: 'retry later',
+    });
+
+    const narrowed = service.open({
+      definition, credential_id: 'cred-1', normalized_inputs: {},
+      steps: [{ ...baseSteps(true)[0], step_id: 'step-b', command: 'command-b' }],
+    });
+    expect(narrowed.run.current_plan_revision).toBe(2);
+    const retry = service.retryStep(first.run.run_id, 'step-a');
+    expect(retry.attempt.plan_revision).toBe(1);
+    expect(narrowed.run.plan_revisions[0].steps.map(step => step.step_id)).toContain('step-a');
+    expect(narrowed.run.plan_revisions[1].steps.map(step => step.step_id)).not.toContain('step-a');
+  });
+
+  it('reopens a succeeded logical step when its execution semantics change', () => {
+    const service = new PlaybookRunService(openEngine());
+    const first = service.open({
+      definition, credential_id: 'cred-1', normalized_inputs: {},
+      steps: [{ ...baseSteps(true)[0], command: 'old-command' }],
+    });
+    const claim = service.startStep(first.run.run_id, 'identity');
+    service.beginAttemptExecution(claim.execution);
+    service.finishAttempt(first.run.run_id, 'identity', claim.attempt.attempt_id, {
+      execution_outcome: 'succeeded', parse_outcome: 'ok',
+    });
+
+    const changed = service.open({
+      definition, credential_id: 'cred-1', normalized_inputs: {},
+      steps: [{ ...baseSteps(true)[0], command: 'new-command' }],
+    });
+    expect(changed.run).toMatchObject({ status: 'pending', current_plan_revision: 2 });
+    expect(changed.run.steps[0]).toMatchObject({ status: 'pending', attempts: [{ status: 'succeeded' }] });
+    const rerun = service.retryStep(first.run.run_id, 'identity');
+    expect(rerun.attempt).toMatchObject({ attempt_number: 2, plan_revision: 2 });
+    expect(rerun.attempt.execution_template_hash).not.toBe(claim.attempt.execution_template_hash);
+  });
+
+  it('records approval and execution transitions against the exact immutable plan revision', () => {
+    const service = new PlaybookRunService(openEngine());
+    const opened = service.open({
+      definition,
+      credential_id: 'cred-1',
+      normalized_inputs: {},
+      steps: [baseSteps(true)[0]],
+    });
+    const claim = service.startStep(opened.run.run_id, 'identity');
+    expect(claim.attempt).toMatchObject({
+      status: 'claimed',
+      plan_revision: 1,
+      execution_template_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const awaiting = service.markAttemptExecutionState(claim.execution, 'awaiting_approval');
+    expect(awaiting).toMatchObject({ status: 'awaiting_approval', steps: [{ status: 'awaiting_approval' }] });
+    const running = service.markAttemptExecutionState(claim.execution, 'running');
+    expect(running).toMatchObject({ status: 'running', steps: [{ status: 'running' }] });
+  });
+
+  it('accepts only exact credential environment resolution for a claimed runner', () => {
+    const engine = openEngine();
+    engine.addNode({
+      id: 'cred-env', type: 'credential', label: 'Credential environment',
+      confidence: 1, discovered_at: engine.now(), cred_type: 'token',
+      cred_value: 'resolved-secret-value',
+    } as any);
+    const service = new PlaybookRunService(engine);
+    const opened = service.open({
+      definition,
+      credential_id: 'cred-env',
+      normalized_inputs: {},
+      steps: [{
+        step_id: 'credential-command', description: 'Use credential environment',
+        runner: 'run_bash', command: 'credential-command',
+        env_from_credential: { OVERWATCH_TOKEN: 'cred-env' },
+        ready: true, status: 'ready',
+      }],
+    });
+    const claim = service.startStep(opened.run.run_id, 'credential-command');
+    expect(() => service.validateAttemptLinkage({
+      ...claim.execution,
+      env: { OVERWATCH_TOKEN: 'resolved-secret-value' },
+      validate: true,
+    } as any)).not.toThrow();
+    for (const env of [
+      { OVERWATCH_TOKEN: 'wrong-value' },
+      { OVERWATCH_TOKEN: 'cred-env' },
+      { OVERWATCH_TOKEN: 'resolved-secret-value', EXTRA: 'unexpected' },
+      {},
+    ]) {
+      expect(() => service.validateAttemptLinkage({
+        ...claim.execution, env, validate: true,
+      } as any)).toThrow(/unclaimed execution field env/);
+    }
+  });
+
+  it('seals direct-tool arguments as well as process runner descriptors', () => {
+    const service = new PlaybookRunService(openEngine());
+    const opened = service.open({
+      definition: { ...definition, provider: 'oidc' },
+      credential_id: 'cred-direct', normalized_inputs: {},
+      steps: [{
+        step_id: 'replay', description: 'Replay token', tool: 'validate_token_credential',
+        args: { credential_id: 'cred-direct', provider: 'aws_sts' },
+        ready: true, status: 'ready',
+      }],
+    });
+    const claim = service.startStep(opened.run.run_id, 'replay');
+    const args = claim.execution.args as Record<string, unknown>;
+    expect(() => service.validateAttemptLinkage(args)).not.toThrow();
+    for (const mutation of [
+      { endpoint: 'https://example.invalid/' },
+      { extra_args: ['--data', 'changed'] },
+      { allow_audience_mismatch: true },
+    ]) {
+      expect(() => service.validateAttemptLinkage({ ...args, ...mutation }))
+        .toThrow(/unclaimed execution field/);
+    }
+  });
+
+  it('rejects terminal descriptors whose command has no matching replay response', () => {
+    const engine = openEngine();
+    const service = new PlaybookRunService(engine);
+    const opened = service.open({
+      definition, credential_id: 'cred-terminal-replay', normalized_inputs: {},
+      steps: [{ ...baseSteps(true)[0], command: 'terminal-command' }],
+    });
+    const claim = service.startStep(opened.run.run_id, 'identity');
+    service.beginAttemptExecution(claim.execution);
+    service.finishAttempt(opened.run.run_id, 'identity', claim.attempt.attempt_id, {
+      execution_outcome: 'interrupted', error: 'Daemon restarted before completion.',
+    });
+    engine.recordApplicationCommand({
+      command_id: claim.attempt.execution_command_id,
+      idempotency_key: 'idem-terminal-replay',
+      input_sha256: 'a'.repeat(64),
+      validated_input: {},
+      command_kind: 'process.execute',
+      transport: 'system',
+      actor_task_id: null,
+      action_id: claim.attempt.execution_action_id,
+      status: 'succeeded',
+      created_at: engine.now(),
+      completed_at: engine.now(),
+      result: {
+        response_evidence_id: 'response-from-completed-process',
+        action_id: claim.attempt.execution_action_id,
+        is_error: false,
+        executed: true,
+      },
+    });
+    expect(() => service.validateAttemptLinkage(claim.execution))
+      .toThrow(/only a matching succeeded command with a retained response can replay/);
+    expect(service.getDurable(opened.run.run_id).steps[0].attempts).toEqual([
+      expect.objectContaining({ status: 'interrupted', execution_outcome: 'interrupted' }),
+    ]);
+  });
+
+  it('rejects success before execution but durably closes a pre-execution validation failure', () => {
+    const service = new PlaybookRunService(openEngine());
+    const opened = service.open({
+      definition,
+      credential_id: 'cred-1',
+      normalized_inputs: {},
+      steps: [baseSteps(true)[0]],
+    });
+    const claim = service.startStep(opened.run.run_id, 'identity');
+    expect(() => service.finishAttempt(opened.run.run_id, 'identity', claim.attempt.attempt_id, {
+      execution_outcome: 'succeeded', parse_outcome: 'ok',
+    })).toThrow(/has not crossed the execution boundary/);
+    const failed = service.finishAttempt(opened.run.run_id, 'identity', claim.attempt.attempt_id, {
+      execution_outcome: 'failed', error: 'Validation failed before execution.',
+    });
+    expect(failed.steps[0].attempts[0]).toMatchObject({
+      status: 'failed',
+      execution_outcome: 'failed',
+      error: 'Validation failed before execution.',
+    });
   });
 });

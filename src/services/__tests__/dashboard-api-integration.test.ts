@@ -1129,9 +1129,19 @@ describe('durable playbook HTTP lifecycle', () => {
     });
     runId = opened.run.run_id;
 
+    const skippedRun = service.open({
+      definition: { definition_id: 'http-skipped', definition_version: 1, provider: 'aws', title: 'Skipped HTTP playbook' },
+      credential_id: 'cred-oidc', normalized_inputs: {},
+      steps: [{ step_id: 'skip-me', step: 1, description: 'Skip me', runner: 'run_tool', binary: 'true', ready: true, status: 'ready' }],
+      new_run: true,
+    });
+    service.skipStep(skippedRun.run.run_id, 'skip-me', 'Not applicable.');
+
     const list = await getJson(`/api/playbook-runs?credential_id=cred-oidc&open_only=true`);
     expect(list.status).toBe(200);
-    expect(PlaybookRunListResponseSchema.parse(list.body).runs.some(run => run.run_id === runId)).toBe(true);
+    const openRuns = PlaybookRunListResponseSchema.parse(list.body).runs;
+    expect(openRuns.some(run => run.run_id === runId)).toBe(true);
+    expect(openRuns.some(run => run.run_id === skippedRun.run.run_id)).toBe(false);
     const detail = await getJson(`/api/playbook-runs/${encodeURIComponent(runId)}`);
     expect(PlaybookRunResponseSchema.parse(detail.body).run.run_id).toBe(runId);
 

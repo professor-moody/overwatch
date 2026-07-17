@@ -206,7 +206,7 @@ Run the ready STS step first and ingest it. Re-run this tool after the caller
 identity lands; account, policy, S3, Lambda, and CloudFox steps then receive
 server-resolved account/caller/principal bindings. Blocked steps carry a null
 command rather than guessing attribution. The logical plan and every attempt
-are durable; repeated calls resume the matching open run by default.`,
+are durable; repeated calls resume the matching logical run by default.`,
       inputSchema: {
         credential_id: z.string().min(1).describe('AWS-shaped credential node id.'),
         regions: z.array(z.string().regex(/^[a-z]{2}(?:-[a-z0-9]+)+-\d+$/)).optional().describe('AWS regions to enumerate. Defaults to us-east-1; duplicates are removed.'),
@@ -215,7 +215,7 @@ are durable; repeated calls resume the matching open run by default.`,
         use_ambient_credentials: z.boolean().default(false).describe('Explicitly acknowledge that the current AWS environment/default chain contains this selected AWS-marked credential.'),
         skip_inventory: z.boolean().default(false).describe('Skip the optional CloudFox inventory step.'),
         include_destructive: z.boolean().default(false).describe('Include an explicit-opt-in IAM write-probe hint.'),
-        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching open run.'),
+        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching logical run.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -429,6 +429,13 @@ are durable; repeated calls resume the matching open run by default.`,
           use_ambient_credentials: useAmbientCredentials,
           skip_inventory,
           include_destructive,
+        },
+        bindings: {
+          ...(bindings ?? {}),
+          ...(executionBinding ? { credential_execution_binding: executionBinding } : {}),
+          ...(executionBindingIdentity
+            ? { credential_execution_binding_identity: executionBindingIdentity }
+            : {}),
         },
         steps: steps.map(step => ({ ...step })),
         new_run: (params as { new_run?: boolean }).new_run === true,

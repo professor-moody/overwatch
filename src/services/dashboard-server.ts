@@ -1959,6 +1959,7 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     try {
       await this.readJsonBody(req);
+      if (!this.requireWritablePersistence(res)) return;
       const payload = PlaybookStepClaimResponseSchema.parse(this.playbookCommands.start(runId, stepId));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
@@ -1975,6 +1976,7 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     try {
       await this.readJsonBody(req);
+      if (!this.requireWritablePersistence(res)) return;
       const payload = PlaybookRunResponseSchema.parse({ run: this.playbookCommands.resume(runId) });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
@@ -1992,6 +1994,7 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     try {
       await this.readJsonBody(req);
+      if (!this.requireWritablePersistence(res)) return;
       const payload = PlaybookStepClaimResponseSchema.parse(this.playbookCommands.retry(runId, stepId));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
@@ -2009,6 +2012,7 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     try {
       const body = await this.readJsonBody(req) as { reason?: string };
+      if (!this.requireWritablePersistence(res)) return;
       const payload = PlaybookRunResponseSchema.parse({
         run: this.playbookCommands.skip(runId, stepId, body.reason),
       });
@@ -2028,6 +2032,7 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     try {
       const body = await this.readJsonBody(req) as { reason?: string };
+      if (!this.requireWritablePersistence(res)) return;
       const payload = PlaybookRunResponseSchema.parse({
         run: this.playbookCommands.interrupt(runId, stepId, body.reason),
       });

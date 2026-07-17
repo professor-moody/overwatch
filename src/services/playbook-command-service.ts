@@ -9,6 +9,7 @@ import {
 import {
   PlaybookRunError,
   PlaybookRunService,
+  type PlaybookAttemptResult,
   type OpenPlaybookInput,
   type PlaybookStepClaim,
 } from './playbook-run-service.js';
@@ -24,6 +25,7 @@ const OpenSchema = z.object({
   definition: DefinitionSchema,
   credential_id: z.string().min(1),
   normalized_inputs: z.record(z.unknown()),
+  bindings: z.record(z.unknown()).optional(),
   steps: z.array(z.record(z.unknown())),
   new_run: z.boolean().optional(),
 }).strict();
@@ -35,6 +37,18 @@ const StepSchema = z.object({
 
 const RunSchema = z.object({ run_id: z.string().min(1) }).strict();
 const StepReasonSchema = StepSchema.extend({ reason: z.string().max(2_000).optional() }).strict();
+const AttemptResultSchema = z.object({
+  execution_outcome: z.enum(['succeeded', 'failed', 'interrupted']),
+  parse_outcome: z.enum(['ok', 'no_data', 'validation_failed', 'parser_exception', 'partial']).optional(),
+  action_id: z.string().min(1).optional(),
+  evidence_ids: z.array(z.string().min(1)).optional(),
+  finding_ids: z.array(z.string().min(1)).optional(),
+  error: z.string().max(8_000).optional(),
+}).strict();
+const CompleteSchema = StepSchema.extend({
+  attempt_id: z.string().min(1),
+  result: AttemptResultSchema,
+}).strict();
 
 type OpenResult = { run: PersistedDurablePlaybookRunV1; created: boolean };
 
@@ -90,6 +104,31 @@ export class PlaybookCommandService {
   interrupt(runId: string, stepId: string, reason?: string, metadata: ApplicationCommandMetadata = {}): PersistedDurablePlaybookRunV1 {
     return this.stepMutation('playbook.step.interrupt', runId, stepId, reason, metadata,
       parsed => this.runs.interruptAttempt(parsed.run_id, parsed.step_id, parsed.reason));
+  }
+
+  complete(
+    runId: string,
+    stepId: string,
+    attemptId: string,
+    result: PlaybookAttemptResult,
+    metadata: ApplicationCommandMetadata = {},
+  ): PersistedDurablePlaybookRunV1 {
+    const input = { run_id: runId, step_id: stepId, attempt_id: attemptId, result };
+    return this.resultAndPublish(this.commands.executeSync({
+      command_kind: 'playbook.attempt.complete', input, schema: CompleteSchema, metadata,
+      state_keys: ['playbook_runs'],
+      execute: parsed => ({
+        run: this.runs.finishAttemptVerified(parsed.run_id, parsed.step_id, parsed.attempt_id, parsed.result),
+      }),
+      record: (_parsed, completed) => ({
+        entity_refs: {
+          run_id: completed.run.run_id,
+          step_id: stepId,
+          attempt_id: attemptId,
+        },
+        action_id: result.action_id,
+      }),
+    })).run;
   }
 
   private stepCommand(

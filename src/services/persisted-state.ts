@@ -271,6 +271,9 @@ export interface PersistedPlaybookAttemptV1 {
   execution_command_id: string;
   execution_idempotency_key: string;
   execution_action_id: string;
+  /** Immutable plan snapshot and descriptor fingerprint selected for this attempt. */
+  plan_revision: number;
+  execution_template_hash: string;
   execution_started_at?: string;
   completed_at?: string;
   action_id?: string;
@@ -289,6 +292,8 @@ export interface PersistedPlaybookStepRunV1 {
   depends_on: string[];
   required_bindings: string[];
   produces_bindings: string[];
+  /** Non-secret values resolved by the server for the current plan revision. */
+  resolved_bindings: Record<string, unknown>;
   resolved_execution?: Record<string, unknown>;
   blocked_reason?: string;
   attempts: PersistedPlaybookAttemptV1[];
@@ -307,6 +312,8 @@ export interface PersistedDurablePlaybookRunV1 {
   credential_id: string;
   input_hash: string;
   normalized_inputs: Record<string, unknown>;
+  /** Current non-secret binding set derived from graph truth during expansion. */
+  bindings: Record<string, unknown>;
   plan_revisions: PersistedPlaybookPlanRevisionV1[];
   current_plan_revision: number;
   steps: PersistedPlaybookStepRunV1[];
@@ -649,6 +656,7 @@ function validatePlaybookRun(candidate: unknown, path: string, key: string): voi
     throw new PersistedStateVersionError(`${path}.plan_revisions must not be empty`, CURRENT_STATE_VERSION, 'invalid');
   }
   const revisionIds = new Set<number>();
+  const revisionStepIds = new Map<number, Set<string>>();
   for (const [revisionIndex, candidateRevision] of planRevisions.entries()) {
     const revisionPath = `${path}.plan_revisions[${revisionIndex}]`;
     const revision = requireRecord(candidateRevision, revisionPath);
@@ -661,10 +669,19 @@ function validatePlaybookRun(candidate: unknown, path: string, key: string): voi
     if (!/^[a-f0-9]{64}$/.test(requireString(revision.plan_hash, `${revisionPath}.plan_hash`))) {
       throw new PersistedStateVersionError(`${revisionPath}.plan_hash must be a lowercase SHA-256 digest`, CURRENT_STATE_VERSION, 'invalid');
     }
+    const definedStepIds = new Set<string>();
     for (const [stepIndex, candidateStep] of requireArray(revision.steps, `${revisionPath}.steps`).entries()) {
       const stepPath = `${revisionPath}.steps[${stepIndex}]`;
       const step = requireRecord(candidateStep, stepPath);
-      requireString(step.step_id, `${stepPath}.step_id`);
+      const definedStepId = requireString(step.step_id, `${stepPath}.step_id`);
+      if (definedStepIds.has(definedStepId)) {
+        throw new PersistedStateVersionError(
+          `${revisionPath}.steps contains duplicate step_id ${definedStepId}`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      definedStepIds.add(definedStepId);
       requireSafeInteger(step.ordinal, `${stepPath}.ordinal`, 1);
       requireString(step.description, `${stepPath}.description`);
       for (const field of ['depends_on', 'required_bindings', 'produces_bindings'] as const) {
@@ -673,6 +690,7 @@ function validatePlaybookRun(candidate: unknown, path: string, key: string): voi
       }
       requireRecord(step.execution_template, `${stepPath}.execution_template`);
     }
+    revisionStepIds.set(revisionId, definedStepIds);
   }
   const currentRevision = requireSafeInteger(run.current_plan_revision, `${path}.current_plan_revision`, 1);
   if (!revisionIds.has(currentRevision)) {
@@ -728,6 +746,15 @@ function validatePlaybookRun(candidate: unknown, path: string, key: string): voi
       requireString(attempt.execution_command_id, `${attemptPath}.execution_command_id`);
       requireString(attempt.execution_idempotency_key, `${attemptPath}.execution_idempotency_key`);
       requireString(attempt.execution_action_id, `${attemptPath}.execution_action_id`);
+      const attemptPlanRevision = requireSafeInteger(attempt.plan_revision, `${attemptPath}.plan_revision`, 1);
+      if (!revisionStepIds.get(attemptPlanRevision)?.has(stepId)) {
+        throw new PersistedStateVersionError(
+          `${attemptPath}.plan_revision does not define playbook step ${stepId}`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+      requireString(attempt.execution_template_hash, `${attemptPath}.execution_template_hash`);
       if (attempt.execution_started_at !== undefined) requireIsoDate(attempt.execution_started_at, `${attemptPath}.execution_started_at`);
       if (attempt.executed_via !== undefined && !['mcp', 'dashboard', 'cli', 'planner', 'scripted_runner', 'headless_runner', 'system'].includes(String(attempt.executed_via))) {
         throw new PersistedStateVersionError(`${attemptPath}.executed_via is invalid`, CURRENT_STATE_VERSION, 'invalid');
@@ -746,6 +773,7 @@ function validatePlaybookRun(candidate: unknown, path: string, key: string): voi
         throw new PersistedStateVersionError(`${attemptPath}.parse_outcome is invalid`, CURRENT_STATE_VERSION, 'invalid');
       }
     }
+    requireRecord(step.resolved_bindings, `${stepPath}.resolved_bindings`);
   }
   if (activeAttempts > 1) {
     throw new PersistedStateVersionError(`${path} contains more than one running attempt`, CURRENT_STATE_VERSION, 'invalid');
@@ -765,6 +793,7 @@ function validatePlaybookRun(candidate: unknown, path: string, key: string): voi
   if (!['generated', 'partial', 'completed'].includes(requireString(run.report_status, `${path}.report_status`))) {
     throw new PersistedStateVersionError(`${path}.report_status is invalid`, CURRENT_STATE_VERSION, 'invalid');
   }
+  requireRecord(run.bindings, `${path}.bindings`);
   requireIsoDate(run.created_at, `${path}.created_at`);
   requireIsoDate(run.updated_at, `${path}.updated_at`);
   if (run.started_at !== undefined) requireIsoDate(run.started_at, `${path}.started_at`);

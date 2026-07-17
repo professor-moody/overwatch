@@ -25,7 +25,12 @@ type StatusFilter = 'all' | 'active' | 'stale' | 'expired';
 /** Derived "what kind of attention does this credential need" views, toggled
  *  from the count chips — orthogonal to the lifecycle StatusFilter. */
 type ViewFilter = 'all' | 'reachable' | 'unverified' | 'expansion' | 'expiring';
-type PreparedExecution = { run_id: string; step_id: string; execution: Record<string, unknown> };
+export type PreparedExecution = {
+  run_id: string;
+  step_id: string;
+  attempt_id: string;
+  execution: Record<string, unknown>;
+};
 
 export function groupPlaybookRunsByCredential(runs: PlaybookRun[]): Map<string, PlaybookRun[]> {
   const result = new Map<string, PlaybookRun[]>();
@@ -33,6 +38,16 @@ export function groupPlaybookRunsByCredential(runs: PlaybookRun[]): Map<string, 
     result.set(run.credential_id, [...(result.get(run.credential_id) ?? []), run]);
   }
   return result;
+}
+
+export function preparedExecutionIsClaimed(
+  prepared: PreparedExecution,
+  runs: PlaybookRun[],
+): boolean {
+  const step = runs.find(run => run.run_id === prepared.run_id)
+    ?.steps.find(candidate => candidate.step_id === prepared.step_id);
+  return step?.attempts.some(attempt =>
+    attempt.attempt_id === prepared.attempt_id && attempt.status === 'claimed') === true;
 }
 
 export function CredentialsPanel() {
@@ -77,6 +92,7 @@ export function CredentialsPanel() {
         setPreparedExecution({
           run_id: run.run_id,
           step_id: String(claim.execution.playbook_step_id ?? ''),
+          attempt_id: String(claim.execution.playbook_attempt_id ?? ''),
           execution: claim.execution,
         });
       } else {
@@ -93,6 +109,12 @@ export function CredentialsPanel() {
     const item = searchParams.get('item');
     if (item) setExpandedId(item);
   }, [searchParams]);
+
+  useEffect(() => {
+    setPreparedExecution(current => current && preparedExecutionIsClaimed(current, playbookRuns)
+      ? current
+      : null);
+  }, [playbookRuns]);
 
   const filtered = useMemo(() => {
     let list = creds;
@@ -278,6 +300,7 @@ export function CredentialsPanel() {
             const isRevealed = revealed.has(cred.id);
             const credValue = cred.cred_value as string | undefined;
             const playbooks = playbooksByCredential.get(cred.id) ?? [];
+            const playbook = playbooks[0];
             const hasIdentityContext = !!(
               cred.cred_audience ||
               cred.cred_mfa_required != null ||
@@ -455,91 +478,96 @@ export function CredentialsPanel() {
                     <div className="mt-3 border-t border-border pt-3 space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-medium text-foreground">Credential playbook</span>
-                        {playbook?.status === 'interrupted' && (
-                          <ActionButton
-                            size="xs"
-                            variant="secondary"
-                            disabled={playbookBusy !== null}
-                            onClick={() => void runPlaybookAction(`resume:${playbook.run_id}`, () => api.resumePlaybookRun(playbook.run_id))}
-                          >
-                            {playbookBusy === `resume:${playbook.run_id}` ? 'resuming…' : 'Resume'}
-                          </ActionButton>
-                        )}
+                        {playbooks.length > 1 && <span className="text-muted-foreground">{playbooks.length} runs</span>}
                       </div>
-                      {!playbook ? (
+                      {playbooks.length === 0 ? (
                         <p className="text-muted-foreground">
                           No durable run yet. Deploy a credential or cloud agent, or call the matching expand tool; the resulting run will appear here and survive restarts.
                         </p>
                       ) : (
-                        <>
-                          <div className="text-muted-foreground">
-                            {playbook.definition.title} · {playbook.report_status} · {playbook.steps.filter(step => step.status === 'succeeded' || step.status === 'skipped').length}/{playbook.steps.length} steps complete
-                          </div>
-                          <div className="space-y-1.5">
-                            {playbook.steps.map(step => {
-                              const key = `${playbook.run_id}:${step.step_id}`;
-                              const canStart = step.status === 'pending' && step.attempts.length === 0;
-                              const canRetry = step.status === 'failed' || step.status === 'interrupted';
-                              const canSkip = ['pending', 'blocked', 'failed', 'interrupted'].includes(step.status);
-                              const activeAttempt = step.attempts.find(attempt => attempt.status === 'running');
-                              return (
-                                <div key={step.step_id} className="rounded border border-border bg-background/40 p-2">
-                                  <div className="flex items-center gap-2">
-                                    <StatusPill className={step.status === 'succeeded' ? 'text-success bg-success/10' : step.status === 'blocked' ? 'text-muted-foreground bg-elevated' : step.status === 'failed' || step.status === 'interrupted' ? 'text-warning bg-warning/10' : 'text-accent bg-accent/10'}>
-                                      {step.status}
-                                    </StatusPill>
-                                    <span className="flex-1 text-foreground">{step.ordinal}. {step.description}</span>
-                                    {canStart && (
-                                      <ActionButton
-                                        size="xs"
-                                        variant="secondary"
-                                        disabled={playbookBusy !== null}
-                                        onClick={() => void runPlaybookAction(`start:${key}`, () => api.startPlaybookStep(playbook.run_id, step.step_id))}
-                                      >Prepare</ActionButton>
-                                    )}
-                                    {canRetry && (
-                                      <ActionButton
-                                        size="xs"
-                                        variant="secondary"
-                                        disabled={playbookBusy !== null}
-                                        onClick={() => void runPlaybookAction(`retry:${key}`, () => api.retryPlaybookStep(playbook.run_id, step.step_id))}
-                                      >Prepare retry</ActionButton>
-                                    )}
-                                    {activeAttempt && (
-                                      <ActionButton
-                                        size="xs"
-                                        variant="ghost"
-                                        disabled={playbookBusy !== null}
-                                        onClick={() => void runPlaybookAction(`interrupt:${key}`, () => api.interruptPlaybookAttempt(playbook.run_id, step.step_id, 'Prepared dashboard claim released by operator'))}
-                                      >Release claim</ActionButton>
-                                    )}
-                                    {canSkip && (
-                                      <ActionButton
-                                        size="xs"
-                                        variant="ghost"
-                                        disabled={playbookBusy !== null}
-                                        onClick={() => void runPlaybookAction(`skip:${key}`, () => api.skipPlaybookStep(playbook.run_id, step.step_id, 'Skipped from Credentials'))}
-                                      >Skip</ActionButton>
-                                    )}
-                                  </div>
-                                  {step.blocked_reason && <div className="mt-1 text-muted-foreground">{step.blocked_reason}</div>}
-                                  {step.attempts.length > 0 && (
-                                    <div className="mt-1 text-muted-foreground">
-                                      Attempts: {step.attempts.map(attempt => `${attempt.attempt_number} ${attempt.status} · ${attempt.claimed_by_task_id ?? attempt.claimed_via}${attempt.executed_via ? ` → ${attempt.executed_by_task_id ?? attempt.executed_via}` : ''}${attempt.finding_ids.length ? ` · ${attempt.finding_ids.length} finding` : ''}`).join(' · ')}
+                        <div className="space-y-3">
+                          {playbooks.map((run, runIndex) => (
+                            <div key={run.run_id} className="rounded border border-border bg-background/20 p-2 space-y-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-muted-foreground flex-1">
+                                  {run.definition.title} · run {playbooks.length - runIndex} · {run.report_status} · {run.steps.filter(step => step.status === 'succeeded').length}/{run.steps.length} succeeded{run.steps.some(step => step.status === 'skipped') ? ` · ${run.steps.filter(step => step.status === 'skipped').length} skipped` : ''}
+                                </span>
+                                {run.status === 'interrupted' && (
+                                  <ActionButton
+                                    size="xs"
+                                    variant="secondary"
+                                    disabled={playbookBusy !== null}
+                                    onClick={() => void runPlaybookAction(`resume:${run.run_id}`, () => api.resumePlaybookRun(run.run_id))}
+                                  >
+                                    {playbookBusy === `resume:${run.run_id}` ? 'resuming…' : 'Resume'}
+                                  </ActionButton>
+                                )}
+                              </div>
+                              <div className="space-y-1.5">
+                                {run.steps.map(step => {
+                                  const key = `${run.run_id}:${step.step_id}`;
+                                  const canStart = step.status === 'pending' && step.attempts.length === 0;
+                                  const lastAttempt = step.attempts.at(-1);
+                                  const canRetry = step.status === 'failed'
+                                    || step.status === 'interrupted'
+                                    || (step.status === 'pending' && !!lastAttempt);
+                                  const canSkip = ['pending', 'blocked', 'failed', 'interrupted'].includes(step.status);
+                                  const claimedAttempt = step.attempts.find(attempt => attempt.status === 'claimed');
+                                  return (
+                                    <div key={step.step_id} className="rounded border border-border bg-background/40 p-2">
+                                      <div className="flex items-center gap-2">
+                                        <StatusPill className={step.status === 'succeeded' ? 'text-success bg-success/10' : step.status === 'blocked' ? 'text-muted-foreground bg-elevated' : step.status === 'failed' || step.status === 'interrupted' ? 'text-warning bg-warning/10' : 'text-accent bg-accent/10'}>
+                                          {step.status}
+                                        </StatusPill>
+                                        <span className="flex-1 text-foreground">{step.ordinal}. {step.description}</span>
+                                        {canStart && (
+                                          <ActionButton size="xs" variant="secondary" disabled={playbookBusy !== null}
+                                            onClick={() => void runPlaybookAction(`start:${key}`, () => api.startPlaybookStep(run.run_id, step.step_id))}>
+                                            Prepare
+                                          </ActionButton>
+                                        )}
+                                        {canRetry && (
+                                          <ActionButton size="xs" variant="secondary" disabled={playbookBusy !== null}
+                                            onClick={() => void runPlaybookAction(`retry:${key}`, () => api.retryPlaybookStep(run.run_id, step.step_id))}>
+                                            Prepare retry
+                                          </ActionButton>
+                                        )}
+                                        {claimedAttempt && (
+                                          <ActionButton size="xs" variant="ghost" disabled={playbookBusy !== null}
+                                            onClick={() => void runPlaybookAction(`interrupt:${key}`, () => api.interruptPlaybookAttempt(run.run_id, step.step_id, 'Prepared dashboard claim released by operator'))}>
+                                            Release claim
+                                          </ActionButton>
+                                        )}
+                                        {canSkip && (
+                                          <ActionButton size="xs" variant="ghost" disabled={playbookBusy !== null}
+                                            onClick={() => void runPlaybookAction(`skip:${key}`, () => api.skipPlaybookStep(run.run_id, step.step_id, 'Skipped from Credentials'))}>
+                                            Skip
+                                          </ActionButton>
+                                        )}
+                                      </div>
+                                      {step.blocked_reason && <div className="mt-1 text-muted-foreground">{step.blocked_reason}</div>}
+                                      {step.attempts.length > 0 && (
+                                        <div className="mt-1 text-muted-foreground">
+                                          Attempts: {step.attempts.map(attempt => `${attempt.attempt_number} ${attempt.status} · ${attempt.claimed_by_task_id ?? attempt.claimed_via}${attempt.executed_via ? ` → ${attempt.executed_by_task_id ?? attempt.executed_via}` : ''}${attempt.finding_ids.length ? ` · ${attempt.finding_ids.length} finding` : ''}`).join(' · ')}
+                                        </div>
+                                      )}
                                     </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       )}
                       {playbookError && <div className="text-destructive">{playbookError}</div>}
-                      {preparedExecution && (
+                      {preparedExecution && preparedExecutionIsClaimed(preparedExecution, playbooks) && (
                         <div className="rounded border border-accent/30 bg-accent/5 p-2 space-y-1">
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-accent">Execution descriptor prepared; the step is now claimed.</span>
-                            <ActionButton size="xs" variant="secondary" onClick={() => navigator.clipboard.writeText(JSON.stringify(preparedExecution, null, 2))}>copy</ActionButton>
+                            <ActionButton size="xs" variant="secondary" onClick={() => navigator.clipboard.writeText(JSON.stringify(preparedExecution.execution, null, 2))}>copy executable input</ActionButton>
+                          </div>
+                          <div className="font-mono text-[10px] text-muted-foreground break-all">
+                            {preparedExecution.run_id} · {preparedExecution.step_id} · {preparedExecution.attempt_id}
                           </div>
                           <p className="text-muted-foreground">This button does not execute against the target. Copy the descriptor to the indicated runner or a deployed credential agent. Its stable command identity makes retries safe; release the claim if you will not run it.</p>
                         </div>

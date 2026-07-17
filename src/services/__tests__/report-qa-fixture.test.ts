@@ -29,9 +29,23 @@ describe('report QA fixture outputs', () => {
       steps: [{ step_id: 'identity', step: 1, description: 'Resolve identity', runner: 'run_tool', binary: 'aws', args: ['sts', 'get-caller-identity'], ready: true, status: 'ready' }],
     });
     const claim = runs.startStep(opened.run.run_id, 'identity');
+    runs.beginAttemptExecution(claim.execution);
+    const evidenceId = qa.engine.getEvidenceStore().store({
+      action_id: claim.attempt.execution_action_id,
+      evidence_type: 'command_output',
+      raw_output: 'playbook report evidence',
+    });
+    qa.engine.logActionEvent({
+      action_id: claim.attempt.execution_action_id,
+      event_type: 'finding_ingested',
+      description: 'Playbook report finding landed',
+      category: 'finding',
+      linked_finding_ids: ['finding-duplicate'],
+      result_classification: 'success',
+    });
     runs.finishAttempt(opened.run.run_id, 'identity', claim.attempt.attempt_id, {
       execution_outcome: 'succeeded', parse_outcome: 'partial',
-      evidence_ids: ['ev-duplicate', 'ev-duplicate'],
+      evidence_ids: [evidenceId, evidenceId],
       finding_ids: ['finding-duplicate', 'finding-duplicate'],
     });
     qa.engine.setPlaybookRuns([

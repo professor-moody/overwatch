@@ -51,7 +51,7 @@ validate_token_credential with the provided args and retained linkage.`,
       inputSchema: {
         credential_id: z.string().min(1).describe('Credential node id of the captured OIDC token.'),
         max_targets: z.number().int().min(1).max(20).default(10).describe('Cap on candidate roles. Highest-confidence ISSUES_TOKENS_FOR matches first.'),
-        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching open run.'),
+        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching logical run.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -142,6 +142,9 @@ validate_token_credential with the provided args and retained linkage.`,
         },
         credential_id,
         normalized_inputs: { max_targets },
+        bindings: {
+          ...(audience ? { audience } : {}),
+        },
         steps: steps.map(step => ({ ...step })),
         new_run: (params as { new_run?: boolean }).new_run === true,
       });

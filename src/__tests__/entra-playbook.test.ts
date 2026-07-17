@@ -229,7 +229,10 @@ describe('expand_entra_credential', () => {
     expect(payload.tenant).toBe(TENANT);
     expect(payload.steps.every((step: any) => step.parser_context.tenant_id === TENANT)).toBe(true);
     expect(payload.steps.every((step: any) => step.parser_context.source_credential_id === 'cred-at-1')).toBe(true);
-    expect(engine.getNode('cred-at-1')?.recon_playbook_invoked_at).toBeUndefined();
+    expect(engine.getNode('cred-at-1')).toMatchObject({
+      recon_playbook_invoked_at: expect.any(String),
+      recon_playbook_step_count: payload.step_count,
+    });
   });
 
   it('skips groups step when include_groups is false', async () => {

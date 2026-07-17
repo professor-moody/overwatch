@@ -139,6 +139,7 @@ import type {
   PersistedApplicationCommandV1,
   PersistedCommandOutcomeV1,
   PersistedCommandPlanV1,
+  PersistedDurablePlaybookRunV1,
   PersistedPlaybookRunV1,
   PersistedRuntimeRunV1,
   PersistedSessionDescriptorV1,
@@ -1138,10 +1139,12 @@ export class GraphEngine {
   }
 
   patchNodeProperties(nodeId: string, setProperties: Record<string, unknown> = {}, unsetProperties: string[] = []): NodeProperties {
-    const existing = this.getNode(nodeId);
-    if (!existing) {
+    if (!this.ctx.graph.hasNode(nodeId)) {
       throw new Error(`Node does not exist in graph: ${nodeId}`);
     }
+    // Mutation drafts must start from canonical graph attributes, not projected
+    // compatibility/community fields that are intentionally derived at read time.
+    const existing = detached(this.ctx.graph.getNodeAttributes(nodeId));
     const nextAttrs = this.buildPatchedNode(existing, setProperties, unsetProperties);
     // Journal as a REPLACE (not merge) so replay reproduces the full-node
     // semantics of patch — including REMOVING keys cleared via unsetProperties.
@@ -7544,6 +7547,22 @@ export class GraphEngine {
     if (includeDerivedCommunity) {
       const communityId = this.ctx.communityCache?.get(id);
       if (communityId !== undefined) properties.community_id = communityId;
+    }
+    if (properties.type === 'credential') {
+      const runs = [...this.ctx.playbookRuns.values()]
+        .filter((run): run is PersistedDurablePlaybookRunV1 =>
+          run.schema_version === 1 && run.credential_id === id)
+        .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+      const latest = runs[0];
+      if (latest?.schema_version === 1) {
+        const latestExpansionAt = latest.plan_revisions
+          .map(revision => revision.created_at)
+          .sort((left, right) => right.localeCompare(left))[0] ?? latest.created_at;
+        // One-release read-only compatibility aliases. Canonical truth lives in
+        // playbookRuns; these values are never written back to the graph.
+        properties.recon_playbook_invoked_at = latestExpansionAt;
+        properties.recon_playbook_step_count = latest.steps.length;
+      }
     }
     return properties;
   }

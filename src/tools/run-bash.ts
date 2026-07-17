@@ -16,7 +16,10 @@ import {
   DEFAULT_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
 } from './_process-runner.js';
-import { withPlaybookAttemptCompletion } from '../services/playbook-run-service.js';
+import {
+  playbookProcessLifecycle,
+  withPlaybookAttemptCompletion,
+} from '../services/playbook-run-service.js';
 
 export function registerRunBashTool(server: McpServer, engine: GraphEngine): void {
   server.registerTool(
@@ -84,8 +87,10 @@ terminal, then register the PID with \`track_process\`.`,
         openWorldHint: true,
       },
     },
-    withErrorBoundary('run_bash', async (params, extra) => withPlaybookAttemptCompletion(engine, params, async () => {
-      return runInstrumentedProcess(engine, {
+    withErrorBoundary('run_bash', async (params, extra) => {
+      const onExecutionState = playbookProcessLifecycle(engine, params);
+      return withPlaybookAttemptCompletion(engine, params, async () => {
+        return runInstrumentedProcess(engine, {
         binary: 'bash',
         args: ['-c', params.command],
         command_repr: params.command,
@@ -116,8 +121,10 @@ terminal, then register the PID with \`track_process\`.`,
         invoking_tool: 'run_bash',
         command_id: params.command_id,
         idempotency_key: params.idempotency_key,
+        onExecutionState,
         abortSignal: extra?.signal,
       });
-    })),
+      }, { begin_execution: false });
+    }),
   );
 }

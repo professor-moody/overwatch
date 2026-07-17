@@ -641,6 +641,7 @@ function renderPlaybookSummaryHtml(playbooks: HtmlPlaybookSummary): string {
           <td>${esc(run.report_status)}</td>
           <td>${esc(run.status)}</td>
           <td>${run.steps_completed}/${run.steps_total}</td>
+          <td>${run.steps_skipped}</td>
           <td>${run.steps_failed}</td>
           <td>${run.attempts}</td>
           <td>${run.evidence_count}</td>
@@ -651,7 +652,7 @@ function renderPlaybookSummaryHtml(playbooks: HtmlPlaybookSummary): string {
     <h2>Credential Playbooks</h2>
     <p>${playbooks.completed} completed, ${playbooks.partial} partial, and ${playbooks.generated} generated but not meaningfully executed.</p>
     <table>
-      <thead><tr><th>Run</th><th>Playbook</th><th>Credential</th><th>Coverage</th><th>Lifecycle</th><th>Steps</th><th>Failed</th><th>Attempts</th><th>Evidence</th><th>Findings</th></tr></thead>
+      <thead><tr><th>Run</th><th>Playbook</th><th>Credential</th><th>Coverage</th><th>Lifecycle</th><th>Succeeded</th><th>Skipped</th><th>Failed</th><th>Attempts</th><th>Evidence</th><th>Findings</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   </section>`;

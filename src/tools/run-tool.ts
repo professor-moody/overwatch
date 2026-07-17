@@ -16,7 +16,10 @@ import {
   DEFAULT_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
 } from './_process-runner.js';
-import { withPlaybookAttemptCompletion } from '../services/playbook-run-service.js';
+import {
+  playbookProcessLifecycle,
+  withPlaybookAttemptCompletion,
+} from '../services/playbook-run-service.js';
 
 function shellQuote(s: string): string {
   // Lightweight pretty-printer for the description / evidence "command_repr".
@@ -86,14 +89,16 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
         openWorldHint: true,
       },
     },
-    withErrorBoundary('run_tool', async (params, extra) => withPlaybookAttemptCompletion(engine, params, async () => {
-      const args = params.args ?? [];
-      const command_repr = [params.binary, ...args].map(shellQuote).join(' ');
-      // Default tool_name to the binary basename for cleaner attribution.
-      const default_tool_name = params.tool_name
-        || params.binary.split('/').pop()
-        || params.binary;
-      return runInstrumentedProcess(engine, {
+    withErrorBoundary('run_tool', async (params, extra) => {
+      const onExecutionState = playbookProcessLifecycle(engine, params);
+      return withPlaybookAttemptCompletion(engine, params, async () => {
+        const args = params.args ?? [];
+        const command_repr = [params.binary, ...args].map(shellQuote).join(' ');
+        // Default tool_name to the binary basename for cleaner attribution.
+        const default_tool_name = params.tool_name
+          || params.binary.split('/').pop()
+          || params.binary;
+        return runInstrumentedProcess(engine, {
         binary: params.binary,
         args,
         command_repr,
@@ -124,8 +129,10 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
         invoking_tool: 'run_tool',
         command_id: params.command_id,
         idempotency_key: params.idempotency_key,
+        onExecutionState,
         abortSignal: extra?.signal,
       });
-    })),
+      }, { begin_execution: false });
+    }),
   );
 }

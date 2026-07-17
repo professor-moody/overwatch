@@ -102,7 +102,7 @@ describe('engagement store hydration', () => {
       schema_version: 1 as const,
       run_id: 'playbook-store-1',
       definition: { definition_id: 'aws-credential', definition_version: 2, provider: 'aws' as const, title: 'AWS expansion' },
-      credential_id: 'cred-1', input_hash: 'a'.repeat(64), normalized_inputs: {},
+      credential_id: 'cred-1', input_hash: 'a'.repeat(64), normalized_inputs: {}, bindings: {},
       plan_revisions: [{ revision: 1, created_at: '2026-07-16T00:00:00Z', plan_hash: 'b'.repeat(64), steps: [] }],
       current_plan_revision: 1, steps: [], status: 'pending' as const, report_status: 'generated' as const,
       created_at: '2026-07-16T00:00:00Z', updated_at: '2026-07-16T00:00:00Z', resume_count: 0,

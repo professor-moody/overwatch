@@ -124,10 +124,27 @@ function isDurablePlaybookRun(value: unknown): value is PersistedDurablePlaybook
 }
 
 function buildPlaybookSummary(engine: GraphEngine, clientSafe: boolean): HtmlPlaybookSummary {
+  const history = engine.getFullHistory();
   const runs = engine.getPlaybookRuns().filter(isDurablePlaybookRun).map(run => {
     const attempts = run.steps.flatMap(step => step.attempts);
-    const evidenceIds = new Set(attempts.flatMap(attempt => attempt.evidence_ids));
-    const findingIds = new Set(attempts.flatMap(attempt => attempt.finding_ids));
+    const evidenceIds = new Set(attempts.flatMap(attempt => {
+      const actionId = attempt.action_id ?? attempt.execution_action_id;
+      return attempt.evidence_ids.filter(id => {
+        try {
+          const record = engine.getEvidenceStore().getRecord(id);
+          return record?.evidence_id === id && record.action_id === actionId;
+        } catch {
+          return false;
+        }
+      });
+    }));
+    const findingIds = new Set(attempts.flatMap(attempt => {
+      const actionId = attempt.action_id ?? attempt.execution_action_id;
+      return attempt.finding_ids.filter(id => history.some(entry =>
+        entry.action_id === actionId
+        && (entry.event_type === 'finding_ingested' || entry.event_type === 'finding_reported')
+        && entry.linked_finding_ids?.includes(id)));
+    }));
     return {
       ...(clientSafe ? {} : { run_id: run.run_id }),
       definition_id: run.definition.definition_id,
@@ -135,7 +152,7 @@ function buildPlaybookSummary(engine: GraphEngine, clientSafe: boolean): HtmlPla
       status: run.status,
       report_status: run.report_status,
       steps_total: run.steps.length,
-      steps_completed: run.steps.filter(step => step.status === 'succeeded' || step.status === 'skipped').length,
+      steps_completed: run.steps.filter(step => step.status === 'succeeded').length,
       steps_skipped: run.steps.filter(step => step.status === 'skipped').length,
       steps_failed: run.steps.filter(step => step.status === 'failed').length,
       attempts: attempts.length,

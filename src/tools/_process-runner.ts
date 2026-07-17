@@ -1085,6 +1085,10 @@ export interface InstrumentedProcessOpts {
   idempotency_key?: string;
   command_transport?: 'mcp' | 'dashboard' | 'cli' | 'planner' | 'scripted_runner' | 'headless_runner' | 'system';
   actor_task_id?: string | null;
+  /** Durable playbook attempt lifecycle. Called only by a non-replayed process
+   * command, after validation reaches approval and immediately before the
+   * action crosses the execution boundary. */
+  onExecutionState?: (state: 'awaiting_approval' | 'running') => void;
 }
 
 export interface InstrumentedProcessResponse {
@@ -1604,6 +1608,7 @@ async function runInstrumentedProcessCore(
         agent_id: ownerAgentLabel,
       };
       engine.recordApprovalRequest(pendingApproval);
+      opts.onExecutionState?.('awaiting_approval');
       // Approval can remain pending for minutes. Couple that wait to the live
       // persistence gate as well as the MCP caller signal so an invocation
       // cannot resume and spawn after durability has gone read-only.
@@ -1671,6 +1676,7 @@ async function runInstrumentedProcessCore(
               action_id: normalizedActionId,
               executed: false,
               approval_status: approval.status,
+              ...(aborted ? { interrupted: true, code: 'COMMAND_INTERRUPTED' } : {}),
               reason: approval.reason,
             }, null, 2),
           }],
@@ -1687,6 +1693,7 @@ async function runInstrumentedProcessCore(
   if (!engine.isPersistenceWritable()) {
     return persistenceInterruptedResponse(engine, normalizedActionId);
   }
+  opts.onExecutionState?.('running');
   const runtimeRunId = `tool-${normalizedActionId}-${randomUUID()}`;
   const commandFingerprint = createHash('sha256')
     .update(binary)
@@ -2176,6 +2183,7 @@ async function runInstrumentedProcessCore(
         signal: result.signal,
         duration_ms: result.duration_ms,
         timed_out: result.timed_out,
+        interrupted: result.timed_out || abortSignal?.aborted === true,
         spawn_error: result.spawn_error,
         stdout: stdoutInfo.text,
         stderr: stderrInfo.text,

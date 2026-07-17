@@ -13,6 +13,7 @@
 // the plan tractable for large orgs.
 // ============================================================
 
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
@@ -37,6 +38,8 @@ interface PlaybookStep {
   ready?: boolean;
   status?: 'ready' | 'blocked';
   depends_on?: string[];
+  required_bindings?: string[];
+  produces_bindings?: string[];
   blocked_reason?: string;
 }
 
@@ -45,6 +48,30 @@ const GH_CRED_KINDS = new Set(['pat', 'oidc_access_token', 'token']);
 function isGithubMarkedCredential(cred: Record<string, unknown>): boolean {
   return [cred.provider, cred.cred_provider, cred.cred_audience, cred.cred_issuer, cred.idp_kind]
     .some(value => typeof value === 'string' && /(^|[/:._-])github([/:._-]|$)|api\.github\.com/i.test(value));
+}
+
+function repositoryStepKey(repoFullName: string): string {
+  return createHash('sha256').update(repoFullName.toLowerCase()).digest('hex').slice(0, 16);
+}
+
+function normalizeCandidateRepositories(
+  candidates: Array<string | { repo_full_name: string; default_branch: string }>,
+  maxRepos: number,
+): Array<{ repo_full_name: string; default_branch?: string }> {
+  const byCanonicalName = new Map<string, { repo_full_name: string; default_branch?: string }>();
+  for (const candidate of candidates) {
+    const normalized: { repo_full_name: string; default_branch?: string } = typeof candidate === 'string'
+      ? { repo_full_name: candidate }
+      : candidate;
+    const key = normalized.repo_full_name.toLowerCase();
+    const existing = byCanonicalName.get(key);
+    if (!existing) {
+      byCanonicalName.set(key, { ...normalized });
+    } else if (!existing.default_branch && normalized.default_branch) {
+      existing.default_branch = normalized.default_branch;
+    }
+  }
+  return [...byCanonicalName.values()].slice(0, maxRepos);
 }
 
 export function registerGithubPlaybookTool(server: McpServer, engine: GraphEngine): void {
@@ -82,7 +109,7 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
         ])).optional().describe('Optional `owner/repo` strings or `{repo_full_name, default_branch}` records. A string remains compatible; branch protection is blocked until its default branch is known.'),
         token_env_var: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).default('OVERWATCH_GITHUB_TOKEN').describe('Environment variable containing this selected credential at execution time. Commands fail closed when it is unset.'),
         confirm_provider: z.boolean().default(false).describe('Explicitly confirm an otherwise-unmarked token is a GitHub credential.'),
-        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching open run.'),
+        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching logical run.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -129,6 +156,7 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
       // Step 1: validate + capture scopes.
       steps.push({
         step: ++n,
+        step_id: 'validate-user',
         description: 'Validate the token and capture OAuth scopes from response headers. Use `-i` so the scopes header is parsed.',
         command: gh('-i /user'),
         parse_with: 'token_replay_github',
@@ -144,6 +172,7 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
       if (include_orgs) {
         steps.push({
           step: ++n,
+          step_id: 'organizations',
           description: 'Enumerate organizations the token has membership in.',
           command: gh('/user/orgs --paginate --slurp'),
           parse_with: 'gh-api-orgs',
@@ -158,36 +187,36 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
 
       let repoList: Array<{ repo_full_name: string; default_branch?: string }> | undefined;
       if (candidate_repos && candidate_repos.length > 0) {
-        repoList = candidate_repos.slice(0, max_repos).map(candidate => typeof candidate === 'string'
-          ? { repo_full_name: candidate }
-          : candidate);
-      } else {
-        steps.push({
-          step: ++n,
-          description: 'List all repositories visible to the token. Use --paginate to walk the full list.',
-          command: gh('/user/repos --paginate --slurp'),
-          parse_with: 'gh-api-repos',
-          parser_context: { source_credential_id: credential_id, credential_execution_binding: credentialBinding },
-          runner: 'run_bash',
-          env_from_credential: envFromCredential,
-          technique: 'recon_idp_application',
-          est_noise: 0.15,
-          expected: 'idp_application per repo (idp_kind: github_org, app_kind: github_repo).',
-          blocking: true,
-        });
+        repoList = normalizeCandidateRepositories(candidate_repos, max_repos);
       }
+      steps.push({
+        step: ++n,
+        step_id: 'repositories',
+        description: 'List all repositories visible to the token. Use --paginate to walk the full list.',
+        command: gh('/user/repos --paginate --slurp'),
+        parse_with: 'gh-api-repos',
+        parser_context: { source_credential_id: credential_id, credential_execution_binding: credentialBinding },
+        runner: 'run_bash',
+        env_from_credential: envFromCredential,
+        technique: 'recon_idp_application',
+        est_noise: 0.15,
+        expected: 'idp_application per repo (idp_kind: github_org, app_kind: github_repo).',
+        blocking: true,
+      });
 
       // Per-repo expansion when an explicit list is provided.
       if (repoList) {
         for (const candidate of repoList) {
           // Fence the operator-supplied repo before it lands in `gh api /repos/'${repo}'/…`.
           const repo = safePlaybookArg(candidate.repo_full_name);
+          const repoKey = repositoryStepKey(repo);
           const owner = repo.split('/')[0];
           const existingRepo = engine.getNodesByType('idp_application')
             .find(node => node.repo_full_name === candidate.repo_full_name);
           const defaultBranch = safePlaybookArg(candidate.default_branch ?? existingRepo?.default_branch ?? '') || undefined;
           steps.push({
             step: ++n,
+            step_id: `actions-secrets-${repoKey}`,
             description: `List Actions secrets for ${repo}.`,
             command: gh(`/repos/'${repo}'/actions/secrets --paginate --slurp`),
             parse_with: 'gh-api-secrets',
@@ -197,11 +226,12 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
             technique: 'recon_credential',
             est_noise: 0.1,
             expected: 'credential nodes for each Actions secret (cred_value is fingerprint-only — values are not exposed by the API).',
+            depends_on: ['repositories'],
           });
           if (!defaultBranch) {
             steps.push({
               step: ++n,
-              step_id: `repo-details-${repo.replace('/', '-')}`,
+              step_id: `repo-details-${repoKey}`,
               description: `Resolve ${repo}'s default branch before branch-protection inspection.`,
               command: gh(`/repos/'${repo}'`),
               parse_with: 'gh-api-repos',
@@ -211,13 +241,14 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
               technique: 'recon_idp_application',
               est_noise: 0.05,
               expected: 'Repo application metadata including the canonical default_branch binding.',
+              depends_on: ['repositories'],
               ready: true,
               status: 'ready',
             });
           }
           steps.push({
             step: ++n,
-            step_id: `branch-protection-${repo.replace('/', '-')}`,
+            step_id: `branch-protection-${repoKey}`,
             description: `Pull branch protection for ${repo}'s resolved default branch.`,
             command: defaultBranch ? gh(`/repos/'${repo}'/branches/'${defaultBranch}'/protection`) : null,
             parse_with: 'gh-api-branch-protection',
@@ -229,11 +260,13 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
             expected: 'Stamps branch_protection_gaps + finding_severity on the repo idp_application.',
             ready: !!defaultBranch,
             status: defaultBranch ? 'ready' : 'blocked',
-            depends_on: defaultBranch ? [] : [`repo-details-${repo.replace('/', '-')}`],
+            depends_on: defaultBranch ? ['repositories'] : [`repo-details-${repoKey}`],
+            required_bindings: defaultBranch ? ['branch_name'] : [],
             blocked_reason: defaultBranch ? undefined : 'Default branch is unknown. Run and ingest repo-details, then re-expand.',
           });
           steps.push({
             step: ++n,
+            step_id: `deploy-keys-${repoKey}`,
             description: `List deploy keys for ${repo}. Read-write keys with private-half capture become lateral-move candidates.`,
             command: gh(`/repos/'${repo}'/keys --paginate --slurp`),
             parse_with: 'gh-api-deploy-keys',
@@ -243,9 +276,11 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
             technique: 'recon_credential',
             est_noise: 0.05,
             expected: 'Public deploy-key credential records with write capability metadata; reusable auth remains false until private material is captured.',
+            depends_on: ['repositories'],
           });
           steps.push({
             step: ++n,
+            step_id: `oidc-customization-${repoKey}`,
             description: `Capture Actions OIDC subject-claim customization for ${repo}. Misconfigured patterns are flagged by the CI_TRUST_WILDCARD inference rule once ingested.`,
             command: gh(`/repos/'${repo}'/actions/oidc-customization/sub`),
             parse_with: 'github-actions-oidc',
@@ -255,6 +290,7 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
             technique: 'recon_idp_application',
             est_noise: 0.05,
             expected: 'ci_github_actions idp_application carrying the repository OIDC customization metadata.',
+            depends_on: ['repositories'],
           });
         }
       }
@@ -272,6 +308,10 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
           include_orgs,
           token_env_var: tokenEnvVar,
           confirm_provider: (params as { confirm_provider?: boolean }).confirm_provider === true,
+        },
+        bindings: {
+          credential_execution_binding: credentialBinding,
+          ...(repoList ? { candidate_repo_count: repoList.length } : {}),
         },
         // candidate_repos are discovered bindings. A later expansion appends
         // an immutable plan revision and materializes deterministic repo steps

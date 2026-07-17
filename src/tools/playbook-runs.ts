@@ -173,7 +173,7 @@ through the indicated runner. Only one attempt may be active in a run.`,
     'complete_playbook_attempt',
     {
       title: 'Complete Playbook Attempt',
-      description: 'Record the durable outcome and evidence/finding references for a claimed playbook attempt.',
+      description: 'Record a pre-execution failure or the durable outcome and evidence/finding references for an attempt that crossed the instrumented execution boundary.',
       inputSchema: {
         run_id: z.string().min(1),
         step_id: z.string().min(1),
@@ -190,8 +190,23 @@ through the indicated runner. Only one attempt may be active in a run.`,
     },
     withErrorBoundary('complete_playbook_attempt', async params => {
       try {
+        const {
+          execution_outcome,
+          parse_outcome,
+          action_id,
+          evidence_ids,
+          finding_ids,
+          error,
+        } = params;
         return response({
-          run: service.finishAttempt(params.run_id, params.step_id, params.attempt_id, params),
+          run: commands.complete(params.run_id, params.step_id, params.attempt_id, {
+            execution_outcome,
+            parse_outcome,
+            action_id,
+            evidence_ids,
+            finding_ids,
+            error,
+          }),
         });
       } catch (error) {
         return runError(error);

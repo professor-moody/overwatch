@@ -31,7 +31,10 @@ import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialMfaBlocked, isCredentialUsableForAuth, isTokenCredential } from '../services/credential-utils.js';
 import { runInstrumentedProcess, MAX_TIMEOUT_MS } from './_process-runner.js';
 import { cloudIdentityId } from '../services/parser-utils.js';
-import { withPlaybookAttemptCompletion } from '../services/playbook-run-service.js';
+import {
+  playbookProcessLifecycle,
+  withPlaybookAttemptCompletion,
+} from '../services/playbook-run-service.js';
 
 const PROVIDERS = ['microsoft_graph', 'aws_sts', 'okta', 'github'] as const;
 type Provider = typeof PROVIDERS[number];
@@ -178,7 +181,9 @@ Sensitive token values are NEVER logged in plain text — the action description
         openWorldHint: true,
       },
     },
-    withErrorBoundary('validate_token_credential', async (params: TokenReplayParams) => withPlaybookAttemptCompletion(engine, params, async () => {
+    withErrorBoundary('validate_token_credential', async (params: TokenReplayParams) => {
+      const onExecutionState = playbookProcessLifecycle(engine, params);
+      return withPlaybookAttemptCompletion(engine, params, async () => {
       const credNode = engine.getNode(params.credential_id);
       if (!credNode || credNode.type !== 'credential') {
         return {
@@ -289,6 +294,7 @@ Sensitive token values are NEVER logged in plain text — the action description
           timeout_ms: params.timeout_ms,
           command_id: params.command_id,
           idempotency_key: params.idempotency_key,
+          onExecutionState,
           invoking_tool: 'run_tool',
         });
         return result;
@@ -321,9 +327,11 @@ Sensitive token values are NEVER logged in plain text — the action description
         timeout_ms: params.timeout_ms,
         command_id: params.command_id,
         idempotency_key: params.idempotency_key,
+        onExecutionState,
         invoking_tool: 'run_tool',
       });
       return result;
-    })),
+      }, { begin_execution: false });
+    }),
   );
 }

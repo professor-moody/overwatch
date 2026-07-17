@@ -360,7 +360,15 @@ printf '%s' '[{"Account":"111122223333","Region":"us-east-1","Name":"wrapped","A
     expect(payload.steps.slice(1).every((step: any) => step.ready === false && !step.command)).toBe(true);
     expect(payload.steps.slice(1).every((step: any) => step.status === 'blocked' && step.command === null)).toBe(true);
     expect(payload.plan_version).toBe(2);
-    expect(engine.getNode('cred-aws-1')?.recon_playbook_invoked_at).toBeUndefined();
+    expect(engine.getNode('cred-aws-1')).toMatchObject({
+      recon_playbook_invoked_at: expect.any(String),
+      recon_playbook_step_count: payload.step_count,
+    });
+    const canonical = (engine as unknown as {
+      ctx: { graph: { getNodeAttributes(id: string): Record<string, unknown> } };
+    }).ctx.graph.getNodeAttributes('cred-aws-1');
+    expect(canonical.recon_playbook_invoked_at).toBeUndefined();
+    expect(canonical.recon_playbook_step_count).toBeUndefined();
   });
 
   it('blocks every command until an execution credential is explicitly bound', async () => {

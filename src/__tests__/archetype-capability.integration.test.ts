@@ -138,11 +138,14 @@ describe.skipIf(!supportsLocalListen)('Archetype capability evals (fake claude)'
       scopeSeededNodes: true,
     });
     expect(result.task?.status).toBe('completed');
-    // Plan generation is deliberately stateless until durable PlaybookRun state
-    // lands; completing this capability must not retire the credential.
+    // Plan generation creates durable resumable state without retiring the
+    // credential. Compatibility fields are derived from that durable run.
     const cred = result.app.engine.getNodesByType('credential').find(n => JSON.stringify(n).includes('svc-deploy'));
     expect(cred).toBeDefined();
-    expect(cred?.recon_playbook_invoked_at).toBeUndefined();
+    expect(cred).toMatchObject({
+      recon_playbook_invoked_at: expect.any(String),
+      recon_playbook_step_count: expect.any(Number),
+    });
   });
 
   it('post_exploit records a lateral admin-access edge and completes', async () => {

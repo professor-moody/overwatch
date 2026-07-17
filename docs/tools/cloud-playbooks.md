@@ -18,9 +18,9 @@ The playbook tools create or resume a matching durable run. Calling an expansion
 
 ## Executing a returned plan
 
-- A repeated expansion with the same credential and normalized inputs resumes the matching open run. Pass `new_run: true` only when a separate run is intentional.
+- A repeated expansion with the same credential and normalized inputs resumes the matching logical run. If newly discovered bindings materialize changed work, a previously terminal run reopens with a new immutable plan revision; an unchanged terminal run remains terminal. Pass `new_run: true` only when a separate run is intentional.
 - Claim exactly one ready step with `start_playbook_step`. Use `retry_playbook_step` after a failed or interrupted attempt; retries append and never overwrite earlier evidence.
-- Preserve `playbook_run_id`, `playbook_step_id`, and `playbook_attempt_id` through the indicated runner. `run_bash`, `run_tool`, `parse_output`, and token replay finalize linked attempts automatically; `complete_playbook_attempt` is the explicit fallback.
+- Preserve `playbook_run_id`, `playbook_step_id`, and `playbook_attempt_id` through the indicated runner. `run_bash`, `run_tool`, and token replay finalize linked attempts automatically; `complete_playbook_attempt` is the explicit fallback after an instrumented execution crossed its durable boundary.
 - Treat `status: "blocked"`, `ready: false`, or `command: null` as non-executable. Run the prerequisite, ingest its output, and call the generator again so it can resolve the missing binding.
 - Honor the returned execution surface. A command descriptor names `runner: "run_bash"` or `runner: "run_tool"`; a direct-tool descriptor names `tool` and `args`. Do not assume every playbook step is a `run_tool` call.
 - `env_from_credential` maps an environment-variable name to a credential node ID. Resolve that node and put its actual selected credential value in `run_bash.env`; the credential ID itself is not the environment-variable value. Commands fail closed before network access when a required binding is absent.
