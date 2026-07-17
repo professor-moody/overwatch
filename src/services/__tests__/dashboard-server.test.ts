@@ -339,6 +339,12 @@ describe('DashboardServer', () => {
     const hub = new DashboardMainWebSocketHub(engine, null, {
       buildState: () => baselineState,
       buildGraph: () => baselineGraph,
+      runtimeBuild: {
+        schema_version: 1,
+        input_sha256: 'a'.repeat(64),
+        runtime_pid: process.pid,
+        runtime_started_at: '2026-07-17T00:00:00.000Z',
+      },
       debounceMs: 0,
     });
     try {

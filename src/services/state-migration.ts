@@ -27,7 +27,6 @@ import {
   PersistedStateVersionError,
   detectJournalVersion,
   detectStateVersion,
-  validatePersistedStateV1,
   type SupportedJournalVersion,
   type SupportedStateVersion,
 } from './persisted-state.js';
@@ -39,6 +38,7 @@ import {
   computeConfigHash,
 } from './engagement-config-service.js';
 import { createOverwatchGraph } from './graphology-types.js';
+import { validatePersistedStateBaseContainer } from './persisted-state-base.js';
 import { engagementConfigSchema, type EngagementConfig } from '../types.js';
 import {
   withStateMigrationWriteGuard,
@@ -130,7 +130,7 @@ interface StateMigrationIntentV1 {
   intent_checksum: string;
 }
 
-interface InspectedBase {
+export interface InspectedBase {
   path: string;
   source: 'state' | 'snapshot';
   rank: number;
@@ -843,7 +843,7 @@ function validateCompactionAuthority(record: Record<string, unknown>): void {
   }
 }
 
-function inspectBase(
+export function inspectPersistedStateRecoveryBase(
   path: string,
   source: 'state' | 'snapshot',
   rank: number,
@@ -852,18 +852,10 @@ function inspectBase(
   const stateVersion = detectStateVersion(record);
   const journalVersion = detectJournalVersion(record, stateVersion);
   validateCompactionAuthority(record);
-  if (stateVersion === CURRENT_STATE_VERSION) validatePersistedStateV1(record);
-  const config = parseConfig(record.config, 'state');
-  if (!record.graph || typeof record.graph !== 'object' || Array.isArray(record.graph)) {
-    throw new Error('persisted state is missing graph');
-  }
-  const scratch = createOverwatchGraph();
-  scratch.import(record.graph as Parameters<typeof scratch.import>[0]);
-  const checkpoint = record.journalSnapshotSeq === undefined
-    ? 0
-    : Number.isSafeInteger(record.journalSnapshotSeq) && (record.journalSnapshotSeq as number) >= 0
-      ? record.journalSnapshotSeq as number
-      : (() => { throw new Error('persisted journalSnapshotSeq must be a non-negative safe integer'); })();
+  const {
+    config,
+    checkpoint,
+  } = validatePersistedStateBaseContainer(record, createOverwatchGraph);
   return {
     path,
     source,
@@ -949,7 +941,7 @@ export function inspectStateMigration(input: {
   let invalidVersionedBlocked = false;
   for (const candidate of candidates) {
     try {
-      const inspected = inspectBase(candidate.path, candidate.source, candidate.rank);
+      const inspected = inspectPersistedStateRecoveryBase(candidate.path, candidate.source, candidate.rank);
       valid.push(inspected);
     } catch (error) {
       if (

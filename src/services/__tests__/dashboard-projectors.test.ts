@@ -141,15 +141,23 @@ describe('dashboard pure projectors', () => {
   it('clones full snapshots so consumers cannot mutate engine-owned inputs', () => {
     const inputState = { nested: { value: 1 } };
     const inputGraph = graph();
-    const snapshot = projectDashboardSnapshot(inputState, inputGraph, 3);
+    const runtimeBuild = {
+      schema_version: 1,
+      input_sha256: 'a'.repeat(64),
+      runtime_pid: 123,
+      runtime_started_at: '2026-07-17T00:00:00.000Z',
+    };
+    const snapshot = projectDashboardSnapshot(inputState, inputGraph, 3, runtimeBuild);
 
     snapshot.state.nested.value = 99;
     snapshot.graph.nodes[0].properties.label = 'Changed in UI';
     snapshot.graph.cold_nodes![0].label = 'Changed cold node';
+    snapshot.runtime_build.input_sha256 = 'b'.repeat(64);
 
     expect(inputState.nested.value).toBe(1);
     expect(inputGraph.nodes[0].properties.label).toBe('New host');
     expect(inputGraph.cold_nodes![0].label).toBe('Cold host');
+    expect(runtimeBuild.input_sha256).toBe('a'.repeat(64));
   });
 
   it('repairs untyped legacy planner dispatches in full-state recent activity', () => {

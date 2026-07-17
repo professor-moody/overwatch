@@ -4648,14 +4648,6 @@ export class DashboardServer {
       const execution = this.graphCorrectionCommands.correct(parsed.data, {
         transport: 'dashboard',
       });
-      // Broadcast full state update to all WS clients
-      const state = this.buildFrontendState();
-      const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
-      this.broadcast({
-        type: 'full_state',
-        timestamp: new Date().toISOString(),
-        data: { state, graph, history_count: this.engine.getFullHistory().length },
-      });
       const payload = GraphCorrectionResultSchema.parse({
         ...execution.result,
         command_id: execution.command_id,

@@ -38,6 +38,62 @@ function recoveryConfig(): EngagementConfig {
   };
 }
 
+const incompleteBootstrapArtifactCases: Array<[
+  string,
+  (directory: string) => Array<[string, Buffer]>,
+]> = [
+  ['a quarantined WAL tail', directory => {
+    const path = join(directory, 'state-recovery.journal.jsonl.quarantine-2026-07-17');
+    const bytes = Buffer.from('preserve quarantined WAL bytes\n');
+    writeFileSync(path, bytes);
+    return [[path, bytes]];
+  }],
+  ['a state writer lock', directory => {
+    const path = join(directory, 'state-recovery.json.writer-lock');
+    const bytes = Buffer.from('{"owner":"interrupted"}\n');
+    writeFileSync(path, bytes);
+    return [[path, bytes]];
+  }],
+  ['a state temporary file', directory => {
+    const path = join(directory, 'state-recovery.json.tmp-crash');
+    const bytes = Buffer.from('{"partial":"state"}\n');
+    writeFileSync(path, bytes);
+    return [[path, bytes]];
+  }],
+  ['a config write intent', directory => {
+    const path = join(directory, 'engagement.json.write-intent.json');
+    const bytes = Buffer.from('{"phase":"prepared"}\n');
+    writeFileSync(path, bytes);
+    return [[path, bytes]];
+  }],
+  ['an atomic config temporary file', directory => {
+    const path = join(directory, 'engagement.json.tmp-123-complete');
+    const bytes = Buffer.from('{"complete":"unpublished config"}\n');
+    writeFileSync(path, bytes);
+    return [[path, bytes]];
+  }],
+  ['an atomic config-intent temporary file', directory => {
+    const path = join(directory, 'engagement.json.write-intent.json.tmp-123-complete');
+    const bytes = Buffer.from('{"complete":"unpublished intent"}\n');
+    writeFileSync(path, bytes);
+    return [[path, bytes]];
+  }],
+  ['a migration backup', directory => {
+    const path = join(directory, '.migration-backups', 'backup-1', 'manifest.json');
+    const bytes = Buffer.from('{"backup":"preserve"}\n');
+    mkdirSync(join(directory, '.migration-backups', 'backup-1'), { recursive: true });
+    writeFileSync(path, bytes);
+    return [[path, bytes]];
+  }],
+  ['retained evidence', directory => {
+    const path = join(directory, 'evidence', 'manifest.json');
+    const bytes = Buffer.from('{"evidence":"preserve"}\n');
+    mkdirSync(join(directory, 'evidence'), { recursive: true });
+    writeFileSync(path, bytes);
+    return [[path, bytes]];
+  }],
+];
+
 describe('app bootstrap', () => {
   it('binds MCP agent aliases to canonical task actors without merging terminal sessions', async () => {
     const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
@@ -214,6 +270,80 @@ describe('app bootstrap', () => {
     }
   });
 
+  it.each(incompleteBootstrapArtifactCases)(
+    'refuses empty-engagement bootstrap when the config is missing beside %s',
+    (_label, arrange) => {
+      const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-artifact-gate-'));
+      const configPath = join(dir, 'engagement.json');
+      const retained = arrange(dir);
+      const previous = process.env.OVERWATCH_BOOTSTRAP;
+      process.env.OVERWATCH_BOOTSTRAP = '1';
+      try {
+        expect(() => createOverwatchApp({
+          configPath,
+          skillDir: resolve('./skills'),
+          dashboardPort: 0,
+        })).toThrow(/durable state\/WAL\/snapshot artifacts could not be validated/i);
+        expect(existsSync(configPath)).toBe(false);
+        for (const [path, bytes] of retained) expect(readFileSync(path)).toEqual(bytes);
+      } finally {
+        if (previous === undefined) delete process.env.OVERWATCH_BOOTSTRAP;
+        else process.env.OVERWATCH_BOOTSTRAP = previous;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('refuses explicit-state bootstrap when only its quarantined WAL remains', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-explicit-artifact-gate-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'custom-state.json');
+    const quarantinePath = join(dir, 'custom-state.journal.jsonl.quarantine-restart');
+    const bytes = Buffer.from('preserve explicit WAL quarantine\n');
+    writeFileSync(quarantinePath, bytes);
+    const previous = process.env.OVERWATCH_BOOTSTRAP;
+    process.env.OVERWATCH_BOOTSTRAP = '1';
+    try {
+      expect(() => createOverwatchApp({
+        configPath,
+        stateFilePath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      })).toThrow(/durable state\/WAL\/snapshot artifacts could not be validated/i);
+      expect(existsSync(configPath)).toBe(false);
+      expect(readFileSync(quarantinePath)).toEqual(bytes);
+    } finally {
+      if (previous === undefined) delete process.env.OVERWATCH_BOOTSTRAP;
+      else process.env.OVERWATCH_BOOTSTRAP = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('unions explicit-state and config-side recovery artifacts before bootstrap', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-explicit-config-artifact-'));
+    const configPath = join(dir, 'engagement.json');
+    const explicitState = join(dir, 'missing-explicit.json');
+    const intentPath = `${configPath}.write-intent.json`;
+    const intentBytes = Buffer.from('{"phase":"prepared"}\n');
+    writeFileSync(intentPath, intentBytes);
+    const previous = process.env.OVERWATCH_BOOTSTRAP;
+    process.env.OVERWATCH_BOOTSTRAP = '1';
+    try {
+      expect(() => createOverwatchApp({
+        configPath,
+        stateFilePath: explicitState,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      })).toThrow(/durable state\/WAL\/snapshot artifacts could not be validated/i);
+      expect(existsSync(configPath)).toBe(false);
+      expect(readFileSync(intentPath)).toEqual(intentBytes);
+    } finally {
+      if (previous === undefined) delete process.env.OVERWATCH_BOOTSTRAP;
+      else process.env.OVERWATCH_BOOTSTRAP = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it.each(['legacy', 'future'] as const)(
     'does not publish a bootstrap config ahead of an explicit %s durable state',
     async format => {
@@ -306,6 +436,36 @@ describe('app bootstrap', () => {
       expect(existsSync(join(dir, 'state-out-of-band-id.json'))).toBe(false);
     } finally {
       if (app) await shutdownOverwatchApp(app);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a fresh state path when the active config matches no durable family', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-unmatched-config-'));
+    const configPath = join(dir, 'engagement.json');
+    const original = recoveryConfig();
+    const originalStatePath = join(dir, `state-${original.id}.json`);
+    writeFileSync(configPath, JSON.stringify(original));
+    const seed = new GraphEngine(original, originalStatePath, configPath);
+    seed.flushNow();
+    seed.dispose();
+    const stale = {
+      ...original,
+      id: 'unrelated-config',
+      created_at: '2026-07-17T12:00:00.000Z',
+      engagement_nonce: 'b'.repeat(64),
+    };
+    writeFileSync(configPath, JSON.stringify(stale));
+
+    try {
+      expect(() => createOverwatchApp({
+        configPath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      })).toThrow(/active config does not match the durable state families/i);
+      expect(existsSync(join(dir, 'state-unrelated-config.json'))).toBe(false);
+      expect(existsSync(originalStatePath)).toBe(true);
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -761,7 +921,7 @@ describe('app bootstrap', () => {
     }
   });
 
-  it('does not substitute a sole neighboring state for a valid unrelated config', async () => {
+  it('does not substitute or hide a sole neighboring state for a valid unrelated config', () => {
     const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-neighbor-state-'));
     const configPath = join(dir, 'engagement.json');
     const active = recoveryConfig();
@@ -777,16 +937,71 @@ describe('app bootstrap', () => {
     seed.persistImmediate();
     seed.dispose();
 
+    try {
+      expect(() => createOverwatchApp({
+        configPath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
+      })).toThrow(/active config does not match the durable state families/i);
+      expect(existsSync(join(dir, `state-${active.id}.json`))).toBe(false);
+      expect(existsSync(unrelatedStatePath)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('selects a state family when a newer retained snapshot matches the active config', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overwatch-app-newer-snapshot-family-'));
+    const configPath = join(dir, 'engagement.json');
+    const stateFilePath = join(dir, 'state-family.json');
+    const active = recoveryConfig();
+    const stale = {
+      ...active,
+      id: 'stale-primary',
+      name: 'Stale primary',
+      created_at: '2026-07-14T00:00:00.000Z',
+    };
+    writeFileSync(configPath, JSON.stringify(active));
+    const staleSeed = new GraphEngine(stale, stateFilePath);
+    staleSeed.persistImmediate();
+    staleSeed.dispose();
+
+    const candidateDir = join(dir, 'candidate');
+    mkdirSync(candidateDir);
+    const candidatePath = join(candidateDir, 'state-candidate.json');
+    const currentSeed = new GraphEngine(active, candidatePath);
+    currentSeed.addNode({
+      id: 'snapshot-proof',
+      type: 'host',
+      label: 'Snapshot proof',
+      ip: '10.30.0.40',
+      discovered_at: '2026-07-17T00:00:00.000Z',
+      confidence: 1,
+    });
+    currentSeed.persistImmediate();
+    currentSeed.dispose();
+    const snapshots = join(dir, '.snapshots');
+    mkdirSync(snapshots, { recursive: true });
+    writeFileSync(
+      join(snapshots, 'state-family.snap-2026-07-17T00-00-00-000Z.json'),
+      readFileSync(candidatePath),
+    );
+    rmSync(candidateDir, { recursive: true, force: true });
+    const familyJournal = MutationJournal.pathForState(stateFilePath);
+    if (existsSync(familyJournal)) unlinkSync(familyJournal);
+
     let app: OverwatchApp | undefined;
     try {
-      app = createOverwatchApp({ configPath, skillDir: resolve('./skills'), dashboardPort: 0 });
-      expect(app.engine.getStateFilePath()).toBe(join(dir, `state-${active.id}.json`));
-      expect(app.engine.getConfig().id).toBe(active.id);
-      expect(app.engine.getConfig().name).toBe(active.name);
-      expect(app.engine.getConfigRecoveryStatus()).toMatchObject({
-        status: 'in_sync',
-        resolution_required: false,
+      app = createOverwatchApp({
+        configPath,
+        skillDir: resolve('./skills'),
+        dashboardPort: 0,
       });
+      expect(app.engine.getPersistenceRecoveryStatus()).toMatchObject({
+        source: 'snapshot',
+        writable: true,
+      });
+      expect(app.engine.exportGraph().nodes.some(node => node.id === 'snapshot-proof')).toBe(true);
     } finally {
       if (app) await shutdownOverwatchApp(app);
       rmSync(dir, { recursive: true, force: true });

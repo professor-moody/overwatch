@@ -15,6 +15,7 @@ import { useWs } from '../../providers/ws-provider';
 import { useKeyboardShortcuts, SHORTCUT_HELP } from '../../hooks/useKeyboardShortcuts';
 import { buildPanelPath, isPanelId, parseHash } from '../../hooks/useNavigation';
 import { cn } from '../../lib/utils';
+import { safeLocalStorage } from '../../lib/browser-storage';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
 import { RecoveryBanner } from '../shared/RecoveryBanner';
 
@@ -71,10 +72,8 @@ export function OperatorLayout() {
   const activePanel: PanelId = isPanelId(panelId) ? panelId : 'agents';
   const [selectedItem, setSelectedItem] = useState<string | undefined>(undefined);
   const [showHelp, setShowHelp] = useState(false);
-  const [sidebarExpanded, setSidebarExpanded] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    return window.localStorage.getItem('overwatch-sidebar-expanded') !== 'false';
-  });
+  const [sidebarExpanded, setSidebarExpanded] = useState(() =>
+    safeLocalStorage.getItem('overwatch-sidebar-expanded') !== 'false');
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -116,7 +115,7 @@ export function OperatorLayout() {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem('overwatch-sidebar-expanded', String(sidebarExpanded));
+    safeLocalStorage.setItem('overwatch-sidebar-expanded', String(sidebarExpanded));
   }, [sidebarExpanded]);
 
   const ActiveComponent = PANEL_COMPONENTS[activePanel];

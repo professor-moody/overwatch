@@ -17,7 +17,10 @@ npm run start:daemon
 
 Leave that command running. Do not start a second Overwatch process for the
 browser; terminal Claude, the dashboard, the CLI, and managed agents all attach
-to this owner.
+to this owner. Re-running setup refreshes client wiring but never replaces an
+existing engagement. If its config is missing beside retained state or other
+engagement artifacts, setup preserves them and enters or requests explicit
+recovery instead of creating a competing empty engagement.
 
 ```
 http://localhost:8384

@@ -423,7 +423,7 @@ export function loadConfig(configPath: string = process.env.OVERWATCH_CONFIG || 
   return parseEngagementConfig(readFileSync(configPath, 'utf-8'));
 }
 
-function readConfigFromDurableState(stateFilePath: string): EngagementConfig | undefined {
+function readConfigsFromDurableState(stateFilePath: string): EngagementConfig[] {
   const directory = dirname(stateFilePath);
   const base = basename(stateFilePath, '.json');
   const candidates: string[] = [];
@@ -444,13 +444,20 @@ function readConfigFromDurableState(stateFilePath: string): EngagementConfig | u
       .map(name => join(directory, name)));
   } catch { /* state directory is unavailable */ }
 
+  const configs: EngagementConfig[] = [];
+  const seen = new Set<string>();
   for (const candidate of candidates) {
     try {
       const value = JSON.parse(readFileSync(candidate, 'utf8')) as { config?: unknown };
-      return engagementConfigSchema.parse(value.config);
+      const config = engagementConfigSchema.parse(value.config);
+      const identity = JSON.stringify(config);
+      if (!seen.has(identity)) {
+        seen.add(identity);
+        configs.push(config);
+      }
     } catch { /* try the next retained recovery base */ }
   }
-  return undefined;
+  return configs;
 }
 
 function discoverRecoveryStateFile(
@@ -480,20 +487,25 @@ function discoverRecoveryStateFile(
   }
   const candidates = names.flatMap(name => {
     const path = join(directory, name);
-    const config = readConfigFromDurableState(path);
-    return config ? [{ path, config }] : [];
+    const configs = readConfigsFromDurableState(path);
+    return configs.length > 0 ? [{ path, configs }] : [];
   });
   if (preferredConfig) {
-    const idMatches = candidates.filter(candidate => candidate.config.id === preferredConfig.id);
-    if (idMatches.length === 1) return idMatches[0];
+    // StatePersistence validates and ranks every retained base. Discovery only
+    // selects the family, so match the active config against every readable
+    // base instead of incorrectly treating the primary file as authoritative.
+    const idMatches = candidates.filter(candidate =>
+      candidate.configs.some(config => config.id === preferredConfig.id));
+    if (idMatches.length === 1) return { path: idMatches[0].path, config: preferredConfig };
     if (idMatches.length > 1) {
       throw new Error('Multiple durable state candidates match the active engagement id; set OVERWATCH_STATE_FILE explicitly.');
     }
     const identityMatches = candidates.filter(candidate =>
-      candidate.config.created_at === preferredConfig.created_at
-      && candidate.config.engagement_nonce === preferredConfig.engagement_nonce,
+      candidate.configs.some(config =>
+        config.created_at === preferredConfig.created_at
+        && config.engagement_nonce === preferredConfig.engagement_nonce),
     );
-    if (identityMatches.length === 1) return identityMatches[0];
+    if (identityMatches.length === 1) return { path: identityMatches[0].path, config: preferredConfig };
     if (identityMatches.length > 1) {
       throw new Error('Active config identity matches multiple durable states; set OVERWATCH_STATE_FILE explicitly.');
     }
@@ -505,56 +517,88 @@ function discoverRecoveryStateFile(
       'Set OVERWATCH_STATE_FILE (or stateFilePath) to select the state to recover.',
     );
   }
-  return candidates[0];
+  const selected = candidates[0];
+  return selected ? { path: selected.path, config: selected.configs[0] } : undefined;
 }
 
 function hasStateArtifactsForPath(stateFilePath: string): boolean {
   const directory = dirname(stateFilePath);
   const base = basename(stateFilePath, '.json');
+  const stateName = basename(stateFilePath);
   if (
     existsSync(stateFilePath)
     || existsSync(join(directory, `${base}.journal.jsonl`))
     || existsSync(`${stateFilePath}.rollback-intent.json`)
     || existsSync(`${stateFilePath}.migration-intent.json`)
+    || existsSync(`${stateFilePath}.writer-lock`)
     || existsSync(`${stateFilePath}.migration-lock`)
   ) {
     return true;
   }
-  try {
-    if (readdirSync(directory).some(name =>
+  if (readDirectoryIfPresent(directory).some(name =>
+      (name.startsWith(`${base}.snap-`) && name.endsWith('.json'))
+      || name.startsWith(`${base}.journal.jsonl.`)
+      || name.startsWith(`${stateName}.rollback-intent.json`)
+      || name.startsWith(`${stateName}.migration-intent.json`)
+      || name.startsWith(`${stateName}.writer-lock`)
+      || name.startsWith(`${stateName}.migration-lock`)
+      || name.startsWith(`${stateName}.tmp`))) {
+    return true;
+  }
+  if (readDirectoryIfPresent(join(directory, '.snapshots')).some(name =>
       name.startsWith(`${base}.snap-`) && name.endsWith('.json'))) {
-      return true;
-    }
-  } catch { /* unavailable directory is handled by the later config/state open */ }
-  try {
-    if (readdirSync(join(directory, '.snapshots')).some(name =>
-      name.startsWith(`${base}.snap-`) && name.endsWith('.json'))) {
-      return true;
-    }
-  } catch { /* no retained snapshots */ }
+    return true;
+  }
+  for (const name of ['.migration-backups', 'engagements', 'evidence', 'reports', 'tapes']) {
+    if (readDirectoryIfPresent(join(directory, name)).length > 0) return true;
+  }
   return false;
+}
+
+function readDirectoryIfPresent(path: string): string[] {
+  try {
+    return readdirSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+function hasAnyStateFamilyBeside(configPath: string): boolean {
+  const directory = dirname(configPath);
+  if (readDirectoryIfPresent(directory).some(name =>
+    /^state-.+\.json$/.test(name)
+    || /^state-.+\.journal\.jsonl(?:\..+)?$/.test(name)
+    || /^state-.+\.json\.(?:rollback-intent|migration-intent)\.json$/.test(name)
+    || /^state-.+\.json\.(?:writer-lock|migration-lock)$/.test(name)
+    || /^state-.+\.json\.tmp(?:-.+)?$/.test(name)
+    || /^state-.+\.snap-.+\.json$/.test(name))) return true;
+  return readDirectoryIfPresent(join(directory, '.snapshots'))
+    .some(name => /^state-.+\.snap-.+\.json$/.test(name));
 }
 
 function hasAnyStateArtifactsBeside(configPath: string): boolean {
   const directory = dirname(configPath);
-  try {
-    if (readdirSync(directory).some(name =>
+  const configName = basename(configPath);
+  if (readDirectoryIfPresent(directory).some(name =>
       /^state-.+\.json$/.test(name)
-      || /^state-.+\.journal\.jsonl$/.test(name)
+      || /^state-.+\.journal\.jsonl(?:\..+)?$/.test(name)
       || /^state-.+\.json\.(?:rollback-intent|migration-intent)\.json$/.test(name)
-      || /^state-.+\.json\.migration-lock$/.test(name)
-      || /^state-.+\.snap-.+\.json$/.test(name))) {
-      return true;
-    }
-  } catch {
-    return false;
+      || /^state-.+\.json\.(?:writer-lock|migration-lock)$/.test(name)
+      || /^state-.+\.json\.tmp(?:-.+)?$/.test(name)
+      || /^state-.+\.snap-.+\.json$/.test(name)
+      || name === `${configName}.write-intent.json`
+      || name.startsWith(`${configName}.write-intent.json.`)
+      || name.startsWith(`${configName}.overwatch-`)
+      || name.startsWith(`${configName}.tmp-`))) {
+    return true;
   }
-  try {
-    return readdirSync(join(directory, '.snapshots'))
-      .some(name => /^state-.+\.snap-.+\.json$/.test(name));
-  } catch {
-    return false;
+  if (readDirectoryIfPresent(join(directory, '.snapshots'))
+    .some(name => /^state-.+\.snap-.+\.json$/.test(name))) return true;
+  for (const name of ['.migration-backups', 'engagements', 'evidence', 'reports', 'tapes']) {
+    if (readDirectoryIfPresent(join(directory, name)).length > 0) return true;
   }
+  return false;
 }
 
 export function registerAllTools(
@@ -643,7 +687,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     config = options.config;
   } else if (!existsSync(resolvedConfigPath)) {
     const explicitRecoveryConfig = explicitStateFilePath
-      ? readConfigFromDurableState(explicitStateFilePath)
+      ? readConfigsFromDurableState(explicitStateFilePath)[0]
       : undefined;
     const discovered = explicitRecoveryConfig
       ? { path: explicitStateFilePath!, config: explicitRecoveryConfig }
@@ -655,9 +699,8 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
         `[recovery] active config is missing; starting read-only from durable state ${discovered.path}`,
       );
     } else {
-      const durableArtifactsExist = explicitStateFilePath
-        ? hasStateArtifactsForPath(explicitStateFilePath)
-        : hasAnyStateArtifactsBeside(resolvedConfigPath);
+      const durableArtifactsExist = hasAnyStateArtifactsBeside(resolvedConfigPath)
+        || (explicitStateFilePath ? hasStateArtifactsForPath(explicitStateFilePath) : false);
       if (durableArtifactsExist) {
         throw new Error(
           'Active config is missing, but durable state/WAL/snapshot artifacts could not be validated. ' +
@@ -672,7 +715,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
       config = loadConfig(resolvedConfigPath);
     } catch (configError) {
       const explicitRecoveryConfig = explicitStateFilePath
-        ? readConfigFromDurableState(explicitStateFilePath)
+        ? readConfigsFromDurableState(explicitStateFilePath)[0]
         : undefined;
       if (explicitStateFilePath && !explicitRecoveryConfig) {
         throw new Error(
@@ -705,6 +748,12 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
 
   if (!explicitStateFilePath && !recoveredStateFilePath) {
     recoveredStateFilePath = discoverRecoveryStateFile(resolvedConfigPath, config)?.path;
+    if (!recoveredStateFilePath && !options.config && hasAnyStateFamilyBeside(resolvedConfigPath)) {
+      throw new Error(
+        'The active config does not match the durable state families beside it. ' +
+        'Refusing to select a fresh state path; restore the matching config or set OVERWATCH_STATE_FILE explicitly.',
+      );
+    }
   }
 
   // Bootstrap is an explicit request to create a new active engagement. Make

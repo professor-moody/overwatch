@@ -60,6 +60,54 @@ test.afterEach(async ({ page }, testInfo) => {
 });
 
 test.describe('dashboard operator journeys', () => {
+  test('stays usable when browser storage property access is denied', async ({ page }) => {
+    await page.addInitScript(() => {
+      for (const key of ['localStorage', 'sessionStorage'] as const) {
+        Object.defineProperty(window, key, {
+          configurable: true,
+          get() { throw new DOMException(`${key} denied`, 'SecurityError'); },
+        });
+      }
+    });
+
+    await page.goto(withToken('/agents'), { waitUntil: 'domcontentloaded' });
+    await expect(page.getByText('Live', { exact: true })).toBeVisible();
+    expect(new URL(page.url()).searchParams.has('token')).toBe(false);
+    // The full sidebar is taller than Playwright's default viewport. Invoke
+    // the real React control without making this storage-resilience journey a
+    // sidebar-scroll test, then use the operator shortcut for navigation.
+    await page.getByTitle('Collapse navigation').evaluate((element: HTMLElement) => element.click());
+    await expect(page.getByTitle('Expand navigation')).toHaveCount(1);
+    await page.keyboard.press('g');
+    await expect(page).toHaveURL(/\/graph$/);
+    await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('9');
+    await page.getByTitle('More graph controls').click();
+    await page.getByText('Reset positions', { exact: true }).click();
+    await expect(page.getByText('Positions reset', { exact: true })).toBeVisible();
+    await page.keyboard.press('c');
+    await page.keyboard.press('g');
+    await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('9');
+  });
+
+  test('stays usable when browser storage methods throw', async ({ page }) => {
+    await page.addInitScript(() => {
+      for (const method of ['getItem', 'setItem', 'removeItem'] as const) {
+        Object.defineProperty(Storage.prototype, method, {
+          configurable: true,
+          value() { throw new DOMException(`${method} denied`, 'SecurityError'); },
+        });
+      }
+    });
+
+    await page.goto(withToken('/agents'), { waitUntil: 'domcontentloaded' });
+    await expect(page.getByText('Live', { exact: true })).toBeVisible();
+    await page.getByTitle('Collapse navigation').evaluate((element: HTMLElement) => element.click());
+    await expect(page.getByTitle('Expand navigation')).toHaveCount(1);
+    await page.keyboard.press('g');
+    await expect(page).toHaveURL(/\/graph$/);
+    await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('9');
+  });
+
   test('captures and scrubs remote tokens while authenticating HTTP and WebSockets', async ({ page }) => {
     const authorizationHeaders: string[] = [];
     const websocketUrls: string[] = [];

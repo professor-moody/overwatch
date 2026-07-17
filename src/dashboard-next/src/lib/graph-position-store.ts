@@ -1,3 +1,9 @@
+import {
+  createSafeBrowserStorage,
+  safeLocalStorage,
+  type StorageLike,
+} from './browser-storage';
+
 export interface GraphNodePosition {
   x: number;
   y: number;
@@ -5,22 +11,21 @@ export interface GraphNodePosition {
 
 type PositionMap = Record<string, GraphNodePosition>;
 
-interface StorageLike {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
-}
-
 const PREFIX = 'overwatch:graph-positions';
+const injectedStorageAdapters = new WeakMap<StorageLike, StorageLike>();
 
 export function graphPositionStorageKey(engagementId: string | undefined | null): string {
   return `${PREFIX}:${engagementId || 'default'}`;
 }
 
-function getStorage(storage?: StorageLike): StorageLike | null {
-  if (storage) return storage;
-  if (typeof window === 'undefined') return null;
-  return window.localStorage;
+function getStorage(storage?: StorageLike): StorageLike {
+  if (!storage) return safeLocalStorage;
+  let adapter = injectedStorageAdapters.get(storage);
+  if (!adapter) {
+    adapter = createSafeBrowserStorage('local', () => storage, new Map());
+    injectedStorageAdapters.set(storage, adapter);
+  }
+  return adapter;
 }
 
 function validPosition(value: unknown): value is GraphNodePosition {
@@ -29,12 +34,10 @@ function validPosition(value: unknown): value is GraphNodePosition {
   return Number.isFinite(p.x) && Number.isFinite(p.y);
 }
 
-export function loadGraphPositions(
+function readGraphPositions(
   engagementId: string | undefined | null,
-  storage?: StorageLike,
+  target: StorageLike,
 ): PositionMap {
-  const target = getStorage(storage);
-  if (!target) return {};
   const raw = target.getItem(graphPositionStorageKey(engagementId));
   if (!raw) return {};
   try {
@@ -49,6 +52,14 @@ export function loadGraphPositions(
   }
 }
 
+export function loadGraphPositions(
+  engagementId: string | undefined | null,
+  storage?: StorageLike,
+): PositionMap {
+  const target = getStorage(storage);
+  return readGraphPositions(engagementId, target);
+}
+
 export function saveGraphNodePosition(
   engagementId: string | undefined | null,
   nodeId: string,
@@ -56,9 +67,9 @@ export function saveGraphNodePosition(
   storage?: StorageLike,
 ): PositionMap {
   const target = getStorage(storage);
-  const current = loadGraphPositions(engagementId, target || undefined);
+  const current = readGraphPositions(engagementId, target);
   current[nodeId] = position;
-  if (target) target.setItem(graphPositionStorageKey(engagementId), JSON.stringify(current));
+  target.setItem(graphPositionStorageKey(engagementId), JSON.stringify(current));
   return current;
 }
 
@@ -67,5 +78,5 @@ export function clearGraphPositions(
   storage?: StorageLike,
 ): void {
   const target = getStorage(storage);
-  target?.removeItem(graphPositionStorageKey(engagementId));
+  target.removeItem(graphPositionStorageKey(engagementId));
 }

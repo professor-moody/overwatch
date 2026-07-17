@@ -17,7 +17,7 @@ import type { ExportedGraph } from '../types.js';
 export interface DashboardMainWebSocketHubOptions {
   buildState: () => DashboardState<unknown, unknown>;
   buildGraph?: () => ExportedGraph;
-  runtimeBuild?: RuntimeBuildInfo;
+  runtimeBuild: RuntimeBuildInfo;
   debounceMs?: number;
 }
 

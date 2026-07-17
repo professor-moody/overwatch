@@ -5,8 +5,15 @@ import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspectBuildFreshness } from './build-fingerprint.mjs';
+import {
+  inventoryEngagementArtifacts,
+  selectRecoveryState,
+  summarizeArtifacts,
+  validateEngagementConfigShape,
+} from './engagement-artifacts.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const root = resolve(process.env.OVERWATCH_DOCTOR_ROOT || sourceRoot);
 const checks = [];
 
 function add(status, label, detail, fix) {
@@ -215,24 +222,130 @@ for (const hook of [
 
 let configPath = process.env.OVERWATCH_CONFIG || join(root, 'engagement.json');
 let config = null;
+let artifactInventory;
+let configProblem;
 try {
   if (!process.env.OVERWATCH_CONFIG && existsSync(mcpPath)) {
     const mcp = readJson(mcpPath);
     const configured = mcp?.mcpServers?.overwatch?.env?.OVERWATCH_CONFIG;
     if (configured) configPath = configured;
   }
-  if (!existsSync(configPath)) throw new Error('missing');
-  config = readJson(configPath);
-  add('pass', 'Engagement config', configPath);
 } catch (err) {
-  add('fail', 'Engagement config', `${configPath} could not be read`, 'Run: npm run setup');
+  configProblem = `.mcp.json could not be read: ${err instanceof Error ? err.message : String(err)}`;
+}
+configPath = resolve(root, configPath);
+if (!configProblem) {
+  if (!existsSync(configPath)) {
+    configProblem = 'file is missing';
+  } else {
+    try {
+      const parsed = readJson(configPath);
+      const validation = validateEngagementConfigShape(parsed);
+      if (validation.valid) config = validation.config;
+      else configProblem = `schema validation failed: ${validation.reason}`;
+    } catch (error) {
+      configProblem = error instanceof Error ? error.message : String(error);
+    }
+  }
 }
 
-if (config) {
+try {
+  artifactInventory = inventoryEngagementArtifacts(root, {
+    configPath,
+    explicitStateFile: process.env.OVERWATCH_STATE_FILE,
+  });
+} catch (inventoryError) {
+  add(
+    'fail',
+    'Durable artifact inventory',
+    inventoryError instanceof Error ? inventoryError.message : String(inventoryError),
+    'Repair directory access and rerun doctor. Do not create or replace engagement configuration while inventory is incomplete.',
+  );
+}
+
+if (!config) {
+  const selection = artifactInventory ? selectRecoveryState(artifactInventory) : undefined;
+  if (!artifactInventory) {
+    add('fail', 'Engagement config', `${configPath} could not be validated: ${configProblem}`);
+  } else if (artifactInventory.artifacts.length === 0) {
+    const fix = configProblem === 'file is missing'
+      ? 'Run: npm run setup'
+      : 'Restore or repair the existing config; setup will not replace it.';
+    add('fail', 'Engagement config', `${configPath} could not be validated: ${configProblem}`, fix);
+  } else if (selection.status === 'selected') {
+    add(
+      'fail',
+      'Engagement config',
+      `${configPath} could not be validated (${configProblem}); preserved recovery state selected at ${selection.family.state_path}`,
+      `Start read-only with OVERWATCH_STATE_FILE=${JSON.stringify(selection.family.state_path)}, inspect Recovery, then reconcile with durable state. Do not create or force-replace engagement.json.`,
+    );
+    add('pass', 'Recovery state selection', `${selection.family.state_path} (${selection.via})`);
+  } else {
+    const reason = selection.status === 'ambiguous'
+      ? 'multiple recoverable state families exist'
+      : selection.status === 'missing_explicit'
+        ? `the explicit state path is missing: ${selection.state_path}`
+        : selection.status === 'no_base'
+          ? 'state/WAL artifacts have no base containing a readable engagement config'
+          : selection.status === 'unmatched_config'
+            ? 'the active config does not match any preserved state family'
+            : 'only non-state durable artifacts were found';
+    add(
+      'fail',
+      'Engagement config',
+      `${configPath} could not be validated (${configProblem}) and ${reason}`,
+      'Restore the matching config or a complete verified backup. Set OVERWATCH_STATE_FILE only when it identifies the intended state; never run setup --force over these artifacts.',
+    );
+  }
+} else {
+  add('pass', 'Engagement config', configPath);
   if (config.engagement_nonce) add('pass', 'Engagement nonce', 'present');
-  else add('warn', 'Engagement nonce', 'missing', 'Run: npm run setup -- --force or add engagement_nonce to the config.');
-  const statePath = process.env.OVERWATCH_STATE_FILE || join(dirname(resolve(configPath)), `state-${config.id}.json`);
-  add('pass', 'Resolved state path', statePath);
+  else add('warn', 'Engagement nonce', 'missing; WAL durability remains enabled, but deterministic IDs use legacy behavior');
+
+  const selection = artifactInventory
+    ? selectRecoveryState(artifactInventory, { activeConfig: config })
+    : undefined;
+  if (selection?.status === 'selected') {
+    add('pass', 'Resolved state path', `${selection.family.state_path} (${selection.via})`);
+    if (selection.semantic_match !== true) {
+      const convergenceDetail = selection.semantic_match === 'unknown'
+        ? `retained recovery bases do not establish one configuration authority (${selection.base_config_status})`
+        : 'the active config file and selected durable state contain different configuration semantics';
+      add(
+        'fail',
+        'Config convergence',
+        convergenceDetail,
+        'Start the daemon read-only, inspect overwatch recovery, and reconcile with the exact file/state hashes.',
+      );
+    }
+  } else if (
+    selection
+    && (artifactInventory.state_families.length > 0 || artifactInventory.explicit_state_file)
+  ) {
+    const reason = selection.status === 'unmatched_config'
+      ? 'the active config does not match any preserved state family'
+      : selection.status === 'ambiguous'
+        ? 'more than one preserved state family matches the active config'
+        : selection.status === 'missing_explicit'
+          ? `the explicit state path is missing: ${selection.state_path}`
+          : 'preserved state artifacts do not contain a readable embedded engagement config';
+    add(
+      'fail',
+      'Resolved state path',
+      reason,
+      'Restore the matching config or set OVERWATCH_STATE_FILE explicitly before starting the daemon.',
+    );
+  } else {
+    add('pass', 'Resolved state path', join(dirname(configPath), `state-${config.id}.json`));
+  }
+}
+
+if (artifactInventory?.artifacts.length > 0) {
+  add(
+    config ? 'pass' : 'warn',
+    'Durable artifact inventory',
+    `${artifactInventory.artifacts.length} preserved artifact entries: ${summarizeArtifacts(artifactInventory)}`,
+  );
 }
 
 const dashboardPort = Number(process.env.OVERWATCH_DASHBOARD_PORT || '8384');

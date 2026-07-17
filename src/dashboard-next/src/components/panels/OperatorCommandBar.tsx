@@ -3,6 +3,7 @@ import * as api from '../../lib/api';
 import { cn } from '../../lib/utils';
 import { POLL } from '../../lib/polling';
 import { projectPlannerCommand } from '../../lib/planner-command-state';
+import { safeSessionStorage } from '../../lib/browser-storage';
 import { ActionButton } from '../shared/primitives';
 
 // Phase 3A NL operator cockpit: type a plain-English command → it becomes a
@@ -60,7 +61,7 @@ export function OperatorCommandBar() {
   useEffect(() => () => clearPoll(), [clearPoll]);
 
   const clearStoredPlanner = useCallback(() => {
-    try { sessionStorage.removeItem(ACTIVE_PLANNER_COMMAND_KEY); } catch { /* storage can be unavailable */ }
+    safeSessionStorage.removeItem(ACTIVE_PLANNER_COMMAND_KEY);
   }, []);
 
   const startPolling = useCallback((commandId: string, plannerTaskId?: string) => {
@@ -68,12 +69,10 @@ export function OperatorCommandBar() {
     const generation = pollGenerationRef.current;
     const controller = new AbortController();
     pollAbortRef.current = controller;
-    try {
-      sessionStorage.setItem(
-        ACTIVE_PLANNER_COMMAND_KEY,
-        JSON.stringify({ commandId, plannerTaskId }),
-      );
-    } catch { /* the durable server record remains authoritative */ }
+    safeSessionStorage.setItem(
+      ACTIVE_PLANNER_COMMAND_KEY,
+      JSON.stringify({ commandId, plannerTaskId }),
+    );
     const schedule = () => {
       if (pollGenerationRef.current !== generation) return;
       pollRef.current = setTimeout(() => {
@@ -152,7 +151,7 @@ export function OperatorCommandBar() {
     const intentGeneration = operatorIntentGenerationRef.current;
     let restoredFromBrowser = false;
     try {
-      const raw = sessionStorage.getItem(ACTIVE_PLANNER_COMMAND_KEY);
+      const raw = safeSessionStorage.getItem(ACTIVE_PLANNER_COMMAND_KEY);
       if (raw) {
         const restored = JSON.parse(raw) as { commandId?: unknown; plannerTaskId?: unknown };
         if (typeof restored.commandId === 'string') {

@@ -49,4 +49,20 @@ describe('graph position store', () => {
 
     expect(loadGraphPositions('eng-1', storage)).toEqual({ good: { x: 1, y: 2 } });
   });
+
+  it('keeps graph interaction usable when every storage method throws', () => {
+    const storage = {
+      getItem: () => { throw new Error('get denied'); },
+      setItem: () => { throw new Error('set denied'); },
+      removeItem: () => { throw new Error('remove denied'); },
+    };
+
+    expect(loadGraphPositions('storage-denied', storage)).toEqual({});
+    expect(saveGraphNodePosition('storage-denied', 'node-a', { x: 3, y: 7 }, storage))
+      .toEqual({ 'node-a': { x: 3, y: 7 } });
+    expect(loadGraphPositions('storage-denied', storage))
+      .toEqual({ 'node-a': { x: 3, y: 7 } });
+    expect(() => clearGraphPositions('storage-denied', storage)).not.toThrow();
+    expect(loadGraphPositions('storage-denied', storage)).toEqual({});
+  });
 });
