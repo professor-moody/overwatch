@@ -21,7 +21,19 @@ export class GraphDeltaIndex {
     }
     for (const raw of data.delta.nodes) {
       const node = flattenNode(raw);
-      this.upsert(graph.nodes, this.nodePositions, node.id, node);
+      this.upsert(
+        graph.nodes,
+        this.nodePositions,
+        node.id,
+        node,
+        (previous, next) => ({
+          ...previous,
+          ...next,
+          ...(next.community_id === undefined && previous.community_id !== undefined
+            ? { community_id: previous.community_id }
+            : {}),
+        }),
+      );
     }
     for (const id of data.delta.removed_edges || []) {
       this.remove(graph.edges, this.edgePositions, id, edgeKey);
@@ -48,18 +60,45 @@ export class GraphDeltaIndex {
     graph.edges.forEach((edge, index) => this.edgePositions.set(edgeKey(edge), index));
   }
 
+  /** Replace topology-derived community labels after the coalesced state
+   * projection completes. The graph arrays remain stable for fast consumers;
+   * callers use graphVersion to invalidate memoized derived views. */
+  applyCommunityIds(graph: ExportedGraph, communityIds: Record<string, number>): boolean {
+    this.ensure(graph);
+    let changed = false;
+    for (let index = 0; index < graph.nodes.length; index++) {
+      const previous = graph.nodes[index];
+      const communityId = communityIds[previous.id];
+      if (previous.community_id === communityId) continue;
+      if (communityId === undefined) {
+        const { community_id: _communityId, ...withoutCommunity } = previous;
+        graph.nodes[index] = withoutCommunity as ExportedNode;
+      } else {
+        graph.nodes[index] = { ...previous, community_id: communityId };
+      }
+      changed = true;
+    }
+    return changed;
+  }
+
   private ensure(graph: ExportedGraph): void {
     if (this.nodesRef !== graph.nodes || this.edgesRef !== graph.edges) this.reset(graph);
   }
 
-  private upsert<T>(items: T[], positions: Map<string, number>, key: string, value: T): void {
+  private upsert<T>(
+    items: T[],
+    positions: Map<string, number>,
+    key: string,
+    value: T,
+    merge?: (previous: T, next: T) => T,
+  ): void {
     const index = positions.get(key);
     if (index === undefined) {
       positions.set(key, items.length);
       items.push(value);
       return;
     }
-    items[index] = value;
+    items[index] = merge ? merge(items[index], value) : value;
   }
 
   private remove<T>(

@@ -273,6 +273,33 @@ describe('DashboardServer', () => {
     expect(update.data.delta.removed_nodes).toContain('missing-final-node');
   });
 
+  it('sends changed-ID deltas before coalescing an expensive state refresh', () => {
+    vi.useFakeTimers();
+    try {
+      const mockClient = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+        on: vi.fn(),
+      };
+      (dashboard as any).mainHub.attachConnection(mockClient);
+      mockClient.send.mockClear();
+      const stateSpy = vi.spyOn(engine, 'getState');
+
+      dashboard.onGraphUpdate({ updated_nodes: ['missing-fast-node'] });
+      dashboard.flush();
+
+      expect(stateSpy).not.toHaveBeenCalled();
+      expect(JSON.parse(String(mockClient.send.mock.calls[0][0])).type).toBe('graph_update');
+
+      vi.advanceTimersByTime(750);
+      expect(stateSpy).toHaveBeenCalledTimes(1);
+      expect(mockClient.send.mock.calls.map(call => JSON.parse(String(call[0])).type)).toContain('state_refresh');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not expand every incident edge for an ordinary high-degree node update', () => {
     const graph = (engine as any).ctx.graph;
     graph.addNode('delta-hub', {
@@ -937,48 +964,53 @@ describe('DashboardServer', () => {
     expect((dashboard as any).fileCache.size).toBe(0);
   });
 
-  it('delta nodes contain fresh community_id after graph topology change', () => {
-    const mockClient = {
-      readyState: WebSocket.OPEN,
-      send: vi.fn(),
-      close: vi.fn(),
-    };
-    (dashboard as any).clients = new Set([mockClient]);
+  it('refreshes community IDs after delivering the topology delta', () => {
+    vi.useFakeTimers();
+    try {
+      const mockClient = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+        on: vi.fn(),
+      };
+      (dashboard as any).mainHub.attachConnection(mockClient);
+      mockClient.send.mockClear();
 
-    // Seed two connected hosts so Louvain has edges to work with
-    engine.ingestFinding({
-      id: 'community-delta-seed',
-      agent_id: 'test-agent',
-      timestamp: '2026-03-27T10:00:00Z',
-      nodes: [
-        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
-        { id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
-      ],
-      edges: [
-        { source: 'host-10-10-10-1', target: 'host-10-10-10-2', properties: { type: 'REACHABLE', confidence: 1.0, discovered_at: '2026-03-27T10:00:00Z' } },
-      ],
-    });
+      // Seed two connected hosts so Louvain has edges to work with.
+      engine.ingestFinding({
+        id: 'community-delta-seed',
+        agent_id: 'test-agent',
+        timestamp: '2026-03-27T10:00:00Z',
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'host-10-10-10-2', properties: { type: 'REACHABLE', confidence: 1.0, discovered_at: '2026-03-27T10:00:00Z' } },
+        ],
+      });
 
-    dashboard.onGraphUpdate({
-      new_nodes: ['host-10-10-10-1', 'host-10-10-10-2'],
-      new_edges: ['host-10-10-10-1--REACHABLE--host-10-10-10-2'],
-    });
-    dashboard.flush();
+      dashboard.onGraphUpdate({
+        new_nodes: ['host-10-10-10-1', 'host-10-10-10-2'],
+        new_edges: ['host-10-10-10-1--REACHABLE--host-10-10-10-2'],
+      });
+      dashboard.flush();
 
-    const graphUpdates = sentGraphUpdates(mockClient);
-    expect(graphUpdates).toHaveLength(1);
-    const payload = graphUpdates[0];
-    const deltaNodes = payload.data.delta.nodes;
+      const graphUpdates = sentGraphUpdates(mockClient);
+      expect(graphUpdates).toHaveLength(1);
+      expect(graphUpdates[0].data.delta.nodes.filter((node: any) => node.id.startsWith('host-'))).toHaveLength(2);
 
-    // Every browser delta node should have community_id projected
-    const hostNodes = deltaNodes.filter((n: any) => n.id.startsWith('host-'));
-    expect(hostNodes.length).toBe(2);
-    for (const node of hostNodes) {
-      expect(typeof node.properties.community_id).toBe('number');
+      vi.advanceTimersByTime(750);
+      const refresh = mockClient.send.mock.calls
+        .map(call => JSON.parse(String(call[0])))
+        .find(message => message.type === 'state_refresh');
+      expect(refresh).toBeDefined();
+      const communities = refresh.data.community_ids;
+      expect(typeof communities['host-10-10-10-1']).toBe('number');
+      expect(communities['host-10-10-10-1']).toBe(communities['host-10-10-10-2']);
+    } finally {
+      vi.useRealTimers();
     }
-
-    // Both hosts in the same connected component should share community_id
-    expect(hostNodes[0].properties.community_id).toBe(hostNodes[1].properties.community_id);
   });
 
   it('index.html serves SPA entry point directly', () => {

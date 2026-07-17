@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useEngagementStore } from '../stores/engagement-store';
 import { useToastStore } from '../stores/toast-store';
-import type { WsMessage, FullStateData, GraphUpdateData, SessionInfo, AgentConsoleEvent } from '../lib/types';
+import type { WsMessage, FullStateData, GraphUpdateData, StateRefreshData, SessionInfo, AgentConsoleEvent } from '../lib/types';
 import * as api from '../lib/api';
 import { createDashboardWebSocket } from '../lib/dashboard-transport';
 import { FallbackPollCoordinator, GenerationSocketController } from '../lib/generation-socket';
@@ -79,6 +79,9 @@ export function WsProvider({ children }: { children: ReactNode }) {
             }
             break;
           }
+          case 'state_refresh':
+            s.applyStateRefresh(msg.data as unknown as StateRefreshData);
+            break;
           case 'action_pending':
             s.updatePendingAction(msg.type, msg.data);
             toast({

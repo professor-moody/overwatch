@@ -1916,7 +1916,7 @@
     "main": {
       "operation_id": "dashboardMainSocket",
       "path": "/ws",
-      "server_events": "b4bb1dafbacc5ee32d6a5ae90ca942e65709b483adf902d04637890fce99ff2e"
+      "server_events": "4712140a70db82d63eeffb47d41a49b18b421db20c949fa5c029a1485c5bad0f"
     },
     "session": {
       "operation_id": "dashboardSessionSocket",
@@ -1930,5 +1930,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "63c51907418000352d7c1f8c66c2e904e5d14ae08ae821e93af9382cde2dc810"
+  "schema_hash": "0e740f57144f037d77d127520ef156804577fc34e24872f968bd3bd26159a16b"
 }

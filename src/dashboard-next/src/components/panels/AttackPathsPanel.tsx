@@ -340,6 +340,7 @@ function CustomPathFinder({ nodes, byId, onInspect }: {
 
 export function AttackPathsPanel() {
   const graph = useEngagementStore((s) => s.graph);
+  const graphVersion = useEngagementStore((s) => s.graphVersion);
   const initialized = useEngagementStore((s) => s.initialized);
   const { navigateToGraphTarget, navigateToFrontier } = useNavigation();
 
@@ -351,11 +352,11 @@ export function AttackPathsPanel() {
     const m = new Map<string, ExportedNode>();
     for (const n of graph.nodes) m.set(n.id, n);
     return m;
-  }, [graph.nodes]);
+  }, [graph.nodes, graphVersion]);
 
   const allPaths = useMemo(
     () => computePaths(graph.nodes, graph.edges, optimize, maxHops, byId),
-    [graph.nodes, graph.edges, optimize, maxHops, byId],
+    [graph.nodes, graph.edges, graphVersion, optimize, maxHops, byId],
   );
 
   const displayPaths = useMemo(

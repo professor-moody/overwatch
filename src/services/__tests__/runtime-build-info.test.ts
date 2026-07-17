@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { probeRunningDashboard } from '../runtime-build-info.js';
+import { createServer } from 'node:net';
+import { isDashboardPortOccupied, probeRunningDashboard } from '../runtime-build-info.js';
 
 describe('runtime build identity', () => {
   it('reads build identity from a running dashboard', async () => {
@@ -69,5 +70,30 @@ describe('runtime build identity', () => {
       running: false,
     });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('checks real ownership on the configured bind host', async () => {
+    const server = createServer();
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    expect(address && typeof address === 'object').toBe(true);
+    const port = typeof address === 'object' && address ? address.port : 0;
+    try {
+      await expect(isDashboardPortOccupied(port, '127.0.0.1')).resolves.toBe(true);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+    await expect(isDashboardPortOccupied(port, '127.0.0.1')).resolves.toBe(false);
+  });
+
+  it('formats an IPv6-specific runtime probe and forwards the bind host', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
+    const portProbe = vi.fn(async () => true);
+    await probeRunningDashboard(8384, fetchImpl as typeof fetch, portProbe, undefined, '::1');
+    expect(portProbe).toHaveBeenCalledWith(8384, '::1');
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://[::1]:8384/api/runtime',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 });

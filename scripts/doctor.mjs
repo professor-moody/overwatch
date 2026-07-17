@@ -20,22 +20,28 @@ function statusRank(status) {
   return status === 'fail' ? 2 : status === 'warn' ? 1 : 0;
 }
 
-async function isPortFree(port) {
+async function isPortFree(port, host) {
   return new Promise((resolveFree) => {
     const server = createServer();
     server.once('error', () => resolveFree(false));
     server.once('listening', () => {
       server.close(() => resolveFree(true));
     });
-    server.listen(port, '127.0.0.1');
+    server.listen(port, host);
   });
 }
 
-async function probeDashboard(port, authorization) {
+function dashboardProbeHost(host) {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]') return '127.0.0.1';
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+}
+
+async function probeDashboard(port, authorization, host) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/runtime`, {
+    const response = await fetch(`http://${dashboardProbeHost(host)}:${port}/api/runtime`, {
       ...(authorization ? { headers: { Authorization: authorization } } : {}),
       signal: controller.signal,
     });
@@ -229,11 +235,12 @@ if (config) {
 }
 
 const dashboardPort = Number(process.env.OVERWATCH_DASHBOARD_PORT || '8384');
+const dashboardHost = process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
 if (Number.isFinite(dashboardPort)) {
-  const free = await isPortFree(dashboardPort);
-  const authorization = overwatchMcpConfig?.headers?.Authorization
-    || overwatchMcpConfig?.headers?.authorization;
-  const runningDashboard = !free ? await probeDashboard(dashboardPort, authorization) : null;
+  const free = await isPortFree(dashboardPort, dashboardHost);
+  const dashboardToken = process.env.OVERWATCH_DASHBOARD_TOKEN;
+  const authorization = dashboardToken ? `Bearer ${dashboardToken}` : undefined;
+  const runningDashboard = !free ? await probeDashboard(dashboardPort, authorization, dashboardHost) : null;
   const mcpProbe = mcpMode === 'http'
     ? await probeMcp(overwatchMcpConfig)
     : undefined;

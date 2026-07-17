@@ -1431,6 +1431,18 @@ export const GraphUpdateDataDtoSchema: z.ZodType<GraphUpdateDataDto> = z.object(
   delta: GraphDeltaDtoSchema,
 }).passthrough();
 
+export interface StateRefreshDataDto {
+  state: DashboardStateDto;
+  history_count: number;
+  community_ids?: Record<string, number>;
+  [key: string]: unknown;
+}
+export const StateRefreshDataDtoSchema: z.ZodType<StateRefreshDataDto> = z.object({
+  state: DashboardStateDtoSchema,
+  history_count: z.number().int().nonnegative(),
+  community_ids: z.record(z.string(), z.number()).optional(),
+}).passthrough();
+
 const timestampedMainEvent = <T extends string, S extends z.ZodTypeAny>(type: T, data: S) => z.object({
   type: z.literal(type),
   timestamp: z.string(),
@@ -1440,6 +1452,7 @@ const timestampedMainEvent = <T extends string, S extends z.ZodTypeAny>(type: T,
 export type MainWebSocketEvent =
   | { type: 'full_state'; timestamp: string; data: DashboardStateResponse; [key: string]: unknown }
   | { type: 'graph_update'; timestamp: string; data: GraphUpdateDataDto; [key: string]: unknown }
+  | { type: 'state_refresh'; timestamp: string; data: StateRefreshDataDto; [key: string]: unknown }
   | { type: 'agent_console_update'; timestamp: string; data: { events: AgentConsoleEventDto[]; [key: string]: unknown }; [key: string]: unknown }
   | { type: 'action_pending'; timestamp: string; data: PendingActionDto; [key: string]: unknown }
   | { type: 'action_resolved'; timestamp: string; data: { action_id: string; status: 'approved' | 'denied' | 'timeout' | 'aborted'; resolved_at: string; operator_notes?: string; reason?: string; auto_approved?: boolean; unattended_execute?: boolean; [key: string]: unknown }; [key: string]: unknown }
@@ -1450,6 +1463,7 @@ export type MainWebSocketEvent =
 export const MainWebSocketEventSchema: z.ZodType<MainWebSocketEvent> = z.discriminatedUnion('type', [
   timestampedMainEvent('full_state', DashboardStateResponseSchema),
   timestampedMainEvent('graph_update', GraphUpdateDataDtoSchema),
+  timestampedMainEvent('state_refresh', StateRefreshDataDtoSchema),
   timestampedMainEvent('agent_console_update', z.object({
     events: z.array(AgentConsoleEventDtoSchema),
   }).passthrough()),

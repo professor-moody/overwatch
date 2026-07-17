@@ -347,6 +347,11 @@ export interface GraphUpdateData {
   detail: GraphUpdateDataDto['detail'];
   delta: GraphUpdateDataDto['delta'];
 }
+export interface StateRefreshData {
+  state: EngagementState;
+  history_count: number;
+  community_ids?: Record<string, number>;
+}
 
 // --- OPSEC Budget ---
 

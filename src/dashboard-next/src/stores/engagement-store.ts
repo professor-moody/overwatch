@@ -21,6 +21,7 @@ import type {
   AccessSummary,
   PersistenceRecoveryStatus,
   PlaybookRun,
+  StateRefreshData,
 } from '../lib/types';
 
 export interface EngagementStore {
@@ -84,6 +85,7 @@ export interface EngagementStore {
   // Actions
   loadFullState: (data: FullStateData) => void;
   applyGraphUpdate: (data: GraphUpdateData) => void;
+  applyStateRefresh: (data: StateRefreshData) => void;
   updatePendingAction: (type: 'action_pending' | 'action_resolved', data: unknown) => void;
   setAgents: (agents: AgentInfo[]) => void;
   setCampaigns: (campaigns: Campaign[]) => void;
@@ -209,6 +211,35 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
         removed_nodes: data.delta.removed_nodes,
         removed_edges: data.delta.removed_edges,
       },
+      frontier: s.frontier || get().frontier,
+      frontierHidden: s.frontier_hidden ?? get().frontierHidden,
+      objectives: s.objectives || get().objectives,
+      agents: s.agents || get().agents,
+      campaigns: s.campaigns || get().campaigns,
+      sessions: s.sessions || get().sessions,
+      pendingActions: s.pending_actions || get().pendingActions,
+      playbookRuns: s.playbook_runs
+        ? s.playbook_runs.filter((run): run is PlaybookRun => run.schema_version === 1)
+        : get().playbookRuns,
+      phases: s.phases || get().phases,
+      readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : get().readiness,
+      persistenceRecovery: s.persistence_recovery ?? get().persistenceRecovery,
+      accessSummary: s.access_summary || get().accessSummary,
+      recentActivity: (s as any).recent_activity || get().recentActivity,
+    });
+  },
+
+  applyStateRefresh: ({ state: s, history_count, community_ids }) => {
+    const graph = get().graph;
+    const communitiesChanged = community_ids
+      ? graphDeltaIndex.applyCommunityIds(graph, community_ids)
+      : false;
+    set({
+      engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : get().engagement,
+      accessLevel: s.access_summary?.current_access_level || get().accessLevel,
+      historyCount: history_count ?? get().historyCount,
+      ...(communitiesChanged ? { graph, graphVersion: get().graphVersion + 1 } : {}),
+      graphSummary: s.graph_summary || get().graphSummary,
       frontier: s.frontier || get().frontier,
       frontierHidden: s.frontier_hidden ?? get().frontierHidden,
       objectives: s.objectives || get().objectives,

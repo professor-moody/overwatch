@@ -160,6 +160,33 @@ describe('engagement store hydration', () => {
     expect(useEngagementStore.getState().graph.coldInventory).toEqual([]);
   });
 
+  it('applies a coalesced state refresh without replacing the graph projection', () => {
+    useEngagementStore.getState().loadFullState({
+      state: {},
+      graph: { nodes: [{ id: 'host-1', properties: { type: 'host', label: 'Host' } }], edges: [] },
+      history_count: 1,
+    } as FullStateData);
+    const graph = useEngagementStore.getState().graph;
+    const graphVersion = useEngagementStore.getState().graphVersion;
+
+    useEngagementStore.getState().applyStateRefresh({
+      state: {
+        graph_summary: {
+          total_nodes: 1, total_edges: 0, confirmed_edges: 0, inferred_edges: 0,
+          nodes_by_type: { host: 1 },
+        },
+      },
+      history_count: 2,
+      community_ids: { 'host-1': 7 },
+    } as any);
+
+    expect(useEngagementStore.getState().graph).toBe(graph);
+    expect(useEngagementStore.getState().graph.nodes[0].community_id).toBe(7);
+    expect(useEngagementStore.getState().graphVersion).toBe(graphVersion + 1);
+    expect(useEngagementStore.getState().historyCount).toBe(2);
+    expect(useEngagementStore.getState().graphSummary?.total_nodes).toBe(1);
+  });
+
   it('projects cold-to-hot promotion and later hot removal without folding inventories together', () => {
     const cold = {
       id: 'host-1', type: 'host', label: 'candidate', discovered_at: '2026-07-15T00:00:00Z',

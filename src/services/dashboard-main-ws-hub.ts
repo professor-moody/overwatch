@@ -27,6 +27,7 @@ export class DashboardMainWebSocketHub {
   clients = new Set<WebSocket>();
   private readonly accumulator = new DeltaAccumulator();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private stateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private seenConsoleEventIds: Set<string>;
   private readonly disposers: Array<() => void> = [];
   private readonly debounceMs: number;
@@ -34,6 +35,7 @@ export class DashboardMainWebSocketHub {
   private readonly hiddenNodeIds: Set<string>;
   private readonly pendingVisibilityChanges = new Set<string>();
   private disposed = false;
+  private cachedState: DashboardState<unknown, unknown> | undefined;
 
   constructor(
     private readonly engine: GraphEngine,
@@ -81,6 +83,7 @@ export class DashboardMainWebSocketHub {
   attachConnection(ws: WebSocket): void {
     this.clients.add(ws);
     const state = this.options.buildState();
+    this.cachedState = state;
     const graph = this.options.buildGraph?.()
       ?? this.engine.exportGraph({ includeDerivedCommunities: true });
     this.send(ws, {
@@ -132,6 +135,8 @@ export class DashboardMainWebSocketHub {
   closeConnections(): void {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = null;
+    if (this.stateRefreshTimer) clearTimeout(this.stateRefreshTimer);
+    this.stateRefreshTimer = null;
     this.accumulator.drain();
     for (const ws of this.clients) ws.close();
     this.clients.clear();
@@ -163,7 +168,10 @@ export class DashboardMainWebSocketHub {
     this.debounceTimer = null;
     if (!detail || this.clients.size === 0) return;
 
-    const state = this.options.buildState();
+    // A graph delta must remain proportional to changed IDs. Global summaries,
+    // frontier/community projections, and health are coalesced into the
+    // state_refresh that follows instead of blocking this live graph update.
+    const state = this.cachedState ?? this.options.buildState();
     const historyCount = this.engine.getHistoryCount();
     const nestedDetail = this.accumulator.drain();
     if (nestedDetail) {
@@ -184,10 +192,7 @@ export class DashboardMainWebSocketHub {
       includeCold: coldNodesChanged,
       includeIncidentEdges: false,
       incident_node_ids: this.pendingVisibilityChanges,
-      // buildState() above refreshes the global community cache once. Reuse it
-      // here so changed nodes retain canonical community IDs without another
-      // graph traversal in the selection path.
-      includeDerivedCommunities: true,
+      includeDerivedCommunities: false,
     });
     this.pendingVisibilityChanges.clear();
     this.broadcast({
@@ -196,6 +201,30 @@ export class DashboardMainWebSocketHub {
       data: projectGraphDelta(state, graph, detail, historyCount),
     });
     this.coldInventoryRevision = coldRevision;
+    this.scheduleStateRefresh();
+  }
+
+  private scheduleStateRefresh(): void {
+    if (this.stateRefreshTimer) clearTimeout(this.stateRefreshTimer);
+    this.stateRefreshTimer = setTimeout(() => {
+      this.stateRefreshTimer = null;
+      if (this.clients.size === 0 || this.disposed) return;
+      const state = this.options.buildState();
+      this.cachedState = state;
+      this.broadcast({
+        type: 'state_refresh',
+        timestamp: new Date().toISOString(),
+        data: {
+          state,
+          history_count: this.engine.getHistoryCount(),
+          // buildState() has already populated the topology-derived cache. Send
+          // its compact projection here so the latency-sensitive graph delta
+          // never needs to run community detection itself.
+          community_ids: Object.fromEntries(this.engine.getCommunities()),
+        },
+      });
+    }, 750);
+    if (typeof this.stateRefreshTimer.unref === 'function') this.stateRefreshTimer.unref();
   }
 
   private refreshNodeVisibility(detail: GraphUpdateDetail): string[] {

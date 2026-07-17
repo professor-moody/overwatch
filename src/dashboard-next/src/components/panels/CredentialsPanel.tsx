@@ -52,6 +52,7 @@ export function preparedExecutionIsClaimed(
 
 export function CredentialsPanel() {
   const graph = useEngagementStore((s) => s.graph);
+  const graphVersion = useEngagementStore((s) => s.graphVersion);
   const playbookRuns = useEngagementStore((s) => s.playbookRuns);
   const setPlaybookRuns = useEngagementStore((s) => s.setPlaybookRuns);
   const [sortMode, setSortMode] = useState<SortMode>('recent');
@@ -69,7 +70,7 @@ export function CredentialsPanel() {
 
   const creds = useMemo(() => {
     return graph.nodes.filter(n => n.type === 'credential');
-  }, [graph.nodes]);
+  }, [graph.nodes, graphVersion]);
 
   const playbooksByCredential = useMemo(() => groupPlaybookRunsByCredential(playbookRuns), [playbookRuns]);
 
@@ -166,7 +167,7 @@ export function CredentialsPanel() {
       });
     }
     return sorted;
-  }, [creds, sortMode, statusFilter, viewFilter, search, graph.edges, nowMs]);
+  }, [creds, sortMode, statusFilter, viewFilter, search, graph.edges, graphVersion, nowMs]);
 
   // Kind → count breakdown
   const kindCounts = useMemo(() => {

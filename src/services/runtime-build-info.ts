@@ -57,7 +57,10 @@ export interface RunningDashboardProbe {
 /** Fail-closed ownership check. An occupied dashboard port means another
  * process already owns the runtime surface, even when its HTTP identity is
  * protected, slow, malformed, or from an older Overwatch build. */
-export async function isDashboardPortOccupied(port: number): Promise<boolean> {
+export async function isDashboardPortOccupied(
+  port: number,
+  host = '127.0.0.1',
+): Promise<boolean> {
   if (!Number.isInteger(port) || port <= 0 || port > 65_535) return false;
   return new Promise(resolve => {
     const server = createServer();
@@ -65,22 +68,29 @@ export async function isDashboardPortOccupied(port: number): Promise<boolean> {
     server.once('listening', () => {
       server.close(() => resolve(false));
     });
-    server.listen(port, '127.0.0.1');
+    server.listen(port, host);
   });
+}
+
+function probeAddress(host: string): string {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]') return '127.0.0.1';
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
 }
 
 export async function probeRunningDashboard(
   port: number,
   fetchImpl: typeof fetch = fetch,
-  portOccupied: (port: number) => Promise<boolean> = isDashboardPortOccupied,
+  portOccupied: (port: number, host: string) => Promise<boolean> = isDashboardPortOccupied,
   authorization?: string,
+  host = '127.0.0.1',
 ): Promise<RunningDashboardProbe> {
   if (!Number.isInteger(port) || port <= 0 || port > 65_535) return { running: false };
-  if (!(await portOccupied(port))) return { running: false };
+  if (!(await portOccupied(port, host))) return { running: false };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1_500);
   try {
-    const response = await fetchImpl(`http://127.0.0.1:${port}/api/runtime`, {
+    const response = await fetchImpl(`http://${probeAddress(host)}:${port}/api/runtime`, {
       ...(authorization ? { headers: { Authorization: authorization } } : {}),
       signal: controller.signal,
     });
