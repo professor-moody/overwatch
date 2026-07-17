@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { createServer } from 'net';
 import { createOverwatchApp, startHttpApp, shutdownOverwatchApp, type OverwatchApp } from '../app.js';
 import { parseEngagementConfig } from '../config.js';
-import { buildPlannerObjective, executeOps } from '../services/command-interpreter.js';
+import { executeOps } from '../services/command-interpreter.js';
 import type { AgentTask } from '../types.js';
 
 const supportsLocalListen = await new Promise<boolean>((resolveP) => {
@@ -16,6 +16,20 @@ const supportsLocalListen = await new Promise<boolean>((resolveP) => {
 
 const FAKE_CLAUDE = resolve('./src/test-support/fake-claude.mjs');
 const rawConfig = readFileSync(resolve('./engagement.example.json'), 'utf-8');
+
+async function freeLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolveListen, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolveListen);
+  });
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+  await new Promise<void>((resolveClose, reject) => {
+    server.close(error => error ? reject(error) : resolveClose());
+  });
+  return port;
+}
 
 function waitFor(pred: () => boolean, timeoutMs = 12000): Promise<void> {
   return new Promise((res, rej) => {
@@ -57,7 +71,7 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
     app = createOverwatchApp({
       config,
       skillDir: resolve('./skills'),
-      dashboardPort: 0,
+      dashboardPort: await freeLoopbackPort(),
       stateFilePath: join(tempDir, `state-${config.id}.json`),
     });
     await startHttpApp(app, { port: 0, host: '127.0.0.1' });
@@ -103,7 +117,7 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
     await waitFor(() => app.taskExecution.activeHeadlessCount() === 0);
   }, 20000);
 
-  it('a headless PLANNER agent reads its objective, proposes a plan via propose_plan, and the plan is executable', async () => {
+  it('a dashboard planner command stays durable through worker proposal and exit', async () => {
     process.env.OVERWATCH_FAKE_MODE = 'planner';
     // A running target the operator wants to steer (manual backend → the daemon
     // won't spawn a process for it; it just stays a steerable running task).
@@ -112,21 +126,38 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
       status: 'running', backend: 'manual', subgraph_node_ids: [],
     } as AgentTask);
 
-    // Dispatch a planner exactly as the dashboard would: role 'planner', the
-    // free-form command + steerable-state snapshot carried as the objective.
-    const objective = buildPlannerObjective('please pause that noisy scanner', {
-      tasks: [{ id: 'plan-target', agent_id: 'scanner-x', status: 'running' }],
-      pendingActionIds: [],
+    // Enter through the real dashboard command boundary so the planner task,
+    // durable application command, proposal, and worker exit all share the
+    // production ownership chain.
+    const response = await fetch(`${app.dashboard!.address}/api/commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'go deal with that noisy scanner somehow' }),
     });
-    app.engine.registerAgent({
-      id: 'plan-er', agent_id: 'planner-1', assigned_at: new Date().toISOString(),
-      status: 'running', backend: 'headless_mcp', role: 'planner', subgraph_node_ids: [], objective,
-    } as AgentTask);
+    expect(response.status).toBe(200);
+    const queued = await response.json() as {
+      command_id: string;
+      planner_task_id: string;
+      planner_status: string;
+    };
+    expect(queued).toMatchObject({
+      command_id: expect.any(String),
+      planner_task_id: expect.any(String),
+      planner_status: 'accepted',
+    });
 
-    // The fake planner connects over /mcp, reads the objective from its prompt,
-    // and submits a directive(pause) on plan-target via propose_plan.
-    await waitFor(() => app.engine.getProposedPlanStore().getOpen().length > 0, 18000);
-    const plan = app.engine.getProposedPlanStore().getOpen()[0];
+    await waitFor(() => app.engine.getApplicationCommandById(queued.command_id)?.status === 'succeeded', 18000);
+    const command = app.engine.getApplicationCommandById(queued.command_id)!;
+    expect(command).toMatchObject({
+      status: 'succeeded',
+      plan_id: expect.any(String),
+      entity_refs: {
+        planner_task_id: queued.planner_task_id,
+        plan_id: expect.any(String),
+      },
+    });
+    const plan = app.engine.getProposedPlanStore().get(command.plan_id!);
+    if (!plan) throw new Error('planner command succeeded without its linked plan');
     expect(plan.ops[0]).toMatchObject({ op: 'directive', task_id: 'plan-target', kind: 'pause' });
 
     // Operator confirm path: the proposed ops execute through the validated
@@ -137,8 +168,9 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
     expect(app.engine.getPendingAgentDirective('plan-target')?.kind).toBe('pause');
 
     // Planner closed itself out and the process is gone.
-    await waitFor(() => app.engine.getTask('plan-er')?.status === 'completed');
+    await waitFor(() => app.engine.getTask(queued.planner_task_id)?.status === 'completed');
     await waitFor(() => app.taskExecution.activeHeadlessCount() === 0);
+    expect(app.engine.getApplicationCommandById(queued.command_id)?.status).toBe('succeeded');
   }, 30000);
 
   it('a headless agent escalates via ask_operator, waits, and proceeds on the operator answer (3D)', async () => {
