@@ -72,6 +72,7 @@ export function classifyNodeTemperature(
 
 export class ColdStore {
   private store = new Map<string, ColdNodeRecord>();
+  private revision = 0;
 
   add(record: ColdNodeRecord): void {
     const existing = this.store.get(record.id);
@@ -90,6 +91,7 @@ export class ColdStore {
     } else {
       this.store.set(record.id, record);
     }
+    this.revision++;
   }
 
   get(id: string): ColdNodeRecord | undefined {
@@ -104,12 +106,18 @@ export class ColdStore {
     const record = this.store.get(id);
     if (record) {
       this.store.delete(id);
+      this.revision++;
     }
     return record;
   }
 
   count(): number {
     return this.store.size;
+  }
+
+  /** Process-local monotonic revision for dashboard projection invalidation. */
+  getRevision(): number {
+    return this.revision;
   }
 
   countBySubnet(): Record<string, number> {
@@ -139,9 +147,11 @@ export class ColdStore {
     for (const r of records) {
       this.store.set(r.id, r);
     }
+    this.revision++;
   }
 
   clear(): void {
+    if (this.store.size > 0) this.revision++;
     this.store.clear();
   }
 

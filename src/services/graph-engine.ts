@@ -4346,6 +4346,20 @@ export class GraphEngine {
     return detached(state);
   }
 
+  /** Compact graph-stage projection used by the live state briefing. Keeping
+   * this separate from exportGraph avoids materializing a complete graph merely
+   * to distinguish an empty/config-seeded engagement from one with real data. */
+  getGraphStage(): 'empty' | 'seeded' | 'mid_run' {
+    if (this.ctx.graph.order === 0) return 'empty';
+    if (this.ctx.graph.size > 0) return 'mid_run';
+    const seedNodeTypes = new Set(['host', 'domain', 'objective', 'subnet']);
+    let seededOnly = true;
+    this.ctx.graph.forEachNode((_id, attributes) => {
+      if (!seedNodeTypes.has(attributes.type)) seededOnly = false;
+    });
+    return seededOnly ? 'seeded' : 'mid_run';
+  }
+
   // --- Phase orchestration ---
 
   /** Evaluate all engagement phases and return runtime statuses */
@@ -7503,6 +7517,90 @@ export class GraphEngine {
     }
 
     return cold_nodes ? { nodes, edges, cold_nodes } : { nodes, edges };
+  }
+
+  /** Project only the graph records named by an incremental update. This path
+   * deliberately avoids exportGraph/forEachNode/forEachEdge so its work scales
+   * with changed IDs (plus incident edges needed for visibility correctness). */
+  exportGraphSelection(options: {
+    node_ids?: Iterable<string>;
+    edge_ids?: Iterable<string>;
+    includeIncidentEdges?: boolean;
+    includeCold?: boolean;
+    sourceTrust?: boolean;
+    includeDerivedCommunities?: boolean;
+  }): import('../types.js').ExportedGraphSelection {
+    const includeIncidentEdges = options.includeIncidentEdges ?? true;
+    const includeDerivedCommunities = options.includeDerivedCommunities ?? false;
+    const withTrust = options.sourceTrust ?? false;
+    if (includeDerivedCommunities) this.getCommunities();
+
+    const nodeIds = [...new Set(options.node_ids ?? [])];
+    const edgeIds = new Set(options.edge_ids ?? []);
+    const nodes: import('../types.js').ExportedGraphNode[] = [];
+    const edges: import('../types.js').ExportedGraphEdge[] = [];
+    const hiddenNodeIds = new Set<string>();
+    const hiddenEdgeIds = new Set<string>();
+
+    for (const id of nodeIds) {
+      if (!this.ctx.graph.hasNode(id)) {
+        hiddenNodeIds.add(id);
+        continue;
+      }
+      const attrs = this.ctx.graph.getNodeAttributes(id);
+      if (attrs.identity_status === 'superseded') {
+        hiddenNodeIds.add(id);
+        for (const edgeId of this.ctx.graph.edges(id)) hiddenEdgeIds.add(edgeId);
+        continue;
+      }
+      const properties = this.projectNodeProperties(id, attrs, includeDerivedCommunities);
+      if (withTrust) properties.source_trust = sourceTrust(attrs);
+      nodes.push({ id, properties });
+      if (includeIncidentEdges) {
+        for (const edgeId of this.ctx.graph.edges(id)) edgeIds.add(edgeId);
+      }
+    }
+
+    for (const edgeId of edgeIds) {
+      if (!this.ctx.graph.hasEdge(edgeId)) {
+        hiddenEdgeIds.add(edgeId);
+        continue;
+      }
+      const source = this.ctx.graph.source(edgeId);
+      const target = this.ctx.graph.target(edgeId);
+      const sourceAttrs = this.ctx.graph.getNodeAttributes(source);
+      const targetAttrs = this.ctx.graph.getNodeAttributes(target);
+      if (
+        sourceAttrs.identity_status === 'superseded'
+        || targetAttrs.identity_status === 'superseded'
+      ) {
+        hiddenEdgeIds.add(edgeId);
+        continue;
+      }
+      const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
+      const properties = detached(attrs);
+      if (withTrust) properties.source_trust = sourceTrust(attrs);
+      edges.push({ id: edgeId, source, target, properties });
+    }
+
+    const coldNodes = options.includeCold
+      ? this.ctx.coldStore.export().map(record => ({ ...record }))
+      : undefined;
+    return {
+      nodes,
+      edges,
+      hidden_node_ids: [...hiddenNodeIds],
+      hidden_edge_ids: [...hiddenEdgeIds],
+      ...(coldNodes ? { cold_nodes: coldNodes } : {}),
+    };
+  }
+
+  getColdInventoryRevision(): number {
+    return this.ctx.coldStore.getRevision();
+  }
+
+  getHistoryCount(): number {
+    return this.ctx.activityLog.length;
   }
 
   private runHealthChecks(): HealthReport {

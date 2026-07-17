@@ -370,6 +370,10 @@ describe('GET /api/health', () => {
     expect(health.health_checks).toHaveProperty('status');
     expect(health.health_checks).toHaveProperty('counts_by_severity');
     expect(Array.isArray(health.health_checks.issues)).toBe(true);
+    expect(health.runtime_build).toMatchObject({
+      input_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      runtime_pid: process.pid,
+    });
   });
 
   it('preserves critical status, severity counts, and issues', async () => {

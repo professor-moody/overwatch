@@ -27,6 +27,19 @@ function makeRecord(overrides: Partial<ColdNodeRecord> = {}): ColdNodeRecord {
 
 describe('ColdStore', () => {
   describe('add / get / has', () => {
+    it('advances a process-local revision only when inventory operations change state', () => {
+      const cs = new ColdStore();
+      const initial = cs.getRevision();
+      cs.add(makeRecord());
+      const afterAdd = cs.getRevision();
+      cs.promote('missing');
+      expect(cs.getRevision()).toBe(afterAdd);
+      cs.promote('host-1');
+      expect(initial).toBe(0);
+      expect(afterAdd).toBe(1);
+      expect(cs.getRevision()).toBe(2);
+    });
+
     it('stores and retrieves a record', () => {
       const cs = new ColdStore();
       const rec = makeRecord();

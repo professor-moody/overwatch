@@ -103,6 +103,7 @@ import {
 } from './dashboard-session-ws-hub.js';
 import { DashboardActionOutputWebSocketHub } from './dashboard-action-output-ws-hub.js';
 import { DashboardMainWebSocketHub } from './dashboard-main-ws-hub.js';
+import { readRuntimeBuildInfo } from './runtime-build-info.js';
 import {
   AgentListResponseSchema,
   CampaignActionRequestSchema,
@@ -295,6 +296,7 @@ export class DashboardServer {
   private readonly parseCommands: ParseCommandService;
   private readonly playbookRuns: PlaybookRunService;
   private readonly playbookCommands: PlaybookCommandService;
+  private readonly runtimeBuild = readRuntimeBuildInfo();
 
   constructor(
     engine: GraphEngine,
@@ -347,6 +349,7 @@ export class DashboardServer {
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.mainHub = new DashboardMainWebSocketHub(engine, this.sessionManager, {
       buildState: () => this.buildFrontendState(),
+      runtimeBuild: this.runtimeBuild,
     });
     this.wss = this.mainHub.server;
     this.sessionHub = new DashboardSessionWebSocketHub(engine, this.sessionManager);
@@ -1841,6 +1844,7 @@ export class DashboardServer {
         },
         ad_context: adContext,
         health_checks: health,
+        runtime_build: this.runtimeBuild,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
@@ -1912,9 +1916,14 @@ export class DashboardServer {
   private serveState(res: ServerResponse): void {
     const state = this.buildFrontendState();
     const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
-    const historyCount = this.engine.getFullHistory().length;
+    const historyCount = this.engine.getHistoryCount();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(projectDashboardSnapshot(state, graph, historyCount)));
+    res.end(JSON.stringify(projectDashboardSnapshot(
+      state,
+      graph,
+      historyCount,
+      this.runtimeBuild,
+    )));
   }
 
   private serveRecovery(res: ServerResponse): void {

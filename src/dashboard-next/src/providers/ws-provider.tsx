@@ -6,6 +6,7 @@ import * as api from '../lib/api';
 import { createDashboardWebSocket } from '../lib/dashboard-transport';
 import { FallbackPollCoordinator, GenerationSocketController } from '../lib/generation-socket';
 import { buildDashboardWebSocketPath, MainWebSocketEventSchema } from '@overwatch/dashboard-contracts';
+import { compareDashboardBuilds } from '../lib/dashboard-build-compatibility';
 
 interface WsContextValue {
   connected: boolean;
@@ -21,6 +22,7 @@ const POLL_INTERVAL_MS = 5_000;
 
 export function WsProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
+  const [versionMismatch, setVersionMismatch] = useState<string | null>(null);
   const store = useEngagementStore;
 
   useEffect(() => {
@@ -38,8 +40,20 @@ export function WsProvider({ children }: { children: ReactNode }) {
         const toast = useToastStore.getState().addToast;
 
         if (msg.type === 'full_state') {
+          const fullState = msg.data as unknown as FullStateData;
+          const compatibility = compareDashboardBuilds(
+            fullState.runtime_build?.input_sha256,
+          );
+          if (!compatibility.compatible) {
+            setVersionMismatch(compatibility.message ?? 'Dashboard and server builds do not match.');
+            controller.stop();
+            setConnected(false);
+            store.getState().setConnected(false);
+            return;
+          }
+          setVersionMismatch(null);
           abortFallbackPoll();
-          s.loadFullState(msg.data as unknown as FullStateData);
+          s.loadFullState(fullState);
           controller.markSynchronized(generation);
           return;
         }
@@ -137,6 +151,13 @@ export function WsProvider({ children }: { children: ReactNode }) {
       try {
         const data = await api.getState(ticket.controller.signal);
         if (!active || !fallbackPoll.isCurrent(ticket) || controller.isSynchronized()) return;
+        const compatibility = compareDashboardBuilds(data.runtime_build?.input_sha256);
+        if (!compatibility.compatible) {
+          setVersionMismatch(compatibility.message ?? 'Dashboard and server builds do not match.');
+          controller.stop();
+          store.getState().setConnected(false);
+          return;
+        }
         store.getState().loadFullState(data as FullStateData);
       } catch (error) {
         if (active && fallbackPoll.isCurrent(ticket)) {
@@ -171,5 +192,21 @@ export function WsProvider({ children }: { children: ReactNode }) {
     };
   }, [store]);
 
-  return <WsContext.Provider value={{ connected }}>{children}</WsContext.Provider>;
+  return (
+    <WsContext.Provider value={{ connected }}>
+      {versionMismatch && (
+        <div className="fixed inset-x-0 top-0 z-[100] flex items-center justify-center gap-3 border-b border-destructive/50 bg-background px-4 py-2 text-xs text-destructive shadow-lg">
+          <span>{versionMismatch} Stop the older daemon if needed, then reload this tab.</span>
+          <button
+            type="button"
+            className="rounded border border-destructive/50 px-2 py-1 font-medium hover:bg-destructive/10"
+            onClick={() => window.location.reload()}
+          >
+            Reload
+          </button>
+        </div>
+      )}
+      {children}
+    </WsContext.Provider>
+  );
 }

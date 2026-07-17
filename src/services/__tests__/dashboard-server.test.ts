@@ -252,6 +252,57 @@ describe('DashboardServer', () => {
     expect(exportGraphSpy).not.toHaveBeenCalled();
   });
 
+  it('connected graph deltas resolve changed IDs without a full graph export', () => {
+    const mockClient = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+      close: vi.fn(),
+    };
+    (dashboard as any).clients = new Set([mockClient]);
+    const exportGraphSpy = vi.spyOn(engine, 'exportGraph');
+    const selectionSpy = vi.spyOn(engine, 'exportGraphSelection');
+
+    dashboard.onGraphUpdate({ updated_nodes: ['missing-final-node'] });
+    dashboard.flush();
+
+    expect(exportGraphSpy).not.toHaveBeenCalled();
+    expect(selectionSpy).toHaveBeenCalledWith(expect.objectContaining({
+      node_ids: ['missing-final-node'],
+    }));
+    const update = sentGraphUpdates(mockClient)[0];
+    expect(update.data.delta.removed_nodes).toContain('missing-final-node');
+  });
+
+  it('replaces cold inventory only when its process-local revision changes', () => {
+    const mockClient = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+      close: vi.fn(),
+    };
+    (dashboard as any).clients = new Set([mockClient]);
+    (engine as any).ctx.coldStore.add({
+      id: 'cold-delta-host',
+      type: 'host',
+      label: '10.10.10.3',
+      discovered_at: '2026-07-16T00:00:00.000Z',
+      last_seen_at: '2026-07-16T00:00:00.000Z',
+    });
+
+    dashboard.onGraphUpdate({});
+    dashboard.flush();
+    dashboard.onGraphUpdate({});
+    dashboard.flush();
+
+    const updates = sentGraphUpdates(mockClient);
+    expect(updates).toHaveLength(2);
+    expect(updates[0].data.detail.cold_nodes_changed).toBe(true);
+    expect(updates[0].data.delta.cold_nodes).toEqual([
+      expect.objectContaining({ id: 'cold-delta-host' }),
+    ]);
+    expect(updates[1].data.detail.cold_nodes_changed).toBeUndefined();
+    expect(updates[1].data.delta.cold_nodes).toBeUndefined();
+  });
+
   it('flush broadcasts accumulated graph updates through connected clients without sockets', () => {
     const mockClient = {
       readyState: WebSocket.OPEN,

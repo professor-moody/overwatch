@@ -90,6 +90,7 @@ import {
   type ObjectiveCreateRequest,
   type ObjectiveUpdateRequest,
   type RawGraphDto,
+  type RuntimeBuildInfoDto,
   type ProposedPlanDto,
   type PlaybookRunDto,
   type PlaybookStepClaimResponse,
@@ -141,7 +142,12 @@ async function request<T extends GeneratedDashboardOperationId>(
 
 // --- State ---
 
-export async function getState(signal?: AbortSignal): Promise<{ state: EngagementState; graph: RawGraphDto; history_count: number }> {
+export async function getState(signal?: AbortSignal): Promise<{
+  state: EngagementState;
+  graph: RawGraphDto;
+  history_count: number;
+  runtime_build?: RuntimeBuildInfoDto;
+}> {
   const response = await request('getState', { signal });
   return {
     ...response,

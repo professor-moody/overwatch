@@ -922,6 +922,16 @@ export const HealthReportDtoSchema = z.object({
   counts_by_severity: z.object({ warning: z.number(), critical: z.number() }).passthrough(),
   issues: z.array(HealthIssueDtoSchema),
 }).passthrough();
+export const RuntimeBuildInfoDtoSchema = z.object({
+  schema_version: z.number().int().positive(),
+  git_sha: z.string().nullable().optional(),
+  input_sha256: Sha256Schema,
+  input_file_count: z.number().int().nonnegative().optional(),
+  built_at: z.string().optional(),
+  runtime_pid: z.number().int().nonnegative(),
+  runtime_started_at: z.string(),
+}).passthrough();
+export type RuntimeBuildInfoDto = z.infer<typeof RuntimeBuildInfoDtoSchema>;
 export const HealthDtoSchema = z.object({
   graph_stats: z.object({
     nodes: z.number(),
@@ -930,6 +940,7 @@ export const HealthDtoSchema = z.object({
   }).passthrough(),
   ad_context: z.boolean(),
   health_checks: HealthReportDtoSchema,
+  runtime_build: RuntimeBuildInfoDtoSchema.optional(),
 }).passthrough();
 export type HealthDto = z.infer<typeof HealthDtoSchema>;
 
@@ -1377,12 +1388,14 @@ export interface DashboardStateResponse {
   state: DashboardStateDto;
   graph: RawGraphDto;
   history_count: number;
+  runtime_build?: RuntimeBuildInfoDto;
   [key: string]: unknown;
 }
 export const DashboardStateResponseSchema: z.ZodType<DashboardStateResponse> = z.object({
   state: DashboardStateDtoSchema,
   graph: RawGraphDtoSchema,
   history_count: z.number().int().nonnegative(),
+  runtime_build: RuntimeBuildInfoDtoSchema.optional(),
 }).passthrough();
 
 export const GraphUpdateDetailDtoSchema = z.object({
@@ -1393,6 +1406,7 @@ export const GraphUpdateDetailDtoSchema = z.object({
   inferred_edges: z.array(z.string()).optional(),
   removed_nodes: z.array(z.string()).optional(),
   removed_edges: z.array(z.string()).optional(),
+  cold_nodes_changed: z.boolean().optional(),
 }).passthrough();
 
 export const GraphDeltaDtoSchema = z.object({

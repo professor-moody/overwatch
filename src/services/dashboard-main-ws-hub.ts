@@ -11,9 +11,11 @@ import {
 } from './dashboard-projectors.js';
 import { MainWebSocketEventSchema } from '../contracts/dashboard-v1.js';
 import { PlaybookRunService } from './playbook-run-service.js';
+import type { RuntimeBuildInfo } from './runtime-build-info.js';
 
 export interface DashboardMainWebSocketHubOptions {
   buildState: () => DashboardState<unknown, unknown>;
+  runtimeBuild?: RuntimeBuildInfo;
   debounceMs?: number;
 }
 
@@ -26,6 +28,7 @@ export class DashboardMainWebSocketHub {
   private seenConsoleEventIds: Set<string>;
   private readonly disposers: Array<() => void> = [];
   private readonly debounceMs: number;
+  private coldInventoryRevision: number;
   private disposed = false;
 
   constructor(
@@ -34,6 +37,7 @@ export class DashboardMainWebSocketHub {
     private readonly options: DashboardMainWebSocketHubOptions,
   ) {
     this.debounceMs = options.debounceMs ?? 500;
+    this.coldInventoryRevision = engine.getColdInventoryRevision();
     this.seenConsoleEventIds = new Set(engine.getFullHistory().map(entry => entry.event_id));
     this.server.on('error', () => { /* individual socket errors remove their client */ });
     this.server.on('connection', ws => this.attachConnection(ws));
@@ -76,7 +80,12 @@ export class DashboardMainWebSocketHub {
     this.send(ws, {
       type: 'full_state',
       timestamp: new Date().toISOString(),
-      data: projectDashboardSnapshot(state, graph, this.engine.getFullHistory().length),
+      data: projectDashboardSnapshot(
+        state,
+        graph,
+        this.engine.getHistoryCount(),
+        this.options.runtimeBuild,
+      ),
     });
     const cleanup = () => this.clients.delete(ws);
     ws.on('close', cleanup);
@@ -147,19 +156,35 @@ export class DashboardMainWebSocketHub {
     if (!detail || this.clients.size === 0) return;
 
     const state = this.options.buildState();
-    const historyCount = this.engine.getFullHistory().length;
-    const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
+    const historyCount = this.engine.getHistoryCount();
     const nestedDetail = this.accumulator.drain();
     if (nestedDetail) {
       if (this.debounceTimer) clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
       detail = mergeGraphUpdateDetails(detail, nestedDetail);
     }
+    const coldRevision = this.engine.getColdInventoryRevision();
+    const coldNodesChanged = coldRevision !== this.coldInventoryRevision;
+    if (coldNodesChanged) detail = { ...detail, cold_nodes_changed: true };
+    const graph = this.engine.exportGraphSelection({
+      node_ids: [...(detail.new_nodes || []), ...(detail.updated_nodes || [])],
+      edge_ids: [
+        ...(detail.new_edges || []),
+        ...(detail.updated_edges || []),
+        ...(detail.inferred_edges || []),
+      ],
+      includeCold: coldNodesChanged,
+      // buildState() above refreshes the global community cache once. Reuse it
+      // here so changed nodes retain canonical community IDs without another
+      // graph traversal in the selection path.
+      includeDerivedCommunities: true,
+    });
     this.broadcast({
       type: 'graph_update',
       timestamp: new Date().toISOString(),
       data: projectGraphDelta(state, graph, detail, historyCount),
     });
+    this.coldInventoryRevision = coldRevision;
   }
 
   private send(ws: WebSocket, event: unknown): void {
@@ -172,7 +197,7 @@ export function mergeGraphUpdateDetails(
   right: GraphUpdateDetail,
 ): GraphUpdateDetail {
   const merged: GraphUpdateDetail = { ...left };
-  const keys: Array<keyof GraphUpdateDetail> = [
+  const keys = [
     'new_nodes',
     'new_edges',
     'updated_nodes',
@@ -180,10 +205,11 @@ export function mergeGraphUpdateDetails(
     'inferred_edges',
     'removed_nodes',
     'removed_edges',
-  ];
+  ] as const;
   for (const key of keys) {
     const values = [...new Set([...(left[key] || []), ...(right[key] || [])])];
     if (values.length > 0) merged[key] = values;
   }
+  if (left.cold_nodes_changed || right.cold_nodes_changed) merged.cold_nodes_changed = true;
   return merged;
 }

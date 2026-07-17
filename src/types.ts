@@ -957,6 +957,14 @@ export interface ExportedGraph {
   cold_nodes?: ColdNodeRecord[];
 }
 
+/** Changed-ID graph projection used by incremental transports. Hidden IDs are
+ * final-state removals (for example, a node that became superseded) and keep
+ * visibility filtering correct without scanning the complete graph. */
+export interface ExportedGraphSelection extends ExportedGraph {
+  hidden_node_ids: string[];
+  hidden_edge_ids: string[];
+}
+
 export interface ColdNodeRecord {
   id: string;
   type: string;

@@ -2,11 +2,15 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import type { Plugin } from 'vite';
+// Plain ESM build helper intentionally has no TypeScript declaration.
+// @ts-expect-error JavaScript build helper has no declaration file.
+import { buildInputFingerprint } from '../../scripts/build-fingerprint.mjs';
 
 const apiPort = process.env.OVERWATCH_DASHBOARD_PORT || process.env.OVERWATCH_DEMO_DASHBOARD_PORT || '8384';
 const apiTarget = `http://localhost:${apiPort}`;
 const wsTarget = `ws://localhost:${apiPort}`;
 const ENTRY_CHUNK_BUDGET_BYTES = 500_000;
+const bundleBuildInputSha = buildInputFingerprint(path.resolve(__dirname, '..', '..')).sha256;
 
 function entryChunkBudget(): Plugin {
   return {
@@ -30,6 +34,9 @@ function entryChunkBudget(): Plugin {
 
 export default defineConfig({
   plugins: [react(), entryChunkBudget()],
+  define: {
+    __OVERWATCH_BUILD_INPUT_SHA__: JSON.stringify(bundleBuildInputSha),
+  },
   root: __dirname,
   base: process.env.GITHUB_PAGES ? '/overwatch/' : '/',
   resolve: {

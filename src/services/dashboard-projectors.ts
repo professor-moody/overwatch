@@ -5,6 +5,7 @@ import type {
   CampaignStatus,
   EngagementState,
   ExportedGraph,
+  ExportedGraphSelection,
 } from '../types.js';
 import {
   normalizeLegacyAgentDispatchDescription,
@@ -14,6 +15,7 @@ import type { ActivityLogEntry, GraphUpdateDetail } from './engine-context.js';
 import type { PersistedPlaybookRunV1 } from './persisted-state.js';
 import type { DefensiveSignal, OpsecContext } from './opsec-tracker.js';
 import { projectAgentDtos } from './dashboard-agent-projector.js';
+import type { RuntimeBuildInfo } from './runtime-build-info.js';
 
 export interface CampaignOpsecBudget {
   global_noise_spent: number;
@@ -130,17 +132,20 @@ export interface DashboardSnapshot<TState = DashboardState> {
   state: TState;
   graph: ExportedGraph;
   history_count: number;
+  runtime_build?: RuntimeBuildInfo;
 }
 
 export function projectDashboardSnapshot<TState>(
   state: TState,
   graph: ExportedGraph,
   historyCount: number,
+  runtimeBuild?: RuntimeBuildInfo,
 ): DashboardSnapshot<TState> {
   return {
     state: structuredClone(state),
     graph: structuredClone(graph),
     history_count: historyCount,
+    ...(runtimeBuild ? { runtime_build: structuredClone(runtimeBuild) } : {}),
   };
 }
 
@@ -153,34 +158,34 @@ export interface DashboardGraphDelta<TState = DashboardState> {
     edges: ExportedGraph['edges'];
     removed_nodes: string[];
     removed_edges: string[];
-    cold_nodes: NonNullable<ExportedGraph['cold_nodes']>;
+    cold_nodes?: NonNullable<ExportedGraph['cold_nodes']>;
   };
 }
 
 export function projectGraphDelta<TState>(
   state: TState,
-  graph: ExportedGraph,
+  graph: ExportedGraphSelection,
   detail: GraphUpdateDetail,
   historyCount: number,
 ): DashboardGraphDelta<TState> {
-  const changedNodeIds = new Set([...(detail.new_nodes || []), ...(detail.updated_nodes || [])]);
-  const changedEdgeIds = new Set([
-    ...(detail.new_edges || []),
-    ...(detail.updated_edges || []),
-    ...(detail.inferred_edges || []),
-  ]);
+  const removedNodes = [...new Set([
+    ...(detail.removed_nodes || []),
+    ...graph.hidden_node_ids,
+  ])];
+  const removedEdges = [...new Set([
+    ...(detail.removed_edges || []),
+    ...graph.hidden_edge_ids,
+  ])];
   return {
     state: structuredClone(state),
     history_count: historyCount,
     detail: structuredClone(detail),
     delta: {
-      nodes: graph.nodes.filter(node => changedNodeIds.has(node.id)).map(node => structuredClone(node)),
-      edges: graph.edges
-        .filter(edge => edge.id !== undefined && changedEdgeIds.has(edge.id))
-        .map(edge => structuredClone(edge)),
-      removed_nodes: [...(detail.removed_nodes || [])],
-      removed_edges: [...(detail.removed_edges || [])],
-      cold_nodes: structuredClone(graph.cold_nodes ?? []),
+      nodes: graph.nodes.map(node => structuredClone(node)),
+      edges: graph.edges.map(edge => structuredClone(edge)),
+      removed_nodes: removedNodes,
+      removed_edges: removedEdges,
+      ...(graph.cold_nodes ? { cold_nodes: structuredClone(graph.cold_nodes) } : {}),
     },
   };
 }

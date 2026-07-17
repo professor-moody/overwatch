@@ -160,6 +160,7 @@ export type GraphUpdateDetail = {
   inferred_edges?: string[];
   removed_nodes?: string[];
   removed_edges?: string[];
+  cold_nodes_changed?: boolean;
 };
 
 export type GraphUpdateCallback = (detail: GraphUpdateDetail) => void;

@@ -42,6 +42,7 @@
     "report:qa": "npx tsx scripts/report-qa.ts",
     "prompt-eval": "npx tsx src/cli/prompt-eval.ts",
     "orch-eval": "npx tsx src/cli/orch-eval.ts",
+    "benchmark:dashboard": "npx tsx scripts/benchmark-dashboard-projection.ts",
     "gen:docs": "npx tsx scripts/gen-agents-md.ts",
     "gen:dashboard-api": "npx tsx scripts/gen-dashboard-api.ts",
     "check:dashboard-api": "npx tsx scripts/gen-dashboard-api.ts --check",

@@ -38,7 +38,7 @@ async function probeDashboard(port) {
     const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
       signal: controller.signal,
     });
-    if (!response.ok) return false;
+    if (!response.ok) return null;
     const body = await response.json();
     return Boolean(
       body
@@ -48,9 +48,9 @@ async function probeDashboard(port) {
         || 'status' in body
         || 'issues' in body
       )
-    );
+    ) ? body : null;
   } catch {
-    return false;
+    return null;
   } finally {
     clearTimeout(timer);
   }
@@ -234,10 +234,45 @@ if (config) {
 const dashboardPort = Number(process.env.OVERWATCH_DASHBOARD_PORT || '8384');
 if (Number.isFinite(dashboardPort)) {
   const free = await isPortFree(dashboardPort);
-  const runningDashboard = !free && await probeDashboard(dashboardPort);
+  const runningDashboard = !free ? await probeDashboard(dashboardPort) : null;
   const mcpProbe = mcpMode === 'http'
     ? await probeMcp(overwatchMcpConfig)
     : undefined;
+  if (runningDashboard) {
+    const daemonBuild = runningDashboard.runtime_build;
+    const localHash = buildFreshness.info?.input_sha256;
+    const daemonHash = daemonBuild?.input_sha256;
+    if (typeof localHash === 'string' && typeof daemonHash === 'string') {
+      if (localHash === daemonHash) {
+        add(
+          'pass',
+          'Running daemon build',
+          `${String(daemonBuild.git_sha || daemonHash).slice(0, 12)} (PID ${daemonBuild.runtime_pid || 'unknown'}) matches this checkout`,
+        );
+      } else {
+        add(
+          'fail',
+          'Running daemon build',
+          `${String(daemonBuild.git_sha || daemonHash).slice(0, 12)} (PID ${daemonBuild.runtime_pid || 'unknown'}) does not match local ${String(buildFreshness.info?.git_sha || localHash).slice(0, 12)}`,
+          'Stop the old daemon, run npm run start:daemon, then reload the dashboard tab.',
+        );
+      }
+    } else if (!daemonBuild) {
+      add(
+        'fail',
+        'Running daemon build',
+        'the running dashboard does not expose build identity and is older than this checkout',
+        'Stop the old daemon, run npm run start:daemon, then reload the dashboard tab.',
+      );
+    } else {
+      add(
+        'warn',
+        'Running daemon build',
+        'the running daemon is identifiable, but the local build is not current enough to compare',
+        'Run npm run build, then rerun npm run doctor.',
+      );
+    }
+  }
   if (mcpProbe?.status === 'reachable') {
     add('pass', 'MCP daemon endpoint', mcpProbe.detail);
   } else if (mcpProbe?.status === 'unauthorized') {
