@@ -26,6 +26,7 @@ import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
 import type { EngagementConfig } from '../../types.js';
 import { PlaybookRunService } from '../playbook-run-service.js';
+import { MainWebSocketEventSchema } from '../../contracts/dashboard-v1.js';
 
 let dashboard: DashboardServer;
 let engine: GraphEngine;
@@ -105,6 +106,7 @@ interface WsMessage {
  */
 interface BufferedWs {
   ws: WebSocket;
+  messages: WsMessage[];
   /** Wait for the first buffered or future message that matches `predicate`. */
   awaitMessage(predicate: (m: WsMessage) => boolean, timeoutMs?: number): Promise<WsMessage>;
   close(): void;
@@ -114,6 +116,7 @@ function openWs(): Promise<BufferedWs> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`${wsBase}/ws`);
     const buffer: WsMessage[] = [];
+    const messages: WsMessage[] = [];
     const waiters: Array<{
       predicate: (m: WsMessage) => boolean;
       resolve: (m: WsMessage) => void;
@@ -121,6 +124,7 @@ function openWs(): Promise<BufferedWs> {
     ws.on('message', (raw: Buffer) => {
       try {
         const msg = JSON.parse(raw.toString()) as WsMessage;
+        messages.push(msg);
         // Drain any waiter whose predicate matches.
         for (let i = 0; i < waiters.length; i++) {
           if (waiters[i].predicate(msg)) {
@@ -132,7 +136,6 @@ function openWs(): Promise<BufferedWs> {
         buffer.push(msg);
       } catch { /* ignore parse errors */ }
     });
-
     function awaitMessage(predicate: (m: WsMessage) => boolean, timeoutMs = 4000): Promise<WsMessage> {
       // Drain the buffer first.
       for (let i = 0; i < buffer.length; i++) {
@@ -156,6 +159,7 @@ function openWs(): Promise<BufferedWs> {
 
     ws.once('open', () => resolve({
       ws,
+      messages,
       awaitMessage,
       close: () => ws.close(),
     }));
@@ -175,6 +179,11 @@ describe('WS full_state push on connect', () => {
       expect(msg.data).toHaveProperty('state');
       expect(msg.data).toHaveProperty('graph');
       expect(msg.data).toHaveProperty('history_count');
+      expect(msg.data.runtime_build).toMatchObject({
+        input_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        runtime_pid: process.pid,
+      });
+      expect(() => MainWebSocketEventSchema.parse(msg)).not.toThrow();
       const state = msg.data.state as Record<string, unknown>;
       // Audit-fix invariants: these were missing/misnamed before the
       // dashboard wiring fix. Pin them so future drifts surface.
@@ -275,6 +284,83 @@ describe('WS durable playbook updates', () => {
 // =============================================
 
 describe('WS graph_update push on mutation', () => {
+  it('keeps graph correction on the canonical delta path without a second full state', async () => {
+    engine.addNode({
+      id: 'graph-correction-ws-node',
+      type: 'host',
+      label: 'before WS correction',
+      ip: '10.0.0.88',
+      discovered_at: NOW,
+      confidence: 1,
+    });
+    const conn = await openWs();
+    try {
+      await conn.awaitMessage(message => message.type === 'full_state');
+      const transcriptStart = conn.messages.length;
+      const response = await fetch(`${baseUrl}/api/graph/correct`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Overwatch-Command-Id': 'ws-graph-correction-command',
+          'Idempotency-Key': 'ws-graph-correction-retry',
+        },
+        body: JSON.stringify({
+          reason: 'prove graph correction keeps the dashboard synchronized',
+          operations: [{
+            kind: 'patch_node',
+            node_id: 'graph-correction-ws-node',
+            set_properties: { label: 'after WS correction' },
+          }],
+        }),
+      });
+      expect(response.status).toBe(200);
+
+      const update = await conn.awaitMessage(message =>
+        message.type === 'graph_update'
+        && ((message.data.detail as { updated_nodes?: string[] } | undefined)?.updated_nodes ?? [])
+          .includes('graph-correction-ws-node'));
+      const delta = update.data.delta as { nodes: Array<{ id: string; properties?: { label?: string } }> };
+      expect(delta.nodes).toContainEqual(expect.objectContaining({
+        id: 'graph-correction-ws-node',
+        properties: expect.objectContaining({ label: 'after WS correction' }),
+      }));
+      const updateIndex = conn.messages.indexOf(update);
+      await conn.awaitMessage(message =>
+        message.type === 'state_refresh'
+        && conn.messages.indexOf(message) > updateIndex);
+      expect(conn.ws.readyState).toBe(WebSocket.OPEN);
+      expect(conn.messages.slice(transcriptStart).filter(message => message.type === 'full_state'))
+        .toHaveLength(0);
+
+      const replayStart = conn.messages.length;
+      const replay = await fetch(`${baseUrl}/api/graph/correct`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Overwatch-Command-Id': 'ws-graph-correction-command',
+          'Idempotency-Key': 'ws-graph-correction-retry',
+        },
+        body: JSON.stringify({
+          reason: 'prove graph correction keeps the dashboard synchronized',
+          operations: [{
+            kind: 'patch_node',
+            node_id: 'graph-correction-ws-node',
+            set_properties: { label: 'after WS correction' },
+          }],
+        }),
+      });
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toMatchObject({ replayed: true });
+      dashboard.flush();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(conn.messages.slice(replayStart).filter(message =>
+        message.type === 'full_state' || message.type === 'graph_update'))
+        .toHaveLength(0);
+    } finally {
+      conn.close();
+    }
+  }, 8_000);
+
   it('debounce-pushes a graph_update with state, delta, detail when nodes change', async () => {
     const conn = await openWs();
     try {

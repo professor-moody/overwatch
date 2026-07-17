@@ -19,10 +19,15 @@ npm run start:daemon
 > **Note:** `node-pty` is an optional native dependency used for local PTY sessions. It requires native build tools (Python 3, C++ compiler). If it fails to install, the rest of Overwatch works normally — only `local_pty` sessions will be unavailable.
 
 `npm run setup` defaults to the shared daemon and creates local-only `.mcp.json`,
-`.overwatch-mcp-token`, `.claude/settings.json`, and
-`engagement.json`, wiring them to the local checkout with a fresh engagement nonce. The
-live graph state persists separately to `state-<engagement-id>.json` beside the
-config unless `OVERWATCH_STATE_FILE` is set.
+`.overwatch-mcp-token`, and `.claude/settings.json`. In a genuinely fresh
+checkout it also creates `engagement.json` with a fresh engagement nonce. It
+never replaces an existing engagement, including with `--force`. If the config
+is missing but durable state, WAL, snapshots, migration backups, evidence, or
+other engagement artifacts remain, setup preserves them: it wires one
+unambiguous recovery state for read-only startup or stops and asks you to select
+or restore the intended state. The live graph normally persists to
+`state-<engagement-id>.json` beside the config unless `OVERWATCH_STATE_FILE` is
+set.
 
 The pre-start `npm run doctor` may warn that the shared daemon is not running
 yet; that is expected on a first launch. Leave `npm run start:daemon` running,

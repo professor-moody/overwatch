@@ -15,6 +15,7 @@
     ".mcp.http.example.json",
     "scripts/setup.mjs",
     "scripts/doctor.mjs",
+    "scripts/engagement-artifacts.mjs",
     "scripts/check-package.mjs",
     "scripts/build-fingerprint.mjs",
     "scripts/write-build-info.mjs",

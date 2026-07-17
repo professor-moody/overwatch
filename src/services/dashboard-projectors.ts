@@ -132,20 +132,20 @@ export interface DashboardSnapshot<TState = DashboardState> {
   state: TState;
   graph: ExportedGraph;
   history_count: number;
-  runtime_build?: RuntimeBuildInfo;
+  runtime_build: RuntimeBuildInfo;
 }
 
 export function projectDashboardSnapshot<TState>(
   state: TState,
   graph: ExportedGraph,
   historyCount: number,
-  runtimeBuild?: RuntimeBuildInfo,
+  runtimeBuild: RuntimeBuildInfo,
 ): DashboardSnapshot<TState> {
   return {
     state: structuredClone(state),
     graph: structuredClone(graph),
     history_count: historyCount,
-    ...(runtimeBuild ? { runtime_build: structuredClone(runtimeBuild) } : {}),
+    runtime_build: structuredClone(runtimeBuild),
   };
 }
 

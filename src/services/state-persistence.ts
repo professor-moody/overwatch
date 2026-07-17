@@ -24,7 +24,6 @@ import {
 import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { FrontierLeases } from './frontier-leases.js';
 import {
-  engagementConfigSchema,
   type EngagementConfig,
   type InferenceRule,
   type NodeProperties,
@@ -65,6 +64,7 @@ import {
   type SupportedStateVersion,
 } from './persisted-state.js';
 import { buildArtifactReferences, mergeArtifactReferences } from './state-artifacts.js';
+import { validatePersistedStateBaseContainer } from './persisted-state-base.js';
 import type {
   EngineTransactionApplier,
   EngineTransactionApplyResult,
@@ -3356,6 +3356,9 @@ export class StatePersistence {
   private validateStateBase(data: unknown): RestoredCheckpoint {
     if (!data || typeof data !== 'object') throw new Error('persisted state is not an object');
     const record = data as Record<string, unknown>;
+    // Format discriminators are authoritative. Detect/validate them before
+    // interpreting checksum metadata so unsupported or explicitly invalid
+    // formats retain their dedicated, byte-preserving recovery path.
     const stateVersion = detectStateVersion(record);
     const journalVersion = detectJournalVersion(record, stateVersion);
     const compactionAuthority = this.walCompactionAuthorityStatus(record);
@@ -3367,29 +3370,11 @@ export class StatePersistence {
           : undefined,
       );
     }
-    if (stateVersion === CURRENT_STATE_VERSION) {
-      validatePersistedStateV1(record);
-    }
-    if (!record.config || typeof record.config !== 'object') throw new Error('persisted state is missing config');
-    const configValidation = engagementConfigSchema.safeParse(record.config);
-    if (!configValidation.success) {
-      const issues = configValidation.error.issues
-        .map(issue => `${issue.path.join('.') || '<root>'}: ${issue.message}`)
-        .join('; ');
-      throw new Error(`persisted state config is invalid: ${issues}`);
-    }
-    if (!record.graph || typeof record.graph !== 'object') throw new Error('persisted state is missing graph');
-    this.validatePersistedAuxiliaryShapes(record);
-    if (
-      record.journalSnapshotSeq !== undefined
-      && (!Number.isSafeInteger(record.journalSnapshotSeq) || (record.journalSnapshotSeq as number) < 0)
-    ) {
-      throw new Error('persisted journalSnapshotSeq must be a non-negative safe integer');
-    }
-    const checkpoint = typeof record.journalSnapshotSeq === 'number' ? record.journalSnapshotSeq : 0;
+    const validated = validatePersistedStateBaseContainer(data, this.createGraph);
+    const {
+      checkpoint,
+    } = validated;
     this.validateRollbackIntent(record, checkpoint);
-    const scratch = this.createGraph();
-    scratch.import(record.graph as Parameters<OverwatchGraph['import']>[0]);
     return {
       checkpoint,
       trusted: isTrustedJournalCheckpoint(record.journalCheckpointSemantics, journalVersion),
@@ -3445,82 +3430,6 @@ export class StatePersistence {
     delete payload.walCompactionAuthority;
     const actual = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     return actual === authority.payload_sha256 ? 'valid' : 'invalid';
-  }
-
-  /** Legacy snapshots may omit auxiliary fields, but a present field with the
-   * wrong container shape is not a valid full-state recovery base. Several old
-   * deserializers silently coerced those values to empty state, which could
-   * otherwise let a corrupt snapshot authorize deletion of its WAL proof. */
-  private validatePersistedAuxiliaryShapes(record: Record<string, unknown>): void {
-    const arrayFields = [
-      'activityLog',
-      'agents',
-      'campaigns',
-      'agentDirectives',
-      'approvalRequests',
-      'inferenceRules',
-      'trackedProcesses',
-      'runtimeRuns',
-      'playbookRuns',
-      'sessionDescriptors',
-      'commandPlans',
-      'commandOutcomes',
-      'applicationCommands',
-      'coldStore',
-      'chainCheckpoints',
-      'recentFindingHashes',
-    ] as const;
-    for (const field of arrayFields) {
-      if (Object.prototype.hasOwnProperty.call(record, field) && !Array.isArray(record[field])) {
-        throw new Error(`persisted ${field} must be an array when present`);
-      }
-    }
-
-    const objectFields = [
-      'opsecTracker',
-      'frontierLinkage',
-      'frontierLeases',
-      'frontierWeights',
-      'artifactReferences',
-      'proposedPlans',
-      'agentQueries',
-    ] as const;
-    for (const field of objectFields) {
-      const value = record[field];
-      if (
-        Object.prototype.hasOwnProperty.call(record, field)
-        && (value === null || typeof value !== 'object' || Array.isArray(value))
-      ) {
-        throw new Error(`persisted ${field} must be an object when present`);
-      }
-    }
-
-    if (Array.isArray(record.coldStore)) {
-      for (const [index, value] of record.coldStore.entries()) {
-        if (!value || typeof value !== 'object' || Array.isArray(value)
-          || typeof (value as Record<string, unknown>).id !== 'string'
-          || (value as Record<string, unknown>).id === '') {
-          throw new Error(`persisted coldStore[${index}] must be an object with a nonempty id`);
-        }
-      }
-    }
-    if (
-      record.deterministicSeq !== undefined
-      && (!Number.isSafeInteger(record.deterministicSeq) || (record.deterministicSeq as number) < 0)
-    ) {
-      throw new Error('persisted deterministicSeq must be a non-negative safe integer');
-    }
-    for (const field of ['chainEventsSinceCheckpoint', 'dedupCount'] as const) {
-      if (
-        record[field] !== undefined
-        && (!Number.isSafeInteger(record[field]) || (record[field] as number) < 0)
-      ) {
-        throw new Error(`persisted ${field} must be a non-negative safe integer`);
-      }
-    }
-    if (record.lastKnownPhaseId !== undefined && typeof record.lastKnownPhaseId !== 'string') {
-      throw new Error('persisted lastKnownPhaseId must be a string when present');
-    }
   }
 
   private validateRollbackIntent(

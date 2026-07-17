@@ -1,3 +1,5 @@
+import { safeSessionStorage } from './browser-storage';
+
 const TOKEN_STORAGE_KEY = 'overwatch.dashboard.token';
 
 let memoryToken: string | null = null;
@@ -10,12 +12,7 @@ export interface DashboardAuthEnvironment {
 }
 
 function browserStorage(): Pick<Storage, 'getItem' | 'setItem'> | undefined {
-  if (typeof window === 'undefined') return undefined;
-  try {
-    return window.sessionStorage;
-  } catch {
-    return undefined;
-  }
+  return safeSessionStorage;
 }
 
 function browserEnvironment(): DashboardAuthEnvironment {

@@ -1,9 +1,11 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import * as ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const SOURCE_ROOT = join(process.cwd(), 'src/dashboard-next/src');
 const TRANSPORT = 'lib/dashboard-transport.ts';
+const STORAGE = 'lib/browser-storage.ts';
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
@@ -11,6 +13,29 @@ function sourceFiles(dir: string): string[] {
     if (entry.isDirectory()) return entry.name === '__tests__' ? [] : sourceFiles(path);
     return /\.tsx?$/.test(entry.name) ? [path] : [];
   });
+}
+
+function directStorageReference(source: string, path: string): boolean {
+  const sourceFile = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (
+      (ts.isIdentifier(node) && (node.text === 'localStorage' || node.text === 'sessionStorage'))
+      || (ts.isStringLiteralLike(node) && (node.text === 'localStorage' || node.text === 'sessionStorage'))
+    ) {
+      found = true;
+      return;
+    }
+    if (!found) ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
 }
 
 describe('dashboard transport architecture', () => {
@@ -36,6 +61,19 @@ describe('dashboard transport architecture', () => {
       }
       if (/createDashboardWebSocket\s*\(\s*["'`]\//.test(source)) {
         violations.push(`${name}: handwritten WebSocket route`);
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it('owns every direct browser storage access behind the safe adapter', () => {
+    const violations: string[] = [];
+    for (const path of sourceFiles(SOURCE_ROOT)) {
+      const name = relative(SOURCE_ROOT, path);
+      if (name === STORAGE) continue;
+      const source = readFileSync(path, 'utf8');
+      if (directStorageReference(source, path)) {
+        violations.push(`${name}: direct browser storage`);
       }
     }
     expect(violations).toEqual([]);

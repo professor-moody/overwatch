@@ -216,11 +216,20 @@ async function patchJson<T = unknown>(path: string, body: unknown): Promise<{ st
 
 describe('GET /api/state', () => {
   it('returns state, graph, history_count with the wired keys the frontend reads', async () => {
-    const { status, body } = await getJson<{ state: Record<string, unknown>; graph: { nodes: unknown[]; edges: unknown[] }; history_count: number }>('/api/state');
+    const { status, body } = await getJson<{
+      state: Record<string, unknown>;
+      graph: { nodes: unknown[]; edges: unknown[] };
+      history_count: number;
+      runtime_build: { input_sha256: string; runtime_pid: number };
+    }>('/api/state');
     expect(status).toBe(200);
     expect(body).toHaveProperty('state');
     expect(body).toHaveProperty('graph');
     expect(body).toHaveProperty('history_count');
+    expect(body.runtime_build).toMatchObject({
+      input_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      runtime_pid: process.pid,
+    });
     // Field names that previously drifted (B.0 audit fixes):
     expect(body.state).toHaveProperty('agents');             // was missing — only active_agents existed
     expect(body.state).toHaveProperty('sessions');           // injected by buildFrontendState

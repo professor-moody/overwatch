@@ -15,11 +15,17 @@ vi.mock('../../lib/dashboard-transport', () => ({
 }));
 
 vi.mock('../../lib/dashboard-build-compatibility', () => ({
-  compareDashboardBuilds: () => ({
-    compatible: true,
-    client_build: 'dashboard-dom',
-    server_build: 'dashboard-dom',
-  }),
+  compareDashboardBuilds: (serverBuild: string | undefined) => serverBuild === 'd'.repeat(64)
+    ? {
+        compatible: true,
+        client_build: 'd'.repeat(64),
+        server_build: serverBuild,
+      }
+    : {
+        compatible: false,
+        client_build: 'd'.repeat(64),
+        message: 'Dashboard build does not match server build legacy/unknown.',
+      },
 }));
 
 interface FakeSocket {
@@ -87,6 +93,12 @@ function fullState(historyCount: number) {
     state: dashboardState(),
     graph: { nodes: [], edges: [] },
     history_count: historyCount,
+    runtime_build: {
+      schema_version: 1,
+      input_sha256: 'd'.repeat(64),
+      runtime_pid: 123,
+      runtime_started_at: '2026-07-17T00:00:00.000Z',
+    },
   };
 }
 
@@ -97,6 +109,7 @@ function Probe() {
 
 describe('WsProvider effect ownership', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     useEngagementStore.setState({
       connected: false,
       initialized: false,
@@ -169,5 +182,36 @@ describe('WsProvider effect ownership', () => {
     expect(socket.onclose).toBeNull();
     expect(socket.onerror).toBeNull();
     expect(useEngagementStore.getState().connected).toBe(false);
+  });
+
+  it('rejects a legacy full state without runtime identity instead of reconnecting generically', async () => {
+    vi.mocked(api.getState).mockImplementation(() => new Promise(() => {}));
+    const socket = fakeSocket();
+    vi.mocked(createDashboardWebSocket).mockReturnValue(socket as unknown as WebSocket);
+
+    render(
+      <WsProvider>
+        <Probe />
+      </WsProvider>,
+    );
+    await waitFor(() => expect(createDashboardWebSocket).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      socket.readyState = 1;
+      socket.onopen?.(new Event('open'));
+      const legacy: Record<string, unknown> = { ...fullState(1) };
+      delete legacy.runtime_build;
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'full_state',
+          timestamp: '2026-07-17T00:00:01.000Z',
+          data: legacy,
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => expect(screen.getByText(/legacy\/unknown/)).toBeInTheDocument());
+    expect(screen.getByText('provider disconnected')).toBeInTheDocument();
+    expect(socket.close).toHaveBeenCalledTimes(1);
   });
 });

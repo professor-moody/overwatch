@@ -52,15 +52,23 @@ Start with the general-purpose **`ctf.json`** template — it has no OPSEC const
 npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
 ```
 
-This creates a local `engagement.json` from the template, fills in the CIDR,
-adds a fresh `engagement_nonce`, and writes an authenticated HTTP `.mcp.json`,
-`.overwatch-mcp-token`, and `.claude/settings.json`. Leave
+On a fresh checkout this creates a local `engagement.json` from the template,
+fills in the CIDR, adds a fresh `engagement_nonce`, and writes an authenticated
+HTTP `.mcp.json`, `.overwatch-mcp-token`, and `.claude/settings.json`. Leave
 `npm run start:daemon` running, open `http://127.0.0.1:8384`, and start `claude`
 in another terminal. Re-running the default `npm run setup` keeps an existing
-`engagement.json`; it only refreshes the shared-client wiring.
+`engagement.json`; it only refreshes the shared-client wiring. `--force` does
+not override that safety rule.
 
-If you prefer to edit manually, copy `engagement.example.json` or a template to
-`engagement.json` and fill in **just two things**:
+If `engagement.json` is missing while state, WAL, snapshots, migration backups,
+evidence, reports, or recovery intents remain, setup does not seed an empty
+engagement over them. A single recoverable state is wired explicitly for a
+read-only recovery launch. Ambiguous or incomplete artifacts stop setup before
+it writes client wiring; restore the matching config or set
+`OVERWATCH_STATE_FILE` to the state you intend to inspect.
+
+Before the first daemon start, you may instead copy `engagement.example.json`
+or a template to `engagement.json` and fill in **just two things**:
 
 ```jsonc
 {
@@ -77,9 +85,14 @@ That's enough to start. Live graph state is stored separately in
 `state-<engagement-id>.json` beside the config. The full schema is in
 [Configuration](configuration.md) when you want it.
 
+After state exists, do not edit the active file out of band. Use the dashboard,
+CLI, or MCP configuration commands so file, runtime, and durable state advance
+together. If an external edit is detected, Overwatch starts read-only and asks
+you to reconcile the exact file/state hashes instead of guessing.
+
 !!! tip "Or set it up conversationally — no JSON"
-    Once Overwatch is wired into Claude Code (even on an empty bootstrap engagement
-    via `OVERWATCH_BOOTSTRAP=1`), you can just **tell the model**: *"set up an
+    Once Overwatch is wired into Claude Code (including a genuinely fresh empty
+    bootstrap engagement via `OVERWATCH_BOOTSTRAP=1`), you can just **tell the model**: *"set up an
     engagement scoped to 10.10.10.0/24, objective domain-admin, quiet OPSEC."* It
     calls [`create_engagement`](tools/create-engagement.md), which writes a
     validated `engagements/<id>.json` and returns the activation steps
@@ -239,7 +252,9 @@ different build, stop that owner instead of starting a second daemon.
 If startup reports read-only recovery, preserve the engagement files and run
 `overwatch recovery` (or inspect **Settings → Recovery**). A configuration
 divergence is an explicit reconciliation decision; it is not a reason to delete
-the current graph or reseed the engagement.
+the current graph or reseed the engagement. `npm run doctor` reports which
+preserved state was selected or why explicit selection is required; never use
+setup flags to overwrite recovery artifacts.
 
 ---
 

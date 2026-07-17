@@ -19,12 +19,14 @@ machine-specific paths. The recommended daemon setup creates both safely:
 npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
 ```
 
-That command preserves other MCP entries, keeps an existing `engagement.json`
-unless you explicitly use `--force`, writes the shared HTTP MCP credential, and
-creates hook settings when they are absent (an existing settings file is
-preserved). Use the manual example-copying flow below only when you intentionally
-want the solo stdio compatibility mode or need to merge an existing custom
-configuration by hand.
+That command preserves other MCP entries and always keeps an existing
+`engagement.json` or existing Claude settings; `--force` is retained as a safe
+compatibility alias. If the config is missing beside durable artifacts, setup either
+wires one unambiguous state for read-only recovery or stops before writing. It
+also writes the shared HTTP MCP credential and creates hook settings when they
+are absent (an existing settings file is preserved). Use the manual
+example-copying flow below only when you intentionally want the solo stdio
+compatibility mode or need to merge an existing custom configuration by hand.
 
 ## `.mcp.json` vs `.claude/settings.json`
 
