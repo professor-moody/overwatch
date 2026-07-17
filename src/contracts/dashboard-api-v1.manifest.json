@@ -457,6 +457,16 @@
       "summary": "Read graph health"
     },
     {
+      "operation_id": "getRuntime",
+      "method": "GET",
+      "path": "/api/runtime",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read lightweight daemon build identity"
+    },
+    {
       "operation_id": "listEngagements",
       "method": "GET",
       "path": "/api/engagements",
@@ -1419,6 +1429,14 @@
         "200": "64c1c28acbabe764c71ea4d297b9d1fad42f87bf2c55ceadf6fddef73523eb01"
       }
     },
+    "getRuntime": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "8cd43117fd4713b01543c86f7b4e84f743fd8976f3ba600bb6e80ef9ddea2090"
+      }
+    },
     "listEngagements": {
       "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
@@ -1912,5 +1930,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "e8fea2bb985f1112063b76cd728f92eaab7e377af320f0a9aaf2a57c4b417930"
+  "schema_hash": "63c51907418000352d7c1f8c66c2e904e5d14ae08ae821e93af9382cde2dc810"
 }

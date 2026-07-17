@@ -11,6 +11,7 @@ const apiTarget = `http://localhost:${apiPort}`;
 const wsTarget = `ws://localhost:${apiPort}`;
 const ENTRY_CHUNK_BUDGET_BYTES = 500_000;
 const bundleBuildInputSha = buildInputFingerprint(path.resolve(__dirname, '..', '..')).sha256;
+const githubPages = Boolean(process.env.GITHUB_PAGES);
 
 function entryChunkBudget(): Plugin {
   return {
@@ -38,7 +39,7 @@ export default defineConfig({
     __OVERWATCH_BUILD_INPUT_SHA__: JSON.stringify(bundleBuildInputSha),
   },
   root: __dirname,
-  base: process.env.GITHUB_PAGES ? '/overwatch/' : '/',
+  base: githubPages ? '/overwatch/' : '/',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src'),
@@ -48,7 +49,9 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: path.resolve(__dirname, '..', '..', 'dist', 'dashboard-next'),
+    // A documentation preview must never overwrite the daemon's locally served
+    // dashboard with assets built for the /overwatch/ Pages base path.
+    outDir: path.resolve(__dirname, '..', '..', 'dist', githubPages ? 'dashboard-pages' : 'dashboard-next'),
     emptyOutDir: true,
     sourcemap: true,
   },

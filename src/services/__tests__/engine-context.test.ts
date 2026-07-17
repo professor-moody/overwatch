@@ -204,6 +204,17 @@ describe('EngineContext', () => {
       expect(received[0]).toBe(detail);
     });
 
+    it('advances state revisions for every publication and graph revisions only for graph IDs', () => {
+      const ctx = makeCtx();
+      ctx.fireUpdateCallbacks({});
+      expect(ctx.projectionRevision).toBe(1);
+      expect(ctx.graphProjectionRevision).toBe(0);
+
+      ctx.fireUpdateCallbacks({ updated_nodes: ['node-1'] });
+      expect(ctx.projectionRevision).toBe(2);
+      expect(ctx.graphProjectionRevision).toBe(1);
+    });
+
     it('does not throw when a callback errors', () => {
       const ctx = makeCtx();
       ctx.updateCallbacks.push(() => { throw new Error('boom'); });

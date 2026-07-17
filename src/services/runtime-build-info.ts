@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 
 export interface RuntimeBuildInfo {
   schema_version: number;
@@ -53,21 +54,38 @@ export interface RunningDashboardProbe {
   runtime_build?: RuntimeBuildInfo;
 }
 
+/** Fail-closed ownership check. An occupied dashboard port means another
+ * process already owns the runtime surface, even when its HTTP identity is
+ * protected, slow, malformed, or from an older Overwatch build. */
+export async function isDashboardPortOccupied(port: number): Promise<boolean> {
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) return false;
+  return new Promise(resolve => {
+    const server = createServer();
+    server.once('error', () => resolve(true));
+    server.once('listening', () => {
+      server.close(() => resolve(false));
+    });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
 export async function probeRunningDashboard(
   port: number,
   fetchImpl: typeof fetch = fetch,
+  portOccupied: (port: number) => Promise<boolean> = isDashboardPortOccupied,
+  authorization?: string,
 ): Promise<RunningDashboardProbe> {
-  if (!Number.isFinite(port) || port <= 0) return { running: false };
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) return { running: false };
+  if (!(await portOccupied(port))) return { running: false };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1_500);
   try {
-    const response = await fetchImpl(`http://127.0.0.1:${port}/api/health`, {
+    const response = await fetchImpl(`http://127.0.0.1:${port}/api/runtime`, {
+      ...(authorization ? { headers: { Authorization: authorization } } : {}),
       signal: controller.signal,
     });
-    if (!response.ok) return { running: false };
+    if (!response.ok) return { running: true };
     const body = await response.json() as Record<string, unknown>;
-    const running = 'health_checks' in body || 'status' in body || 'issues' in body;
-    if (!running) return { running: false };
     const candidate = body.runtime_build;
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
       return { running: true };
@@ -93,7 +111,7 @@ export async function probeRunningDashboard(
       },
     };
   } catch {
-    return { running: false };
+    return { running: true };
   } finally {
     clearTimeout(timer);
   }

@@ -31,11 +31,12 @@ async function isPortFree(port) {
   });
 }
 
-async function probeDashboard(port) {
+async function probeDashboard(port, authorization) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+    const response = await fetch(`http://127.0.0.1:${port}/api/runtime`, {
+      ...(authorization ? { headers: { Authorization: authorization } } : {}),
       signal: controller.signal,
     });
     if (!response.ok) return null;
@@ -43,11 +44,7 @@ async function probeDashboard(port) {
     return Boolean(
       body
       && typeof body === 'object'
-      && (
-        'health_checks' in body
-        || 'status' in body
-        || 'issues' in body
-      )
+      && 'runtime_build' in body
     ) ? body : null;
   } catch {
     return null;
@@ -234,7 +231,9 @@ if (config) {
 const dashboardPort = Number(process.env.OVERWATCH_DASHBOARD_PORT || '8384');
 if (Number.isFinite(dashboardPort)) {
   const free = await isPortFree(dashboardPort);
-  const runningDashboard = !free ? await probeDashboard(dashboardPort) : null;
+  const authorization = overwatchMcpConfig?.headers?.Authorization
+    || overwatchMcpConfig?.headers?.authorization;
+  const runningDashboard = !free ? await probeDashboard(dashboardPort, authorization) : null;
   const mcpProbe = mcpMode === 'http'
     ? await probeMcp(overwatchMcpConfig)
     : undefined;
@@ -272,6 +271,14 @@ if (Number.isFinite(dashboardPort)) {
         'Run npm run build, then rerun npm run doctor.',
       );
     }
+  }
+  if (!free && !runningDashboard) {
+    add(
+      'fail',
+      'Dashboard port ownership',
+      `port ${dashboardPort} is occupied, but its runtime identity could not be read`,
+      'Stop the process using the dashboard port before starting Overwatch, or refresh the daemon token with npm run setup -- --daemon.',
+    );
   }
   if (mcpProbe?.status === 'reachable') {
     add('pass', 'MCP daemon endpoint', mcpProbe.detail);

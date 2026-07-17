@@ -55,6 +55,7 @@ import {
   QuickDeployResponseSchema,
   RawGraphDtoSchema,
   RecoveryStatusResponseSchema,
+  RuntimeBuildInfoDtoSchema,
   ReportRenderResponseSchema,
   ReportsListResponseSchema,
   ReparseResponseSchema,
@@ -612,7 +613,7 @@ export const DASHBOARD_OPERATION_IDS = [
   'getProposedPlans', 'getAgentQueries', 'answerAgentQueriesBatch',
   'getTemplates', 'getSettings', 'updateSettings', 'getConfig', 'updateConfig',
   'previewScope', 'updateScope', 'createObjective', 'getFrontierWeights',
-  'updateFrontierWeights', 'resetFrontierWeights', 'getOpsecBudget', 'getHealth',
+  'updateFrontierWeights', 'resetFrontierWeights', 'getOpsecBudget', 'getHealth', 'getRuntime',
   'listEngagements', 'createEngagement', 'createEngagementFromTemplate',
   'createCampaign', 'listCampaigns', 'getPhases', 'getPendingActions', 'getTools',
   'getParsers', 'getMcpTools', 'getReadiness', 'getTrustSignals',
@@ -694,6 +695,7 @@ const dashboardConfigEndpoints = {
   resetFrontierWeights: endpoint({ operation_id: 'resetFrontierWeights', method: 'POST', path: '/api/frontier/weights/reset', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: FrontierWeightsResetResultSchema }, response_kind: 'json', summary: 'Reset frontier weights' }),
   getOpsecBudget: endpoint({ operation_id: 'getOpsecBudget', method: 'GET', path: '/api/opsec/budget', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: OpsecBudgetResponseSchema }, response_kind: 'json', summary: 'Read OPSEC budget' }),
   getHealth: endpoint({ operation_id: 'getHealth', method: 'GET', path: '/api/health', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: HealthDtoSchema }, response_kind: 'json', summary: 'Read graph health' }),
+  getRuntime: endpoint({ operation_id: 'getRuntime', method: 'GET', path: '/api/runtime', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: z.object({ runtime_build: RuntimeBuildInfoDtoSchema.optional() }).passthrough() }, response_kind: 'json', summary: 'Read lightweight daemon build identity' }),
 } as const;
 
 const dashboardEngagementEndpoints = {

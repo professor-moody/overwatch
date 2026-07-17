@@ -7526,11 +7526,13 @@ export class GraphEngine {
     node_ids?: Iterable<string>;
     edge_ids?: Iterable<string>;
     includeIncidentEdges?: boolean;
+    incident_node_ids?: Iterable<string>;
     includeCold?: boolean;
     sourceTrust?: boolean;
     includeDerivedCommunities?: boolean;
   }): import('../types.js').ExportedGraphSelection {
     const includeIncidentEdges = options.includeIncidentEdges ?? true;
+    const incidentNodeIds = new Set(options.incident_node_ids ?? []);
     const includeDerivedCommunities = options.includeDerivedCommunities ?? false;
     const withTrust = options.sourceTrust ?? false;
     if (includeDerivedCommunities) this.getCommunities();
@@ -7556,7 +7558,7 @@ export class GraphEngine {
       const properties = this.projectNodeProperties(id, attrs, includeDerivedCommunities);
       if (withTrust) properties.source_trust = sourceTrust(attrs);
       nodes.push({ id, properties });
-      if (includeIncidentEdges) {
+      if (includeIncidentEdges || incidentNodeIds.has(id)) {
         for (const edgeId of this.ctx.graph.edges(id)) edgeIds.add(edgeId);
       }
     }
@@ -7599,8 +7601,25 @@ export class GraphEngine {
     return this.ctx.coldStore.getRevision();
   }
 
+  /** Initial visibility baseline for incremental dashboard projection. This is
+   * paid once per hub rather than on every update. */
+  getSupersededNodeIds(): string[] {
+    const ids: string[] = [];
+    this.ctx.graph.forEachNode((id, attrs) => {
+      if (attrs.identity_status === 'superseded') ids.push(id);
+    });
+    return ids;
+  }
+
   getHistoryCount(): number {
     return this.ctx.activityLog.length;
+  }
+
+  getProjectionRevisions(): { state: number; graph: number } {
+    return {
+      state: this.ctx.projectionRevision,
+      graph: this.ctx.graphProjectionRevision,
+    };
   }
 
   private runHealthChecks(): HealthReport {

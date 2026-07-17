@@ -24,7 +24,13 @@ function describeBuild(build: RuntimeBuildInfo | undefined): string {
 // ============================================================
 async function main(): Promise<void> {
   const dashboardPort = Number(process.env.OVERWATCH_DASHBOARD_PORT || '8384');
-  const existing = await probeRunningDashboard(dashboardPort);
+  const dashboardToken = process.env.OVERWATCH_DASHBOARD_TOKEN;
+  const existing = await probeRunningDashboard(
+    dashboardPort,
+    fetch,
+    undefined,
+    dashboardToken ? `Bearer ${dashboardToken}` : undefined,
+  );
   if (existing.running && transport === 'http') {
     const localBuild = readRuntimeBuildInfo();
     const mismatch = localBuild && existing.runtime_build

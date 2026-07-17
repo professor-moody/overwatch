@@ -35,7 +35,7 @@
     "build": "npm run clean && tsc -p tsconfig.build.json && tsc -p src/dashboard-next/tsconfig.json --noEmit && npx vite build --config src/dashboard-next/vite.config.ts",
     "postbuild": "node scripts/write-build-info.mjs",
     "build:dashboard-next": "npx vite build --config src/dashboard-next/vite.config.ts",
-    "build:pages": "GITHUB_PAGES=true npx vite build --config src/dashboard-next/vite.config.ts && cp dist/dashboard-next/index.html dist/dashboard-next/404.html",
+    "build:pages": "GITHUB_PAGES=true npx vite build --config src/dashboard-next/vite.config.ts && cp dist/dashboard-pages/index.html dist/dashboard-pages/404.html",
     "dev:dashboard-next": "npx vite --config src/dashboard-next/vite.config.ts",
     "demo:dashboard": "npx tsx scripts/demo-dashboard.ts",
     "demo:daemon": "npx tsx scripts/demo-daemon.ts",

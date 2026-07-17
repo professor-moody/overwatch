@@ -12,9 +12,11 @@ import {
 import { MainWebSocketEventSchema } from '../contracts/dashboard-v1.js';
 import { PlaybookRunService } from './playbook-run-service.js';
 import type { RuntimeBuildInfo } from './runtime-build-info.js';
+import type { ExportedGraph } from '../types.js';
 
 export interface DashboardMainWebSocketHubOptions {
   buildState: () => DashboardState<unknown, unknown>;
+  buildGraph?: () => ExportedGraph;
   runtimeBuild?: RuntimeBuildInfo;
   debounceMs?: number;
 }
@@ -29,6 +31,8 @@ export class DashboardMainWebSocketHub {
   private readonly disposers: Array<() => void> = [];
   private readonly debounceMs: number;
   private coldInventoryRevision: number;
+  private readonly hiddenNodeIds: Set<string>;
+  private readonly pendingVisibilityChanges = new Set<string>();
   private disposed = false;
 
   constructor(
@@ -38,6 +42,7 @@ export class DashboardMainWebSocketHub {
   ) {
     this.debounceMs = options.debounceMs ?? 500;
     this.coldInventoryRevision = engine.getColdInventoryRevision();
+    this.hiddenNodeIds = new Set(engine.getSupersededNodeIds());
     this.seenConsoleEventIds = new Set(engine.getFullHistory().map(entry => entry.event_id));
     this.server.on('error', () => { /* individual socket errors remove their client */ });
     this.server.on('connection', ws => this.attachConnection(ws));
@@ -76,7 +81,8 @@ export class DashboardMainWebSocketHub {
   attachConnection(ws: WebSocket): void {
     this.clients.add(ws);
     const state = this.options.buildState();
-    const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
+    const graph = this.options.buildGraph?.()
+      ?? this.engine.exportGraph({ includeDerivedCommunities: true });
     this.send(ws, {
       type: 'full_state',
       timestamp: new Date().toISOString(),
@@ -102,6 +108,7 @@ export class DashboardMainWebSocketHub {
 
   onGraphUpdate(detail: GraphUpdateDetail): void {
     const consoleEvents = this.collectNewConsoleEvents();
+    const visibilityChanges = this.refreshNodeVisibility(detail);
     if (this.clients.size === 0) return;
     if (consoleEvents.length > 0) {
       this.broadcast({
@@ -110,6 +117,7 @@ export class DashboardMainWebSocketHub {
         data: { events: consoleEvents },
       });
     }
+    for (const id of visibilityChanges) this.pendingVisibilityChanges.add(id);
     this.accumulator.push(detail);
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => this.flushPendingUpdate(), this.debounceMs);
@@ -174,17 +182,38 @@ export class DashboardMainWebSocketHub {
         ...(detail.inferred_edges || []),
       ],
       includeCold: coldNodesChanged,
+      includeIncidentEdges: false,
+      incident_node_ids: this.pendingVisibilityChanges,
       // buildState() above refreshes the global community cache once. Reuse it
       // here so changed nodes retain canonical community IDs without another
       // graph traversal in the selection path.
       includeDerivedCommunities: true,
     });
+    this.pendingVisibilityChanges.clear();
     this.broadcast({
       type: 'graph_update',
       timestamp: new Date().toISOString(),
       data: projectGraphDelta(state, graph, detail, historyCount),
     });
     this.coldInventoryRevision = coldRevision;
+  }
+
+  private refreshNodeVisibility(detail: GraphUpdateDetail): string[] {
+    const changed = new Set([
+      ...(detail.new_nodes || []),
+      ...(detail.updated_nodes || []),
+    ]);
+    const transitions: string[] = [];
+    for (const id of changed) {
+      const node = this.engine.getNode(id);
+      const hidden = node?.identity_status === 'superseded';
+      const wasHidden = this.hiddenNodeIds.has(id);
+      if (hidden) this.hiddenNodeIds.add(id);
+      else this.hiddenNodeIds.delete(id);
+      if (hidden !== wasHidden) transitions.push(id);
+    }
+    for (const id of detail.removed_nodes || []) this.hiddenNodeIds.delete(id);
+    return transitions;
   }
 
   private send(ws: WebSocket, event: unknown): void {

@@ -393,6 +393,21 @@ describe('GET /api/health', () => {
   });
 });
 
+describe('GET /api/runtime', () => {
+  it('returns build identity without running graph health or export work', async () => {
+    const healthSpy = vi.spyOn(engine, 'getHealthReport');
+    const exportSpy = vi.spyOn(engine, 'exportGraph');
+    const { status, body } = await getJson<{ runtime_build?: { input_sha256?: string; runtime_pid?: number } }>('/api/runtime');
+    expect(status).toBe(200);
+    expect(body.runtime_build).toMatchObject({
+      input_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      runtime_pid: process.pid,
+    });
+    expect(healthSpy).not.toHaveBeenCalled();
+    expect(exportSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('GET /api/tools', () => {
   it('returns host binary inventory with installed/missing counts', async () => {
     const { status, body } = await getJson<{ installed_count: number; missing_count: number; tools: unknown[] }>('/api/tools');

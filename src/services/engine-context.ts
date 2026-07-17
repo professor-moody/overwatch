@@ -189,6 +189,10 @@ export class EngineContext {
   stateFilePath: string;
   configFilePath?: string;
   updateCallbacks: GraphUpdateCallback[];
+  /** Process-local publication counters for read-model caches. They are never
+   * persisted and do not participate in deterministic replay. */
+  projectionRevision = 0;
+  graphProjectionRevision = 0;
   lastSnapshotTime: number;
   pathGraphCache: Map<string, OverwatchGraph>;  // cached undirected projections keyed by optimize mode
   communityCache: Map<string, number> | null;  // cached Louvain community assignments
@@ -1197,6 +1201,18 @@ export class EngineContext {
   }
 
   fireUpdateCallbacks(detail: GraphUpdateDetail): void {
+    this.projectionRevision++;
+    if ([
+      detail.new_nodes,
+      detail.updated_nodes,
+      detail.removed_nodes,
+      detail.new_edges,
+      detail.updated_edges,
+      detail.inferred_edges,
+      detail.removed_edges,
+    ].some(ids => (ids?.length ?? 0) > 0)) {
+      this.graphProjectionRevision++;
+    }
     for (const cb of this.updateCallbacks) {
       try { cb(detail); } catch { /* dashboard errors must not break engine */ }
     }

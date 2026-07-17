@@ -273,6 +273,63 @@ describe('DashboardServer', () => {
     expect(update.data.delta.removed_nodes).toContain('missing-final-node');
   });
 
+  it('does not expand every incident edge for an ordinary high-degree node update', () => {
+    const graph = (engine as any).ctx.graph;
+    graph.addNode('delta-hub', {
+      id: 'delta-hub', type: 'host', label: 'Delta hub',
+      discovered_at: '2026-07-16T00:00:00.000Z', confidence: 1,
+    });
+    for (let index = 0; index < 2_000; index++) {
+      const nodeId = `delta-spoke-${index}`;
+      graph.addNode(nodeId, {
+        id: nodeId, type: 'host', label: nodeId,
+        discovered_at: '2026-07-16T00:00:00.000Z', confidence: 1,
+      });
+      graph.addEdgeWithKey(`delta-edge-${index}`, 'delta-hub', nodeId, {
+        type: 'REACHABLE', confidence: 1, discovered_at: '2026-07-16T00:00:00.000Z',
+      });
+    }
+    const mockClient = { readyState: WebSocket.OPEN, send: vi.fn(), close: vi.fn() };
+    (dashboard as any).clients = new Set([mockClient]);
+
+    dashboard.onGraphUpdate({ updated_nodes: ['delta-hub'] });
+    dashboard.flush();
+
+    const update = sentGraphUpdates(mockClient)[0];
+    expect(update.data.delta.nodes).toHaveLength(1);
+    expect(update.data.delta.edges).toHaveLength(0);
+  });
+
+  it('expands incident edges when a node is superseded and reactivated', () => {
+    const graph = (engine as any).ctx.graph;
+    graph.addNode('visibility-hub', {
+      id: 'visibility-hub', type: 'host', label: 'Visibility hub',
+      discovered_at: '2026-07-16T00:00:00.000Z', confidence: 1,
+    });
+    graph.addNode('visibility-spoke', {
+      id: 'visibility-spoke', type: 'host', label: 'Visibility spoke',
+      discovered_at: '2026-07-16T00:00:00.000Z', confidence: 1,
+    });
+    graph.addEdgeWithKey('visibility-edge', 'visibility-hub', 'visibility-spoke', {
+      type: 'REACHABLE', confidence: 1, discovered_at: '2026-07-16T00:00:00.000Z',
+    });
+    const mockClient = { readyState: WebSocket.OPEN, send: vi.fn(), close: vi.fn() };
+    (dashboard as any).clients = new Set([mockClient]);
+
+    graph.setNodeAttribute('visibility-hub', 'identity_status', 'superseded');
+    dashboard.onGraphUpdate({ updated_nodes: ['visibility-hub'] });
+    dashboard.flush();
+    expect(sentGraphUpdates(mockClient)[0].data.delta.removed_edges).toContain('visibility-edge');
+
+    mockClient.send.mockClear();
+    graph.removeNodeAttribute('visibility-hub', 'identity_status');
+    dashboard.onGraphUpdate({ updated_nodes: ['visibility-hub'] });
+    dashboard.flush();
+    expect(sentGraphUpdates(mockClient)[0].data.delta.edges).toEqual([
+      expect.objectContaining({ id: 'visibility-edge' }),
+    ]);
+  });
+
   it('replaces cold inventory only when its process-local revision changes', () => {
     const mockClient = {
       readyState: WebSocket.OPEN,
@@ -301,6 +358,31 @@ describe('DashboardServer', () => {
     ]);
     expect(updates[1].data.detail.cold_nodes_changed).toBeUndefined();
     expect(updates[1].data.delta.cold_nodes).toBeUndefined();
+  });
+
+  it('does not mark cold inventory changed during an unrelated durable transaction draft', () => {
+    (engine as any).ctx.coldStore.add({
+      id: 'cold-stable-host',
+      type: 'host',
+      label: '10.10.20.3',
+      discovered_at: '2026-07-16T00:00:00.000Z',
+      last_seen_at: '2026-07-16T00:00:00.000Z',
+    });
+    const revision = engine.getColdInventoryRevision();
+
+    engine.ingestFinding({
+      id: 'finding-unrelated-to-cold-store',
+      agent_id: 'test-agent',
+      timestamp: '2026-07-16T00:00:01.000Z',
+      nodes: [{
+        id: 'vuln-unrelated-to-cold-store',
+        type: 'vulnerability',
+        label: 'Unrelated finding',
+      }],
+      edges: [],
+    });
+
+    expect(engine.getColdInventoryRevision()).toBe(revision);
   });
 
   it('flush broadcasts accumulated graph updates through connected clients without sockets', () => {

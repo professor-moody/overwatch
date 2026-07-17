@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { flattenNode, flattenEdge, projectRawGraph } from '../lib/graph-flatten';
+import { GraphDeltaIndex } from '../lib/graph-delta-index';
 import type {
   EngagementState,
   ExportedGraph,
@@ -93,6 +94,8 @@ export interface EngagementStore {
   setPlaybookRuns: (runs: PlaybookRun[]) => void;
 }
 
+const graphDeltaIndex = new GraphDeltaIndex();
+
 export const useEngagementStore = create<EngagementStore>((set, get) => ({
   // Connection
   connected: false,
@@ -158,6 +161,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
     // same shape (fixes IdentityPanel + AttackPathsPanel rendering
     // empty against real engagements).
     const flatGraph = projectRawGraph(data.graph);
+    graphDeltaIndex.reset(flatGraph);
     set({
       // The backend sends `config` + `access_summary`, NOT top-level `engagement`/
       // `access_level`. Derive the toolbar/layout view-model from the real fields —
@@ -190,41 +194,13 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   applyGraphUpdate: (data: GraphUpdateData) => {
     const s = data.state;
     const prev = get().graph;
-
-    // Merge delta into existing graph. Flatten incoming nodes/edges
-    // so panel code can read flat fields consistently.
-    const nodeMap = new Map<string, ExportedNode>();
-    for (const n of prev.nodes) nodeMap.set(n.id, n);
-    // Remove deleted nodes
-    for (const id of data.delta.removed_nodes || []) nodeMap.delete(id);
-    // Add/update nodes from delta (flattened)
-    for (const n of data.delta.nodes) nodeMap.set(n.id, flattenNode(n));
-
-    const edgeMap = new Map<string, ExportedEdge>();
-    for (const e of prev.edges) {
-      const key = e.id || `${e.source}-${e.type}-${e.target}`;
-      edgeMap.set(key, e);
-    }
-    // Remove deleted edges
-    for (const id of data.delta.removed_edges || []) edgeMap.delete(id);
-    // Add/update edges from delta (flattened)
-    for (const e of data.delta.edges) {
-      const flat = flattenEdge(e);
-      const key = flat.id || `${flat.source}-${flat.type}-${flat.target}`;
-      edgeMap.set(key, flat);
-    }
+    const graph = graphDeltaIndex.apply(prev, data);
 
     set({
       engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : get().engagement,
       accessLevel: s.access_summary?.current_access_level || get().accessLevel,
       historyCount: data.history_count ?? get().historyCount,
-      graph: {
-        nodes: Array.from(nodeMap.values()),
-        edges: Array.from(edgeMap.values()),
-        coldInventory: data.delta.cold_nodes
-          ? [...data.delta.cold_nodes]
-          : prev.coldInventory,
-      },
+      graph,
       graphSummary: s.graph_summary || get().graphSummary,
       graphVersion: get().graphVersion + 1,
       lastDelta: {

@@ -28,9 +28,10 @@ for (const size of [1_000, 10_000, 50_000]) {
   try {
     const fixture = seedDashboardScaleFixture(engine, size);
     const fullStarted = performance.now();
+    const state = engine.getState();
     const full = engine.exportGraph({ includeDerivedCommunities: false });
     RawGraphDtoSchema.parse(full);
-    JSON.stringify(full);
+    JSON.stringify({ state, graph: full });
     const fullMs = performance.now() - fullStarted;
 
     const deltaSamples: number[] = [];
@@ -39,6 +40,7 @@ for (const size of [1_000, 10_000, 50_000]) {
       const selection = engine.exportGraphSelection({
         node_ids: fixture.node_ids,
         edge_ids: fixture.edge_ids,
+        includeIncidentEdges: false,
         includeDerivedCommunities: false,
       });
       const delta = projectGraphDelta({}, selection, fixture.detail, 0).delta;

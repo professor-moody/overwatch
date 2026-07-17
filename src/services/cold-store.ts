@@ -76,9 +76,10 @@ export class ColdStore {
 
   add(record: ColdNodeRecord): void {
     const existing = this.store.get(record.id);
+    let next: ColdNodeRecord;
     if (existing) {
       // Merge: keep earliest discovered_at, latest last_seen_at
-      this.store.set(record.id, {
+      next = {
         ...existing,
         ...record,
         discovered_at: existing.discovered_at < record.discovered_at
@@ -87,10 +88,12 @@ export class ColdStore {
         last_seen_at: existing.last_seen_at > record.last_seen_at
           ? existing.last_seen_at
           : record.last_seen_at,
-      });
+      };
     } else {
-      this.store.set(record.id, record);
+      next = { ...record };
     }
+    if (existing && coldRecordsEqual(existing, next)) return;
+    this.store.set(record.id, next);
     this.revision++;
   }
 
@@ -143,10 +146,12 @@ export class ColdStore {
 
   /** Restore from a serialized array. */
   import(records: ColdNodeRecord[]): void {
-    this.store.clear();
+    const next = new Map<string, ColdNodeRecord>();
     for (const r of records) {
-      this.store.set(r.id, r);
+      next.set(r.id, { ...r });
     }
+    if (coldStoreMapsEqual(this.store, next)) return;
+    this.store = next;
     this.revision++;
   }
 
@@ -161,6 +166,23 @@ export class ColdStore {
       fn(record);
     }
   }
+}
+
+function coldRecordsEqual(left: ColdNodeRecord, right: ColdNodeRecord): boolean {
+  const keys = Object.keys({ ...left, ...right }) as Array<keyof ColdNodeRecord>;
+  return keys.every(key => left[key] === right[key]);
+}
+
+function coldStoreMapsEqual(
+  left: ReadonlyMap<string, ColdNodeRecord>,
+  right: ReadonlyMap<string, ColdNodeRecord>,
+): boolean {
+  if (left.size !== right.size) return false;
+  for (const [id, record] of left) {
+    const candidate = right.get(id);
+    if (!candidate || !coldRecordsEqual(record, candidate)) return false;
+  }
+  return true;
 }
 
 // --- Helper: build a ColdNodeRecord from NodeProperties ---

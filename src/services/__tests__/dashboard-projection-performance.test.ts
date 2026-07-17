@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 describe.sequential('dashboard projection performance', () => {
-  it('keeps a ten-item delta proportional to changed IDs at 1k, 10k, and 50k nodes', () => {
+  it('keeps an ordinary ten-item delta proportional to changed IDs at 1k, 10k, and 50k nodes', () => {
     const medians: Record<number, number> = {};
     for (const size of [1_000, 10_000, 50_000]) {
       const engine = openScaleEngine(size);
@@ -51,7 +51,7 @@ describe.sequential('dashboard projection performance', () => {
         const selection = engine.exportGraphSelection({
           node_ids: fixture.node_ids,
           edge_ids: fixture.edge_ids,
-          includeIncidentEdges: true,
+          includeIncidentEdges: false,
           includeDerivedCommunities: false,
         });
         const projected = projectGraphDelta({}, selection, fixture.detail, 0);
@@ -73,13 +73,15 @@ describe.sequential('dashboard projection performance', () => {
     seedDashboardScaleFixture(engine, 50_000);
 
     const started = performance.now();
+    const state = engine.getState();
     const graph = engine.exportGraph({ includeDerivedCommunities: false });
     RawGraphDtoSchema.parse(graph);
-    JSON.stringify(graph);
+    JSON.stringify({ state, graph });
     const elapsed = performance.now() - started;
 
     expect(graph.nodes).toHaveLength(50_000);
     expect(graph.edges).toHaveLength(50_000);
+    expect(state.graph_summary.total_nodes).toBe(50_000);
     expect(elapsed).toBeLessThan(5_000);
   }, 30_000);
 
