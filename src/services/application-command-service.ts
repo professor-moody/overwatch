@@ -592,9 +592,19 @@ export class ApplicationCommandService {
             completed_at: this.engine.now(),
             error: { code: 'COMMAND_INTERRUPTED', message: reason },
           });
+          if (command.command_kind === 'operator.plan') {
+            const plannerTaskId = command.entity_refs?.planner_task_id;
+            if (typeof plannerTaskId === 'string') {
+              const task = this.engine.getTask(plannerTaskId);
+              if (task?.status === 'running' || task?.status === 'pending') {
+                this.engine.updateAgentStatus(plannerTaskId, 'interrupted', reason);
+              }
+            }
+          }
         }
         return unfinished.length;
       },
+      ['agents', 'plans_questions', 'approvals', 'activity', 'frontier'],
     );
   }
 

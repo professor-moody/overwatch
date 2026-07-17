@@ -3,8 +3,8 @@
 //
 // A headless 'planner' sub-agent translates a free-form operator command into a
 // list of OperatorOps and submits it via the propose_plan tool. The operator
-// then confirms the plan, which executes through the SAME validated executeOps
-// path the deterministic grammar uses (directive / scope / approve / deny) — so
+// then confirms the plan, which executes through the SAME validated application-
+// command path the deterministic grammar uses (directive / scope / approve / deny) — so
 // OPSEC/scope/lease/approval guards still apply. The plan is never auto-executed.
 //
 // This store is the shared hand-off point: the propose_plan tool (which only has

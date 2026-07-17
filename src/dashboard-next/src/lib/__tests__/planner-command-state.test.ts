@@ -76,4 +76,14 @@ describe('projectPlannerCommand', () => {
       text: 'Planner completed without returning a plan.',
     });
   });
+
+  it('does not render an expired embedded plan as confirmable', () => {
+    expect(projectPlannerCommand(command({
+      status: 'succeeded',
+      result: { phase: 'plan_expired', plan_id: 'plan-1' },
+    }))).toEqual({
+      kind: 'error',
+      text: 'The proposed plan expired before confirmation. Send the command again.',
+    });
+  });
 });

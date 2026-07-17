@@ -9,7 +9,7 @@
 //   OVERWATCH_FAKE_MODE = 'complete' (default) | 'hang' | 'research' | 'planner' | 'ask'
 //   OVERWATCH_TASK_ID   = the agent task id (set by the runner)
 // ============================================================
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
@@ -149,12 +149,18 @@ async function main() {
     const ops = targetIds.length
       ? [{ op: 'directive', task_id: targetIds[0], agent_label: 'target', kind: 'pause' }]
       : [{ op: 'scope', add_cidrs: ['10.99.99.0/24'] }];
+    const gate = process.env.OVERWATCH_FAKE_PLANNER_GATE;
+    if (gate) {
+      writeFileSync(`${gate}.ready`, taskId ?? 'unknown');
+      while (!existsSync(`${gate}.release`)) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+    }
     await client.callTool({
       name: 'propose_plan',
       arguments: {
         agent_id: agentId,
         task_id: taskId,
-        command: targetIds.length ? 'pause the running agent' : 'expand scope to the new subnet',
         summary: targetIds.length ? `pause ${targetIds[0]}` : 'add 10.99.99.0/24 to scope',
         rationale: 'fake planner proposed a plan',
         ops,

@@ -95,8 +95,9 @@ const incompleteBootstrapArtifactCases: Array<[
 ];
 
 describe('app bootstrap', () => {
-  it('binds MCP agent aliases to canonical task actors without merging terminal sessions', async () => {
+  it('binds MCP session credentials to canonical task actors without trusting body aliases', async () => {
     const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    const terminalHandlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
     const fakeServer = {
       registerTool(name: string, _config: unknown, callback: (...args: unknown[]) => Promise<unknown>) {
         handlers.set(name, callback);
@@ -127,22 +128,10 @@ describe('app bootstrap', () => {
     const registrar = new ToolRegistrar(fakeServer as never, {
       isPersistenceWritable: () => true,
       getPersistenceRecoveryStatus: () => recovery,
-      resolveAgentTaskReference: reference => reference === 'dashboard-agent'
-        ? {
-            status: 'unique_legacy_label',
-            task: {
-              id: 'task-dashboard-agent',
-              task_id: 'task-dashboard-agent',
-              agent_id: 'dashboard-agent',
-              agent_label: 'dashboard-agent',
-              assigned_at: '2026-07-16T00:00:00.000Z',
-              status: 'running',
-              subgraph_node_ids: [],
-            },
-          }
-        : { status: 'missing' },
-    });
-    registrar.registerTool('get_history', {
+    }, 'task-dashboard-agent');
+    const registerInvocationProbe = (
+      target: ToolRegistrar,
+    ) => target.registerTool('get_history', {
       description: 'returns command invocation ownership',
       annotations: completeAnnotations(true),
     }, async () => ({
@@ -151,13 +140,26 @@ describe('app bootstrap', () => {
         text: JSON.stringify(getApplicationCommandInvocation()),
       }],
     }));
+    registerInvocationProbe(registrar);
+
+    const terminalServer = {
+      registerTool(name: string, _config: unknown, callback: (...args: unknown[]) => Promise<unknown>) {
+        terminalHandlers.set(name, callback);
+        return { enable() {}, disable() {}, enabled: true };
+      },
+    };
+    const terminalRegistrar = new ToolRegistrar(terminalServer as never, {
+      isPersistenceWritable: () => true,
+      getPersistenceRecoveryStatus: () => recovery,
+    }, null);
+    registerInvocationProbe(terminalRegistrar);
 
     const dashboardAgent = await handlers.get('get_history')!(
       { agent_id: 'dashboard-agent' },
       { requestId: 1, sessionId: 'dashboard-agent-session' },
     ) as { content: Array<{ text: string }> };
-    const terminalPrimary = await handlers.get('get_history')!(
-      {},
+    const terminalPrimary = await terminalHandlers.get('get_history')!(
+      { task_id: 'task-dashboard-agent', agent_id: 'dashboard-agent' },
       { requestId: 1, sessionId: 'terminal-primary-session' },
     ) as { content: Array<{ text: string }> };
 
@@ -170,11 +172,11 @@ describe('app bootstrap', () => {
       session_id: 'terminal-primary-session',
     });
 
-    const bareRetryA = await handlers.get('get_history')!(
+    const bareRetryA = await terminalHandlers.get('get_history')!(
       {},
       { requestId: 7 },
     ) as { content: Array<{ text: string }> };
-    const bareRetryB = await handlers.get('get_history')!(
+    const bareRetryB = await terminalHandlers.get('get_history')!(
       {},
       { requestId: 7 },
     ) as { content: Array<{ text: string }> };

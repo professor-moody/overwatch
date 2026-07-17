@@ -43,6 +43,8 @@ export interface HeadlessEndpoint {
   url: string;
   /** Bearer token the child must present (required when /mcp auth is enforced). */
   token?: string;
+  /** Daemon-issued per-task credential. Preferred over the shared token. */
+  tokenForTask?: (taskId: string) => string;
 }
 
 type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
@@ -594,6 +596,10 @@ export class HeadlessMcpRunner {
     };
     const publishTargetLaunch = (targetPid: number | undefined): void => {
       this.engine.markRuntimeRunLaunched(processId, targetPid);
+      const currentTask = this.engine.getTask(task.id);
+      if (currentTask?.status === 'pending') {
+        this.engine.updateAgentStatus(task.id, 'running');
+      }
       if (task.application_command_id) {
         new ApplicationCommandService(this.engine).transition(task.application_command_id, {
           status: 'running',
@@ -791,7 +797,8 @@ export class HeadlessMcpRunner {
 
   private writeMcpConfig(task_id: string, endpoint: HeadlessEndpoint): string {
     const server: Record<string, unknown> = { type: 'http', url: endpoint.url };
-    if (endpoint.token) server.headers = { Authorization: `Bearer ${endpoint.token}` };
+    const token = endpoint.tokenForTask?.(task_id) ?? endpoint.token;
+    if (token) server.headers = { Authorization: `Bearer ${token}` };
     const config = { mcpServers: { overwatch: server } };
     const path = join(tmpdir(), `overwatch-mcp-${task_id}.json`);
     // 0600: the file carries the bearer token; keep it owner-only.
@@ -853,7 +860,7 @@ export class HeadlessMcpRunner {
     this.cleanupConfig(configPath);
     if (!this.mutationAllowed()) return;
     const current = this.engine.getTask(task_id);
-    if (current && current.status === 'running') {
+    if (current && (current.status === 'running' || current.status === 'pending')) {
       this.engine.updateAgentStatus(task_id, status, summary);
     }
   }

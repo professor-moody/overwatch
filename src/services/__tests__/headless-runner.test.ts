@@ -13,8 +13,13 @@ import {
   inspectHeadlessClaudeCompatibility,
 } from '../headless-mcp-runner.js';
 import { HeadlessProcessRegistry } from '../headless-process-registry.js';
-import { ApplicationCommandService } from '../application-command-service.js';
+import {
+  ApplicationCommandService,
+  withApplicationCommandInvocation,
+} from '../application-command-service.js';
+import { OperatorCommandService } from '../operator-command-service.js';
 import { AgentLifecycleCommandService } from '../agent-lifecycle-command-service.js';
+import { projectAgentDtos } from '../dashboard-agent-projector.js';
 import { z } from 'zod';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 
@@ -85,9 +90,11 @@ describe('Headless runner mechanics (injected spawn)', () => {
     return (engine as any).ctx.agents.get(id) as AgentTask;
   }
 
-  function makeService(opts: { maxConcurrentHeadless?: number; engineOverride?: GraphEngine; orchestratorHealthyMs?: number; orchestratorWedgedCeilingMs?: number; persistenceGatePollMs?: number } = {}) {
+  function makeService(opts: { maxConcurrentHeadless?: number; maxConcurrentPlanners?: number; headlessTimeoutMs?: number; engineOverride?: GraphEngine; orchestratorHealthyMs?: number; orchestratorWedgedCeilingMs?: number; persistenceGatePollMs?: number } = {}) {
     return new TaskExecutionService(opts.engineOverride ?? engine, new ProcessTracker(), {
       maxConcurrentHeadless: opts.maxConcurrentHeadless,
+      maxConcurrentPlanners: opts.maxConcurrentPlanners,
+      headlessTimeoutMs: opts.headlessTimeoutMs,
       orchestratorHealthyMs: opts.orchestratorHealthyMs,
       orchestratorWedgedCeilingMs: opts.orchestratorWedgedCeilingMs,
       persistenceGatePollMs: opts.persistenceGatePollMs,
@@ -585,10 +592,10 @@ describe('Headless runner mechanics (injected spawn)', () => {
     engine.registerAgent(headlessTask({ id: 'wedged-sub', agent_id: 'osint' }));
     await settle();
     expect(spawned.length).toBe(1);
-    // Deliberately shape persisted internals to simulate a process that has not
-    // emitted output or heartbeats; public getters return detached read models.
+    // Deliberately shape supervisor + persisted internals to simulate a process
+    // that has not emitted output or heartbeats; public getters are detached.
     const t = (engine as any).ctx.agents.get('wedged-sub')!;
-    t.assigned_at = new Date(Date.now() - 5000).toISOString();               // no output ever → falls back to assigned_at, past the 1s ceiling
+    (svc as any).registry.get('wedged-sub').started_at = new Date(Date.now() - 5000).toISOString();
     t.heartbeat_at = new Date(Date.now() - 310_000).toISOString();           // beat also stale past the 300s TTL
     svc.tickWatchdog();
     await settle();
@@ -805,7 +812,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
     svc = makeService({ maxConcurrentHeadless: 1 });
     svc.start();
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
-    engine.registerAgent(headlessTask({ id: 'h-capacity-blocker' }));
+    engine.registerAgent(headlessTask({ id: 'h-capacity-blocker', role: 'planner' }));
     await settle();
     new ApplicationCommandService(engine).reserveSync({
       command_kind: 'operator.plan',
@@ -841,6 +848,346 @@ describe('Headless runner mechanics (injected spawn)', () => {
         message: 'operator cancelled queued planner',
       },
     });
+  });
+
+  it('runs one planner in a bounded control lane even when the target-worker pool is full', async () => {
+    svc = makeService({ maxConcurrentHeadless: 1, maxConcurrentPlanners: 1 });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'worker-full' }));
+    engine.registerAgent(headlessTask({ id: 'planner-control-1', role: 'planner', status: 'pending' }));
+    engine.registerAgent(headlessTask({ id: 'planner-control-2', role: 'planner', status: 'pending' }));
+    await settle();
+
+    expect(spawned).toHaveLength(2);
+    expect((svc as any).registry.has('worker-full')).toBe(true);
+    expect((svc as any).registry.has('planner-control-1')).toBe(true);
+    expect((svc as any).registry.has('planner-control-2')).toBe(false);
+    expect(engine.getTask('planner-control-1')?.status).toBe('running');
+    expect(engine.getTask('planner-control-2')?.status).toBe('pending');
+    const plannerDtos = projectAgentDtos(
+      engine.getAgentTasks().filter(task => task.role === 'planner'),
+      engine.getFullHistory(),
+      [],
+    );
+    expect(plannerDtos.find(task => task.task_id === 'planner-control-1')).toMatchObject({
+      queued: false,
+      lifecycle: 'live',
+      live: true,
+    });
+    expect(plannerDtos.find(task => task.task_id === 'planner-control-2')).toMatchObject({
+      queued: true,
+      lifecycle: 'queued',
+      live: false,
+    });
+
+    engine.updateAgentStatus('planner-control-1', 'completed', 'plan returned');
+    spawned[1].simulateExit(0);
+    spawned[1].simulateClose(0);
+    await settle();
+
+    expect(spawned).toHaveLength(3);
+    expect((svc as any).registry.has('planner-control-2')).toBe(true);
+    expect(engine.getTask('planner-control-2')?.status).toBe('running');
+  });
+
+  it('rolls back a synchronous startup drain failure and remains retryable', () => {
+    svc = makeService();
+    const baselineListeners = (engine as any).ctx.updateCallbacks.length;
+    engine.registerAgent(headlessTask({
+      id: 'planner-start-retry',
+      role: 'planner',
+      status: 'pending',
+    }));
+    svc.setHttpEndpoint({
+      url: 'http://127.0.0.1:9/mcp',
+      tokenForTask: () => { throw new Error('temporary MCP config failure'); },
+    });
+
+    expect(() => svc.start()).toThrow('temporary MCP config failure');
+    expect(svc.isHeadlessAvailable()).toBe(false);
+    expect((svc as any).registry.has('planner-start-retry')).toBe(false);
+    expect(engine.getTask('planner-start-retry')?.status).toBe('pending');
+    expect((engine as any).ctx.updateCallbacks).toHaveLength(baselineListeners);
+
+    svc.setHttpEndpoint({
+      url: 'http://127.0.0.1:9/mcp',
+      tokenForTask: () => 'retry-token',
+    });
+    expect(() => svc.start()).not.toThrow();
+    expect(svc.isHeadlessAvailable()).toBe(true);
+    expect((svc as any).registry.has('planner-start-retry')).toBe(true);
+    expect(engine.getTask('planner-start-retry')?.status).toBe('running');
+    // One TaskExecutionService listener + one ScriptedAgentRunner listener.
+    expect((engine as any).ctx.updateCallbacks).toHaveLength(baselineListeners + 2);
+  });
+
+  it('keeps bounded recovery retries alive until a transient startup failure clears', () => {
+    vi.useFakeTimers();
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      svc = makeService();
+      const baselineListeners = (engine as any).ctx.updateCallbacks.length;
+      engine.registerAgent(headlessTask({
+        id: 'planner-recovery-retry',
+        role: 'planner',
+        status: 'pending',
+      }));
+      let attempts = 0;
+      let allowStart = false;
+      svc.setHttpEndpoint({
+        url: 'http://127.0.0.1:9/mcp',
+        tokenForTask: () => {
+          attempts += 1;
+          if (!allowStart) throw new Error(`transient config failure ${attempts}`);
+          return 'eventual-token';
+        },
+      });
+
+      expect(() => svc.start()).toThrow(/transient config failure/);
+      expect(() => svc.resumeAfterRecovery()).toThrow(/transient config failure/);
+      expect((engine as any).ctx.updateCallbacks).toHaveLength(baselineListeners);
+      vi.advanceTimersByTime(250);
+      vi.advanceTimersByTime(1_000);
+      vi.advanceTimersByTime(5_000);
+      expect(svc.isHeadlessAvailable()).toBe(false);
+      expect(attempts).toBeGreaterThanOrEqual(5);
+      allowStart = true;
+      vi.advanceTimersByTime(30_000);
+
+      expect(svc.isHeadlessAvailable()).toBe(true);
+      expect(engine.getTask('planner-recovery-retry')?.status).toBe('running');
+      expect((svc as any).registry.has('planner-recovery-retry')).toBe(true);
+      expect((engine as any).ctx.updateCallbacks).toHaveLength(baselineListeners + 2);
+    } finally {
+      stderr.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('times out a launched planner exactly once and late process events cannot rewrite its command', () => {
+    vi.useFakeTimers();
+    try {
+      svc = makeService({ headlessTimeoutMs: 1_000 });
+      svc.start();
+      svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+      new ApplicationCommandService(engine).reserveSync({
+        command_kind: 'operator.plan',
+        input: { command: 'inspect the timed target' },
+        schema: z.object({ command: z.string() }).strict(),
+        metadata: {
+          command_id: 'timed-planner-command',
+          idempotency_key: 'timed-planner-command',
+        },
+        reserve: () => ({
+          status: 'accepted',
+          result: {
+            phase: 'planning_queued',
+            planner_task_id: 'timed-planner-task',
+          },
+        }),
+      });
+      engine.registerAgent(headlessTask({
+        id: 'timed-planner-task',
+        role: 'planner',
+        application_command_id: 'timed-planner-command',
+      }));
+      expect(spawned).toHaveLength(1);
+
+      vi.advanceTimersByTime(1_000);
+      expect(engine.getTask('timed-planner-task')?.status).toBe('interrupted');
+      expect(engine.getApplicationCommandById('timed-planner-command')).toMatchObject({
+        status: 'interrupted',
+        error: { code: 'PLANNER_INTERRUPTED' },
+      });
+      expect(spawned[0].signals.filter(signal => signal === 'SIGTERM')).toHaveLength(1);
+
+      spawned[0].simulateExit(0);
+      spawned[0].simulateClose(0);
+      vi.runOnlyPendingTimers();
+      expect(engine.getApplicationCommandById('timed-planner-command')).toMatchObject({
+        status: 'interrupted',
+        error: { code: 'PLANNER_INTERRUPTED' },
+      });
+      expect(engine.getFullHistory().filter(event =>
+        event.linked_agent_task_id === 'timed-planner-task'
+        && event.details?.reason === 'headless_timeout')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects a late proposal after planner cancellation without creating a plan', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'cancel before proposal' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: { command_id: 'late-plan-command', idempotency_key: 'late-plan-command' },
+      reserve: () => ({
+        status: 'accepted',
+        result: { phase: 'planning_queued', planner_task_id: 'late-plan-task' },
+        entity_refs: { planner_task_id: 'late-plan-task' },
+      }),
+    });
+    engine.registerAgent(headlessTask({
+      id: 'late-plan-task',
+      role: 'planner',
+      application_command_id: 'late-plan-command',
+    }));
+    await settle();
+    expect(svc.cancelHeadless('late-plan-task', 'operator cancelled before proposal')).toBe(true);
+
+    const result = withApplicationCommandInvocation({
+      transport: 'mcp',
+      actor_task_id: 'late-plan-task',
+    }, () => new OperatorCommandService(engine).submitProposal({
+      task_id: 'late-plan-task',
+      summary: 'too late',
+      ops: [{ op: 'scope', add_cidrs: ['10.71.0.0/24'] }],
+    }));
+    expect(result).toEqual({
+      ok: false,
+      error: expect.stringContaining('already interrupted'),
+    });
+    expect(engine.getProposedPlanStore().getOpen()).toHaveLength(0);
+    expect(engine.getApplicationCommandById('late-plan-command')).toMatchObject({
+      status: 'interrupted',
+      error: { code: 'PLANNER_INTERRUPTED' },
+    });
+  });
+
+  it('keeps a committed proposal succeeded when the worker crashes before its transcript', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'propose then crash' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: { command_id: 'proposal-crash-command', idempotency_key: 'proposal-crash-command' },
+      reserve: () => ({
+        status: 'accepted',
+        result: { phase: 'planning_queued', planner_task_id: 'proposal-crash-task' },
+        entity_refs: { planner_task_id: 'proposal-crash-task' },
+      }),
+    });
+    engine.registerAgent(headlessTask({
+      id: 'proposal-crash-task',
+      role: 'planner',
+      application_command_id: 'proposal-crash-command',
+    }));
+    await settle();
+    const proposal = withApplicationCommandInvocation({
+      transport: 'mcp',
+      actor_task_id: 'proposal-crash-task',
+    }, () => new OperatorCommandService(engine).submitProposal({
+      task_id: 'proposal-crash-task',
+      summary: 'proposal landed before crash',
+      ops: [{ op: 'scope', add_cidrs: ['10.72.0.0/24'] }],
+    }));
+    expect(proposal.ok).toBe(true);
+
+    spawned[0].simulateExit(1);
+    spawned[0].simulateClose(1);
+    await settle();
+
+    expect(engine.getTask('proposal-crash-task')?.status).toBe('interrupted');
+    expect(engine.getApplicationCommandById('proposal-crash-command')).toMatchObject({
+      status: 'succeeded',
+      plan_id: proposal.ok ? proposal.plan_id : undefined,
+      result: { phase: 'plan_ready' },
+    });
+    expect(engine.getProposedPlanStore().getOpen()).toHaveLength(1);
+  });
+
+  it('handles process error then exit then close with one terminal planner outcome', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'process error ordering' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: { command_id: 'error-order-command', idempotency_key: 'error-order-command' },
+      reserve: () => ({
+        status: 'accepted',
+        result: { phase: 'planning_queued', planner_task_id: 'error-order-task' },
+        entity_refs: { planner_task_id: 'error-order-task' },
+      }),
+    });
+    engine.registerAgent(headlessTask({
+      id: 'error-order-task',
+      role: 'planner',
+      application_command_id: 'error-order-command',
+    }));
+    await settle();
+
+    spawned[0].emit('error', new Error('synthetic child error'));
+    spawned[0].simulateExit(1);
+    spawned[0].simulateClose(1);
+    await settle();
+
+    expect(engine.getTask('error-order-task')?.status).toBe('failed');
+    expect(engine.getApplicationCommandById('error-order-command')).toMatchObject({
+      status: 'failed',
+      error: { code: 'PLANNER_PROCESS_ERROR' },
+    });
+    expect(engine.getFullHistory().filter(event =>
+      event.event_type === 'agent_updated'
+      && event.linked_agent_task_id === 'error-order-task'
+      && event.description.includes(' failed'))).toHaveLength(1);
+    expect(engine.getRuntimeRuns().filter(run => run.run_id === 'headless-error-order-task'))
+      .toHaveLength(1);
+    expect(engine.getRuntimeRuns().find(run => run.run_id === 'headless-error-order-task')?.lifecycle)
+      .toBe('failed');
+  });
+
+  it('does not arm a wall-clock deadline for a planner still queued behind the planner lane', () => {
+    vi.useFakeTimers();
+    try {
+      svc = makeService({
+        maxConcurrentPlanners: 1,
+        headlessTimeoutMs: 1_000,
+      });
+      svc.start();
+      svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+      engine.registerAgent(headlessTask({ id: 'planner-lane-blocker', role: 'planner' }));
+      new ApplicationCommandService(engine).reserveSync({
+        command_kind: 'operator.plan',
+        input: { command: 'wait for the planner lane' },
+        schema: z.object({ command: z.string() }).strict(),
+        metadata: {
+          command_id: 'queued-lane-command',
+          idempotency_key: 'queued-lane-command',
+        },
+        reserve: () => ({
+          status: 'accepted',
+          result: {
+            phase: 'planning_queued',
+            planner_task_id: 'queued-lane-planner',
+          },
+        }),
+      });
+      engine.registerAgent(headlessTask({
+        id: 'queued-lane-planner',
+        role: 'planner',
+        application_command_id: 'queued-lane-command',
+      }));
+      expect(spawned).toHaveLength(1);
+
+      vi.advanceTimersByTime(1_000);
+      expect(engine.getTask('queued-lane-planner')?.status).toBe('running');
+      expect(engine.getApplicationCommandById('queued-lane-command')?.status)
+        .toBe('accepted');
+      expect(engine.getFullHistory().some(event =>
+        event.linked_agent_task_id === 'queued-lane-planner'
+        && event.details?.reason === 'headless_timeout')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('terminalizes a launched planner command even if the child never emits exit', async () => {
@@ -1323,10 +1670,12 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(prompt).not.toContain('run_bash');
   });
 
-  it('isHeadlessAvailable reflects whether an endpoint is set', () => {
+  it('isHeadlessAvailable requires a started writable executor and endpoint', () => {
     svc = makeService();
     expect(svc.isHeadlessAvailable()).toBe(false);
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    expect(svc.isHeadlessAvailable()).toBe(false);
+    svc.start();
     expect(svc.isHeadlessAvailable()).toBe(true);
   });
 

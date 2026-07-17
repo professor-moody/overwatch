@@ -4,6 +4,7 @@ import {
   ActiveApplicationCommandsResponseSchema,
   ActivityEntryDtoSchema,
   AgentArchetypesResponseSchema,
+  AgentDtoSchema,
   AgentConsoleEventDtoSchema,
   AgentListResponseSchema,
   AgentQueriesResponseSchema,
@@ -275,7 +276,17 @@ const AnswerBatchResponseSchema = z.object({
   answered: z.number().int().nonnegative(),
 }).passthrough();
 const AgentContextResponseSchema = z.object({
-  task: z.object({ id: z.string(), agent_id: z.string() }).passthrough(),
+  // The server now emits AgentDto. Keep the historical context shape readable
+  // while rolling upgrades can still pair a new dashboard with an old daemon.
+  task: z.union([
+    AgentDtoSchema,
+    z.object({
+      id: z.string(),
+      agent_id: z.string(),
+      task_id: z.string().optional(),
+      agent_label: z.string().optional(),
+    }).passthrough(),
+  ]),
   subgraph: z.object({ nodes: z.array(z.unknown()), edges: z.array(z.unknown()) }).passthrough(),
 }).passthrough();
 const AgentDismissResponseSchema = z.object({

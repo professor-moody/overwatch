@@ -184,6 +184,23 @@ describe('buildAttentionQueue — stuck agents', () => {
     expect(v.counts.approval).toBe(1);
   });
 
+  it('does not double-count a uniquely labelled legacy approval as stuck', () => {
+    const blocked = idle({
+      task_id: 'tb-label',
+      id: 'tb-label',
+      agent_label: 'web-label',
+      agent_id: 'web-label',
+    });
+    const v = buildAttentionQueue({
+      now: NOW,
+      agents: [blocked],
+      pendingActions: [action({ action_id: 'a-label', agent_label: 'web-label' })],
+    });
+    expect(v.counts.approval).toBe(1);
+    expect(v.counts.stuck).toBe(0);
+    expect(v.items.find(item => item.kind === 'approval')?.agentLabel).toBe('web-label');
+  });
+
   it('does NOT flag when assigned_at is missing (legacy non-heartbeating task)', () => {
     const v = buildAttentionQueue({ now: NOW, agents: [agent({ status: 'running', current_action_at: new Date(NOW - 20 * 60_000).toISOString() })] });
     expect(v.counts.stuck).toBe(0);

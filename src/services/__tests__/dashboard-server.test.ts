@@ -1960,7 +1960,7 @@ describe('DashboardServer', () => {
       expect(completed.elapsed_ms).toBeUndefined();
     });
 
-    it('projects the same canonical AgentDto through REST, state, full-state WS, and graph updates', () => {
+    it('projects the same canonical AgentDto through REST, context, state, and WebSockets', () => {
       vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-07-15T12:00:00Z'));
       const task = registerTestAgent({
         id: 'task-canonical', agent_id: 'operator-label', assigned_at: '2026-07-15T11:55:00Z',
@@ -1975,6 +1975,10 @@ describe('DashboardServer', () => {
       const agentRes = mockRes();
       (dashboard as any).serveAgents(agentRes);
       const restDto = AgentDtoSchema.parse(JSON.parse(agentRes.body).agents[0]);
+
+      const contextRes = mockRes();
+      (dashboard as any).serveAgentContext(task.id, contextRes);
+      const contextDto = AgentDtoSchema.parse(JSON.parse(contextRes.body).task);
 
       const stateRes = mockRes();
       (dashboard as any).serveState(stateRes);
@@ -1994,6 +1998,7 @@ describe('DashboardServer', () => {
       const graphUpdate = sentMessages(socket).find(message => message.type === 'graph_update');
       const graphUpdateDto = AgentDtoSchema.parse(graphUpdate.data.state.agents[0]);
 
+      expect(restDto).toEqual(contextDto);
       expect(restDto).toEqual(stateDto);
       expect(fullStateDto).toEqual(restDto);
       expect(graphUpdateDto).toEqual(restDto);
@@ -2282,6 +2287,50 @@ describe('DashboardServer', () => {
       const data = JSON.parse(res.body);
       expect(data.campaign_id).toBe(campaign.id);
       expect(data.dispatched.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it('replays a legacy persisted campaign-dispatch result with additive aliases absent', async () => {
+      vi.spyOn((dashboard as any).dispatchCommands, 'dispatchCampaign').mockReturnValue({
+        command_id: 'legacy-campaign-command',
+        idempotency_key: 'legacy-campaign-key',
+        status: 'succeeded',
+        replayed: true,
+        result: {
+          campaign_id: 'campaign-legacy',
+          strategy: 'enumeration',
+          requested: 1,
+          total_items: 1,
+          dispatched: [{
+            task_id: 'legacy-task',
+            agent_id: 'legacy-label',
+            frontier_item_id: 'frontier-legacy',
+            scope_nodes: 1,
+            archetype: 'recon_scanner',
+          }],
+          skipped: [],
+        },
+      });
+      const bodyStr = JSON.stringify({});
+      const req = {
+        headers: {},
+        url: '/api/campaigns/campaign-legacy/dispatch',
+        on: vi.fn((event: string, cb: Function) => {
+          if (event === 'data') cb(Buffer.from(bodyStr));
+          if (event === 'end') cb();
+        }),
+        destroy: vi.fn(),
+      } as any;
+      const res = mockRes();
+
+      await (dashboard as any).handleCampaignDispatch('campaign-legacy', req, res);
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toMatchObject({
+        command_id: 'legacy-campaign-command',
+        replayed: true,
+        dispatched: [{ task_id: 'legacy-task', agent_id: 'legacy-label' }],
+      });
     });
 
     it('handleCampaignCreate creates a new campaign via POST', async () => {

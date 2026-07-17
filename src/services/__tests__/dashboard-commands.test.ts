@@ -312,7 +312,10 @@ describe('/api/commands — headless planner fallback', () => {
       expect.objectContaining({
         command_id: r.command_id,
         status: 'accepted',
-        entity_refs: { planner_task_id: r.planner_task_id },
+        entity_refs: expect.objectContaining({
+          planner_task_id: r.planner_task_id,
+          planner_request_key: expect.stringMatching(/^planner_[a-f0-9]{64}$/),
+        }),
       }),
     ]);
   });
@@ -330,6 +333,43 @@ describe('/api/commands — headless planner fallback', () => {
     expect(third.planner_task_id).toBe(first.planner_task_id);
     const planners = engine.getAgentTasks().filter(t => t.role === 'planner' && t.objective?.includes('rummage through the weird share'));
     expect(planners).toHaveLength(1);
+  });
+
+  it('coalesces concurrent semantically-identical HTTP planner requests', async () => {
+    headlessAvail = true;
+    const before = engine.getAgentTasks().filter(task => task.role === 'planner').length;
+    const responses = await Promise.all([
+      post({ command: 'investigate the concurrent mystery host' }),
+      post({ command: '  INVESTIGATE   the concurrent mystery host ' }),
+      post({ command: 'Investigate the concurrent mystery host' }),
+    ]);
+    expect(responses.every(response => response.status === 200)).toBe(true);
+    const bodies = await Promise.all(responses.map(response => response.json()));
+    expect(new Set(bodies.map(body => body.command_id)).size).toBe(1);
+    expect(new Set(bodies.map(body => body.planner_task_id)).size).toBe(1);
+    expect(engine.getAgentTasks().filter(task => task.role === 'planner'))
+      .toHaveLength(before + 1);
+  });
+
+  it('returns a conflict when one idempotency key is reused for different text', async () => {
+    headlessAvail = true;
+    const request = (command: string, commandId: string) => fetch(`${baseUrl}/api/commands`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'planner-http-conflict',
+        'X-Overwatch-Command-Id': commandId,
+      },
+      body: JSON.stringify({ command }),
+    });
+    const first = await request('inspect idempotency alpha', 'planner-http-alpha');
+    expect(first.status).toBe(200);
+    const before = engine.getAgentTasks().filter(task => task.role === 'planner').length;
+    const second = await request('inspect idempotency beta', 'planner-http-beta');
+    expect(second.status).toBe(409);
+    expect(await second.json()).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(engine.getAgentTasks().filter(task => task.role === 'planner'))
+      .toHaveLength(before);
   });
 
   it('correlates the planner proposal to the durable command without a timeout window', async () => {
@@ -457,6 +497,42 @@ describe('/api/commands — headless planner fallback', () => {
         plan: { plan_id: plan.plan_id },
       },
     });
+  });
+
+  it('never projects an expired embedded plan as confirmable', async () => {
+    const plan = engine.getProposedPlanStore().add({
+      command: 'expired planner command',
+      ops: [{ op: 'scope', add_cidrs: ['10.88.0.0/24'] }],
+      summary: 'expired plan',
+      now: Date.now() - 11 * 60_000,
+    });
+    engine.recordApplicationCommand({
+      command_id: 'expired-planner-command',
+      idempotency_key: 'expired-planner-idempotency',
+      input_sha256: 'b'.repeat(64),
+      command_kind: 'operator.plan',
+      validated_input: { command: plan.command },
+      transport: 'dashboard',
+      actor_task_id: null,
+      status: 'succeeded',
+      created_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      plan_id: plan.plan_id,
+      result: {
+        phase: 'plan_ready',
+        plan_id: plan.plan_id,
+        plan,
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/api/commands/expired-planner-command`);
+    expect(response.status).toBe(200);
+    const projected = (await response.json()).command;
+    expect(projected.result).toMatchObject({
+      phase: 'plan_expired',
+      plan_id: plan.plan_id,
+    });
+    expect(projected.result.plan).toBeUndefined();
   });
 
   it('reports planner_available:false in stdio mode (no daemon)', async () => {

@@ -286,6 +286,8 @@ export const CampaignDispatchResponseSchema = z.object({
   total_items: z.number().int(),
   dispatched: z.array(z.object({
     task_id: z.string(),
+    agent_label: z.string().optional(),
+    id: z.string().optional(),
     agent_id: z.string(),
     frontier_item_id: z.string(),
     scope_nodes: z.number().int(),
@@ -338,6 +340,8 @@ export const AgentListResponseSchema = z.object({
 export type AgentListResponse = z.infer<typeof AgentListResponseSchema>;
 
 export const DispatchedAgentTaskSchema = z.object({
+  // Canonical identity is additive for one compatibility release. Older
+  // daemons/replayed responses may still expose only id + agent_id.
   task_id: z.string().optional(),
   agent_label: z.string().optional(),
   id: z.string(),
@@ -397,6 +401,8 @@ export const DispatchBatchResponseSchema = z.object({
   dispatched: z.array(z.object({
     node_ids: z.array(z.string()),
     task_id: z.string(),
+    agent_label: z.string().optional(),
+    id: z.string().optional(),
     agent_id: z.string(),
     archetype: z.string().optional(),
   }).passthrough()),
@@ -491,6 +497,12 @@ export const CommandOpResultSchema = z.object({
   ok: z.boolean(),
   detail: z.string().optional(),
   error: z.string().optional(),
+  task: z.object({
+    task_id: z.string(),
+    agent_label: z.string(),
+    id: z.string(),
+    agent_id: z.string(),
+  }).passthrough().optional(),
 }).passthrough();
 export type CommandOpResultDto = z.infer<typeof CommandOpResultSchema>;
 
@@ -620,7 +632,7 @@ export function normalizeLegacyAgentDispatchDescription(entry: {
   description: string;
   details?: Record<string, unknown>;
 }): string {
-  const legacyShape = /^Agent dispatched:\s*(.*?)\s+for undefined\s*$/i.exec(entry.description);
+  const legacyShape = /^Agent dispatched:\s*(.*?)\s+(?:for|as)\s+undefined\s*$/i.exec(entry.description);
   // The oldest durable rows predate event_type. Restrict that compatibility
   // case to the exact historical sentence so unrelated untyped activity is not
   // rewritten. Explicit non-registration event types always remain untouched.
@@ -630,12 +642,28 @@ export function normalizeLegacyAgentDispatchDescription(entry: {
   ) {
     return entry.description;
   }
-  const withoutUndefined = entry.description.replace(/\sfor undefined\s*$/i, '').trim();
+  const details = entry.details ?? {};
+  const captured = legacyShape[1].trim();
+  const fallback = [
+    details.agent_label,
+    details.agent_id,
+    details.task_id,
+    details.linked_agent_task_id,
+  ].find(value =>
+    typeof value === 'string'
+    && value.trim().length > 0
+    && value.trim().toLowerCase() !== 'undefined');
+  const label = captured && captured.toLowerCase() !== 'undefined'
+    ? captured
+    : typeof fallback === 'string'
+      ? fallback
+      : 'agent';
+  const repaired = `Agent dispatched: ${label}`;
   const planner = entry.details?.role === 'planner'
-    || /^planner(?:-|\b)/i.test(legacyShape[1]);
+    || /^planner(?:-|\b)/i.test(label);
   return planner
-    ? `${withoutUndefined} as operator planner`
-    : withoutUndefined;
+    ? `${repaired} as operator planner`
+    : repaired;
 }
 
 export const AgentQuerySchema = z.object({
