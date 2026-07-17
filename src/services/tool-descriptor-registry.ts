@@ -232,6 +232,12 @@ function persistenceFor(name: string, readOnly: boolean): ToolDescriptor['persis
   if (name === 'get_state' || name === 'get_system_prompt') {
     return { mode: 'conditional', allowed_during_recovery: false };
   }
+  if (name === 'generate_report' || name === 'run_retrospective') {
+    return { mode: 'conditional', allowed_during_recovery: false };
+  }
+  if (name === 'bundle_engagement') {
+    return { mode: 'conditional', allowed_during_recovery: true };
+  }
   if (name === 'check_processes') {
     return { mode: 'write', allowed_during_recovery: false };
   }
@@ -295,6 +301,10 @@ export function toolRequiresWritablePersistence(
   if (descriptor.persistence.allowed_during_recovery) return false;
   if (descriptor.name === 'get_state') return input.snapshot === true;
   if (descriptor.name === 'get_system_prompt') return input.snapshot !== false;
+  if (descriptor.name === 'generate_report') {
+    return input.write_to_disk === true || input.persist_to_archive !== false;
+  }
+  if (descriptor.name === 'run_retrospective') return input.write_to_disk === true;
   return descriptor.persistence.mode !== 'read';
 }
 

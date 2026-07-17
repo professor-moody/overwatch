@@ -91,4 +91,24 @@ describe('canonical tool descriptor registry', () => {
     expect(toolRequiresWritablePersistence(state, { snapshot: true })).toBe(true);
     expect(toolRequiresWritablePersistence(reconcile, {})).toBe(false);
   });
+
+  it('gates only report/retrospective publication while allowing diagnostic bundles', () => {
+    const mutatingAnnotations = { ...annotations, readOnlyHint: false };
+    const report = buildToolDescriptor('generate_report', {
+      description: 'Generate report.', inputSchema: {}, annotations: mutatingAnnotations,
+    });
+    const retrospective = buildToolDescriptor('run_retrospective', {
+      description: 'Run retrospective.', inputSchema: {}, annotations: mutatingAnnotations,
+    });
+    const bundle = buildToolDescriptor('bundle_engagement', {
+      description: 'Bundle engagement.', inputSchema: {}, annotations: mutatingAnnotations,
+    });
+    expect(toolRequiresWritablePersistence(report, {
+      write_to_disk: false, persist_to_archive: false,
+    })).toBe(false);
+    expect(toolRequiresWritablePersistence(report, { persist_to_archive: true })).toBe(true);
+    expect(toolRequiresWritablePersistence(retrospective, { write_to_disk: false })).toBe(false);
+    expect(toolRequiresWritablePersistence(retrospective, { write_to_disk: true })).toBe(true);
+    expect(toolRequiresWritablePersistence(bundle, {})).toBe(false);
+  });
 });

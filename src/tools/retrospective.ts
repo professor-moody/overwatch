@@ -4,10 +4,13 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import type { SkillIndex } from '../services/skill-index.js';
 import { runRetrospective } from '../services/retrospective.js';
 import type { RetrospectiveInput } from '../services/retrospective.js';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { withErrorBoundary, getTelemetry } from './error-boundary.js';
 import { validateFilePath } from '../utils/path-validation.js';
+import {
+  publishArtifactGenerationDurable,
+  type ArtifactGenerationPublication,
+} from '../services/artifact-generation.js';
 
 export function registerRetrospectiveTools(server: McpServer, engine: GraphEngine, skills: SkillIndex, getToolNames?: () => string[]): void {
 
@@ -35,7 +38,9 @@ Use this at the end of an engagement or after significant progress to:
 - Generate a structured report
 - Export heuristic training telemetry for model improvement
 
-Optionally write all outputs to disk for archival.`,
+Optionally write all outputs to disk for archival. The returned generation_path
+and pointer_path identify the checksummed authoritative set; fixed filenames are
+post-commit compatibility mirrors.`,
       inputSchema: {
         write_to_disk: z.boolean().default(false)
           .describe('Save report + traces to files in output_dir'),
@@ -45,7 +50,7 @@ Optionally write all outputs to disk for archival.`,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: false
       }
     },
@@ -77,6 +82,7 @@ Optionally write all outputs to disk for archival.`,
         result.tool_telemetry = telemetry.summarize(getToolNames ? getToolNames() : []);
       }
 
+      let diskPublication: ArtifactGenerationPublication | undefined;
       if (write_to_disk) {
         let validatedDir: string;
         try {
@@ -87,19 +93,37 @@ Optionally write all outputs to disk for archival.`,
             isError: true,
           };
         }
-        if (!existsSync(validatedDir)) {
-          mkdirSync(validatedDir, { recursive: true });
-        }
-        writeFileSync(join(validatedDir, 'report.md'), result.report_markdown);
-        writeFileSync(join(validatedDir, 'inference-suggestions.json'), JSON.stringify(result.inference_suggestions, null, 2));
-        writeFileSync(join(validatedDir, 'skill-gaps.json'), JSON.stringify(result.skill_gaps, null, 2));
-        writeFileSync(join(validatedDir, 'context-improvements.json'), JSON.stringify(result.context_improvements, null, 2));
-        writeFileSync(join(validatedDir, 'training-traces.json'), JSON.stringify(result.training_traces, null, 2));
-        writeFileSync(join(validatedDir, 'trace-quality.json'), JSON.stringify(result.trace_quality, null, 2));
-        writeFileSync(join(validatedDir, 'summary.txt'), result.summary);
+        // Analysis can remain read-only, but the filesystem commit must be
+        // rejected if recovery degraded while the retrospective was running.
+        engine.assertPersistenceWritable();
+        const files: Record<string, { content: string; media_type?: string }> = {
+          'report.md': { content: result.report_markdown, media_type: 'text/markdown' },
+          'inference-suggestions.json': { content: `${JSON.stringify(result.inference_suggestions, null, 2)}\n`, media_type: 'application/json' },
+          'skill-gaps.json': { content: `${JSON.stringify(result.skill_gaps, null, 2)}\n`, media_type: 'application/json' },
+          'context-improvements.json': { content: `${JSON.stringify(result.context_improvements, null, 2)}\n`, media_type: 'application/json' },
+          'training-traces.json': { content: `${JSON.stringify(result.training_traces, null, 2)}\n`, media_type: 'application/json' },
+          'trace-quality.json': { content: `${JSON.stringify(result.trace_quality, null, 2)}\n`, media_type: 'application/json' },
+          'summary.txt': { content: result.summary, media_type: 'text/plain' },
+        };
         if (result.tool_telemetry) {
-          writeFileSync(join(validatedDir, 'tool-telemetry.json'), JSON.stringify(result.tool_telemetry, null, 2));
+          files['tool-telemetry.json'] = { content: `${JSON.stringify(result.tool_telemetry, null, 2)}\n`, media_type: 'application/json' };
         }
+        const legacyNames = [
+          'report.md', 'inference-suggestions.json', 'skill-gaps.json',
+          'context-improvements.json', 'training-traces.json',
+          'trace-quality.json', 'summary.txt', 'tool-telemetry.json',
+        ];
+        engine.registerArtifactGenerationRecovery({
+          root: validatedDir,
+          namespace: 'retrospective',
+          legacy_names: legacyNames,
+        });
+        diskPublication = publishArtifactGenerationDurable({
+          root: validatedDir,
+          namespace: 'retrospective',
+          files,
+          legacy_names: legacyNames,
+        });
       }
 
       return {
@@ -115,6 +139,17 @@ Optionally write all outputs to disk for archival.`,
             tool_telemetry: result.tool_telemetry,
             report_preview: result.report_markdown.slice(0, 500) + '...',
             ...(write_to_disk ? { output_dir: join(output_dir, config.id) } : {}),
+            ...(diskPublication ? {
+              generation_id: diskPublication.generation_id,
+              generation_committed: diskPublication.generation_committed,
+              generation_pointer_visible: diskPublication.pointer_visible,
+              generation_path: diskPublication.generation_path,
+              generation_manifest: diskPublication.generation_manifest,
+              pointer_path: diskPublication.pointer_path,
+              generation_commit_durability: diskPublication.commit_durability,
+              legacy_mirror_complete: diskPublication.legacy_mirror_complete,
+            } : {}),
+            ...(diskPublication?.warning ? { output_warning: diskPublication.warning } : {}),
           }, null, 2)
         }]
       };

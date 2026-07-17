@@ -1185,6 +1185,7 @@ export class StatePersistence {
         this.ctx.stateFilePath,
         this.ctx.activityLog,
       ),
+      this.ctx.stateFilePath,
     );
     this.ctx.artifactReferences = JSON.parse(JSON.stringify(artifactReferences));
     return {
@@ -2411,7 +2412,12 @@ export class StatePersistence {
       ? JSON.parse(JSON.stringify(data.frontierWeights))
       : undefined;
     this.ctx.artifactReferences = data.artifactReferences
-      ? JSON.parse(JSON.stringify(data.artifactReferences))
+      ? {
+          ...JSON.parse(JSON.stringify(data.artifactReferences)),
+          ...(data.artifactReferences.generation_registrations
+            ? { generation_registrations: JSON.parse(JSON.stringify(data.artifactReferences.generation_registrations)) }
+            : {}),
+        }
       : { tapes: [], bundles: [], cookie_jars: [] };
     this.ctx.rebuildActionFrontierMap();
     this.ctx.rebuildChainTail();

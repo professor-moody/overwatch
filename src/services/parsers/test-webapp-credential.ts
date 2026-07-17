@@ -195,7 +195,7 @@ export function parseTestWebappCredential(output: string, agentId: string = 'web
   const originUrl = ctx.request_url ?? ctx.target_url;
 
   if (!credId || !originUrl) {
-    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes: [], edges: [] };
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes: [], edges: [], parser_details: { auth_verdict: 'inconclusive' } };
   }
 
   const { status, headers, body, parsed } = extractResponse(output, ctx.status_nonce);
@@ -204,14 +204,14 @@ export function parseTestWebappCredential(output: string, agentId: string = 'web
   if (verdict === 'inconclusive') {
     // Unreachable / curl killed / ambiguous status with no criteria. Emit
     // nothing so coverage isn't retired and the pair can be retried.
-    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes: [], edges: [] };
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes: [], edges: [], parser_details: { auth_verdict: 'inconclusive' } };
   }
 
   if (verdict === 'success') {
     const { nodes, edges, svcId, waId } = emitChain(originUrl, true, now);
     edges.push({ source: credId, target: waId, properties: { type: 'AUTHENTICATED_AS' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId, notes: `authenticated via ${ctx.method ?? 'web'} credential test (HTTP ${status})` } });
     edges.push({ source: credId, target: svcId, properties: { type: 'VALID_ON' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId } });
-    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges, parser_details: { auth_verdict: 'success' } };
   }
 
   // Confirmed failure — record TESTED_CRED so the frontier stops re-suggesting
@@ -219,5 +219,5 @@ export function parseTestWebappCredential(output: string, agentId: string = 'web
   // did not authenticate to it.
   const { nodes, edges, svcId } = emitChain(originUrl, false, now);
   edges.push({ source: credId, target: svcId, properties: { type: 'TESTED_CRED' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId, notes: `web credential test not authenticated (HTTP ${status})` } });
-  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges, parser_details: { auth_verdict: 'failure' } };
 }

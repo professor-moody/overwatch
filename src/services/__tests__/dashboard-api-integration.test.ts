@@ -568,8 +568,8 @@ describe('degraded persistence gate', () => {
       expect(state.status).toBe(200);
 
       const bundle = await getJson<Record<string, unknown>>('/api/bundle');
-      expect(bundle.status).toBe(503);
-      expect(bundle.body).toMatchObject({ code: 'PERSISTENCE_READ_ONLY' });
+      expect(bundle.status).toBe(200);
+      expect(typeof bundle.body).toBe('string');
 
       const preview = await postJson('/api/config/scope/preview', {
         ...engine.getConfig().scope,
@@ -1319,6 +1319,23 @@ describe('Reports lifecycle: render → list → get → delete', () => {
   it('rejects unsupported format with 400', async () => {
     const { status } = await postJson('/api/reports/render', { format: 'xml' });
     expect(status).toBe(400);
+  });
+
+  it('returns 503 and keeps serving when report recovery rejects before a handle is acquired', async () => {
+    const archive = engine.getReportArchive();
+    const verify = vi.spyOn(archive, 'verifyForRead')
+      .mockRejectedValueOnce(new Error('synthetic report recovery failure'));
+    try {
+      const response = await fetch(`${baseUrl}/api/reports/recovery-failure`);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        error: 'report is temporarily unavailable',
+        reason: 'synthetic report recovery failure',
+      });
+      expect((await fetch(`${baseUrl}/api/health`)).status).toBe(200);
+    } finally {
+      verify.mockRestore();
+    }
   });
 
   it('attack-paths section is rendered for objectives with reachable target', async () => {

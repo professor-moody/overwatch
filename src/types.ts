@@ -1206,6 +1206,10 @@ export interface Finding {
     filename?: string;
   };
   raw_output?: string;
+  /** Parser-owned, non-secret semantic details for callers that must decide a
+   * post-parse side effect (for example whether an authenticated cookie jar is
+   * safe to publish). These details are not graph mutations. */
+  parser_details?: Record<string, unknown>;
   /** Parser recognized a truncated/paginated payload and emitted only a prefix. */
   partial?: boolean;
   partial_reason?: string;
@@ -1337,6 +1341,18 @@ export interface PersistenceRecoveryStatus {
   complete: boolean;
   writable: boolean;
   reason?: string;
+  artifact_recovery?: {
+    reports: {
+      writable: boolean;
+      uncertain_deletion_ids: string[];
+      reason?: string;
+    };
+    generation_warnings?: Array<{
+      root: string;
+      namespace: string;
+      message: string;
+    }>;
+  };
   /** Underlying WAL/state reason when configuration recovery is also blocked. */
   persistence_reason?: string;
   /** Raw state/WAL health before the active-config or deferred-lifecycle gate

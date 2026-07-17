@@ -113,6 +113,41 @@ describe('dashboard transport', () => {
     expect(revoke).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects truncated or digest-mismatched protected downloads before creating a blob URL', async () => {
+    initializeDashboardAuth({ href: 'https://ops.example.test/' });
+    const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:should-not-exist');
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(new Blob(['short']), {
+      status: 200,
+      headers: { 'Content-Length': '99' },
+    })));
+    await expect(fetchAuthenticatedBlobUrl('/api/bundle')).rejects.toThrow(/truncated/i);
+    expect(create).not.toHaveBeenCalled();
+
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(new Blob(['bundle']), {
+      status: 200,
+      headers: { 'Content-Digest': 'sha-256=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:' },
+    })));
+    await expect(fetchAuthenticatedBlobUrl('/api/bundle')).rejects.toThrow(/integrity/i);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('verifies a valid digest incrementally before publishing the blob URL', async () => {
+    initializeDashboardAuth({ href: 'https://ops.example.test/' });
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(new Blob(['bundle']), {
+      status: 200,
+      headers: {
+        'Content-Length': '6',
+        'Content-Digest': 'sha-256=:Hm7WXXfWNk7q7Vp0W6XEmFritwDdhdfPfwJ73ylKM/w=:',
+      },
+    })));
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:verified');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const resource = await fetchAuthenticatedBlobUrl('/api/bundle');
+    expect(resource.bytes).toBe(6);
+    expect(resource.url).toBe('blob:verified');
+    resource.revoke();
+  });
+
   it('attaches downloads and defers object URL revocation until a later task', async () => {
     vi.useFakeTimers();
     initializeDashboardAuth({ href: 'https://ops.example.test/?token=download-token' });

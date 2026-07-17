@@ -107,4 +107,28 @@ describe('recovery presentation', () => {
     });
     expect(view?.message).toContain('could not be safely reclaimed');
   });
+
+  it('surfaces local report and generation recovery without claiming global writes are paused', () => {
+    const view = recoveryPresentation(recovery({
+      artifact_recovery: {
+        reports: {
+          writable: false,
+          uncertain_deletion_ids: ['report-1'],
+          reason: 'ambiguous report deletion',
+        },
+        generation_warnings: [{
+          root: '/tmp/reports',
+          namespace: 'report',
+          message: 'mirror refresh failed',
+        }],
+      },
+    }));
+    expect(view).toMatchObject({
+      tone: 'warning',
+      title: 'Artifact recovery needs review',
+      restartRequired: false,
+    });
+    expect(view?.message).toContain('ambiguous report deletion');
+    expect(view?.message).toContain('generation pointer');
+  });
 });

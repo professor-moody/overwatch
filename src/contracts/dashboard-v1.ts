@@ -1199,6 +1199,18 @@ export const RecoveryStatusDtoSchema = z.object({
   }).passthrough(),
   state_migration: StateMigrationStatusSchema.optional(),
   config_recovery: ConfigRecoveryStatusSchema.optional(),
+  artifact_recovery: z.object({
+    reports: z.object({
+      writable: z.boolean(),
+      uncertain_deletion_ids: z.array(z.string()),
+      reason: z.string().optional(),
+    }).passthrough(),
+    generation_warnings: z.array(z.object({
+      root: z.string(),
+      namespace: z.string(),
+      message: z.string(),
+    }).passthrough()).optional(),
+  }).passthrough().optional(),
   runtime_ownership_warnings: z.array(z.object({
     run_id: z.string(),
     pid: z.number().int().positive().optional(),
@@ -1686,9 +1698,14 @@ export type ReportsListResponseDto = z.infer<typeof ReportsListResponseSchema>;
 
 export const ReportRenderResponseSchema = z.object({
   report: ReportRecordSchema,
+  report_committed: z.boolean(),
+  commit_durability: z.enum(['confirmed', 'uncertain']),
+  aggregate_manifest_persisted: z.boolean(),
   findings_count: z.number().int().nonnegative(),
   evidence_count: z.number().int().nonnegative(),
   severity_summary: FindingSeveritySummarySchema,
+  reference_persisted: z.boolean(),
+  warning: z.string().optional(),
 }).passthrough();
 export type ReportRenderResponseDto = z.infer<typeof ReportRenderResponseSchema>;
 

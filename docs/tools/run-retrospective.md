@@ -33,10 +33,14 @@ Produces five structured outputs:
 | `trace_quality` | `TraceQualityReport` | Quality assessment of training traces |
 | `report_preview` | `string` | First 500 chars of the markdown report |
 | `output_dir` | `string` | Output directory (if `write_to_disk: true`) |
+| `generation_id` / `generation_path` | `string` | Immutable authoritative output generation (if written) |
+| `generation_manifest` / `pointer_path` | `string` | Checksummed manifest and atomic current-generation pointer |
+| `generation_committed` / `generation_commit_durability` | `boolean` / `string` | Whether the pointer is durably committed versus only visible with uncertain directory durability |
+| `legacy_mirror_complete` | `boolean` | Whether all fixed-name compatibility files match the generation |
 
 ### Output Files (when `write_to_disk: true`)
 
-Written to `<output_dir>/<engagement_id>/`:
+The immutable directory returned as `generation_path` is authoritative. These fixed names under `<output_dir>/<engagement_id>/` are compatibility mirrors refreshed only after the pointer commits:
 
 | File | Content |
 |------|---------|

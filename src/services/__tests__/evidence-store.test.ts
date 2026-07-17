@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { spawn, type ChildProcess } from 'child_process';
 import { createHash } from 'crypto';
 import { once } from 'events';
@@ -127,11 +127,24 @@ describe('EvidenceStore', () => {
     expect(store.getRawOutput(id)).toBe(rawOutput);
   });
 
+  it('records UTF-8 byte lengths rather than JavaScript code units', () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const content = 'snowman ☃ and emoji 🚀';
+    const raw = '東京';
+    const id = store.store({ evidence_type: 'command_output', content, raw_output: raw });
+    expect(store.getRecord(id)).toMatchObject({
+      content_length: Buffer.byteLength(content),
+      raw_output_length: Buffer.byteLength(raw),
+    });
+  });
+
   it('does not hang when a backpressured write errors (drain never fires)', async () => {
     const store = new EvidenceStore(TEST_STATE);
-    // Remove the evidence dir so the lazy createWriteStream fails (ENOENT) on first write.
-    rmSync(EVIDENCE_DIR, { recursive: true, force: true });
     const sink = store.createBlobStream({ evidence_type: 'screenshot', filename: 'big.bin', kind: 'content' });
+    // Stream creation now durably publishes a recovery intent. Remove the
+    // directory after that boundary so the lazy payload stream still fails on
+    // first write and exercises the backpressure/error path.
+    rmSync(EVIDENCE_DIR, { recursive: true, force: true });
     // A chunk larger than the 16KB highWaterMark → write() returns false (backpressure),
     // then the stream errors — before the fix the writeChunk promise waited for a 'drain'
     // that never comes, so end() (which awaits the write chain) hung forever.
@@ -387,6 +400,13 @@ describe('EvidenceStore', () => {
     const record = store.getRecord(id);
     expect(record!.content_length).toBe(5);
     expect(record!.raw_output_length).toBe(22);
+  });
+
+  it('enforces max_bytes through the pinned raw-output descriptor', () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const id = store.store({ evidence_type: 'command_output', raw_output: '12345' });
+    expect(store.getRawOutput(id, { max_bytes: 4 })).toBeNull();
+    expect(store.getRawOutput(id, { max_bytes: 5 })).toBe('12345');
   });
 
   // -----------------------------------------------------------------
@@ -672,6 +692,277 @@ describe('EvidenceStore', () => {
         }
       });
 
+      it('fails closed when the corrupt manifest cannot be quarantined', () => {
+        const store = new EvidenceStore(TEST_STATE);
+        store.store({ evidence_type: 'command_output', content: 'keep me' });
+        const manifestPath = join(EVIDENCE_DIR, 'manifest.json');
+        const corrupt = '{only corrupt copy';
+        writeFileSync(manifestPath, corrupt);
+
+        expect(() => new EvidenceStore(TEST_STATE, {
+          renameFile: () => { throw new Error('synthetic quarantine failure'); },
+        })).toThrow('synthetic quarantine failure');
+        expect(readFileSync(manifestPath, 'utf8')).toBe(corrupt);
+      });
+
+      it('projects descriptor-backed evidence without mutating a corrupt manifest in read-only mode', () => {
+        const writable = new EvidenceStore(TEST_STATE);
+        const id = writable.store({
+          evidence_type: 'command_output',
+          content: 'available during degraded recovery',
+          action_id: 'act-read-only-recovery',
+        });
+        const manifestPath = join(EVIDENCE_DIR, 'manifest.json');
+        const corrupt = '{preserve these exact bytes';
+        writeFileSync(manifestPath, corrupt);
+        const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const readOnly = new EvidenceStore(TEST_STATE, { readOnly: true });
+          expect(readOnly.getContent(id)).toBe('available during degraded recovery');
+          expect(readOnly.getRecord(id)).toMatchObject({
+            evidence_id: id,
+            action_id: 'act-read-only-recovery',
+            recovered: true,
+          });
+          expect(readFileSync(manifestPath, 'utf8')).toBe(corrupt);
+          expect(readdirSync(EVIDENCE_DIR).some(name => name.startsWith('manifest.json.corrupt-'))).toBe(false);
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('projects a finalized stream intent under its public UUID in read-only recovery', () => {
+        mkdirSync(EVIDENCE_DIR, { recursive: true });
+        const id = '32345678-1234-4123-8123-123456789abc';
+        const bytes = Buffer.from('finalized before descriptor');
+        const hash = createHash('sha256').update(bytes).digest('hex');
+        writeFileSync(join(EVIDENCE_DIR, `${hash}.content`), bytes);
+        writeFileSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`), JSON.stringify({
+          intent_version: 1,
+          evidence_id: id,
+          temporary_filename: `.stream-${id}.content.tmp-dead`,
+          kind: 'content',
+          timestamp: '2026-07-17T00:00:00.000Z',
+          action_id: 'act-finalized-intent',
+          evidence_type: 'command_output',
+          content_hash: hash,
+          bytes: bytes.byteLength,
+          owner_pid: 999999,
+          owner_token: 'dead-owner',
+        }));
+        writeFileSync(join(EVIDENCE_DIR, 'manifest.json'), '{preserved corrupt manifest');
+        const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const readOnly = new EvidenceStore(TEST_STATE, { readOnly: true });
+          expect(readOnly.getContent(id)).toBe(bytes.toString());
+          expect(readOnly.getRecord(id)).toMatchObject({
+            evidence_id: id,
+            content_hash: hash,
+            recovered: true,
+            capture_error: 'interrupted before evidence stream descriptor commit',
+          });
+          expect(existsSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`))).toBe(true);
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('recovers a finalized zero-byte stream intent without requiring an empty blob', () => {
+        mkdirSync(EVIDENCE_DIR, { recursive: true });
+        const id = '42345678-1234-4123-8123-123456789abc';
+        const emptyHash = createHash('sha256').digest('hex');
+        writeFileSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`), JSON.stringify({
+          intent_version: 1,
+          evidence_id: id,
+          temporary_filename: `.stream-${id}.content.tmp-dead`,
+          kind: 'content',
+          timestamp: '2026-07-17T00:00:00.000Z',
+          evidence_type: 'command_output',
+          content_hash: emptyHash,
+          bytes: 0,
+          owner_pid: 999999,
+          owner_token: 'dead-owner',
+        }));
+
+        const recovered = new EvidenceStore(TEST_STATE);
+        expect(recovered.getRecord(id)).toMatchObject({
+          evidence_id: id,
+          content_hash: emptyHash,
+          content_length: 0,
+          recovered: true,
+        });
+        expect(recovered.getContent(id)).toBeNull();
+        expect(existsSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`))).toBe(false);
+      });
+
+      it('accepts a committed empty-stream descriptor and removes only its leftover finalized intent', async () => {
+        const first = new EvidenceStore(TEST_STATE);
+        const sink = first.createBlobStream({
+          evidence_type: 'command_output',
+          kind: 'content',
+        });
+        await sink.end();
+        const record = first.getRecord(sink.evidence_id)!;
+        expect(record.content_length).toBe(0);
+        expect(existsSync(join(EVIDENCE_DIR, `${record.content_hash}.content`))).toBe(false);
+        writeFileSync(join(EVIDENCE_DIR, `${sink.evidence_id}.stream-intent.json`), JSON.stringify({
+          intent_version: 1,
+          evidence_id: sink.evidence_id,
+          temporary_filename: `.stream-${sink.evidence_id}.content.tmp-dead`,
+          kind: 'content',
+          timestamp: record.timestamp,
+          evidence_type: 'command_output',
+          content_hash: record.content_hash,
+          bytes: 0,
+          owner_pid: 999999,
+          owner_token: 'dead-owner',
+        }));
+
+        const restarted = new EvidenceStore(TEST_STATE);
+        expect(restarted.getRecord(sink.evidence_id)?.content_length).toBe(0);
+        expect(existsSync(join(EVIDENCE_DIR, `${sink.evidence_id}.stream-intent.json`))).toBe(false);
+        expect(readdirSync(EVIDENCE_DIR).some(name =>
+          name.startsWith(`${sink.evidence_id}.record.json.corrupt-`))).toBe(false);
+      });
+
+      it('does not reauthorize corrupt same-size descriptor blobs under the committed UUID', () => {
+        const writable = new EvidenceStore(TEST_STATE);
+        const id = writable.store({ evidence_type: 'command_output', content: 'GOOD' });
+        const record = writable.getRecord(id)!;
+        writeFileSync(join(EVIDENCE_DIR, `${record.blob_key}.content`), 'EVIL');
+        writeFileSync(join(EVIDENCE_DIR, 'manifest.json'), '{corrupt manifest');
+        const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const readOnly = new EvidenceStore(TEST_STATE, { readOnly: true });
+          expect(readOnly.getRecord(id)).toBeUndefined();
+          expect(readOnly.getContent(id)).toBeNull();
+          expect(readOnly.getRecord(record.blob_key!)).toBeUndefined();
+          expect(readOnly.getContent(record.blob_key!)).toBeNull();
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('does not follow descriptor-less hash-named blob symlinks during recovery', () => {
+        mkdirSync(EVIDENCE_DIR, { recursive: true });
+        const outside = sandbox.path('outside-evidence');
+        writeFileSync(outside, 'outside bytes');
+        const hash = createHash('sha256').update('outside bytes').digest('hex');
+        symlinkSync(outside, join(EVIDENCE_DIR, `${hash}.content`));
+        writeFileSync(join(EVIDENCE_DIR, 'manifest.json'), '{corrupt manifest');
+        const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const readOnly = new EvidenceStore(TEST_STATE, { readOnly: true });
+          expect(readOnly.list()).toEqual([]);
+          expect(readOnly.getContent(hash)).toBeNull();
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('recovers a dead process stream intent and its partial bytes', () => {
+        mkdirSync(EVIDENCE_DIR, { recursive: true });
+        const id = '12345678-1234-4123-8123-123456789abc';
+        const temporaryFilename = `.stream-${id}.raw.tmp-dead-writer`;
+        writeFileSync(join(EVIDENCE_DIR, temporaryFilename), 'partial process output');
+        writeFileSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`), JSON.stringify({
+          intent_version: 1,
+          evidence_id: id,
+          temporary_filename: temporaryFilename,
+          kind: 'raw_output',
+          timestamp: '2026-07-17T00:00:00.000Z',
+          action_id: 'act-interrupted',
+          evidence_type: 'command_output',
+          owner_pid: 999999,
+          owner_token: 'dead-process-incarnation',
+        }));
+
+        const recovered = new EvidenceStore(TEST_STATE);
+        expect(recovered.getRawOutput(id)).toBe('partial process output');
+        expect(recovered.getRecord(id)).toMatchObject({
+          evidence_id: id,
+          action_id: 'act-interrupted',
+          raw_output_length: Buffer.byteLength('partial process output'),
+          capture_error: 'interrupted before evidence stream finalization',
+          recovered: true,
+        });
+        expect(existsSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`))).toBe(false);
+      });
+
+      it('preserves a corrupt hash-name occupant and recovers the verified interrupted staging bytes', () => {
+        mkdirSync(EVIDENCE_DIR, { recursive: true });
+        const id = '52345678-1234-4123-8123-123456789abc';
+        const good = Buffer.from('GOOD');
+        const hash = createHash('sha256').update(good).digest('hex');
+        const temporaryFilename = `.stream-${id}.content.tmp-dead-writer`;
+        writeFileSync(join(EVIDENCE_DIR, temporaryFilename), good);
+        writeFileSync(join(EVIDENCE_DIR, `${hash}.content`), 'EVIL');
+        writeFileSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`), JSON.stringify({
+          intent_version: 1,
+          evidence_id: id,
+          temporary_filename: temporaryFilename,
+          kind: 'content',
+          timestamp: '2026-07-17T00:00:00.000Z',
+          evidence_type: 'command_output',
+          owner_pid: 999999,
+          owner_token: 'dead-process-incarnation',
+        }));
+
+        const recovered = new EvidenceStore(TEST_STATE);
+        expect(recovered.getContent(id)).toBe('GOOD');
+        expect(readFileSync(join(EVIDENCE_DIR, `${hash}.content`), 'utf8')).toBe('GOOD');
+        const quarantine = readdirSync(EVIDENCE_DIR)
+          .find(name => name.startsWith(`${hash}.content.corrupt-`));
+        expect(quarantine).toBeDefined();
+        expect(readFileSync(join(EVIDENCE_DIR, quarantine!), 'utf8')).toBe('EVIL');
+      });
+
+      it('quarantines a corrupt descriptor instead of discarding a good dead-writer intent and temp', () => {
+        mkdirSync(EVIDENCE_DIR, { recursive: true });
+        const id = '62345678-1234-4123-8123-123456789abc';
+        const temporaryFilename = `.stream-${id}.content.tmp-dead-writer`;
+        writeFileSync(join(EVIDENCE_DIR, temporaryFilename), 'verified staging bytes');
+        writeFileSync(join(EVIDENCE_DIR, `${id}.record.json`), '{corrupt descriptor');
+        writeFileSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`), JSON.stringify({
+          intent_version: 1,
+          evidence_id: id,
+          temporary_filename: temporaryFilename,
+          kind: 'content',
+          timestamp: '2026-07-17T00:00:00.000Z',
+          evidence_type: 'command_output',
+          owner_pid: 999999,
+          owner_token: 'dead-process-incarnation',
+        }));
+
+        const recovered = new EvidenceStore(TEST_STATE);
+        expect(recovered.getContent(id)).toBe('verified staging bytes');
+        expect(existsSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`))).toBe(false);
+        expect(existsSync(join(EVIDENCE_DIR, temporaryFilename))).toBe(false);
+        expect(readdirSync(EVIDENCE_DIR).some(name =>
+          name.startsWith(`${id}.record.json.corrupt-`))).toBe(true);
+      });
+
+      it('recovers an interrupted stream when a live PID belongs to a different process incarnation', () => {
+        mkdirSync(EVIDENCE_DIR, { recursive: true });
+        const id = '22345678-1234-4123-8123-123456789abc';
+        const temporaryFilename = `.stream-${id}.content.tmp-reused-pid`;
+        writeFileSync(join(EVIDENCE_DIR, temporaryFilename), 'reused pid bytes');
+        writeFileSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`), JSON.stringify({
+          intent_version: 1,
+          evidence_id: id,
+          temporary_filename: temporaryFilename,
+          kind: 'content',
+          timestamp: '2026-07-17T00:00:00.000Z',
+          evidence_type: 'command_output',
+          owner_pid: process.pid,
+          owner_process_start_identity: 'a different process start identity',
+          owner_token: 'older-process-incarnation',
+        }));
+        const recovered = new EvidenceStore(TEST_STATE);
+        expect(recovered.getContent(id)).toBe('reused pid bytes');
+        expect(existsSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`))).toBe(false);
+      });
+
       it('handles a missing evidence directory during rebuild without throwing', () => {
         // Set up an empty evidence dir then corrupt the manifest.
         mkdirSync(EVIDENCE_DIR, { recursive: true });
@@ -705,6 +996,37 @@ describe('EvidenceStore', () => {
       expect(record.blob_key).toBe(expected);
       expect(existsSync(join(EVIDENCE_DIR, `${expected}.content`))).toBe(true);
       expect(existsSync(join(EVIDENCE_DIR, `${sink.evidence_id}.content`))).toBe(false);
+    });
+
+    it('repairs a corrupt pre-existing hash-named blob before committing a live stream descriptor', async () => {
+      const store = new EvidenceStore(TEST_STATE);
+      const bytes = Buffer.from('GOOD');
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      writeFileSync(join(EVIDENCE_DIR, `${hash}.content`), 'EVIL');
+      const sink = store.createBlobStream({
+        evidence_type: 'command_output',
+        kind: 'content',
+      });
+      sink.write(bytes);
+      await sink.end();
+
+      expect(store.getContent(sink.evidence_id)).toBe('GOOD');
+      expect(readFileSync(join(EVIDENCE_DIR, `${hash}.content`), 'utf8')).toBe('GOOD');
+      expect(readdirSync(EVIDENCE_DIR).some(name => name.startsWith(`${hash}.content.corrupt-`)))
+        .toBe(true);
+    });
+
+    it('scans the descriptor corpus once per normal manifest load', () => {
+      const store = new EvidenceStore(TEST_STATE);
+      for (let index = 0; index < 25; index++) {
+        store.store({ evidence_type: 'command_output', content: `seed-${index}` });
+      }
+      const scan = vi.spyOn(
+        store as unknown as { readRecoveryDescriptors: (verify?: boolean) => unknown[] },
+        'readRecoveryDescriptors',
+      );
+      store.store({ evidence_type: 'command_output', content: 'one-scan-write' });
+      expect(scan).toHaveBeenCalledTimes(1);
     });
   });
 });

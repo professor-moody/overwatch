@@ -52,6 +52,11 @@ import { EvidenceStore } from './evidence-store.js';
 import { ActionOutputBuffer } from './action-output-buffer.js';
 import type { SkillIndex } from './skill-index.js';
 import { ReportArchive } from './report-archive.js';
+import {
+  normalizeArtifactGenerationRecoveryRegistration,
+  repairArtifactGenerationMirrors,
+  type ArtifactGenerationRecoveryRegistration,
+} from './artifact-generation.js';
 import { BUILTIN_RULES } from './builtin-inference-rules.js';
 import { BloodHoundPathEnricher } from './bloodhound-paths.js';
 import type { HVTResult, PreComputedPath } from './bloodhound-paths.js';
@@ -274,6 +279,11 @@ export class GraphEngine {
   private startupReconciliationDeferred = false;
   private recoveryMaintenanceInProgress = false;
   private deferredStartupRecoveryError?: string;
+  private artifactGenerationRecoveryWarnings: Array<{
+    root: string;
+    namespace: string;
+    message: string;
+  }> = [];
   private runtimeOwnershipRecoveryHandler?: () => void;
   private coordinationStoreUnsubscribers: Array<() => void> = [];
   private rollbackCoordinator?: {
@@ -410,6 +420,7 @@ export class GraphEngine {
     this.installCoordinationStorePersistence();
 
     if (!persistenceDegraded && !configRecovery.resolution_required) {
+      this.repairRegisteredArtifactGenerationsOnStartup();
       if (restore.status === 'restored') {
         this.log(
           restore.source === 'snapshot'
@@ -581,6 +592,93 @@ export class GraphEngine {
     );
     this.persist();
     return prepared.result;
+  }
+
+  private registeredArtifactGenerations(): ArtifactGenerationRecoveryRegistration[] {
+    const registrations = new Map<string, ArtifactGenerationRecoveryRegistration>();
+    for (const candidate of this.ctx.artifactReferences.generation_registrations ?? []) {
+      if (candidate.registry_version !== 1) continue;
+      try {
+        const registration = normalizeArtifactGenerationRecoveryRegistration({
+          root: candidate.root,
+          namespace: candidate.namespace,
+          legacy_names: candidate.legacy_names,
+        });
+        registrations.set(`${registration.namespace}\0${registration.root}`, registration);
+      } catch {
+        // Invalid recovery registrations are never followed or rewritten.
+      }
+    }
+    return [...registrations.values()];
+  }
+
+  private repairRegisteredArtifactGenerationsOnStartup(): void {
+    this.artifactGenerationRecoveryWarnings = [];
+    for (const registration of this.registeredArtifactGenerations()) {
+      try {
+        repairArtifactGenerationMirrors(
+          registration.root,
+          registration.namespace,
+          registration.legacy_names,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.artifactGenerationRecoveryWarnings.push({
+          root: registration.root,
+          namespace: registration.namespace,
+          message,
+        });
+        console.error(
+          `[artifact-recovery] ${registration.namespace} compatibility mirrors remain pending at ${registration.root}: ${message}`,
+        );
+      }
+    }
+  }
+
+  /** Durably register an external generation root before publishing its
+   * pointer. A restart can then deterministically finish post-pointer legacy
+   * mirror refresh without guessing which operator-selected output directory
+   * was in use. */
+  registerArtifactGenerationRecovery(options: {
+    root: string;
+    namespace: string;
+    legacy_names?: readonly string[];
+  }): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'register external artifact generation recovery',
+        ['artifacts'],
+        () => this.registerArtifactGenerationRecovery(options),
+      );
+      // The state-patch transaction is already committed to the WAL. Also
+      // checkpoint immediately because the external pointer may become visible
+      // as soon as this method returns.
+      this.flushNow();
+      return;
+    }
+    this.assertPersistenceWritable();
+    const registration = normalizeArtifactGenerationRecoveryRegistration(options);
+    const existing = this.registeredArtifactGenerations().find(candidate =>
+      candidate.root === registration.root
+      && candidate.namespace === registration.namespace
+      && JSON.stringify(candidate.legacy_names) === JSON.stringify(registration.legacy_names));
+    if (existing) return;
+    const prior = this.ctx.artifactReferences.generation_registrations ?? [];
+    this.ctx.artifactReferences = {
+      ...this.ctx.artifactReferences,
+      generation_registrations: [
+        ...prior.filter(candidate =>
+          candidate.root !== registration.root
+          || candidate.namespace !== registration.namespace),
+        {
+          registry_version: 1,
+          root: registration.root,
+          namespace: registration.namespace,
+          legacy_names: registration.legacy_names,
+        },
+      ],
+    };
+    this.persist();
   }
 
   private transactAttachedCoordinationStore<T>(
@@ -5345,6 +5443,14 @@ export class GraphEngine {
     const runtimeOwnershipFields = runtime_ownership_warnings.length > 0
       ? { runtime_ownership_warnings: detached(runtime_ownership_warnings) }
       : {};
+    const artifactRecoveryFields = {
+      artifact_recovery: {
+        reports: detached(this.getReportArchive().getRecoveryStatus()),
+        ...(this.artifactGenerationRecoveryWarnings.length > 0
+          ? { generation_warnings: detached(this.artifactGenerationRecoveryWarnings) }
+          : {}),
+      },
+    };
     const state_recovery = {
       outcome: persistence.outcome,
       source: persistence.source,
@@ -5372,6 +5478,7 @@ export class GraphEngine {
         ...persistence,
         ...coordinationFields,
         ...runtimeOwnershipFields,
+        ...artifactRecoveryFields,
         outcome: 'incomplete',
         complete: false,
         writable: false,
@@ -5388,6 +5495,7 @@ export class GraphEngine {
         ...persistence,
         ...coordinationFields,
         ...runtimeOwnershipFields,
+        ...artifactRecoveryFields,
         state_recovery,
         config_recovery: configRecovery,
       };
@@ -5400,6 +5508,7 @@ export class GraphEngine {
       ...persistence,
       ...coordinationFields,
       ...runtimeOwnershipFields,
+      ...artifactRecoveryFields,
       outcome: 'incomplete',
       complete: false,
       writable: false,
@@ -7464,7 +7573,9 @@ export class GraphEngine {
   private reportArchive: ReportArchive | null = null;
   /** Lazily-instantiated per-engagement report archive (B.2). */
   getReportArchive(): ReportArchive {
-    if (!this.reportArchive) this.reportArchive = new ReportArchive(this.ctx.stateFilePath);
+    if (!this.reportArchive) this.reportArchive = new ReportArchive(this.ctx.stateFilePath, {
+      isWritable: () => this.isPersistenceWritable(),
+    });
     return this.reportArchive;
   }
 

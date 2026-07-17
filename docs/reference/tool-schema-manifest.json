@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "tool_count": 91,
-  "registry_sha256": "29fdf9d3bc168c09ad9119bbb4b67126033d29dc25f373d2aa41284a80c8d27e",
+  "registry_sha256": "5a99cd25acea90c6bdf2efb723dee7848d638f7df9fee7fdd197e7c7ad513090",
   "categories": [
     {
       "id": "state-readiness",
@@ -337,7 +337,7 @@
     {
       "name": "bundle_engagement",
       "title": "Bundle Engagement",
-      "description": "Package all engagement artefacts into a single portable .tar.gz archive.\n\nThe bundle includes:\n- **state file** — full graph, activity log, and config (the source of truth)\n- **evidence/** — all captured evidence files and the manifest\n- **reports/** — every rendered report in the archive\n- **bundle-manifest.json** — index of included files, state/journal format versions, tape paths, and metadata\n\nOptionally includes .snapshots/ (periodic state snapshots; can add significant size).\n\nRegistered tape files (captured by `overwatch-mcp-tape`) are external and not\ncopied into the bundle, but their paths are listed in bundle-manifest.json so they\ncan be located manually.\n\nUse this to:\n- Archive a completed engagement for long-term storage\n- Transfer engagement data to another machine or operator\n- Share a reproducible state with the team\n\nReturns the absolute path to the created archive and its size.",
+      "description": "Package all engagement artefacts into a single portable .tar.gz archive.\n\nThe bundle includes:\n- **state file** — full graph, activity log, and config (the source of truth)\n- **evidence/** — all captured evidence files and the manifest\n- **reports/** — every rendered report in the archive\n- **active-engagement-config.json** — converged active config when the engagement is file-managed\n- **recovery-artifacts/** — active intents, conflicts, migration backups, rollback markers, and preserved recovery authorities when present\n- **tapes/** — registered MCP tapes when requested\n- **bundle-manifest.json** — V2 index with checkpoint/config identity, recovery status, authority inventory, and per-file sizes and SHA-256 digests\n\nOptionally includes .snapshots/ (periodic state snapshots; can add significant size).\n\nRegistered tape files (captured by `overwatch-mcp-tape`) are copied into the\nbundle when requested; their original paths remain listed for provenance.\n\nUse this to:\n- Archive a completed engagement for long-term storage\n- Transfer engagement data to another machine or operator\n- Share a reproducible state with the team\n\nThe capture is staged privately, validated, fsynced, and atomically published;\nfailed replacements leave a prior destination intact. Live state/WAL/config and\nartifact-store path collisions are rejected.\n\nReturns the absolute path, bundle id, size, SHA-256, publication status, and\nwhether its durable state reference was persisted.",
       "category": "audit-reporting",
       "category_label": "Audit & reporting",
       "category_order": 80,
@@ -356,18 +356,18 @@
           },
           "include_tapes": {
             "default": true,
-            "description": "List registered tape file paths in the bundle manifest (tapes are not copied, only referenced).",
+            "description": "Copy registered tape files into the bundle and retain their original paths in the manifest.",
             "type": "boolean"
           },
           "output_path": {
-            "description": "Absolute path for the output .tar.gz file. Defaults to bundle-<id>-<timestamp>.tar.gz alongside the state file.",
+            "description": "Absolute path for the output .tar.gz file. Defaults alongside writable state, or in the OS temp directory during degraded read-only recovery.",
             "type": "string"
           }
         },
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "fc89fc211a180223734446ed421e00e651a0ccfc8bca6145c0204d558f0ced88",
+      "input_schema_sha256": "cdaebe4f3b7af5e47b1c78b2da9150112d3e8c9dff316221af6729d39cfd858f",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/bundle-engagement.md",
@@ -377,8 +377,8 @@
         "default"
       ],
       "persistence": {
-        "mode": "write",
-        "allowed_during_recovery": false
+        "mode": "conditional",
+        "allowed_during_recovery": true
       }
     },
     {
@@ -1819,13 +1819,13 @@
     {
       "name": "generate_report",
       "title": "Generate Pentest Report",
-      "description": "Generate a comprehensive penetration test report from the engagement graph and activity history.\n\nProduces a client-deliverable report with:\n- **Executive summary** with severity distribution\n- **Per-finding sections** — each compromised host, credential, and vulnerability gets its own section with evidence and auto-generated remediation\n- **Attack narrative** — chronological prose description of the engagement phases (Recon → Initial Access → Lateral Movement → PrivEsc → Objective)\n- **Compliance mapping** — CWE, OWASP Top 10, NIST 800-53, PCI DSS tables\n- **MITRE ATT&CK** — technique coverage and optional Navigator layer export\n- **Risk heatmap** — severity × category distribution\n- **Remediation priority ranking** — CVSS × blast radius × credential exposure\n- **Evidence chains** — command → tool output → graph mutation linkage for each finding\n- **Credential chains** — derivation paths showing how credentials were obtained\n- **Objectives status** and recommendations\n\nUse this at the end of an engagement to produce the final deliverable report.",
+      "description": "Generate a comprehensive penetration test report from the engagement graph and activity history.\n\nProduces a client-deliverable report with:\n- **Executive summary** with severity distribution\n- **Per-finding sections** — each compromised host, credential, and vulnerability gets its own section with evidence and auto-generated remediation\n- **Attack narrative** — chronological prose description of the engagement phases (Recon → Initial Access → Lateral Movement → PrivEsc → Objective)\n- **Compliance mapping** — CWE, OWASP Top 10, NIST 800-53, PCI DSS tables\n- **MITRE ATT&CK** — technique coverage and optional Navigator layer export\n- **Risk heatmap** — severity × category distribution\n- **Remediation priority ranking** — CVSS × blast radius × credential exposure\n- **Evidence chains** — command → tool output → graph mutation linkage for each finding\n- **Credential chains** — derivation paths showing how credentials were obtained\n- **Objectives status** and recommendations\n\nUse this at the end of an engagement to produce the final deliverable report.\n\nWhen writing to output_dir, the returned generation_path and pointer_path are\nthe checksummed authority. Fixed report.* and attack-navigator.json paths are\npost-commit compatibility mirrors.",
       "category": "audit-reporting",
       "category_label": "Audit & reporting",
       "category_order": 80,
       "read_only": false,
       "destructive": false,
-      "idempotent": true,
+      "idempotent": false,
       "open_world": false,
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1947,7 +1947,7 @@
         "report_scribe"
       ],
       "persistence": {
-        "mode": "write",
+        "mode": "conditional",
         "allowed_during_recovery": false
       }
     },
@@ -4951,7 +4951,7 @@
     {
       "name": "register_tape_session",
       "title": "Register Tape Session",
-      "description": "Register an external JSON-RPC tape (produced by `overwatch-mcp-tape`) with this engagement.\n\nThe tape itself is captured by the standalone proxy binary and lives on disk\nas JSONL outside the server. This tool only records a pointer + small manifest\n(file size, line count, sha256 of the first/last bytes) into the activity log\nso retrospectives can locate it. The tape's contents are NOT loaded into the\ngraph by this call.\n\nInputs:\n- `tape_path` (required): absolute or workspace-relative path to the tape JSONL.\n- `session_id` (required): human-readable identifier for the captured session.\n- `upstream_command` (optional): the upstream argv that was wrapped, for context.\n- `notes` (optional): operator-supplied free text.\n\nEmits a `tape_session_started` event (provenance='operator', category='system').",
+      "description": "Register an external JSON-RPC tape (produced by `overwatch-mcp-tape`) with this engagement.\n\nThe tape itself is captured by the standalone proxy binary and lives on disk\nas JSONL outside the server. This tool only records a pointer + small manifest\n(file size, line count, full-file sha256, and a compatibility head/tail fingerprint) into the activity log\nso retrospectives can locate it. The tape's contents are NOT loaded into the\ngraph by this call.\n\nInputs:\n- `tape_path` (required): absolute or workspace-relative path to the tape JSONL.\n- `session_id` (required): human-readable identifier for the captured session.\n- `upstream_command` (optional): the upstream argv that was wrapped, for context.\n- `notes` (optional): operator-supplied free text.\n\nEmits a `tape_session_started` event (provenance='operator', category='system').",
       "category": "audit-reporting",
       "category_label": "Audit & reporting",
       "category_order": 80,
@@ -6064,13 +6064,13 @@
     {
       "name": "run_retrospective",
       "title": "Run Retrospective Analysis",
-      "description": "Perform a structured post-engagement retrospective analysis.\n\nProduces five outputs:\n1. **Inference rule suggestions** — patterns the graph shows that existing rules missed\n2. **Skill gap analysis** — skills unused vs. techniques attempted without skills\n3. **Context-improvement recommendations** — where context, logging, validation, and coverage should improve\n4. **Attack path report** — client-deliverable markdown (timeline, findings, recommendations)\n5. **Heuristic RLVR traces** — state→action→outcome triplets with explicit confidence and trace quality\n\nUse this at the end of an engagement or after significant progress to:\n- Identify patterns that should become inference rules\n- Find methodology gaps in the skill library\n- Improve context, evidence quality, validation guidance, and logging for future runs\n- Generate a structured report\n- Export heuristic training telemetry for model improvement\n\nOptionally write all outputs to disk for archival.",
+      "description": "Perform a structured post-engagement retrospective analysis.\n\nProduces five outputs:\n1. **Inference rule suggestions** — patterns the graph shows that existing rules missed\n2. **Skill gap analysis** — skills unused vs. techniques attempted without skills\n3. **Context-improvement recommendations** — where context, logging, validation, and coverage should improve\n4. **Attack path report** — client-deliverable markdown (timeline, findings, recommendations)\n5. **Heuristic RLVR traces** — state→action→outcome triplets with explicit confidence and trace quality\n\nUse this at the end of an engagement or after significant progress to:\n- Identify patterns that should become inference rules\n- Find methodology gaps in the skill library\n- Improve context, evidence quality, validation guidance, and logging for future runs\n- Generate a structured report\n- Export heuristic training telemetry for model improvement\n\nOptionally write all outputs to disk for archival. The returned generation_path\nand pointer_path identify the checksummed authoritative set; fixed filenames are\npost-commit compatibility mirrors.",
       "category": "audit-reporting",
       "category_label": "Audit & reporting",
       "category_order": 80,
       "read_only": false,
       "destructive": false,
-      "idempotent": true,
+      "idempotent": false,
       "open_world": false,
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -6100,7 +6100,7 @@
         "default"
       ],
       "persistence": {
-        "mode": "write",
+        "mode": "conditional",
         "allowed_during_recovery": false
       }
     },
@@ -7131,7 +7131,7 @@
       "category_order": 50,
       "read_only": false,
       "destructive": false,
-      "idempotent": true,
+      "idempotent": false,
       "open_world": true,
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",

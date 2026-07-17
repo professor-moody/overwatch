@@ -96,6 +96,7 @@ import {
   type PlaybookRunDto,
   type PlaybookStepClaimResponse,
   type ReportRecordDto,
+  type ReportRenderResponseDto,
   type ReportsListResponseDto,
   type RecoveryStatusDto,
   type SettingsDto,
@@ -1068,10 +1069,13 @@ export async function getTelemetry(): Promise<TelemetryResponse> {
 export interface TapeStatus {
   enabled: boolean;
   path?: string | null;
-  frame_count?: number;
+  frame_count: number;
+  accepted_frame_count?: number;
+  dropped_frame_count?: number;
   session_id?: string | null;
   started_at?: string | null;
   started_by?: 'env' | 'config' | 'dashboard' | null;
+  error?: string;
 }
 
 export async function getTapeStatus(): Promise<TapeStatus> {
@@ -1196,7 +1200,7 @@ export interface RenderReportBody {
   max_paths_per_objective?: number;
 }
 
-export async function renderReport(body: RenderReportBody): Promise<{ report: ReportRecord; findings_count: number; evidence_count: number; severity_summary: FindingsResponse['severity_summary'] }> {
+export async function renderReport(body: RenderReportBody): Promise<ReportRenderResponseDto> {
   return request('renderReport', { body });
 }
 
@@ -1210,6 +1214,8 @@ export function reportOpenUrl(id: string): string {
   return `${buildDashboardPath('downloadReport', { report_id: id })}?disposition=inline`;
 }
 
-export async function deleteReport(id: string): Promise<{ deleted: boolean }> {
+export type ReportDeleteResult = GeneratedDashboardOutput<'deleteReport'>;
+
+export async function deleteReport(id: string): Promise<ReportDeleteResult> {
   return request('deleteReport', { path: { report_id: id } });
 }

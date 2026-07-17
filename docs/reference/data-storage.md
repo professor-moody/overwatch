@@ -207,7 +207,10 @@ Reports rendered via `generate_report` or the dashboard "Generate Report" button
 ```
 <config-dir>/
 └── reports/
-    ├── manifest.json                 # index of all report records
+    ├── archive-format.json           # descriptor-authority format marker
+    ├── manifest.json                 # rebuildable aggregate index
+    ├── <report-id>.record.json       # immutable UUID → payload commit descriptor
+    ├── <report-id>.deleted.json      # deletion commit/tombstone
     ├── <report-id>.md                # markdown format
     ├── <report-id>.html              # HTML format
     ├── <report-id>.pdf               # PDF format (requires puppeteer)
@@ -215,6 +218,8 @@ Reports rendered via `generate_report` or the dashboard "Generate Report" button
 ```
 
 List reports: `GET /api/reports`. Download: `GET /api/reports/:id`.
+
+Report publication is payload → immutable descriptor → aggregate manifest. The descriptor is the per-report commit authority; `manifest.json` is repaired from valid descriptors after a crash. The format marker prevents a descriptorless payload from being mistaken for a committed new-format report. A valid legacy manifest remains authoritative during upgrade, so orphan payloads are preserved but not silently resurrected. Deletion publishes a tombstone before unlinking the descriptor/payload. Invalid or unreadable tombstones hide the affected report and make report mutations read-only while preserving all bytes for reconciliation.
 
 ---
 
@@ -276,7 +281,9 @@ The state file contains the full graph, activity log, agents, campaigns, and che
 
 **To move to another machine:** copy the directory, set `OVERWATCH_CONFIG` to point at the new path, and start the server.
 
-**To export a shareable bundle:** use `bundle_engagement`. It produces a portable `.tar.gz` containing the state file, evidence blobs, generated reports, `bundle-manifest.json`, and the mutation journal when present. The manifest records the state and journal format versions. Optional snapshots can be included. Registered JSON-RPC tapes are referenced in the manifest but are not copied.
+**To export a shareable bundle:** use `bundle_engagement`. It produces a portable `.tar.gz` from one artifact-first/state capture barrier containing the state file, active config, evidence, reports, registered JSON-RPC tapes, `bundle-manifest.json`, and the mutation journal when present. Manifest v2 records format versions, checkpoint/config identity, recovery status, exact recovery-authority paths, and per-file sizes and SHA-256 digests. Active config intents, conflict archives, migration backups, rollback intents, and nonstandard recovery journals are copied under `recovery-artifacts/` when present. Optional snapshots can be included. Publication is atomic; an interrupted build cannot replace a prior good archive with a partial tarball. During degraded read-only recovery, staging and the default output move to the OS temp directory so diagnostic export does not require writes under the engagement root.
+
+Report payloads are published before immutable per-report recovery descriptors and the aggregate report manifest. Startup quarantines a corrupt report manifest and reconstructs the index from descriptors or legacy payloads; degraded read-only startup performs the same projection in memory without changing the source bytes. Report/ATT&CK-Navigator and retrospective file sets also publish as immutable checksummed generations with one small current-generation pointer as their commit boundary; fixed filenames are post-commit compatibility mirrors. Evidence streams publish an owner-identity intent before accepting bytes, allowing restart to retain an interrupted partial capture with an explicit `capture_error`. Named curl cookie jars use a bounded per-jar staging transaction, so a failed, zero-cookie, or killed login does not truncate the previous authenticated session.
 
 **To export only the graph:** use `export_graph`. It returns a JSON graph dump for external analysis, custom reporting, or visualization; it is not a full evidence/report bundle.
 

@@ -597,11 +597,12 @@ describe('PersistedStateV1 and migration', () => {
     close(restarted);
 
     const persisted = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, any>;
-    expect(persisted.artifactReferences.tapes).toContainEqual({
+    expect(persisted.artifactReferences.tapes).toEqual(expect.arrayContaining([expect.objectContaining({
       kind: 'tape',
       path: '/offline/archive/operator-session.jsonl',
       sha256: 'a'.repeat(64),
-    });
+      availability: 'missing',
+    })]));
   });
 
   it('persists the current claimed session owner by exact task id', () => {

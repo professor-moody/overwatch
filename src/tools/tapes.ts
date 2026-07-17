@@ -8,7 +8,7 @@
 // ============================================================
 
 import { z } from 'zod';
-import { createReadStream, statSync, existsSync } from 'fs';
+import { createReadStream, lstatSync, existsSync } from 'fs';
 import { createHash } from 'crypto';
 import { resolve as resolvePath } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -20,13 +20,15 @@ import { withErrorBoundary } from './error-boundary.js';
  * loading it into memory. Tapes can be hundreds of MB; the previous
  * `readFileSync` blew up the heap for large captures.
  */
-async function streamTapeStats(absPath: string): Promise<{ line_count: number }> {
+async function streamTapeStats(absPath: string): Promise<{ line_count: number; sha256: string }> {
   return new Promise((resolve, reject) => {
     let lineCount = 0;
+    const hash = createHash('sha256');
     let pendingNonEmpty = false; // true once we have seen non-newline bytes for the current line
     const stream = createReadStream(absPath, { highWaterMark: 64 * 1024 });
     stream.on('data', (chunk: Buffer | string) => {
       const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      hash.update(buf);
       for (let i = 0; i < buf.length; i++) {
         const b = buf[i];
         if (b === 0x0a /* \n */) {
@@ -39,7 +41,7 @@ async function streamTapeStats(absPath: string): Promise<{ line_count: number }>
     });
     stream.on('end', () => {
       if (pendingNonEmpty) lineCount++; // trailing line without final newline
-      resolve({ line_count: lineCount });
+      resolve({ line_count: lineCount, sha256: hash.digest('hex') });
     });
     stream.on('error', reject);
   });
@@ -82,7 +84,7 @@ export function registerTapeTools(server: McpServer, engine: GraphEngine): void 
 
 The tape itself is captured by the standalone proxy binary and lives on disk
 as JSONL outside the server. This tool only records a pointer + small manifest
-(file size, line count, sha256 of the first/last bytes) into the activity log
+(file size, line count, full-file sha256, and a compatibility head/tail fingerprint) into the activity log
 so retrospectives can locate it. The tape's contents are NOT loaded into the
 graph by this call.
 
@@ -124,11 +126,45 @@ Emits a \`tape_session_started\` event (provenance='operator', category='system'
         };
       }
 
-      const stat = statSync(absPath);
+      const stat = lstatSync(absPath);
+      if (stat.isSymbolicLink() || !stat.isFile()) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              registered: false,
+              error: 'tape_not_regular_file',
+              tape_path: absPath,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
       // Stream-count lines so multi-hundred-MB tapes don't OOM the server,
       // and fingerprint via head+tail windows only.
-      const { line_count: lineCount } = await streamTapeStats(absPath);
+      const { line_count: lineCount, sha256 } = await streamTapeStats(absPath);
       const fingerprint = await tapeFingerprint(absPath, stat.size);
+      const after = lstatSync(absPath);
+      if (
+        after.isSymbolicLink()
+        || !after.isFile()
+        || after.dev !== stat.dev
+        || after.ino !== stat.ino
+        || after.size !== stat.size
+        || after.mtimeMs !== stat.mtimeMs
+      ) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              registered: false,
+              error: 'tape_changed_during_registration',
+              tape_path: absPath,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
 
       const event = engine.logActionEvent({
         description: `Tape session registered: ${session_id} (${lineCount} frames, ${stat.size} bytes)`,
@@ -140,6 +176,7 @@ Emits a \`tape_session_started\` event (provenance='operator', category='system'
           tape_path: absPath,
           tape_size_bytes: stat.size,
           tape_line_count: lineCount,
+          tape_sha256: sha256,
           tape_fingerprint_sha256: fingerprint,
           upstream_command,
           notes,
@@ -157,6 +194,7 @@ Emits a \`tape_session_started\` event (provenance='operator', category='system'
             session_id,
             tape_size_bytes: stat.size,
             tape_line_count: lineCount,
+            tape_sha256: sha256,
             tape_fingerprint_sha256: fingerprint,
           }, null, 2),
         }],

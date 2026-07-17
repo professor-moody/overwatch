@@ -41,7 +41,10 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialMfaBlocked, isCredentialUsableForAuth } from '../services/credential-utils.js';
 import { runInstrumentedProcess, MAX_TIMEOUT_MS } from './_process-runner.js';
-import { sessionJarPath } from '../services/http-session-jar.js';
+import {
+  beginSessionJarTransaction,
+  type SessionJarTransaction,
+} from '../services/http-session-jar.js';
 
 const METHODS = ['form', 'basic', 'bearer', 'cookie'] as const;
 type Method = typeof METHODS[number];
@@ -132,7 +135,7 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: true,
       },
     },
@@ -194,16 +197,19 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
       // `-b <jar>` could send a stale same-named cookie and shadow it, flipping
       // the verdict. The jar path isn't secret → it goes into args AND the repr.
       let sessionJarFilePath: string | undefined;
+      let sessionJarTransaction: SessionJarTransaction | undefined;
+      let sessionJarDurabilityWarning: string | undefined;
       if (params.session_jar_id !== undefined) {
         try {
-          sessionJarFilePath = sessionJarPath(engine.getStateFilePath(), params.session_jar_id);
+          sessionJarTransaction = await beginSessionJarTransaction(engine.getStateFilePath(), params.session_jar_id);
+          sessionJarFilePath = sessionJarTransaction.readPath;
         } catch (e) {
           return {
             isError: true,
             content: [{ type: 'text', text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }, null, 2) }],
           };
         }
-        base.push('-c', sessionJarFilePath);
+        base.push('-c', sessionJarTransaction.writePath);
         if (params.method !== 'cookie') base.push('-b', sessionJarFilePath);
       }
 
@@ -216,7 +222,8 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
       let args: string[];
       let reprArgs: string[];
       let requestUrl = params.target_url;
-      switch (params.method) {
+      try {
+        switch (params.method) {
         case 'form': {
           requestUrl = resolveLoginUrl(params.target_url, params.login_path);
           const uf = params.username_field || 'username';
@@ -242,6 +249,10 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
           reprArgs = [...base, '-b', `${cookieName}=${label}`, requestUrl];
           break;
         }
+        }
+      } catch (error) {
+        sessionJarTransaction?.abort();
+        throw error;
       }
       const commandRepr = `curl ${reprArgs.map(quoteArg).join(' ')}`;
 
@@ -250,7 +261,12 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
         ? (Array.isArray(params.success.status) ? params.success.status : [params.success.status])
         : undefined;
 
-      const result = await runInstrumentedProcess(engine, {
+      let result: Awaited<ReturnType<typeof runInstrumentedProcess>>;
+      let sessionJarPublished = false;
+      let sessionJarCommitDurability: 'confirmed' | 'uncertain' | undefined;
+      let sessionJarReferencePersisted: boolean | undefined;
+      try {
+        result = await runInstrumentedProcess(engine, {
         binary: 'curl',
         args,
         command_repr: commandRepr,
@@ -289,6 +305,72 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
         // so it never exceeds the runner's ceiling.
         timeout_ms: params.timeout_ms ? Math.min(MAX_TIMEOUT_MS, params.timeout_ms + 5000) : undefined,
         invoking_tool: 'run_tool',
+        });
+        if (sessionJarTransaction) {
+          const authVerdict = result.parse_summary?.parser_details?.auth_verdict;
+          if (!result.isError && authVerdict === 'success') {
+            const jarCommit = sessionJarTransaction.commit(params.method === 'cookie'
+              ? { url: requestUrl, name: params.header_name || 'session', value: secret }
+              : undefined);
+            sessionJarPublished = jarCommit.published;
+            sessionJarCommitDurability = jarCommit.durability_confirmed ? 'confirmed' : 'uncertain';
+            if (!jarCommit.durability_confirmed) {
+              sessionJarDurabilityWarning = jarCommit.warning
+                ?? 'The session jar is visible, but filesystem durability could not be confirmed.';
+            }
+          }
+          else sessionJarTransaction.abort();
+        }
+      } catch (error) {
+        sessionJarTransaction?.abort();
+        throw error;
+      }
+
+      if (sessionJarPublished && sessionJarFilePath) {
+        try {
+          engine.logActionEvent({
+            description: `Reusable web session jar published: ${params.session_jar_id}`,
+            event_type: 'system',
+            category: 'system',
+            source_kind: 'system',
+            provenance: 'system',
+            action_id: result.parse_summary?.action_id ?? params.action_id,
+            frontier_item_id: params.frontier_item_id,
+            agent_id: params.agent_id,
+            result_classification: 'success',
+            details: {
+              session_jar_id: params.session_jar_id,
+              session_jar_path: sessionJarFilePath,
+              session_jar_published: true,
+              session_jar_commit_durability: sessionJarCommitDurability,
+            },
+          });
+          // Rebuild and checkpoint artifactReferences now; otherwise the jar
+          // is discoverable only after an unrelated future mutation.
+          engine.flushNow();
+          sessionJarReferencePersisted = true;
+        } catch (error) {
+          sessionJarReferencePersisted = false;
+          const checkpointWarning = `The session jar was published, but its durable state reference could not be checkpointed: ${error instanceof Error ? error.message : String(error)}`;
+          sessionJarDurabilityWarning = sessionJarDurabilityWarning
+            ? `${sessionJarDurabilityWarning} ${checkpointWarning}`
+            : checkpointWarning;
+        }
+      }
+
+      Object.assign(result, {
+        ...(params.session_jar_id !== undefined ? {
+          session_jar_published: sessionJarPublished,
+          ...(sessionJarCommitDurability
+            ? { session_jar_commit_durability: sessionJarCommitDurability }
+            : {}),
+          ...(sessionJarReferencePersisted !== undefined
+            ? { session_jar_reference_persisted: sessionJarReferencePersisted }
+            : {}),
+          ...(sessionJarDurabilityWarning
+            ? { session_jar_warning: sessionJarDurabilityWarning }
+            : {}),
+        } : {}),
       });
 
       // Crawl handoff: when a jar was written and curl ran, surface the jar FILE
@@ -297,15 +379,29 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
       // verdict (a 401 still exits curl 0), so it says "if the login succeeded" —
       // the jar holds the authenticated session only then. `wget --load-cookies`
       // reads the curl Netscape jar natively; feed its URL list to parse_output.
-      if (sessionJarFilePath && !result.isError) {
+      if (sessionJarFilePath && sessionJarPublished) {
         const jar = quoteArg(sessionJarFilePath);
         result.content = [
           ...result.content,
           {
             type: 'text',
-            text: `Cookie jar written to ${jar}. If the login succeeded, it holds the session — crawl authenticated: `
+            text: `Authenticated cookie jar written to ${jar} — crawl authenticated: `
               + `wget --load-cookies ${jar} --recursive --level=2 --spider --no-verbose <target> 2>&1 | grep -oE 'https?://[^ ]+' | sort -u`
               + ` (or katana with the cookie), then parse_output as \`katana\` (or \`hakrawler\`).`,
+          },
+        ];
+        if (sessionJarDurabilityWarning) {
+          result.content.push({
+            type: 'text',
+            text: `Warning: ${sessionJarDurabilityWarning}`,
+          });
+        }
+      } else if (sessionJarFilePath && !result.isError && result.parse_summary?.parser_details?.auth_verdict === 'success') {
+        result.content = [
+          ...result.content,
+          {
+            type: 'text',
+            text: 'Authentication was confirmed, but the response produced no reusable cookies. The prior named session jar was preserved.',
           },
         ];
       }

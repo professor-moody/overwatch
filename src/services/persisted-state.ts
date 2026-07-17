@@ -344,6 +344,17 @@ export interface PersistedArtifactReferenceV1 {
   kind: 'evidence_manifest' | 'report_manifest' | 'tape' | 'bundle' | 'cookie_jar';
   path: string;
   sha256?: string;
+  size_bytes?: number;
+  availability?: 'available' | 'missing' | 'invalid';
+  integrity?: 'verified' | 'unverified';
+  bundle_id?: string;
+}
+
+export interface PersistedArtifactGenerationRegistrationV1 {
+  registry_version: 1;
+  root: string;
+  namespace: string;
+  legacy_names: string[];
 }
 
 export interface PersistedArtifactReferencesV1 {
@@ -352,6 +363,8 @@ export interface PersistedArtifactReferencesV1 {
   tapes: PersistedArtifactReferenceV1[];
   bundles: PersistedArtifactReferenceV1[];
   cookie_jars: PersistedArtifactReferenceV1[];
+  /** Additive V1 field. Older V1 states legitimately omit it. */
+  generation_registrations?: PersistedArtifactGenerationRegistrationV1[];
 }
 
 export interface PersistedCommandPlanV1 {
@@ -1734,6 +1747,25 @@ function validateArtifactReferences(value: unknown, path: string): void {
     if (reference.sha256 !== undefined && !/^[a-f0-9]{64}$/.test(requireString(reference.sha256, `${referencePath}.sha256`))) {
       throw new PersistedStateVersionError(`${referencePath}.sha256 must be a lowercase SHA-256 digest`, CURRENT_STATE_VERSION, 'invalid');
     }
+    if (
+      reference.size_bytes !== undefined
+      && (!Number.isSafeInteger(reference.size_bytes) || (reference.size_bytes as number) < 0)
+    ) {
+      throw new PersistedStateVersionError(`${referencePath}.size_bytes must be a non-negative safe integer`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    if (
+      reference.availability !== undefined
+      && !['available', 'missing', 'invalid'].includes(String(reference.availability))
+    ) {
+      throw new PersistedStateVersionError(`${referencePath}.availability is invalid`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    if (
+      reference.integrity !== undefined
+      && !['verified', 'unverified'].includes(String(reference.integrity))
+    ) {
+      throw new PersistedStateVersionError(`${referencePath}.integrity is invalid`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    if (reference.bundle_id !== undefined) requireString(reference.bundle_id, `${referencePath}.bundle_id`);
   };
   if (references.evidence_manifest !== undefined) {
     validateReference(references.evidence_manifest, `${path}.evidence_manifest`, 'evidence_manifest');
@@ -1749,6 +1781,41 @@ function validateArtifactReferences(value: unknown, path: string): void {
     requireArray(references[list], `${path}.${list}`)
       .forEach((candidate, index) =>
         validateReference(candidate, `${path}.${list}[${index}]`, kind));
+  }
+  if (references.generation_registrations !== undefined) {
+    const generationKeys = new Set<string>();
+    requireArray(references.generation_registrations, `${path}.generation_registrations`)
+      .forEach((candidate, index) => {
+        const registrationPath = `${path}.generation_registrations[${index}]`;
+        const registration = requireRecord(candidate, registrationPath);
+        requireSafeInteger(registration.registry_version, `${registrationPath}.registry_version`, 1);
+        const root = requireString(registration.root, `${registrationPath}.root`);
+        const namespace = requireString(registration.namespace, `${registrationPath}.namespace`);
+        if (!root || !/^[A-Za-z0-9_-]{1,64}$/.test(namespace)) {
+          throw new PersistedStateVersionError(`${registrationPath} is invalid`, CURRENT_STATE_VERSION, 'invalid');
+        }
+        const key = `${namespace}\0${root}`;
+        if (generationKeys.has(key)) {
+          throw new PersistedStateVersionError(`${path} contains duplicate artifact generation ${namespace}:${root}`, CURRENT_STATE_VERSION, 'invalid');
+        }
+        generationKeys.add(key);
+        requireArray(registration.legacy_names, `${registrationPath}.legacy_names`)
+          .forEach((name, nameIndex) => {
+            const value = requireString(name, `${registrationPath}.legacy_names[${nameIndex}]`);
+            if (
+              !value
+              || value.includes('\0')
+              || value.startsWith('/')
+              || value.split(/[\\/]+/).some(segment => segment === '.' || segment === '..')
+            ) {
+              throw new PersistedStateVersionError(
+                `${registrationPath}.legacy_names[${nameIndex}] is invalid`,
+                CURRENT_STATE_VERSION,
+                'invalid',
+              );
+            }
+          });
+      });
   }
 }
 

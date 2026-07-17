@@ -136,13 +136,169 @@ export interface AuthenticatedBlobUrl {
   revoke: () => void;
 }
 
+const MAX_AUTHENTICATED_BLOB_BYTES = 512 * 1024 * 1024;
+
+const SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+function rotateRight(value: number, bits: number): number {
+  return (value >>> bits) | (value << (32 - bits));
+}
+
+/** Small incremental SHA-256 used only for authenticated downloads. WebCrypto
+ * requires one contiguous ArrayBuffer; this keeps verification bounded to the
+ * 64-byte working block while the Blob retains the sole payload copy. */
+class StreamingSha256 {
+  private state = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  private block = new Uint8Array(64);
+  private blockLength = 0;
+  private bytes = 0;
+
+  update(input: Uint8Array): void {
+    this.bytes += input.byteLength;
+    let offset = 0;
+    while (offset < input.byteLength) {
+      const take = Math.min(64 - this.blockLength, input.byteLength - offset);
+      this.block.set(input.subarray(offset, offset + take), this.blockLength);
+      this.blockLength += take;
+      offset += take;
+      if (this.blockLength === 64) {
+        this.compress(this.block);
+        this.blockLength = 0;
+      }
+    }
+  }
+
+  digest(): Uint8Array {
+    const bitLength = this.bytes * 8;
+    this.block[this.blockLength++] = 0x80;
+    if (this.blockLength > 56) {
+      this.block.fill(0, this.blockLength);
+      this.compress(this.block);
+      this.blockLength = 0;
+    }
+    this.block.fill(0, this.blockLength, 56);
+    const high = Math.floor(bitLength / 0x1_0000_0000);
+    const low = bitLength >>> 0;
+    for (let i = 0; i < 4; i++) {
+      this.block[56 + i] = (high >>> (24 - i * 8)) & 0xff;
+      this.block[60 + i] = (low >>> (24 - i * 8)) & 0xff;
+    }
+    this.compress(this.block);
+    const output = new Uint8Array(32);
+    for (let i = 0; i < 8; i++) {
+      output[i * 4] = this.state[i] >>> 24;
+      output[i * 4 + 1] = this.state[i] >>> 16;
+      output[i * 4 + 2] = this.state[i] >>> 8;
+      output[i * 4 + 3] = this.state[i];
+    }
+    return output;
+  }
+
+  private compress(block: Uint8Array): void {
+    const words = new Uint32Array(64);
+    for (let i = 0; i < 16; i++) {
+      const j = i * 4;
+      words[i] = ((block[j] << 24) | (block[j + 1] << 16) | (block[j + 2] << 8) | block[j + 3]) >>> 0;
+    }
+    for (let i = 16; i < 64; i++) {
+      const x = words[i - 15];
+      const y = words[i - 2];
+      const s0 = rotateRight(x, 7) ^ rotateRight(x, 18) ^ (x >>> 3);
+      const s1 = rotateRight(y, 17) ^ rotateRight(y, 19) ^ (y >>> 10);
+      words[i] = (words[i - 16] + s0 + words[i - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = this.state;
+    for (let i = 0; i < 64; i++) {
+      const s1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
+      const choice = (e & f) ^ (~e & g);
+      const t1 = (h + s1 + choice + SHA256_K[i] + words[i]) >>> 0;
+      const s0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
+      const majority = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (s0 + majority) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    this.state[0] = (this.state[0] + a) >>> 0;
+    this.state[1] = (this.state[1] + b) >>> 0;
+    this.state[2] = (this.state[2] + c) >>> 0;
+    this.state[3] = (this.state[3] + d) >>> 0;
+    this.state[4] = (this.state[4] + e) >>> 0;
+    this.state[5] = (this.state[5] + f) >>> 0;
+    this.state[6] = (this.state[6] + g) >>> 0;
+    this.state[7] = (this.state[7] + h) >>> 0;
+  }
+}
+
+function digestBytesToBase64(bytes: ArrayBuffer | Uint8Array): string {
+  let binary = '';
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  for (const byte of view) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+async function cancelResponse(response: Response): Promise<void> {
+  try { await response.body?.cancel(); } catch { /* rejection remains primary */ }
+}
+
 export async function fetchAuthenticatedBlobUrl(path: string, signal?: AbortSignal): Promise<AuthenticatedBlobUrl> {
   const response = await dashboardFetch(path, { signal });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
     throw new Error(`${response.status} ${response.statusText}: ${body}`);
   }
-  const blob = await response.blob();
+  const declaredLengthRaw = response.headers.get('Content-Length');
+  const declaredLength = declaredLengthRaw === null ? undefined : Number(declaredLengthRaw);
+  if (declaredLength !== undefined && (!Number.isSafeInteger(declaredLength) || declaredLength < 0)) {
+    await cancelResponse(response);
+    throw new Error('Dashboard resource declared an invalid Content-Length.');
+  }
+  if (declaredLength !== undefined && declaredLength > MAX_AUTHENTICATED_BLOB_BYTES) {
+    await cancelResponse(response);
+    throw new Error('Dashboard resource exceeds the 512 MiB browser download limit; use the terminal bundle command for larger exports.');
+  }
+  const digestHeader = response.headers.get('Content-Digest');
+  const digestMatch = digestHeader?.match(/^sha-256=:([A-Za-z0-9+/]+={0,2}):$/i);
+  if (digestHeader && !digestMatch) {
+    await cancelResponse(response);
+    throw new Error('Dashboard resource declared an unsupported Content-Digest.');
+  }
+  const chunks: BlobPart[] = [];
+  const digest = new StreamingSha256();
+  let observedBytes = 0;
+  if (response.body) {
+    const reader = response.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        observedBytes += value.byteLength;
+        if (observedBytes > MAX_AUTHENTICATED_BLOB_BYTES) {
+          await reader.cancel();
+          throw new Error('Dashboard resource exceeds the 512 MiB browser download limit; use the terminal bundle command for larger exports.');
+        }
+        digest.update(value);
+        chunks.push(value as BlobPart);
+      }
+    } catch (error) {
+      try { await reader.cancel(); } catch { /* preserve the read failure */ }
+      throw error;
+    }
+  }
+  if (declaredLength !== undefined && observedBytes !== declaredLength) {
+    throw new Error(`Dashboard resource was truncated: expected ${declaredLength} bytes, received ${observedBytes}.`);
+  }
+  if (digestMatch && digestBytesToBase64(digest.digest()) !== digestMatch[1]) {
+    throw new Error('Dashboard resource failed its SHA-256 integrity check.');
+  }
+  const blob = new Blob(chunks, { type: response.headers.get('Content-Type') ?? undefined });
   const url = URL.createObjectURL(blob);
   let revoked = false;
   return {

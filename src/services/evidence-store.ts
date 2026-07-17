@@ -7,9 +7,12 @@
 
 import {
   closeSync,
+  constants,
   createWriteStream,
   existsSync,
+  fstatSync,
   fsyncSync,
+  lstatSync,
   openSync,
   readFileSync,
   readSync,
@@ -25,6 +28,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createHash, type Hash } from 'crypto';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
 import { withStateMigrationWriteGuard } from './state-migration-lock.js';
+import { readProcessStartIdentity } from './process-identity.js';
 
 // Defense-in-depth: reject evidence IDs with path traversal components
 function sanitizeEvidenceId(id: string): string {
@@ -96,6 +100,126 @@ interface RecoveredEvidenceDescriptor {
   blobs: EvidenceRecoveryDescriptorV1['blobs'];
 }
 
+interface EvidenceStreamIntentV1 {
+  intent_version: 1;
+  evidence_id: string;
+  temporary_filename: string;
+  kind: 'content' | 'raw_output';
+  timestamp: string;
+  action_id?: string;
+  finding_id?: string;
+  agent_id?: string;
+  task_id?: string;
+  evidence_type: EvidenceRecord['evidence_type'];
+  filename?: string;
+  content_hash?: string;
+  bytes?: number;
+  owner_pid: number;
+  owner_process_start_identity?: string;
+  owner_token: string;
+}
+
+const evidenceStreamOwnerToken = uuidv4();
+const evidenceStreamProcessStartIdentity = readProcessStartIdentity(process.pid);
+const MAX_EVIDENCE_DESCRIPTOR_BYTES = 1024 * 1024;
+
+function readFileBounded(path: string, maxBytes: number): Buffer {
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.size > maxBytes) throw new Error(`Recovery metadata exceeds ${maxBytes} bytes.`);
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) throw new Error('Recovery metadata changed while being read.');
+      offset += count;
+    }
+    const after = fstatSync(fd);
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
+      throw new Error('Recovery metadata changed while being read.');
+    }
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function hashPinnedBlob(
+  path: string,
+  expectedBytes: number,
+  onChunk?: (chunk: Buffer) => void,
+): string {
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.size !== expectedBytes) {
+      throw new Error(`Evidence blob size mismatch: ${path}`);
+    }
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let offset = 0;
+    while (offset < before.size) {
+      const count = readSync(fd, buffer, 0, Math.min(buffer.length, before.size - offset), offset);
+      if (count === 0) throw new Error(`Evidence blob changed while being read: ${path}`);
+      const chunk = buffer.subarray(0, count);
+      hash.update(chunk);
+      onChunk?.(chunk);
+      offset += count;
+    }
+    const after = fstatSync(fd);
+    if (
+      after.dev !== before.dev
+      || after.ino !== before.ino
+      || after.size !== before.size
+      || after.mtimeMs !== before.mtimeMs
+      || after.ctimeMs !== before.ctimeMs
+    ) throw new Error(`Evidence blob changed while being read: ${path}`);
+    return hash.digest('hex');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readPinnedBlobBounded(path: string, maxBytes: number): Buffer | null {
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile()) throw new Error(`Evidence blob is not a regular file: ${path}`);
+    if (before.size > maxBytes) return null;
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) throw new Error(`Evidence blob changed while being read: ${path}`);
+      offset += count;
+    }
+    const after = fstatSync(fd);
+    if (
+      after.dev !== before.dev
+      || after.ino !== before.ino
+      || after.size !== before.size
+      || after.mtimeMs !== before.mtimeMs
+      || after.ctimeMs !== before.ctimeMs
+    ) throw new Error(`Evidence blob changed while being read: ${path}`);
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function processMayStillBeAlive(pid: number, expectedStartIdentity?: string): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    // Permission/inspection failures are unverifiable, not proof of death.
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+  }
+  if (!expectedStartIdentity) return true;
+  const observed = readProcessStartIdentity(pid);
+  return observed === undefined || observed === expectedStartIdentity;
+}
+
 function descriptorRecord(record: EvidenceRecord): EvidenceRecord {
   const { recovered: _recovered, ...durable } = record;
   return durable;
@@ -136,6 +260,7 @@ export class EvidenceStore {
   private manifestPath: string;
   private readOnly: boolean;
   private syncDirectory: (directory: string) => void;
+  private renameFile: (source: string, destination: string) => void;
 
   constructor(
     stateFilePath: string,
@@ -143,6 +268,8 @@ export class EvidenceStore {
       readOnly?: boolean;
       /** Injectable durability boundary for deterministic filesystem tests. */
       syncDirectory?: (directory: string) => void;
+      /** Injectable quarantine boundary for corruption failure tests. */
+      renameFile?: (source: string, destination: string) => void;
     } = {},
   ) {
     const stateDir = dirname(stateFilePath);
@@ -150,6 +277,7 @@ export class EvidenceStore {
     this.manifestPath = join(this.dir, 'manifest.json');
     this.readOnly = options.readOnly === true;
     this.syncDirectory = options.syncDirectory ?? fsyncDirectory;
+    this.renameFile = options.renameFile ?? renameSync;
     if (!this.readOnly) this.ensureDir();
     this.loadManifest();
   }
@@ -226,22 +354,38 @@ export class EvidenceStore {
    * changed the in-memory manifest and it needs to be published.
    */
   private loadManifestUnlocked(recoverCorrupt: boolean): boolean {
+    if (recoverCorrupt) this.recoverInterruptedStreamsUnlocked();
     if (!existsSync(this.manifestPath)) {
       const descriptors = this.readRecoveryDescriptors();
       // A blob without a descriptor may be an interrupted write whose public
       // evidence_id was never committed or returned. Preserve the prior retry
       // behavior in that case; only durable UUID descriptors authorize
       // reconstructing a deleted aggregate manifest.
-      if (descriptors.length === 0) {
+      if (descriptors.length === 0 && recoverCorrupt) {
         this.manifest = [];
         return false;
       }
       this.manifest = this.rebuildManifestFromBlobs(descriptors);
-      return this.manifest.length > 0;
+      return recoverCorrupt && this.manifest.length > 0;
     }
     let parsedManifest: EvidenceRecord[];
+    let manifestBytes: string;
     try {
-      const parsed = JSON.parse(readFileSync(this.manifestPath, 'utf-8'));
+      manifestBytes = readFileSync(this.manifestPath, 'utf-8');
+    } catch (error) {
+      if (!recoverCorrupt) {
+        console.error(
+          `[evidence-store] manifest.json at ${this.manifestPath} could not be read during degraded recovery; preserving it byte-for-byte.`,
+        );
+        this.manifest = this.rebuildManifestFromBlobs();
+        return false;
+      }
+      // An I/O/permission error does not prove byte corruption and must never
+      // trigger quarantine or replacement of a potentially valid manifest.
+      throw error;
+    }
+    try {
+      const parsed = JSON.parse(manifestBytes);
       if (!Array.isArray(parsed)) {
         throw new Error('manifest root must be an array');
       }
@@ -251,7 +395,10 @@ export class EvidenceStore {
         console.error(
           `[evidence-store] manifest.json at ${this.manifestPath} is unreadable during degraded recovery; preserving it byte-for-byte.`,
         );
-        this.manifest = [];
+        // Degraded mode must not mutate the corrupt authority, but valid
+        // immutable descriptors/blobs can still be projected in memory so
+        // findings retain access to their evidence during reconciliation.
+        this.manifest = this.rebuildManifestFromBlobs();
         return false;
       }
       // F1-15: silent reset → loud recovery. Preserve the corrupted manifest
@@ -260,13 +407,10 @@ export class EvidenceStore {
       // reference evidence_ids still resolve.
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const preservedPath = `${this.manifestPath}.corrupt-${timestamp}.json`;
-      try {
-        renameSync(this.manifestPath, preservedPath);
-        this.syncDirectory(this.dir);
-      } catch {
-        // If rename fails (permission, missing), continue — the rebuild is
-        // still worth attempting and the warning will surface the failure.
-      }
+      // Preserving the only corrupt bytes is a precondition for recovery. A
+      // failed quarantine must never be followed by a manifest rewrite.
+      this.renameFile(this.manifestPath, preservedPath);
+      this.syncDirectory(this.dir);
       const message = err instanceof Error ? err.message : String(err);
       console.error(
         `[evidence-store] manifest.json at ${this.manifestPath} failed to parse (${message}). ` +
@@ -279,8 +423,260 @@ export class EvidenceStore {
     // Descriptor publication failures are durability failures, not evidence
     // that the already-parsed manifest itself is corrupt. Keep this outside the
     // parse/recovery catch so a failed fsync never renames a valid manifest.
-    if (recoverCorrupt) this.backfillRecoveryDescriptors();
-    return this.mergeRecoveryDescriptors();
+    const recoveryDescriptors = this.readRecoveryDescriptors(false);
+    if (recoverCorrupt) this.backfillRecoveryDescriptors(recoveryDescriptors);
+    return this.mergeRecoveryDescriptors(recoveryDescriptors);
+  }
+
+  /** Publish a verified private stream blob without trusting a pre-existing
+   * content-addressed filename. Valid duplicates deduplicate; corrupt or
+   * unsafe occupants are preserved under a quarantine name before the good
+   * staged bytes replace them. Caller holds the manifest writer lock. */
+  private publishOrDeduplicateVerifiedBlob(
+    stagedPath: string,
+    destinationPath: string,
+    expectedHash: string,
+    expectedBytes: number,
+  ): void {
+    if (existsSync(destinationPath)) {
+      let destinationValid = false;
+      try {
+        destinationValid = hashPinnedBlob(destinationPath, expectedBytes) === expectedHash;
+      } catch {
+        destinationValid = false;
+      }
+      if (destinationValid) {
+        unlinkSync(stagedPath);
+        this.syncDirectory(this.dir);
+        return;
+      }
+      const quarantinePath = `${destinationPath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}-${uuidv4()}`;
+      renameSync(destinationPath, quarantinePath);
+      this.syncDirectory(this.dir);
+    }
+    renameSync(stagedPath, destinationPath);
+    this.syncDirectory(this.dir);
+  }
+
+  /**
+   * Finalize stream intents left by a dead process. The intent is published
+   * before the first byte, then enriched with the final hash before the blob
+   * rename. Those two states let restart recover either a partial staging file
+   * or a fully-published blob whose descriptor/manifest was not yet committed.
+   * Caller holds the manifest writer lock.
+   */
+  private recoverInterruptedStreamsUnlocked(): void {
+    let names: string[];
+    try { names = readdirSync(this.dir); } catch { return; }
+    for (const name of names.filter(entry => entry.endsWith('.stream-intent.json'))) {
+      const intentPath = join(this.dir, name);
+      let intent: EvidenceStreamIntentV1;
+      try {
+        const parsed = JSON.parse(readFileBounded(intentPath, MAX_EVIDENCE_DESCRIPTOR_BYTES).toString('utf8')) as Partial<EvidenceStreamIntentV1>;
+        if (
+          parsed.intent_version !== 1
+          || typeof parsed.evidence_id !== 'string'
+          || !/^[0-9a-f-]{36}$/i.test(parsed.evidence_id)
+          || name !== `${parsed.evidence_id}.stream-intent.json`
+          || typeof parsed.temporary_filename !== 'string'
+          || parsed.temporary_filename !== basename(parsed.temporary_filename)
+          || !parsed.temporary_filename.startsWith(`.stream-${parsed.evidence_id}.`)
+          || (parsed.kind !== 'content' && parsed.kind !== 'raw_output')
+          || typeof parsed.timestamp !== 'string'
+          || !['screenshot', 'log', 'file', 'command_output'].includes(parsed.evidence_type ?? '')
+          || !Number.isSafeInteger(parsed.owner_pid)
+          || parsed.owner_pid! <= 0
+          || (parsed.owner_process_start_identity !== undefined
+            && (typeof parsed.owner_process_start_identity !== 'string'
+              || parsed.owner_process_start_identity.length === 0))
+          || typeof parsed.owner_token !== 'string'
+          || parsed.owner_token.length === 0
+        ) throw new Error('invalid interrupted evidence stream intent');
+        intent = parsed as EvidenceStreamIntentV1;
+      } catch {
+        const quarantined = `${intentPath}.corrupt-${uuidv4()}`;
+        renameSync(intentPath, quarantined);
+        this.syncDirectory(this.dir);
+        continue;
+      }
+
+      // Normal manifest refreshes happen while active streams are open. Only a
+      // different process incarnation may recover an unfinished intent.
+      if (
+        (intent.owner_pid === process.pid && intent.owner_token === evidenceStreamOwnerToken)
+        || processMayStillBeAlive(intent.owner_pid, intent.owner_process_start_identity)
+      ) continue;
+
+      const descriptorPath = join(this.dir, `${intent.evidence_id}.record.json`);
+      if (existsSync(descriptorPath)) {
+        const descriptors = this.readRecoveryDescriptorFile(
+          `${intent.evidence_id}.record.json`,
+          true,
+        );
+        const matching = descriptors.some(descriptor => {
+          const length = intent.kind === 'content'
+            ? descriptor.record.content_length
+            : descriptor.record.raw_output_length;
+          const blobCommitted = intent.kind === 'content'
+            ? descriptor.blobs.content
+            : descriptor.blobs.raw;
+          const committedEmptyWithoutBlob = intent.bytes === 0
+            && intent.content_hash === createHash('sha256').digest('hex')
+            && descriptor.record.content_hash === intent.content_hash
+            && length === 0
+            && !descriptor.blobs.content
+            && !descriptor.blobs.raw;
+          return (blobCommitted || committedEmptyWithoutBlob)
+            && (intent.content_hash === undefined
+              || descriptor.record.content_hash === intent.content_hash)
+            && (intent.bytes === undefined || length === intent.bytes);
+        });
+        if (matching) {
+          const temporaryPath = join(this.dir, intent.temporary_filename);
+          if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+          unlinkSync(intentPath);
+          this.syncDirectory(this.dir);
+          continue;
+        }
+        // Filename presence alone is not a commit boundary. Preserve the bad
+        // descriptor for diagnosis, then let the verified intent/temp path
+        // reconstruct the UUID mapping.
+        renameSync(
+          descriptorPath,
+          `${descriptorPath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}-${uuidv4()}`,
+        );
+        this.syncDirectory(this.dir);
+      }
+
+      const temporaryPath = join(this.dir, intent.temporary_filename);
+      const ext = intent.kind === 'raw_output' ? 'raw' : 'content';
+      let contentHash = intent.content_hash;
+      let bytes = intent.bytes;
+      let blobPublished = false;
+
+      if (existsSync(temporaryPath)) {
+        const stat = lstatSync(temporaryPath);
+        if (stat.isSymbolicLink() || !stat.isFile()) {
+          throw new Error(`Interrupted evidence staging path is not a regular file: ${temporaryPath}`);
+        }
+        const fd = openSync(temporaryPath, 'r');
+        const hasher = createHash('sha256');
+        let total = 0;
+        try {
+          const buffer = Buffer.allocUnsafe(64 * 1024);
+          while (true) {
+            const count = readSync(fd, buffer, 0, buffer.length, null);
+            if (count <= 0) break;
+            hasher.update(buffer.subarray(0, count));
+            total += count;
+          }
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+        const observedHash = hasher.digest('hex');
+        if (contentHash !== undefined && contentHash !== observedHash) {
+          throw new Error(`Interrupted evidence stream hash mismatch for ${intent.evidence_id}.`);
+        }
+        if (bytes !== undefined && bytes !== total) {
+          throw new Error(`Interrupted evidence stream byte-count mismatch for ${intent.evidence_id}.`);
+        }
+        contentHash = observedHash;
+        bytes = total;
+        const blobPath = join(this.dir, `${contentHash}.${ext}`);
+        this.publishOrDeduplicateVerifiedBlob(temporaryPath, blobPath, contentHash, total);
+        blobPublished = true;
+      } else if (contentHash && Number.isSafeInteger(bytes) && bytes! >= 0) {
+        const finalizedBytes = bytes!;
+        const blobPath = join(this.dir, `${contentHash}.${ext}`);
+        if (finalizedBytes === 0 && contentHash === createHash('sha256').digest('hex') && !existsSync(blobPath)) {
+          // Empty streams intentionally publish no blob. The enriched intent is
+          // still sufficient to restore the stable UUID and zero-byte record.
+          blobPublished = false;
+        } else {
+          try {
+            blobPublished = hashPinnedBlob(blobPath, finalizedBytes) === contentHash;
+          } catch {
+            blobPublished = false;
+          }
+          if (!blobPublished) {
+            throw new Error(`Interrupted evidence stream blob is missing or corrupt for ${intent.evidence_id}.`);
+          }
+        }
+      } else {
+        contentHash = createHash('sha256').digest('hex');
+        bytes = 0;
+      }
+
+      const record: EvidenceRecord = {
+        evidence_id: intent.evidence_id,
+        blob_key: contentHash,
+        content_hash: contentHash,
+        action_id: intent.action_id,
+        finding_id: intent.finding_id,
+        agent_id: intent.agent_id,
+        task_id: intent.task_id,
+        timestamp: intent.timestamp,
+        evidence_type: intent.evidence_type,
+        filename: intent.filename,
+        content_length: intent.kind === 'content' ? bytes! : 0,
+        raw_output_length: intent.kind === 'raw_output' ? bytes! : 0,
+        capture_error: 'interrupted before evidence stream finalization',
+        recovered: true,
+      };
+      this.publishRecoveryDescriptor(record, {
+        content: intent.kind === 'content' && blobPublished,
+        raw: intent.kind === 'raw_output' && blobPublished,
+      });
+      unlinkSync(intentPath);
+      this.syncDirectory(this.dir);
+    }
+  }
+
+  private verifyDescriptorBlobs(
+    record: EvidenceRecord,
+    blobs: EvidenceRecoveryDescriptorV1['blobs'],
+  ): boolean {
+    if (
+      !Number.isSafeInteger(record.content_length)
+      || record.content_length < 0
+      || !Number.isSafeInteger(record.raw_output_length)
+      || record.raw_output_length < 0
+      || typeof record.content_hash !== 'string'
+      || !/^[0-9a-f]{64}$/i.test(record.content_hash)
+    ) return false;
+
+    try {
+      const combined = createHash('sha256');
+      let singleBlobHash: string | undefined;
+      if (blobs.content) {
+        singleBlobHash = hashPinnedBlob(
+          this.blobPath(record, 'content'),
+          record.content_length,
+          chunk => combined.update(chunk),
+        );
+      } else if (record.content_length !== 0) return false;
+      combined.update('\0');
+      if (blobs.raw) {
+        const rawHash = hashPinnedBlob(
+          this.blobPath(record, 'raw'),
+          record.raw_output_length,
+          chunk => combined.update(chunk),
+        );
+        singleBlobHash = blobs.content ? undefined : rawHash;
+      } else if (record.raw_output_length !== 0) return false;
+
+      const combinedHash = combined.digest('hex');
+      const emptyStreamHash = createHash('sha256').digest('hex');
+      return record.content_hash === combinedHash
+        || record.content_hash === singleBlobHash
+        || (!blobs.content && !blobs.raw
+          && record.content_length === 0
+          && record.raw_output_length === 0
+          && record.content_hash === emptyStreamHash);
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -290,73 +686,73 @@ export class EvidenceStore {
    * blob mapping when manifest.json is missing, corrupt, or an older valid
    * version survived a writer crash before the final manifest rename.
    */
-  private readRecoveryDescriptors(): RecoveredEvidenceDescriptor[] {
+  private readRecoveryDescriptorFile(
+    name: string,
+    verifyBlobs: boolean,
+  ): RecoveredEvidenceDescriptor[] {
+    const match = name.match(/^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.record\.json$/i);
+    if (!match) return [];
+    try {
+      const parsed = JSON.parse(
+        readFileBounded(join(this.dir, name), MAX_EVIDENCE_DESCRIPTOR_BYTES).toString('utf8'),
+      ) as Partial<EvidenceRecoveryDescriptorV1> | Partial<EvidenceRecoveryDescriptorV2>;
+      const records = parsed.descriptor_version === 1
+        ? parsed.record ? [parsed.record] : []
+        : parsed.descriptor_version === 2 && Array.isArray(parsed.records)
+          ? parsed.records
+          : [];
+      if (
+        records.length === 0
+        || typeof parsed.blobs?.content !== 'boolean'
+        || typeof parsed.blobs?.raw !== 'boolean'
+      ) return [];
+      const validRecords = records.every(record =>
+        record
+        && record.evidence_id === match[1]
+        && typeof record.timestamp === 'string'
+        && ['screenshot', 'log', 'file', 'command_output'].includes(record.evidence_type)
+        && typeof record.content_length === 'number'
+        && typeof record.raw_output_length === 'number'
+        && typeof record.blob_key === 'string'
+        && /^[0-9a-f]{64}$/i.test(record.blob_key)
+        && typeof record.content_hash === 'string'
+        && record.content_hash === record.blob_key
+        && record.blob_key === records[0]!.blob_key
+        && record.content_length === records[0]!.content_length
+        && record.raw_output_length === records[0]!.raw_output_length);
+      if (!validRecords) return [];
+      const blobs = {
+        content: parsed.blobs.content,
+        raw: parsed.blobs.raw,
+      };
+      if (verifyBlobs && !this.verifyDescriptorBlobs(records[0]!, blobs)) return [];
+      return records.map(record => ({ record, blobs }));
+    } catch {
+      // A damaged descriptor is not authoritative. Blob scanning below still
+      // recovers the content under its hash/legacy UUID where possible.
+      return [];
+    }
+  }
+
+  private readRecoveryDescriptors(verifyBlobs = true): RecoveredEvidenceDescriptor[] {
     let entries: string[];
     try {
       entries = readdirSync(this.dir);
     } catch {
       return [];
     }
-    const descriptors: RecoveredEvidenceDescriptor[] = [];
-    for (const name of entries) {
-      const match = name.match(/^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.record\.json$/i);
-      if (!match) continue;
-      try {
-        const parsed = JSON.parse(
-          readFileSync(join(this.dir, name), 'utf8'),
-        ) as Partial<EvidenceRecoveryDescriptorV1> | Partial<EvidenceRecoveryDescriptorV2>;
-        const records = parsed.descriptor_version === 1
-          ? parsed.record ? [parsed.record] : []
-          : parsed.descriptor_version === 2 && Array.isArray(parsed.records)
-            ? parsed.records
-            : [];
-        if (
-          records.length === 0
-          || typeof parsed.blobs?.content !== 'boolean'
-          || typeof parsed.blobs?.raw !== 'boolean'
-        ) {
-          continue;
-        }
-        const validRecords = records.every(record =>
-          record
-          && record.evidence_id === match[1]
-          && typeof record.timestamp === 'string'
-          && ['screenshot', 'log', 'file', 'command_output'].includes(record.evidence_type)
-          && typeof record.content_length === 'number'
-          && typeof record.raw_output_length === 'number'
-          && typeof record.blob_key === 'string'
-          && /^[0-9a-f]{64}$/i.test(record.blob_key)
-          && typeof record.content_hash === 'string'
-          && record.content_hash === record.blob_key
-          && record.blob_key === records[0]!.blob_key);
-        if (!validRecords) continue;
-        const record = records[0]!;
-        const contentAvailable = !parsed.blobs.content
-          || existsSync(this.blobPath(record, 'content'));
-        const rawAvailable = !parsed.blobs.raw
-          || existsSync(this.blobPath(record, 'raw'));
-        if (!contentAvailable || !rawAvailable) continue;
-        const blobs = {
-          content: parsed.blobs.content,
-          raw: parsed.blobs.raw,
-        };
-        for (const recoveredRecord of records) {
-          descriptors.push({ record: recoveredRecord, blobs });
-        }
-      } catch {
-        // A damaged descriptor is not authoritative. Blob scanning below still
-        // recovers the content under its hash/legacy UUID where possible.
-      }
-    }
-    return descriptors;
+    return entries.flatMap(name => this.readRecoveryDescriptorFile(name, verifyBlobs));
   }
 
-  private mergeRecoveryDescriptors(): boolean {
+  private mergeRecoveryDescriptors(
+    descriptors: RecoveredEvidenceDescriptor[] = this.readRecoveryDescriptors(false),
+  ): boolean {
     let changed = false;
     const existing = new Set(this.manifest.map(recoveryRecordSignature));
-    for (const descriptor of this.readRecoveryDescriptors()) {
+    for (const descriptor of descriptors) {
       const signature = recoveryRecordSignature(descriptor.record);
       if (existing.has(signature)) continue;
+      if (!this.verifyDescriptorBlobs(descriptor.record, descriptor.blobs)) continue;
       this.manifest.push({
         ...descriptor.record,
         recovered: true,
@@ -372,9 +768,11 @@ export class EvidenceStore {
    * existed. The valid manifest is authoritative here, so publish one canonical
    * descriptor per public UUID while the manifest writer lock is held.
    */
-  private backfillRecoveryDescriptors(): void {
+  private backfillRecoveryDescriptors(
+    descriptors: RecoveredEvidenceDescriptor[] = this.readRecoveryDescriptors(false),
+  ): void {
     const described = new Map<string, RecoveredEvidenceDescriptor[]>();
-    for (const descriptor of this.readRecoveryDescriptors()) {
+    for (const descriptor of descriptors) {
       const rows = described.get(descriptor.record.evidence_id) ?? [];
       rows.push(descriptor);
       described.set(descriptor.record.evidence_id, rows);
@@ -411,6 +809,7 @@ export class EvidenceStore {
       ) {
         continue;
       }
+      if (!this.verifyDescriptorBlobs(record, { content, raw })) continue;
       const descriptorRecords = [
         ...(described.get(evidenceId) ?? []).map(descriptor => descriptor.record),
         ...records.filter(candidate =>
@@ -448,7 +847,72 @@ export class EvidenceStore {
       descriptors.map(descriptor =>
         descriptor.record.blob_key ?? descriptor.record.evidence_id),
     );
-    const byId = new Map<string, { contentSize: number; rawSize: number; mtimeMs: number; type: 'content' | 'raw' | 'both' }>();
+    const describedEvidenceIds = new Set(descriptors.map(descriptor => descriptor.record.evidence_id));
+    // A finalized stream intent carries the original public UUID plus the
+    // content-addressed blob identity. In degraded read-only mode, project it
+    // without unlinking or publishing a descriptor so finding references keep
+    // resolving under the exact UUID.
+    for (const name of entries.filter(entry => entry.endsWith('.stream-intent.json'))) {
+      try {
+        const intent = JSON.parse(
+          readFileBounded(join(this.dir, name), MAX_EVIDENCE_DESCRIPTOR_BYTES).toString('utf8'),
+        ) as Partial<EvidenceStreamIntentV1>;
+        if (
+          intent.intent_version !== 1
+          || typeof intent.evidence_id !== 'string'
+          || describedEvidenceIds.has(intent.evidence_id)
+          || name !== `${intent.evidence_id}.stream-intent.json`
+          || (intent.kind !== 'content' && intent.kind !== 'raw_output')
+          || typeof intent.content_hash !== 'string'
+          || !/^[0-9a-f]{64}$/i.test(intent.content_hash)
+          || !Number.isSafeInteger(intent.bytes)
+          || intent.bytes! < 0
+          || typeof intent.timestamp !== 'string'
+          || !['screenshot', 'log', 'file', 'command_output'].includes(intent.evidence_type ?? '')
+        ) continue;
+        const intentBytes = intent.bytes!;
+        const ext = intent.kind === 'content' ? 'content' : 'raw';
+        const blobPath = join(this.dir, `${intent.content_hash}.${ext}`);
+        let blobAvailable = false;
+        if (intentBytes === 0 && intent.content_hash === createHash('sha256').digest('hex') && !existsSync(blobPath)) {
+          blobAvailable = false;
+        } else {
+          try {
+            blobAvailable = hashPinnedBlob(blobPath, intentBytes) === intent.content_hash;
+          } catch {
+            continue;
+          }
+        }
+        rebuilt.push({
+          evidence_id: intent.evidence_id,
+          blob_key: intent.content_hash,
+          content_hash: intent.content_hash,
+          action_id: intent.action_id,
+          finding_id: intent.finding_id,
+          agent_id: intent.agent_id,
+          task_id: intent.task_id,
+          timestamp: intent.timestamp,
+          evidence_type: intent.evidence_type!,
+          filename: intent.filename,
+          content_length: intent.kind === 'content' ? intentBytes : 0,
+          raw_output_length: intent.kind === 'raw_output' ? intentBytes : 0,
+          capture_error: 'interrupted before evidence stream descriptor commit',
+          recovered: true,
+        });
+        describedEvidenceIds.add(intent.evidence_id);
+        if (blobAvailable) describedBlobKeys.add(intent.content_hash);
+      } catch {
+        // Preserve malformed/oversized intent bytes for writable recovery or
+        // manual inspection; they are not safe read-only authority.
+      }
+    }
+    const byId = new Map<string, {
+      contentSize: number;
+      rawSize: number;
+      hasContent: boolean;
+      hasRaw: boolean;
+      mtimeMs: number;
+    }>();
     for (const name of entries) {
       const match = name.match(/^([0-9a-f-]{36}|[0-9a-f]{64})\.(content|raw)$/i);
       if (!match) continue;
@@ -457,22 +921,55 @@ export class EvidenceStore {
       let size = 0;
       let mtimeMs = 0;
       try {
-        const stat = statSync(join(this.dir, name));
+        const stat = lstatSync(join(this.dir, name));
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
         size = stat.size;
         mtimeMs = stat.mtimeMs;
       } catch {
         continue;
       }
-      const existing = byId.get(evidenceId) || { contentSize: 0, rawSize: 0, mtimeMs: 0, type: ext as 'content' | 'raw' };
-      if (ext === 'content') existing.contentSize = size;
-      else existing.rawSize = size;
-      existing.type = existing.contentSize > 0 && existing.rawSize > 0
-        ? 'both'
-        : existing.contentSize > 0 ? 'content' : 'raw';
+      const existing = byId.get(evidenceId) || {
+        contentSize: 0, rawSize: 0, hasContent: false, hasRaw: false, mtimeMs: 0,
+      };
+      if (ext === 'content') {
+        existing.contentSize = size;
+        existing.hasContent = true;
+      } else {
+        existing.rawSize = size;
+        existing.hasRaw = true;
+      }
       existing.mtimeMs = Math.max(existing.mtimeMs, mtimeMs);
       byId.set(evidenceId, existing);
     }
     for (const [evidenceId, info] of byId) {
+      try {
+        const combined = createHash('sha256');
+        let directContent: string | undefined;
+        let directRaw: string | undefined;
+        if (info.hasContent) {
+          directContent = hashPinnedBlob(
+            join(this.dir, `${evidenceId}.content`),
+            info.contentSize,
+            chunk => combined.update(chunk),
+          );
+        }
+        combined.update('\0');
+        if (info.hasRaw) {
+          directRaw = hashPinnedBlob(
+            join(this.dir, `${evidenceId}.raw`),
+            info.rawSize,
+            chunk => combined.update(chunk),
+          );
+        }
+        if (evidenceId.length === 64) {
+          const combinedHash = combined.digest('hex');
+          const validContentStream = info.hasContent && !info.hasRaw && directContent === evidenceId;
+          const validRawStream = info.hasRaw && !info.hasContent && directRaw === evidenceId;
+          if (combinedHash !== evidenceId && !validContentStream && !validRawStream) continue;
+        }
+      } catch {
+        continue;
+      }
       rebuilt.push({
         evidence_id: evidenceId,
         ...(evidenceId.length === 64
@@ -480,8 +977,8 @@ export class EvidenceStore {
           : {}),
         timestamp: new Date(info.mtimeMs).toISOString(),
         evidence_type: 'command_output',
-        content_length: info.contentSize,
-        raw_output_length: info.rawSize,
+        content_length: info.hasContent ? info.contentSize : 0,
+        raw_output_length: info.hasRaw ? info.rawSize : 0,
         recovered: true,
       });
     }
@@ -635,8 +1132,8 @@ export class EvidenceStore {
         timestamp,
         evidence_type: opts.evidence_type,
         filename: opts.filename,
-        content_length: opts.content?.length ?? 0,
-        raw_output_length: opts.raw_output?.length ?? 0,
+        content_length: opts.content === undefined ? 0 : Buffer.byteLength(opts.content),
+        raw_output_length: opts.raw_output === undefined ? 0 : Buffer.byteLength(opts.raw_output),
       };
       this.publishRecoveryDescriptor(record, {
         content: opts.content !== undefined,
@@ -694,6 +1191,28 @@ export class EvidenceStore {
       this.dir,
       `.stream-${evidenceId}.${ext}.tmp-${process.pid}-${uuidv4()}`,
     );
+    const intentPath = join(this.dir, `${evidenceId}.stream-intent.json`);
+    const streamIntent: EvidenceStreamIntentV1 = {
+      intent_version: 1,
+      evidence_id: evidenceId,
+      temporary_filename: basename(tmpPath),
+      kind,
+      timestamp,
+      action_id: opts.action_id,
+      finding_id: opts.finding_id,
+      agent_id: opts.agent_id,
+      task_id: opts.task_id,
+      evidence_type: opts.evidence_type,
+      filename: opts.filename,
+      owner_pid: process.pid,
+      ...(evidenceStreamProcessStartIdentity
+        ? { owner_process_start_identity: evidenceStreamProcessStartIdentity }
+        : {}),
+      owner_token: evidenceStreamOwnerToken,
+    };
+    this.withManifestWriteLock(() => {
+      this.durableBlobWrite(intentPath, `${JSON.stringify(streamIntent, null, 2)}\n`);
+    });
     let stream: WriteStream | null = null;
     let streamFd: number | undefined;
     // Writes that have been issued vs. confirmed durable. We update the
@@ -815,6 +1334,16 @@ export class EvidenceStore {
         // streams the hash represents only the bytes that landed durably,
         // so it agrees with the recorded length.
         const contentHash = hasher.digest('hex');
+        // Enrich the intent before publishing the blob. If the process dies
+        // after rename but before the descriptor, restart can still locate the
+        // immutable content-addressed bytes.
+        this.withManifestWriteLock(() => {
+          this.durableBlobWrite(intentPath, `${JSON.stringify({
+            ...streamIntent,
+            content_hash: contentHash,
+            bytes: bytesDurable,
+          } satisfies EvidenceStreamIntentV1, null, 2)}\n`);
+        });
         const record: EvidenceRecord & { capture_error?: string } = {
           evidence_id: evidenceId,
           blob_key: contentHash,
@@ -836,14 +1365,12 @@ export class EvidenceStore {
 
           if (stream) {
             const contentAddressedPath = join(this.dir, `${contentHash}.${ext}`);
-            if (existsSync(contentAddressedPath)) {
-              // Another writer already published the same immutable bytes.
-              // Keep its blob and discard this stream's private staging file.
-              unlinkSync(tmpPath);
-            } else {
-              renameSync(tmpPath, contentAddressedPath);
-            }
-            this.syncDirectory(this.dir);
+            this.publishOrDeduplicateVerifiedBlob(
+              tmpPath,
+              contentAddressedPath,
+              contentHash,
+              bytesDurable,
+            );
           }
 
           this.publishRecoveryDescriptor(record, {
@@ -860,6 +1387,8 @@ export class EvidenceStore {
             this.manifest = before;
             throw error;
           }
+          unlinkSync(intentPath);
+          this.syncDirectory(this.dir);
         });
         if (writeError) throw writeError;
       },
@@ -924,12 +1453,9 @@ export class EvidenceStore {
     if (!path) return null;
     if (!existsSync(path)) return null;
     if (typeof opts?.max_bytes === 'number') {
-      try {
-        if (statSync(path).size > opts.max_bytes) return null;
-      } catch {
-        // If stat fails, fall through to readFileSync — reading itself
-        // will surface the error to the caller.
-      }
+      const limit = Math.max(0, Math.trunc(opts.max_bytes));
+      const bytes = readPinnedBlobBounded(path, limit);
+      return bytes?.toString('utf8') ?? null;
     }
     return readFileSync(path, 'utf-8');
   }
@@ -944,19 +1470,29 @@ export class EvidenceStore {
     if (!path) return null;
     if (!existsSync(path)) return null;
 
-    const total = statSync(path).size;
-    const limit = Math.min(total, Math.max(0, max_bytes | 0));
-    if (limit === 0) return { text: '', total_bytes: total, truncated: total > 0 };
-
-    const buf = Buffer.alloc(limit);
-    const fd = openSync(path, 'r');
+    const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
+      const before = fstatSync(fd);
+      if (!before.isFile()) throw new Error(`Evidence blob is not a regular file: ${path}`);
+      const total = before.size;
+      const limit = Math.min(total, Math.max(0, Math.trunc(max_bytes)));
+      if (limit === 0) return { text: '', total_bytes: total, truncated: total > 0 };
+
+      const buf = Buffer.alloc(limit);
       let read = 0;
       while (read < limit) {
         const n = readSync(fd, buf, read, limit - read, read);
         if (n <= 0) break;
         read += n;
       }
+      const after = fstatSync(fd);
+      if (
+        after.dev !== before.dev
+        || after.ino !== before.ino
+        || after.size !== before.size
+        || after.mtimeMs !== before.mtimeMs
+        || after.ctimeMs !== before.ctimeMs
+      ) throw new Error(`Evidence blob changed while it was being read: ${path}`);
       const text = buf.subarray(0, read).toString('utf-8');
       return { text, total_bytes: total, truncated: total > limit };
     } finally {

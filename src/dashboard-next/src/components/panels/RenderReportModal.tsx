@@ -71,7 +71,9 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
       <div className="bg-surface border border-border rounded-lg shadow-xl w-full max-w-md p-5">
         <div className="flex items-start justify-between mb-4">
-          <h3 className="text-base font-semibold">{rendered ? 'Report Saved' : 'Generate Report'}</h3>
+          <h3 className="text-base font-semibold">{rendered
+            ? rendered.report_committed ? 'Report Saved' : 'Report Needs Attention'
+            : 'Generate Report'}</h3>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg leading-none" aria-label="Close">&times;</button>
         </div>
 
@@ -224,12 +226,22 @@ function ReportResult({ result, onClose, onRenderAnother }: {
   const evidenceCount = report.evidence_count ?? result.evidence_count ?? 0;
   const openUrl = api.reportOpenUrl(report.id);
   const downloadUrl = api.reportDownloadUrl(report.id);
+  const durable = result.report_committed && result.commit_durability === 'confirmed';
 
   return (
     <div className="space-y-4">
-      <div className="rounded border border-success/30 bg-success/10 p-3">
-        <div className="text-sm font-medium text-success">Render complete</div>
+      <div className={cn(
+        'rounded border p-3',
+        durable ? 'border-success/30 bg-success/10' : 'border-warning/30 bg-warning/10',
+      )}>
+        <div className={cn('text-sm font-medium', durable ? 'text-success' : 'text-warning')}>
+          {durable ? 'Render committed' : 'Rendered, but durability is unconfirmed'}
+        </div>
         <div className="mt-1 text-xs text-muted-foreground break-words">{report.filename}</div>
+        {result.warning && <div className="mt-2 text-xs text-warning">{result.warning}</div>}
+        {!result.reference_persisted && (
+          <div className="mt-2 text-xs text-warning">The engagement state does not yet contain a durable reference to this report.</div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-2 text-xs">

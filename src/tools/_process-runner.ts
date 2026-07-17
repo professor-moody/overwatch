@@ -943,6 +943,8 @@ export interface InstrumentedProcessOpts {
 export interface InstrumentedProcessResponse {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
+  /** Additive structured projection of inline parsing for internal adapters. */
+  parse_summary?: ParseIngestResult;
   [key: string]: unknown;
 }
 
@@ -2046,6 +2048,7 @@ async function runInstrumentedProcessCore(
       }, null, 2),
     }],
     isError: !actionSucceeded,
+    ...(parse_summary ? { parse_summary } : {}),
   };
   Object.defineProperty(response, PROCESS_COMMAND_TERMINAL, {
     value: terminalRuntimeInput,

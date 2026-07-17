@@ -103,4 +103,29 @@ describe('RecoverySection', () => {
     expect(html).toContain('PID 4242');
     expect(html).toContain('belongs to a different process');
   });
+
+  it('renders ambiguous report IDs and external generation repair warnings', () => {
+    const html = render(recovery({
+      outcome: 'clean',
+      complete: true,
+      writable: true,
+      artifact_recovery: {
+        reports: {
+          writable: false,
+          uncertain_deletion_ids: ['report-ambiguous'],
+          reason: 'ambiguous deletion tombstone',
+        },
+        generation_warnings: [{
+          root: '/tmp/operator-reports',
+          namespace: 'report',
+          message: 'mirror refresh pending',
+        }],
+      },
+    }));
+
+    expect(html).toContain('Artifact recovery needs review');
+    expect(html).toContain('report-ambiguous');
+    expect(html).toContain('/tmp/operator-reports');
+    expect(html).toContain('mirror refresh pending');
+  });
 });
