@@ -6,14 +6,16 @@ Generate a comprehensive penetration test report from the engagement graph and a
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `format` | `"markdown"` \| `"html"` | `"markdown"` | Output format |
+| `format` | `"markdown"` \| `"md"` \| `"html"` \| `"json"` \| `"pdf"` | `"markdown"` | Output format. PDF requires a Chromium binary. |
 | `include_evidence` | boolean | `true` | Include evidence chains for each finding |
 | `include_narrative` | boolean | `true` | Include attack narrative section |
 | `include_retrospective` | boolean | `false` | Include retrospective analysis (inference gaps, skill gaps) |
 | `write_to_disk` | boolean | `false` | Save report file(s) to `output_dir` |
 | `output_dir` | string | `"./reports/"` | Directory for output files |
 | `theme` | `"light"` \| `"dark"` | `"light"` | Theme for HTML output |
-| `client_safe` | boolean | `false` | **Phase I**: produce a client-deliverable variant. Strips `cred_value`, `raw_output`, stdout/stderr previews, and operator-machine paths. Disk artifacts get a `.client-safe.<ext>` suffix. See [Client-safe exports](#client-safe-exports). |
+| `client_safe` | boolean | `false` | Produce a client-deliverable variant. Strips `cred_value`, `raw_output`, stdout/stderr previews, and operator-machine paths. Disk artifacts get a `.client-safe.<ext>` suffix. See [Client-safe exports](#client-safe-exports). |
+| `persist_to_archive` | boolean | `true` | Store the rendered report in the engagement report archive and return a reusable `report_id`. |
+| `include_attack_paths` | boolean | `true` | Include synthesized, confidence-decorated paths from current access to objectives. |
 | `profile` | `"operator"` \| `"client"` | inferred | Report profile. `operator` keeps full internal proof metadata; `client` produces a polished client-safe deliverable. `client_safe: true` maps to `client`. |
 | `evidence_style` | `"proof_cards"` \| `"appendix"` \| `"full_inline"` | `"proof_cards"` | Evidence presentation style. Proof cards are the default; appendix mode keeps findings concise; full inline is intended for operator binders. |
 

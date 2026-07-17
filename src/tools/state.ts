@@ -24,14 +24,14 @@ export function registerStateTools(server: McpServer, engine: GraphEngine, optio
 
   // ============================================================
   // Tool: get_state
-  // Full engagement state briefing from the graph.
+  // Operational engagement briefing from durable state.
   // This is the primary recovery mechanism after compaction.
   // ============================================================
   server.registerTool(
     'get_state',
     {
       title: 'Get Engagement State',
-      description: `Returns the complete current state of the engagement, synthesized from the graph.
+      description: `Returns the current operational briefing synthesized from durable engagement state.
 Use this as your first call in any new or compacted session to understand:
 - What targets are in scope
 - What has been discovered (nodes and edges)
@@ -60,7 +60,7 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
           .describe('Include `category=system` entries in recent_activity (snapshots, ingested transcript turns, instrumentation warnings). Set false to focus on operational events only.'),
         snapshot: z.boolean()
           .default(false)
-          .describe('Persist a copy of the returned state to the evidence store and log a `system` event so the retrospective can reconstruct exactly what the agent saw when it made each decision. De-duplicated within a 5s window when the state body is unchanged. **Phase H**: defaults to false so the tool is genuinely read-only; pass true at session bootstrap or when you want the snapshot for retrospective fidelity.'),
+          .describe('Persist a copy of the returned state to the evidence store and log a `system` event so the retrospective can reconstruct exactly what the agent saw when it made each decision. De-duplicated within a 5s window when the state body is unchanged. Defaults to false so the tool is genuinely read-only; pass true at session bootstrap or when you want the snapshot for retrospective fidelity.'),
         since: z.string().optional()
           .describe('ISO timestamp of your last get_state call. When set, the response adds a `changes_since` summary — new findings + which sub-agents completed since then + a recommendation — so a dispatching primary sees at a glance whether to re-synthesize without scanning recent_activity. Unparseable values are ignored.'),
         compact: z.boolean().default(false).describe(COMPACT_PARAM_DESCRIPTION),

@@ -8,22 +8,26 @@ exception: it inspects persisted files without requiring a running server.
 It is **not** part of `claude`/MCP. It's a separate binary you run yourself:
 
 ```
-pane 1:  $ claude            # the model drives the engagement via MCP tools
-pane 2:  $ overwatch status   # you watch / approve / deploy directly
+pane 1:  $ npm run start:daemon  # the one Overwatch runtime owner
+pane 2:  $ claude                # the model drives it via HTTP MCP
+pane 3:  $ overwatch status      # you watch / approve / deploy directly
 ```
 
-Both panes are adapters to the **same running Overwatch daemon and durable
+All three panes are adapters to the **same running Overwatch daemon and durable
 engagement**. Start the daemon once; do not start a second copy for the
 dashboard. Claude, the terminal CLI, and dashboard-deployed agents see the same
 task leases, playbook claims, approvals, and findings. If one surface prepares
 a playbook step, the others show its owner instead of silently claiming it too.
+Dashboard-deployed Claude workers use isolated per-task MCP configuration and
+do not share the human terminal's project settings, hooks, or resumable Claude
+session.
 
 ## Prerequisites
 
 The engagement must be running (it serves the API on `:8384`):
 
 ```bash
-npm start -- --http      # or: npm run demo:daemon  (demo engagement)
+npm run start:daemon     # or: npm run demo:daemon  (demo engagement)
 ```
 
 Then, from the repo:

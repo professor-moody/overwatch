@@ -3,9 +3,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { inspectBuildFreshness } from './build-fingerprint.mjs';
 
-const root = resolve(dirname(new URL(import.meta.url).pathname), '..');
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const checks = [];
 
 function add(status, label, detail, fix) {
@@ -284,7 +285,7 @@ if (Number.isFinite(dashboardPort)) {
       'fail',
       'Dashboard port ownership',
       `port ${dashboardPort} is occupied, but its runtime identity could not be read`,
-      'Stop the process using the dashboard port before starting Overwatch, or refresh the daemon token with npm run setup -- --daemon.',
+      'Stop the process using the dashboard port before starting Overwatch, or refresh the daemon token with npm run setup.',
     );
   }
   if (mcpProbe?.status === 'reachable') {
@@ -294,7 +295,7 @@ if (Number.isFinite(dashboardPort)) {
       'fail',
       'MCP daemon endpoint',
       mcpProbe.detail,
-      'Run: npm run setup -- --daemon  (refreshes only the Overwatch MCP entry and token).',
+      'Run: npm run setup  (refreshes only the Overwatch MCP entry and token).',
     );
   } else if (mcpProbe && mcpProbe.status !== 'invalid') {
     add(
@@ -304,7 +305,7 @@ if (Number.isFinite(dashboardPort)) {
       'Run: npm run start:daemon',
     );
   } else if (mcpProbe?.status === 'invalid') {
-    add('fail', 'MCP daemon endpoint', mcpProbe.detail, 'Run: npm run setup -- --daemon');
+    add('fail', 'MCP daemon endpoint', mcpProbe.detail, 'Run: npm run setup');
   }
   if (runningDashboard && mcpProbe?.status === 'reachable') {
     add('pass', 'Shared daemon', `dashboard and MCP are both reachable`);
@@ -314,14 +315,14 @@ if (Number.isFinite(dashboardPort)) {
         'fail',
         'Process ownership',
         `An Overwatch instance is already running at http://127.0.0.1:${dashboardPort}, but Claude is configured to launch another stdio writer.`,
-        'Run: npm run setup -- --daemon  (keeps engagement.json and points Claude at the existing daemon).',
+        'Run: npm run setup  (keeps engagement.json and points Claude at the existing daemon).',
       );
     } else {
       add(
         'fail',
         'Shared daemon',
         'dashboard is reachable but the configured MCP endpoint is not usable',
-        'Confirm OVERWATCH_HTTP_PORT and rerun: npm run setup -- --daemon',
+        'Confirm OVERWATCH_HTTP_PORT and rerun: npm run setup',
       );
     }
   } else if (free && mcpMode === 'http') {

@@ -56,7 +56,8 @@ recovery evidence, not a disposable temporary file.
 
 ## Engagement state file
 
-The active engagement's full in-memory state is periodically flushed to a separate state file beside the config:
+The active engagement's durable checkpoint is stored in a separate state file
+beside the config:
 
 ```
 <config-dir>/state-<engagement-id>.json
@@ -74,10 +75,12 @@ This single JSON file contains:
 - **Chain checkpoints** — hash-chain integrity anchors (when `hash_chain_enabled: true`)
 - **External artifact references** — evidence/report manifests, tapes, bundles, and cookie jars by path/hash rather than embedded content
 
-Set `OVERWATCH_STATE_FILE=/path/to/state.json` to override the default. The
-server writes this file on every tool call that mutates state (debounced) and on
-clean shutdown. Active configuration changes also atomically update the config
-file; an API/tool success means its revision/hash matches runtime and state.
+Set `OVERWATCH_STATE_FILE=/path/to/state.json` to override the default. Durable
+mutations enter the WAL before live apply; checkpoint snapshots are
+write-triggered/debounced and are also flushed on clean shutdown. Active
+configuration changes atomically update the config file as part of their
+managed convergence path; an API/tool success means its revision/hash matches
+runtime and state.
 
 ### State format versions and migration
 
@@ -134,6 +137,10 @@ At startup, Overwatch selects the newest valid primary/snapshot base and replays
 every newer committed WAL record. Incomplete replay remains degraded and
 read-only; recovery never treats an older snapshot as permission to discard a
 malformed, unknown, skipped, or failed WAL tail.
+
+Snapshot creation is triggered by durable writes once the snapshot interval is
+eligible; there is no independent periodic timer that implies progress while
+the engagement is idle. Up to five valid snapshots are retained.
 
 ### WAL (mutation journal)
 
@@ -281,7 +288,8 @@ Bundles and graph exports inherit the same operator-confidential boundary as the
 
 Durable state includes graph/config truth, evidence references, orchestration,
 approvals, directives, proposals, questions/answers, command idempotency
-outcomes, tracked-process ownership, and secret-free session descriptors.
+outcomes, legacy tracked-process inventory, canonical runtime-run ownership, and
+secret-free session descriptors.
 
 The following remain intentionally ephemeral:
 
@@ -293,6 +301,10 @@ The following remain intentionally ephemeral:
 - path-graph projections, UI projections, telemetry buffers, and other rebuildable caches
 
 After restart, durable descriptors may say that a process or session existed,
-but no runtime handle is fabricated. Process liveness becomes `unknown`; active
-session descriptors become interrupted/non-live with only their explicit resume
-intent retained.
+but no runtime handle is fabricated. Runtime-run identity is checked before any
+signal: a verified owned orphan is finalized as interrupted, while a reused or
+unverifiable PID becomes unresolved/unknown and is never killed on guesswork.
+PTY, SSH, and socket-connect session descriptors become interrupted/non-live;
+rearm-listener descriptors become `resume_available` and require explicit
+`resume_session`, which creates a new listener/connection generation rather
+than reviving the old handle.

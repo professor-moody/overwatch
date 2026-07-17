@@ -84,7 +84,10 @@ import { buildFindings } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
 import type { ReportRecord } from './report-archive.js';
 import type { DurableApprovalRecord, PendingAction } from './pending-action-queue.js';
-import type { ToolEntry } from './prompt-generator.js';
+import {
+  buildToolRegistryManifest,
+  type ToolDescriptor,
+} from './tool-descriptor-registry.js';
 import { buildTrustSignalsResponse, type TrustSignalSeverity } from './trust-signal-summary.js';
 import { buildAgentConsoleEvents, buildOperatorConsoleEvents } from './agent-console.js';
 import { assessPersistenceRecovery } from './lab-preflight.js';
@@ -153,47 +156,6 @@ import {
   type MatchedDashboardEndpoint,
 } from '../contracts/dashboard-api-v1.js';
 
-function categorizeMcpTool(name: string): string {
-  if (['get_state', 'next_task', 'get_system_prompt', 'run_lab_preflight', 'run_graph_health', 'get_recovery_status', 'resolve_config_divergence'].includes(name)) {
-    return 'state-readiness';
-  }
-  if (
-    name.includes('session') ||
-    ['validate_action', 'log_action_event', 'run_bash', 'run_tool', 'track_process', 'check_processes'].includes(name)
-  ) {
-    return 'execution';
-  }
-  if (
-    name.includes('graph') ||
-    name.includes('ingest') ||
-    ['query_graph', 'find_paths', 'parse_output', 'report_finding', 'get_evidence', 'recompute_objectives', 'correct_graph'].includes(name)
-  ) {
-    return 'graph-data';
-  }
-  if (name.includes('agent') || name.includes('campaign')) {
-    return 'agents-campaigns';
-  }
-  if (
-    name.includes('credential') ||
-    name.includes('token') ||
-    name.includes('postgres') ||
-    ['expand_aws_credential', 'expand_github_credential', 'expand_oidc_capture', 'expand_entra_credential', 'exchange_refresh_token'].includes(name)
-  ) {
-    return 'credentials-playbooks';
-  }
-  if (
-    name.includes('report') ||
-    name.includes('timeline') ||
-    name.includes('decision') ||
-    name.includes('retrospective') ||
-    name.includes('tape') ||
-    ['get_history', 'explain_action', 'verify_activity_chain', 'bundle_engagement'].includes(name)
-  ) {
-    return 'audit-reporting';
-  }
-  return 'other';
-}
-
 export interface DashboardStartResult {
   started: boolean;
   error?: string;
@@ -258,8 +220,11 @@ export class DashboardServer {
     this.skills = skills;
   }
 
-  private mcpTools: ToolEntry[] = [];
-  attachMcpTools(tools: ToolEntry[]): void {
+  private mcpTools: ToolDescriptor[] = [];
+  attachMcpTools(tools: readonly ToolDescriptor[]): void {
+    if (tools.some(tool => typeof tool.input_schema_sha256 !== 'string')) {
+      throw new Error('Dashboard MCP inventory requires canonical tool descriptors');
+    }
     this.mcpTools = tools.slice();
   }
 
@@ -4190,24 +4155,37 @@ export class DashboardServer {
   }
 
   private serveMcpTools(res: ServerResponse): void {
+    const registry = buildToolRegistryManifest(this.mcpTools);
     const tools = this.mcpTools
       .map(tool => ({
         name: tool.name,
         title: tool.title,
         description: tool.description,
-        category: tool.category ?? categorizeMcpTool(tool.name),
+        category: tool.category,
+        category_label: tool.category_label,
+        category_order: tool.category_order,
         read_only: tool.read_only,
         destructive: tool.destructive,
         idempotent: tool.idempotent,
         open_world: tool.open_world,
+        input_schema_sha256: tool.input_schema_sha256,
+        output_schema_sha256: tool.output_schema_sha256,
+        documentation: tool.documentation,
+        archetype_exposure: tool.archetype_exposure,
+        persistence: tool.persistence,
       }))
-      .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+      .sort((a, b) => a.category_order - b.category_order || a.name.localeCompare(b.name));
     const categories = tools.reduce((acc: Record<string, number>, tool) => {
       acc[tool.category] = (acc[tool.category] || 0) + 1;
       return acc;
     }, {});
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ total: tools.length, categories, tools }));
+    res.end(JSON.stringify({
+      total: tools.length,
+      registry_sha256: registry.registry_sha256,
+      categories,
+      tools,
+    }));
   }
 
   private serveReadiness(res: ServerResponse): void {

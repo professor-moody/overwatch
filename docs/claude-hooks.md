@@ -11,7 +11,20 @@ A `git pull` gives you the shared pieces:
 - `.mcp.example.json` — copyable MCP server configuration.
 - `CLAUDE.md`, `AGENTS.md`, and the generated system prompt updates.
 
-It does **not** activate MCP or hooks by itself. `.mcp.json` and `.claude/settings.json` are intentionally gitignored because they contain machine-specific paths. Every operator creates both local files from the examples.
+It does **not** activate MCP or hooks by itself. `.mcp.json` and
+`.claude/settings.json` are intentionally gitignored because they contain
+machine-specific paths. The recommended daemon setup creates both safely:
+
+```bash
+npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+```
+
+That command preserves other MCP entries, keeps an existing `engagement.json`
+unless you explicitly use `--force`, writes the shared HTTP MCP credential, and
+creates hook settings when they are absent (an existing settings file is
+preserved). Use the manual example-copying flow below only when you intentionally
+want the solo stdio compatibility mode or need to merge an existing custom
+configuration by hand.
 
 ## `.mcp.json` vs `.claude/settings.json`
 
@@ -22,20 +35,21 @@ The recommended setup uses two local config files:
 | `.mcp.json` | MCP server definitions such as `mcpServers.overwatch` | No |
 | `.claude/settings.json` | Claude Code project settings, including hooks; may also contain `mcpServers` | No |
 
-For a new checkout:
+For a manually configured **solo stdio** checkout:
 
 ```bash
 cp .mcp.example.json .mcp.json
 cp .claude/settings.example.json .claude/settings.json
 ```
 
-Then edit `.mcp.json` with your absolute paths. Leave `.claude/settings.json` as hooks-only unless you intentionally keep MCP config there too.
+Then edit `.mcp.json` with your absolute paths. Leave `.claude/settings.json` as hooks-only unless you intentionally keep MCP config there too. Do not use this stdio shape alongside a running daemon; run the default `npm run setup` so terminal Claude connects to the one existing owner.
 
 Do **not** assume copying `.claude/settings.example.json` replaces `.mcp.json`. They are different files for different jobs.
 
-## Required local setup
+## Manual solo-stdio setup
 
-Use this exact two-file setup for a new checkout:
+Use this exact two-file setup only when one Claude session should launch and own
+Overwatch itself:
 
 ```bash
 cp .mcp.example.json .mcp.json
@@ -82,6 +96,27 @@ Only use this alternate shape if your MCP server is configured in `.claude/setti
 If you already have `.claude/settings.json`, keep your existing content and paste in the full `"hooks"` object from `.claude/settings.example.json`.
 
 Use absolute paths for MCP config whether it lives in `.mcp.json` or `.claude/settings.json`. Keep `${CLAUDE_PROJECT_DIR}` exactly as written in hook args; Claude Code expands it to this repo path.
+
+## Terminal Claude and dashboard workers
+
+Project hooks and `.mcp.json` configure the **human-operated terminal Claude
+session**. Dashboard-deployed planners and agents intentionally do not load
+them. The daemon launches each managed worker with:
+
+- a temporary `0600`, task-specific MCP configuration that points back to the
+  existing daemon;
+- strict MCP configuration, so an old/project stdio server cannot be merged;
+- `user` as the only Claude setting source, preserving normal authentication
+  without loading project/local hooks or settings;
+- Claude session persistence disabled, so agent runs do not pollute the human
+  terminal's resume list;
+- an archetype-specific Overwatch tool allowlist.
+
+The worker and terminal still see the same Overwatch tasks, findings, approvals,
+frontier leases, and durable playbook claims. This is the intended coexistence
+model: **one shared Overwatch runtime, separate Claude processes and sessions**.
+Run `npm run doctor` to verify that the installed Claude CLI supports the worker
+isolation flags before relying on dashboard planners or agents.
 
 ## What the hooks do
 

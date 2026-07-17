@@ -8,7 +8,7 @@ For current development direction, see the [Roadmap](roadmap.md). For a commit-b
 npm run build    # Compile TypeScript + copy dashboard assets
 npm run dev      # Watch mode (tsc --watch)
 npm start        # Run server (stdio)
-npm start -- --http  # Run server (HTTP/SSE transport)
+npm run start:daemon # Run the shared Streamable HTTP daemon
 npm test         # Run fast source-level tests
 npm run test:integration:stdio   # Fresh-build stdio integration suite
 npm run test:integration:http    # Fresh-build HTTP transport integration suite
@@ -82,7 +82,7 @@ overwatch/
 │   │   ├── subagent-ipc.ts   # P4.2 — typed JSON-over-stdio sub-agent contract
 │   │   ├── subagent-process-runner.ts # P4.2 — parent-side runner (in-memory or spawn)
 │   │   ├── skill-index.ts    # TF-IDF search over skill library
-│   │   ├── parsers/          # 75 parsers / 130 parse_output keys: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler, burp, zap, sqlmap, wpscan, httpx, dnsx, amass, subfinder, crtsh, whois, theharvester, trufflehog, secretfinder, linkfinder, openapi/swagger/graphql, security-headers, gowitness/aquatone, katana/hakrawler/gau, test-webapp-credential, …
+│   │   ├── parsers/          # Parser implementations; generated alias count in docs index
 │   │   ├── parser-utils.ts   # Shared parsing helpers
 │   │   ├── credential-utils.ts # Credential normalization, lifecycle, and domain inference
 │   │   ├── provenance-utils.ts # Source attribution tracking
@@ -120,7 +120,7 @@ overwatch/
 │       ├── app-bootstrap.test.ts
 │       ├── mcp-server.integration.test.ts
 │       └── http-transport.integration.test.ts
-├── skills/                   # 43 offensive methodology guides
+├── skills/                   # Offensive methodology guides (generated count in docs index)
 ├── engagement.json           # Engagement configuration
 ├── mkdocs.yml                # Documentation config
 └── docs/                     # Documentation source
@@ -135,7 +135,7 @@ Tests use [Vitest](https://vitest.dev/). The source suite is now **4000+ tests a
 ```bash
 npm test                        # Fast source tests (see Vitest summary for current count)
 npm run test:integration:stdio  # Stdio MCP integration (build-backed)
-npm run test:integration:http   # HTTP/SSE transport integration (build-backed)
+npm run test:integration:http   # Streamable HTTP transport integration (build-backed)
 npm run verify                  # All of the above + dist freshness check
 ```
 
@@ -224,7 +224,7 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `lab-smoke.test.ts` | Lab smoke test CLI harness |
 | `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and MCP tool registration |
 | `mcp-server.integration.test.ts` | End-to-end MCP protocol via fresh-built stdio server |
-| `http-transport.integration.test.ts` | HTTP/SSE transport: tool listing, state, findings, concurrent sessions |
+| `http-transport.integration.test.ts` | Streamable HTTP transport: tool listing, state, findings, concurrent sessions |
 
 ### Dashboard Review Checklist
 

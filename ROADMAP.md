@@ -1,6 +1,13 @@
-# Overwatch Roadmap
+# Archived: Overwatch Roadmap (2026-04-27)
 
-Last updated: 2026-04-27 (Phase 6, 4.2, 4.4 completed)
+> **Historical document.** This roadmap is preserved to explain the original
+> phase plan; it is not the current backlog or architecture description. Many
+> implementation notes, counts, dashboard assumptions, and future-tense items
+> below were superseded by later work. Use
+> [`docs/roadmap.md`](docs/roadmap.md) for current priorities and
+> [`docs/development-timeline.md`](docs/development-timeline.md) for landed work.
+
+Archived snapshot: 2026-04-27 (Phase 6, 4.2, 4.4 completed)
 
 This roadmap captures planned capabilities organized into prioritized phases. Items within each phase are roughly ordered by expected impact. Phase ordering reflects dependencies and strategic priority, not strict sequencing — work can overlap across phases.
 

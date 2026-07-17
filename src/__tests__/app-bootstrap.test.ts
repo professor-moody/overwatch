@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
@@ -13,6 +15,17 @@ import { registerEngagementTools } from '../tools/engagement.js';
 import { withErrorBoundary } from '../tools/error-boundary.js';
 import { verifyStateMigrationBackup } from '../services/state-migration.js';
 import { getApplicationCommandInvocation } from '../services/application-command-service.js';
+import {
+  buildToolRegistryManifest,
+  canonicalJson,
+} from '../services/tool-descriptor-registry.js';
+
+const completeAnnotations = (readOnlyHint: boolean) => ({
+  readOnlyHint,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: false,
+});
 
 function recoveryConfig(): EngagementConfig {
   return {
@@ -73,9 +86,9 @@ describe('app bootstrap', () => {
           }
         : { status: 'missing' },
     });
-    registrar.registerTool('actor_probe', {
+    registrar.registerTool('get_history', {
       description: 'returns command invocation ownership',
-      annotations: { readOnlyHint: true },
+      annotations: completeAnnotations(true),
     }, async () => ({
       content: [{
         type: 'text' as const,
@@ -83,11 +96,11 @@ describe('app bootstrap', () => {
       }],
     }));
 
-    const dashboardAgent = await handlers.get('actor_probe')!(
+    const dashboardAgent = await handlers.get('get_history')!(
       { agent_id: 'dashboard-agent' },
       { requestId: 1, sessionId: 'dashboard-agent-session' },
     ) as { content: Array<{ text: string }> };
-    const terminalPrimary = await handlers.get('actor_probe')!(
+    const terminalPrimary = await handlers.get('get_history')!(
       {},
       { requestId: 1, sessionId: 'terminal-primary-session' },
     ) as { content: Array<{ text: string }> };
@@ -101,11 +114,11 @@ describe('app bootstrap', () => {
       session_id: 'terminal-primary-session',
     });
 
-    const bareRetryA = await handlers.get('actor_probe')!(
+    const bareRetryA = await handlers.get('get_history')!(
       {},
       { requestId: 7 },
     ) as { content: Array<{ text: string }> };
-    const bareRetryB = await handlers.get('actor_probe')!(
+    const bareRetryB = await handlers.get('get_history')!(
       {},
       { requestId: 7 },
     ) as { content: Array<{ text: string }> };
@@ -951,6 +964,10 @@ describe('app bootstrap', () => {
       skillDir: resolve('./skills'),
       dashboardPort: 0,
     });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'tool-schema-parity', version: '1.0.0' });
+    await app.server.connect(serverTransport);
+    await client.connect(clientTransport);
 
     const toolNames: string[] = [];
     const fakeServer = {
@@ -961,7 +978,7 @@ describe('app bootstrap', () => {
     } as any;
 
     try {
-      registerAllTools(fakeServer, {
+      const registeredTools = registerAllTools(fakeServer, {
         engine: app.engine,
         skills: app.skills,
         processTracker: app.processTracker,
@@ -970,9 +987,23 @@ describe('app bootstrap', () => {
         getDashboardStatus: () => ({ enabled: false, running: false }),
       });
 
-      // Minimum expected tool count — increase this when adding new tools
-      expect(toolNames).toHaveLength(91);
-      expect(new Set(toolNames).size).toBe(91);
+      const publicManifest = JSON.parse(readFileSync(
+        resolve('./docs/reference/tool-schema-manifest.json'),
+        'utf8',
+      ));
+      const runtimeManifest = buildToolRegistryManifest(registeredTools);
+      expect(runtimeManifest).toEqual({
+        manifest_version: publicManifest.manifest_version,
+        tool_count: publicManifest.tool_count,
+        registry_sha256: publicManifest.registry_sha256,
+        categories: publicManifest.categories,
+        tools: publicManifest.tools,
+      });
+      expect(toolNames).toHaveLength(publicManifest.tool_count);
+      expect(new Set(toolNames).size).toBe(publicManifest.tool_count);
+      expect(toolNames.slice().sort()).toEqual(
+        publicManifest.tools.map((tool: { name: string }) => tool.name).sort(),
+      );
       expect(toolNames).toContain('get_state');
       expect(toolNames).toContain('list_playbook_runs');
       expect(toolNames).toContain('start_playbook_step');
@@ -986,6 +1017,20 @@ describe('app bootstrap', () => {
       expect(toolNames).toContain('set_opsec');
       expect(toolNames).toContain('close_session');
       expect(toolNames).toContain('resume_session');
+
+      // Hashes and the checked manifest must describe the schema that an actual
+      // MCP client receives, including the SDK's empty-object behavior.
+      const listed = await client.listTools();
+      const listedByName = new Map(listed.tools.map(tool => [tool.name, tool]));
+      expect(listedByName.size).toBe(app.registeredTools.length);
+      for (const descriptor of app.registeredTools) {
+        const sdkTool = listedByName.get(descriptor.name);
+        expect(sdkTool, descriptor.name).toBeDefined();
+        expect(canonicalJson(descriptor.input_schema), descriptor.name)
+          .toBe(canonicalJson(sdkTool!.inputSchema));
+        expect(canonicalJson(descriptor.output_schema), descriptor.name)
+          .toBe(canonicalJson(sdkTool!.outputSchema ?? null));
+      }
       expect(toolNames).toContain('update_scope');
       expect(toolNames).toContain('get_system_prompt');
       expect(toolNames).toContain('ingest_azurehound');
@@ -993,6 +1038,7 @@ describe('app bootstrap', () => {
       expect(toolNames).toContain('get_recovery_status');
       expect(toolNames).toContain('resolve_config_divergence');
     } finally {
+      await client.close();
       await shutdownOverwatchApp(app);
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1094,43 +1140,43 @@ describe('app bootstrap', () => {
     });
     let mutationCalls = 0;
     let readCalls = 0;
-    registrar.registerTool('mutating_test', {
+    registrar.registerTool('add_objective', {
       description: 'mutates',
-      annotations: { readOnlyHint: false },
+      annotations: completeAnnotations(false),
     }, async () => {
       mutationCalls++;
       return { content: [{ type: 'text' as const, text: 'mutated' }] };
     });
-    registrar.registerTool('read_test', {
+    registrar.registerTool('get_history', {
       description: 'reads',
-      annotations: { readOnlyHint: true },
+      annotations: completeAnnotations(true),
     }, async () => {
       readCalls++;
       return { content: [{ type: 'text' as const, text: 'read' }] };
     });
     registrar.registerTool('get_state', {
       description: 'conditionally snapshots',
-      annotations: { readOnlyHint: true },
+      annotations: completeAnnotations(true),
     }, async () => ({ content: [{ type: 'text' as const, text: 'state' }] }));
     registrar.registerTool('get_system_prompt', {
       description: 'conditionally snapshots despite a mutating annotation',
-      annotations: { readOnlyHint: false },
+      annotations: completeAnnotations(false),
     }, async () => ({ content: [{ type: 'text' as const, text: 'prompt' }] }));
     registrar.registerTool('check_processes', {
       description: 'refreshes durable process status despite a read annotation',
-      annotations: { readOnlyHint: true },
+      annotations: completeAnnotations(true),
     }, async () => ({ content: [{ type: 'text' as const, text: 'processes' }] }));
     let recoveryResolutionCalls = 0;
     registrar.registerTool('resolve_config_divergence', {
       description: 'the narrow configuration recovery mutation',
-      annotations: { readOnlyHint: false },
+      annotations: completeAnnotations(false),
     }, async () => {
       recoveryResolutionCalls++;
       return { content: [{ type: 'text' as const, text: 'resolved' }] };
     });
 
-    const blocked = await handlers.get('mutating_test')!({});
-    const allowed = await handlers.get('read_test')!({});
+    const blocked = await handlers.get('add_objective')!({});
+    const allowed = await handlers.get('get_history')!({});
     const snapshotBlocked = await handlers.get('get_state')!({ snapshot: true });
     const stateAllowed = await handlers.get('get_state')!({ snapshot: false });
     const promptSnapshotBlocked = await handlers.get('get_system_prompt')!({ snapshot: true });
@@ -1207,15 +1253,15 @@ describe('app bootstrap', () => {
     });
     const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
-      registrar.registerTool('late_boundary_failure', {
+      registrar.registerTool('set_opsec', {
         description: 'fails during a durable write',
-        annotations: { readOnlyHint: false },
+        annotations: completeAnnotations(false),
       }, withErrorBoundary('late_boundary_failure', async () => {
         writable = false;
         throw Object.assign(new Error('config fsync failed'), { code: 'ENOSPC' });
       }));
 
-      const result = await handlers.get('late_boundary_failure')!({}) as {
+      const result = await handlers.get('set_opsec')!({}) as {
         isError?: boolean;
         content: Array<{ text: string }>;
       };
@@ -1355,7 +1401,7 @@ describe('app bootstrap', () => {
     });
     registrar.registerTool('run_tool', {
       description: 'instrumented target process',
-      annotations: { readOnlyHint: false },
+      annotations: completeAnnotations(false),
     }, async () => {
       recovery = lateRecovery;
       return {
@@ -1439,16 +1485,16 @@ describe('app bootstrap', () => {
       isPersistenceWritable: () => writable,
       getPersistenceRecoveryStatus: recovery,
     });
-    registrar.registerTool('late_rejection', {
+    registrar.registerTool('update_scope', {
       description: 'rejects after storage fails',
-      annotations: { readOnlyHint: false },
+      annotations: completeAnnotations(false),
     }, async () => {
       writable = false;
       throw Object.assign(new Error('state rename failed'), { code: 'EIO' });
     });
-    registrar.registerTool('ordinary_failure', {
+    registrar.registerTool('correct_graph', {
       description: 'returns an ordinary validation failure',
-      annotations: { readOnlyHint: false },
+      annotations: completeAnnotations(false),
     }, async () => ({
       content: [{
         type: 'text' as const,
@@ -1457,7 +1503,7 @@ describe('app bootstrap', () => {
       isError: true,
     }));
 
-    const rejected = await handlers.get('late_rejection')!({}) as { content: Array<{ text: string }> };
+    const rejected = await handlers.get('update_scope')!({}) as { content: Array<{ text: string }> };
     const rejectedPayload = JSON.parse(rejected.content[0].text);
     expect(rejectedPayload).toMatchObject({
       error: 'state rename failed',
@@ -1466,7 +1512,7 @@ describe('app bootstrap', () => {
     });
 
     writable = true;
-    const ordinary = await handlers.get('ordinary_failure')!({}) as { content: Array<{ text: string }> };
+    const ordinary = await handlers.get('correct_graph')!({}) as { content: Array<{ text: string }> };
     expect(JSON.parse(ordinary.content[0].text)).toEqual({
       success: false,
       error: 'target is required',
@@ -1518,7 +1564,7 @@ describe('app bootstrap', () => {
     });
     registrar.registerTool('resolve_config_divergence', {
       description: 'reconciles configuration',
-      annotations: { readOnlyHint: false },
+      annotations: completeAnnotations(false),
     }, async () => {
       attempt++;
       if (attempt === 1) {

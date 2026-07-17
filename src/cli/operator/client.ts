@@ -57,7 +57,7 @@ async function request<T>(opts: ClientOptions, method: string, path: string, bod
     });
   } catch {
     throw new ApiError(
-      `Overwatch server not reachable at ${opts.url}. Start it with \`npm start -- --http\` (or pass --url / set OVERWATCH_URL).`,
+      `Overwatch server not reachable at ${opts.url}. Start it with \`npm run start:daemon\` (or pass --url / set OVERWATCH_URL).`,
     );
   }
 

@@ -1,16 +1,22 @@
-# Prompt Architecture Review
+# Archived: Prompt Architecture Review
+
+!!! warning "Historical design review — 2026-06-28"
+    This document records the reasoning that led to the prompt changes. Both
+    step (a) and the context-first step (b) have since landed. The `lean`
+    sub-agent prompt is now the default; `OVERWATCH_PROMPT_VARIANT=control`
+    selects the prior prompt as a one-release rollback. Use
+    [Prompt Step (b)](prompt-stepb-design.md) and the live generated system prompt
+    for current behavior.
 
 A review of how Overwatch instructs the model — the generated system prompt and
 the layers around it — and options for evolving it. **This is an analysis to
 inform a decision; it proposes no code changes.** The source of truth at runtime
 is [`src/services/prompt-generator.ts`](https://github.com/professor-moody/overwatch/blob/main/src/services/prompt-generator.ts).
 
-> **Status:** the recommended **step (a)** has since been implemented — the
-> identity persona opener was trimmed to a one-line role tag, `AGENTS.md`'s Core
-> Loop / Key Principles were condensed to defer to `get_system_prompt` (single
-> source of truth), and a prompt-size guard test was added. The persona quotes
-> below describe the **pre-trim** prompt. The context-first restructure (step b)
-> remains parked behind a behavior eval.
+> **Historical status:** step (a) was implemented after this review. Step (b)
+> later shipped as the default `lean` sub-agent prompt behind deterministic and
+> real-model evaluation work. The analysis and quoted prompts below describe the
+> earlier decision point, not the current runtime.
 
 ## TL;DR
 
@@ -135,4 +141,5 @@ gated on a behavior eval. Concrete first step for a follow-up plan:
 2. Rewrite the `identity` opener to lead with the briefing + a one-line role tag.
 3. Add a prompt-size assertion / snapshot test so token cost is tracked.
 
-None of this is implemented here — this document exists to choose the direction.
+This review itself implemented no code. Its recommendations have since been
+evaluated and landed as described in the archive notice above.

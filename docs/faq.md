@@ -6,7 +6,18 @@ Frequently asked questions about Overwatch.
 
 ### How does Overwatch survive context compaction?
 
-The engagement graph lives **outside** the context window — it's persisted in the MCP server process and on disk. When Claude Code compacts, it loses the conversation history but not the graph. The `AGENTS.md` file instructs Claude to call `get_state()` as its first action in any new or compacted session, which reconstructs a complete briefing from the graph: scope, discoveries, access, frontier, agents, and recent activity.
+Durable engagement truth lives **outside** the context window in the Overwatch
+daemon and its persisted state. When Claude Code compacts, it may lose
+conversation detail, but it can rebuild an operational briefing by calling
+`get_state()`: scope, discoveries, access, objectives, frontier, agents, and
+recent activity. That briefing is not a lossless export of every event or
+evidence byte. Retrieve those through `get_history`, `get_evidence`, reports,
+or `bundle_engagement`.
+
+Live PTYs, socket connections, process objects, terminal buffers, and database
+connections are ephemeral. Overwatch persists truthful descriptors and resume
+intent where supported; it does not claim those live handles survived a
+process restart.
 
 See [Compaction](concepts.md#compaction) for details.
 
@@ -16,7 +27,11 @@ Not in a single server instance. Each Overwatch server runs one engagement. To r
 
 ### Can I use this with models other than Claude?
 
-Overwatch is a standard MCP server. Today the shipped runtime transport is stdio, and any MCP-compatible client that can talk to a stdio MCP server can connect to it. However, the `AGENTS.md` session instructions and sub-agent dispatch are written for Claude Code specifically. You'd need to adapt the session instructions for other clients.
+Overwatch is a standard MCP server with stdio and authenticated streamable HTTP
+transports. Any compatible client can use the corresponding transport. The
+shipped `AGENTS.md` session instructions and managed headless-agent runner are
+written for Claude Code specifically; another model/client needs equivalent
+operator instructions and may not support dashboard-managed workers.
 
 The core server functionality (graph operations, inference rules, parsers, persistence) is model-agnostic.
 
@@ -42,13 +57,17 @@ reports, and rollback authority.
 
 ### How do I resume a previous engagement?
 
-Just start the server with the same `OVERWATCH_CONFIG`. The server automatically loads the persisted state file (`state-<engagement-id>.json`) if it exists. Call `get_state` to see where you left off.
+Start the same daemon with the same `OVERWATCH_CONFIG` and state path. It loads
+the newest valid base and replays complete committed journal transactions. Call
+`get_recovery_status` (or `overwatch recovery`) first if startup is degraded,
+then `get_state` for the current operational briefing. Do not delete state,
+snapshots, WAL, or intents to force startup.
 
 ## Graph & Findings
 
 ### What's the difference between `parse_output` and `report_finding`?
 
-- **`parse_output`** \u2014 deterministic parser for supported tools (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler, burp, zap, sqlmap, wpscan). Extracts structured nodes/edges without LLM involvement. Token-efficient and consistent. Accepts an optional `context` parameter for domain and source host hints.
+- **`parse_output`** — deterministic parser for supported tools (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler, burp, zap, sqlmap, wpscan). Extracts structured nodes/edges without LLM involvement. Token-efficient and consistent. Its shared parser context can carry credential, tenant, repository/branch, cloud, target, domain, host, and provider-extension attribution.
 - **`report_finding`** — manual finding submission for unsupported tools, analyst observations, or already-structured data. The LLM constructs the nodes and edges.
 
 Use `parse_output` whenever possible. See [parse_output vs report_finding](playbook/parse-vs-report.md) for detailed guidance.
@@ -112,14 +131,53 @@ The sub-agent then calls [`get_agent_context`](tools/get-agent-context.md) with 
 
 ### Can agents conflict with each other?
 
-Agents write to the same graph concurrently. The engine handles this safely:
+Terminal Claude, the dashboard, the CLI, and managed agents intentionally share
+one engine. The engine coordinates them through application-command
+idempotency, frontier leases, durable playbook ownership, and transactional
+writes:
 
 - Node IDs are deterministic, so duplicate discoveries merge automatically.
 - Edge properties are merged (higher confidence wins).
 - Inference rules fire on each new finding independently.
-- The activity log preserves the full timeline from all agents.
+- The activity log preserves the ordered sequence of recorded events from all agents.
+- A duplicate command/idempotency key returns its original outcome rather than
+  dispatching twice.
+- A playbook step has one active owner/attempt; an operator who decides not to
+  run a prepared step releases it with `interrupt_playbook_attempt`.
 
 For **frontier item** races (two agents trying to claim the same item), the engine takes a TTL lease at `register_agent` time. The losing agent gets `lease_conflict` and picks a different item. See [Concepts → Agent Heartbeat and Watchdog](concepts.md#agent-heartbeat-and-watchdog) and [`register_agent`](tools/register-agent.md).
+
+Run exactly one Overwatch daemon for an engagement. The default `npm run setup`
+points terminal Claude at that owner; it must not launch a parallel stdio
+writer.
+
+### Will dashboard agents interfere with Claude in my terminal?
+
+They share engagement state on purpose, but they do not share a Claude session.
+Each dashboard-managed worker launches with a temporary task-specific MCP
+configuration, strict MCP isolation, user-only Claude settings, and Claude
+session persistence disabled. This keeps your normal user authentication while
+excluding the terminal checkout's project MCP servers, hooks/settings, and
+resume history. Durable task leases and playbook ownership coordinate actual
+Overwatch work across both surfaces.
+
+If planners repeatedly fail immediately, run `npm run doctor`: it verifies that
+the installed Claude CLI supports the isolation flags required by managed
+workers. Also confirm the daemon build matches the checkout.
+
+### Why does a dashboard planner appear stuck or finish without a plan?
+
+Planning is asynchronous and server-owned. The dashboard records the command
+and planner task, follows that durable command across reloads, and does not
+declare failure merely because a browser timer expired. If the worker exits
+without calling `propose_plan`, the command records that terminal outcome.
+
+Run `npm run doctor` first. It catches the two common local causes: a running
+daemon built from an older checkout, and a Claude CLI that lacks the strict MCP,
+setting-source, or no-session-persistence flags required for isolated workers.
+For a genuine worker failure, inspect `logs/agents/<task-id>.ndjson`; the task ID
+is shown in the Fleet/command activity. Preserve that log when reporting the
+problem.
 
 ### What's `engagement_nonce`? Why do new engagements have it but old ones don't?
 
@@ -131,7 +189,7 @@ The `engagement_nonce` is 32 random bytes minted at engagement creation. When pr
 
 They cover different attack surfaces:
 
-- **Hash chain** (`hash_chain_enabled`, default true) protects the **activity log**. Each event carries `prev_hash` + `event_hash`. Modifying any old entry breaks the chain and is detectable via [`verify_activity_chain`](tools/sessions.md). Signed checkpoints let verifiers resume without re-walking from genesis.
+- **Hash chain** (`hash_chain_enabled`, default true) protects the **activity log**. Each event carries `prev_hash` + `event_hash`. Modifying any old entry breaks the chain and is detectable via [`verify_activity_chain`](tools/verify-activity-chain.md). Signed checkpoints let verifiers resume without re-walking from genesis.
 - **Content-addressed evidence** protects the **evidence files on disk**. Each evidence row's `content_hash = sha256(content)`. Tampering with content changes the address; the manifest no longer resolves. `get_evidence` lookups accept either UUID or hash.
 
 You want both: the chain proves the log is intact, the addresses prove the evidence is intact.
@@ -144,7 +202,12 @@ Open `http://localhost:8384` (or your configured port) in any modern browser. It
 
 ### Can I interact with the graph from the dashboard?
 
-The dashboard is **read-only** — you can explore, search, filter, and highlight but not modify the graph. All mutations go through MCP tools.
+Yes. Graph exploration itself is read-mostly, but the dashboard is an operator
+surface, not a read-only viewer. You can dispatch and steer agents, approve or
+deny actions, manage campaigns and durable credential playbooks, edit active
+scope/settings, reconcile configuration recovery, and generate reports. Those
+mutations use the same validated command and persistence services as MCP and
+the CLI.
 
 You can:
 
@@ -156,14 +219,36 @@ You can:
 - Toggle **Attack Path** overlay to see the actual path taken (gold) and compare against the theoretical shortest path (cyan)
 - Toggle **Credential Flow** to visualize credential relationships and derivation chains with status badges
 - View credential derivation chains in the node detail panel
+- Dispatch a canonical frontier item or ad-hoc target
+- Approve actions and answer agent questions
+- Confirm planner proposals and manage campaigns/playbooks
 
 ### The dashboard is blank or shows errors
 
-- Check that `OVERWATCH_DASHBOARD_PORT` is not `0` (disabled)
-- Verify the port isn't in use by another process
+- Run `npm run doctor`. It detects a stale compiled dashboard/runtime, an old
+  daemon with a different build, unsupported managed-worker Claude flags, an
+  unusable MCP token, and unexpected port ownership.
+- Check that `OVERWATCH_DASHBOARD_PORT` is not `0` (disabled).
+- Verify the port is not owned by another process. Overwatch deliberately
+  refuses to start a second runtime owner.
+- After a pull, stop the old daemon, reinstall dependencies, build, run
+  `npm run doctor`, start `npm run start:daemon` once, then hard-reload the
+  browser.
+- If a recovery banner reports read-only mode, inspect `overwatch recovery`.
+  Do not delete engagement state; reconcile only with the exact hashes and
+  allowed mode shown by the service.
 - Open the browser console (F12) for JavaScript errors
 - The dashboard requires WebGL — check browser compatibility
 - Try a hard refresh (Ctrl+Shift+R)
+
+### How do I open a remote authenticated dashboard?
+
+Set `OVERWATCH_DASHBOARD_TOKEN` on a non-loopback deployment and enter through
+`https://host/?token=<token>`. The dashboard stores the token for the tab under
+`overwatch.dashboard.token`, scrubs it from browser history, sends Bearer auth
+on API/media/download requests, and adds an encoded token to its main, session,
+and action-output WebSocket URLs. If session storage is blocked, the token lasts
+only for that page lifetime. Use TLS for remote access.
 
 ## OPSEC
 

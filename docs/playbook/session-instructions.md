@@ -33,7 +33,7 @@ flowchart TD
 
 In plain words:
 
-1. **Start by reading state.** `get_state()` gives the full briefing — scope, discoveries, access, objectives, frontier. Every session starts here, including after compaction.
+1. **Start by reading state.** `get_state()` gives an operational briefing — scope, discoveries, access, objectives, frontier, and current coordination state. Every session starts here, including after compaction. It is not a full history/evidence export.
 2. **Look at the frontier.** `next_task()` returns candidates already filtered by the deterministic layer (out-of-scope / duplicate / OPSEC-vetoed items are gone).
 3. **Pick the best one.** This is where the AI does real work — score by chain potential, sequencing, risk, distance to objective.
 4. **Validate.** `validate_action()` returns an `action_id` and a verdict.
@@ -43,7 +43,7 @@ In plain words:
 
 ## Key principles
 
-- **The graph is memory.** After compaction, `get_state()` rebuilds everything. Don't try to hold engagement state in context.
+- **Durable state is outside model context.** After compaction, use `get_state()` to rebuild the working briefing instead of relying on conversational memory. Use `get_history`, `get_evidence`, or `bundle_engagement` for records and artifacts omitted from the briefing. Live PTYs, sockets, process objects, and buffers are ephemeral even when their descriptors or resume intent persist.
 - **Report early, report often.** Every `report_finding` triggers inference rules that may surface new attack paths.
 - **Always thread `frontier_item_id`.** From `next_task` → `validate_action` → `log_action_event` → `parse_output` / `report_finding`. Without it, retrospectives lose causal attribution.
 - **Validate before executing.** Catches scope, OPSEC, and impossible-target issues before you waste an action.
@@ -68,7 +68,14 @@ When dispatching agents with `register_agent`, give them this charter:
 >
 > Validate first, log start, execute, parse/report, log completion. The primary will mark you done.
 
-The full charter (with all 49 sub-agent tools and per-tool guidance) is in [`AGENTS.md`](https://github.com/professor-moody/overwatch/blob/main/AGENTS.md).
+The generated full charter and current per-tool guidance are in [`AGENTS.md`](https://github.com/professor-moody/overwatch/blob/main/AGENTS.md).
+
+In the recommended daemon mode, terminal Claude and dashboard-managed workers
+are separate Claude processes attached to the same Overwatch engine. Managed
+workers use task-specific strict MCP configuration, user-only Claude settings,
+and no Claude session persistence, so the terminal's project settings/hooks and
+resume history do not override a scoped agent or planner prompt. Overwatch task
+leases and durable playbook ownership coordinate the shared work.
 
 ## Customizing the prompt
 

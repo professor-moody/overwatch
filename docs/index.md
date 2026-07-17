@@ -2,7 +2,7 @@
 
 **An MCP server that gives Claude a persistent engagement graph for offensive security operations.**
 
-The core problem with LLM-driven pentesting: context windows are finite but engagements aren't. Every credential, lateral movement path, and discovered host matters — and they accumulate faster than they fit in a prompt. Overwatch solves this by moving state out of the context window entirely. The LLM calls tools. A persistent server holds the graph. Compaction, restarts, and agent handoffs lose nothing.
+The core problem with LLM-driven pentesting: context windows are finite but engagements aren't. Every credential, lateral movement path, and discovered host matters — and they accumulate faster than they fit in a prompt. Overwatch moves durable engagement truth out of the context window. The model calls tools; a persistent server holds the graph, coordination records, and artifact references. Ephemeral runtime handles such as live PTYs, sockets, and process objects are deliberately not reconstructed after restart.
 
 ---
 
@@ -10,44 +10,48 @@ The core problem with LLM-driven pentesting: context windows are finite but enga
 
 You run Overwatch as an MCP server alongside Claude. As you work an engagement, every discovery feeds into a directed property graph: hosts, credentials, services, users, cloud identities, and the relationships between them. The LLM queries this graph to plan next steps, validates actions against scope and OPSEC constraints, and dispatches sub-agents for parallel work — all without you having to manually track state between sessions.
 
-There is **one engine, two surfaces**: you drive the same `GraphEngine` from the **terminal** (Claude over MCP) and from the **dashboard** (a live web UI) — an approval in one resumes a blocked agent in the other. See the [Runtime Model](runtime-model.md) for how they tie together.
+There is **one engine, several coordinated surfaces**: terminal Claude over MCP, the browser dashboard, the `overwatch` CLI, and dashboard-deployed agents all use the same daemon. An approval in one surface is visible in the others, and task leases prevent two workers from silently owning the same work. See the [Runtime Model](runtime-model.md) for how they tie together.
 
-After a compaction or restart, one call to [`get_state()`](tools/get-state.md) reconstructs a full engagement briefing from the graph. You pick up exactly where you left off.
+After compaction or restart, [`get_state()`](tools/get-state.md) returns an operational briefing: scope, discoveries, access, objectives, agents, and the current frontier. It is not a lossless export of every historical event or evidence byte. Use `get_history`, `get_evidence`, and `bundle_engagement` when you need the full records and referenced artifacts.
 
 ## Key Features
 
-- **[Graph-based state](graph-model.md)** — 30 node types, 90 edge types. Every attack path is a traversable route through the engagement graph, not a list of notes.
-- **[Inference engine](architecture.md#inference-rules)** — 64 built-in rules that fire when findings land (e.g., "OIDC audience matches AWS STS → probable AssumeRoleWithWebIdentity"). Surfaces follow-on opportunities as scored frontier items automatically.
+- **[Graph-based state](graph-model.md)** — Every attack path is a traversable route through the engagement graph, not a list of notes. Current generated counts appear below.
+- **[Inference engine](concepts.md#inference-rules)** — Built-in rules fire when findings land (e.g., "OIDC audience matches AWS STS → probable AssumeRoleWithWebIdentity") and surface follow-on opportunities as scored frontier items automatically.
 - **[Credential lifecycle intelligence](concepts.md#credential-lifecycle)** — Captured tokens track status (active/stale/expired), reachability via confirmed edges, expiry estimation, and provenance. The Credentials dashboard tab shows all of this at a glance.
-- **[MCP tool reference](tools/index.md)** — State management, recovery and config reconciliation, action logging, graph queries, BloodHound/AzureHound ingestion, output parsers, recoverable interactive-session descriptors, durable credential playbooks, and pentest report generation. The live count + set come from `get_system_prompt`.
+- **[MCP tool reference](tools/index.md)** — State management, recovery and config reconciliation, action logging, graph queries, BloodHound/AzureHound ingestion, output parsers, recoverable interactive-session descriptors, durable credential playbooks, and pentest report generation. Runtime registration generates the checked-in count, categories, and schema hashes.
 - **[Credential-driven playbooks](tools/cloud-playbooks.md)** — Captured cloud/SaaS credentials become durable, resumable runs with dependency-aware steps, append-only attempts, explicit ownership, and precise execution/parse outcomes.
-- **[43 offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
+- **[Offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
 - **[Scope and OPSEC enforcement](concepts.md#opsec-noise)** — Hard constraints live in the deterministic layer. The LLM handles reasoning. Out-of-scope calls fail closed.
-- **[Persistent sessions](tools/sessions.md)** — Long-lived interactive shells (SSH, local PTY, reverse shell) with cursor-based I/O and TTY quality tracking.
+- **[Recoverable session intent](tools/sessions.md)** — Interactive shells and listeners with cursor-based I/O and TTY quality tracking. Durable descriptors survive restart; live connections and buffers do not masquerade as resumed sessions.
 - **[Claude Code hooks](claude-hooks.md)** — Local hooks that re-anchor Claude to Overwatch, block raw target-facing Bash, and nudge discovery output back into the graph.
 - **[Live dashboard](dashboard.md)** — Real-time graph visualization, approval queue, frontier view, agent status, credential tracker, findings panel with report generation.
-- **[Tamper-evident audit trail](concepts.md#audit-trail)** — Optional hash-chained activity log and JSON-RPC tape proxy. Retrospectives can prove the AI did exactly what it claimed, in the order it claimed.
+- **[Tamper-evident audit trail](concepts.md#audit-trail)** — Optional hash-chained activity log and JSON-RPC tape proxy. Retrospectives can verify the integrity and order of recorded actions and wire frames.
 
 ### By the Numbers
 
-| | |
-|---|---|
-| **Generated** MCP tool inventory | **43** offensive skills |
-| **75** output parsers / **130** `parse_output` keys (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, sqlmap, wpscan, httpx, dnsx, amass, subfinder, crt.sh, whois, theHarvester, trufflehog, linkfinder, openapi/graphql, security-headers, gowitness, katana, and more) | **64** built-in inference rules |
-| **4000+** tests across **220+** files | **30** node types, **90** edge types |
+<!-- BEGIN:capability-counts -->
+| Capability | Count | Capability | Count |
+|------------|------:|------------|------:|
+| MCP tools | **91** | Offensive skills | **44** |
+| Parser aliases | **138** | Built-in inference rules | **64** |
+| Node types | **30** | Edge types | **90** |
+| Agent archetypes | **15** | Tool categories | **8** |
+<!-- END:capability-counts -->
 
 ## Quick Start
 
 !!! tip "Just want to get running?"
-    The [**Getting Started**](getting-started.md) guide is a tight 5-minute path: clone, copy a template, wire the MCP config, launch `claude`. Everything else here is reference material you can come back to.
+    The [**Getting Started**](getting-started.md) guide is a tight 5-minute path: clone, run setup, start one daemon, then open the dashboard and terminal Claude. Everything else here is reference material you can come back to.
 
 ```bash
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
-npm install && npm run build
-cp engagement-templates/ctf.json engagement.json
-# edit scope.cidrs and scope.domains, then add to ~/.claude/settings.json
-claude
+npm install
+npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm run build
+npm run doctor
+npm run start:daemon
 ```
 
 `ctf.json` is the friendliest first-run template — no OPSEC constraints,
@@ -55,13 +59,23 @@ auto-approves everything. For real engagements switch to
 `internal-pentest.json` or `external-assessment.json` — see
 [Configuration](configuration.md).
 
-That's **stdio** mode — Claude launches Overwatch for one session. To run it as a persistent **HTTP daemon** that a browser dashboard, the [`overwatch` CLI](cli.md), and multiple agents share on the *same* live engagement, see [Two ways to run Overwatch](getting-started.md#two-ways-to-run-overwatch).
+Leave the daemon running. Open `http://127.0.0.1:8384` and launch `claude` from
+the repo in another terminal. Terminal Claude, the dashboard, the
+[`overwatch` CLI](cli.md), and deployed agents share that one runtime; do not
+launch a second stdio server beside it. Dashboard-managed Claude workers use
+isolated per-task MCP configuration and do not inherit the terminal session's
+project settings, hooks, or resume history.
+
+The solo **stdio** compatibility mode is still available through
+`npm run setup:stdio` (or `npm run setup -- --stdio`), but use the default daemon
+whenever you want the dashboard, CLI, planner, or dispatched agents.
+See [Two ways to run Overwatch](getting-started.md#two-ways-to-run-overwatch).
 
 Full walk-through with template list, dashboard tour, and "what to say to the AI first" prompts: [Getting Started](getting-started.md). Or jump straight to a [lab workflow](playbook/index.md).
 
 ## Architecture at a Glance
 
-One persistent engine; the terminal (Claude over MCP) and the dashboard (HTTP/WebSocket) are two surfaces driving the same live state:
+One persistent engine; terminal Claude, the dashboard, CLI, and managed workers are adapters over the same live state and command services:
 
 ![Two surfaces, one engine](assets/two-surfaces-one-engine-light.svg#only-light)
 ![Two surfaces, one engine](assets/two-surfaces-one-engine-dark.svg#only-dark)
@@ -76,7 +90,7 @@ Learn more in the [Runtime Model](runtime-model.md), [Architecture](architecture
 ## Where to Go Next
 
 - **First time here?** → [Getting Started](getting-started.md) for the 5-minute install + first engagement.
-- **Want the mental model?** → [Runtime Model](runtime-model.md) — one engine, two surfaces (terminal + dashboard), and how they tie together.
+- **Want the mental model?** → [Runtime Model](runtime-model.md) — one engine shared by terminal Claude, dashboard, CLI, and managed workers.
 - **Want to understand the design?** → [Architecture](architecture.md) covers the system diagram, components, and design decisions. Then [Key Concepts](concepts.md) for the engagement-graph vocabulary (frontier, inference, OPSEC, audit trail).
 - **Auditing or threat-modeling?** → [Threat Model](threat-model.md) states explicitly what the system trusts, what it defends against, and what residual risks remain.
 - **Building or extending?** → [Roadmap](roadmap.md) for current tracks, [Tool Reference](tools/index.md) for every MCP tool, and [Development](development.md) for project structure and testing.

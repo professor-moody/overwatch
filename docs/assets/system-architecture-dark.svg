@@ -30,33 +30,33 @@
   <!-- LLM operator -->
   <g class="n-purple"><rect x="220" y="20" width="280" height="50" rx="8"/><text class="th" x="360" y="40" text-anchor="middle" dominant-baseline="central">LLM operator (Claude / Opus)</text><text class="ts" x="360" y="56" text-anchor="middle" dominant-baseline="central">Primary session + sub-agents</text></g>
   <line x1="310" y1="70" x2="310" y2="110" class="arr" marker-end="url(#arr)"/><line x1="410" y1="110" x2="410" y2="70" class="arr" marker-end="url(#arr)"/>
-  <text class="ts" x="272" y="94" text-anchor="end">stdio / HTTP+SSE</text>
+  <text class="ts" x="272" y="94" text-anchor="end">stdio / Streamable HTTP</text>
 
   <!-- MCP orchestrator container -->
   <g class="n-teal"><rect x="40" y="110" width="640" height="430" rx="14"/><text class="th" x="360" y="134" text-anchor="middle" dominant-baseline="central">MCP orchestrator server</text></g>
 
   <!-- Tools row -->
-  <g class="n-blue"><rect x="70" y="150" width="580" height="36" rx="7"/><text class="th" x="360" y="168" text-anchor="middle" dominant-baseline="central">55+ MCP tools (Zod-validated)</text></g>
+  <g class="n-blue"><rect x="70" y="150" width="580" height="36" rx="7"/><text class="th" x="360" y="168" text-anchor="middle" dominant-baseline="central">MCP tools (generated canonical registry)</text></g>
 
   <!-- Core engines -->
   <g class="n-amber"><rect x="70" y="200" width="180" height="50" rx="7"/><text class="th" x="160" y="218" text-anchor="middle" dominant-baseline="central">Graph engine</text><text class="ts" x="160" y="234" text-anchor="middle" dominant-baseline="central">graphology</text></g>
-  <g class="n-coral"><rect x="270" y="200" width="180" height="50" rx="7"/><text class="th" x="360" y="218" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="360" y="234" text-anchor="middle" dominant-baseline="central">64 rules</text></g>
+  <g class="n-coral"><rect x="270" y="200" width="180" height="50" rx="7"/><text class="th" x="360" y="218" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="360" y="234" text-anchor="middle" dominant-baseline="central">Built-in rule registry</text></g>
   <g class="n-pink"><rect x="470" y="200" width="180" height="50" rx="7"/><text class="th" x="560" y="218" text-anchor="middle" dominant-baseline="central">Frontier + leases</text><text class="ts" x="560" y="234" text-anchor="middle" dominant-baseline="central">Next actions, TTL claims</text></g>
   <line x1="250" y1="225" x2="268" y2="225" class="arr" marker-end="url(#arr)"/><line x1="450" y1="225" x2="468" y2="225" class="arr" marker-end="url(#arr)"/>
 
   <!-- EngineContext bar -->
-  <g class="n-gray"><rect x="70" y="266" width="580" height="36" rx="7"/><text class="th" x="360" y="284" text-anchor="middle" dominant-baseline="central">EngineContext — shared state, withClock, deterministic seq</text></g>
+  <g class="n-gray"><rect x="70" y="266" width="580" height="36" rx="7"/><text class="th" x="360" y="284" text-anchor="middle" dominant-baseline="central">Application commands → EngineTransaction V2 → shared applier</text></g>
 
   <!-- Core services -->
   <g class="n-teal"><rect x="70" y="318" width="138" height="36" rx="6"/><text class="ts" x="139" y="336" text-anchor="middle" dominant-baseline="central">Path analyzer</text></g>
   <g class="n-teal"><rect x="218" y="318" width="138" height="36" rx="6"/><text class="ts" x="287" y="336" text-anchor="middle" dominant-baseline="central">Identity resolution</text></g>
   <g class="n-teal"><rect x="366" y="318" width="138" height="36" rx="6"/><text class="ts" x="435" y="336" text-anchor="middle" dominant-baseline="central">State persistence</text></g>
-  <g class="n-teal"><rect x="514" y="318" width="138" height="36" rx="6"/><text class="ts" x="583" y="336" text-anchor="middle" dominant-baseline="central">75 parsers</text></g>
+  <g class="n-teal"><rect x="514" y="318" width="138" height="36" rx="6"/><text class="ts" x="583" y="336" text-anchor="middle" dominant-baseline="central">Parser registry</text></g>
 
   <!-- Foundations row -->
-  <text class="tx" x="70" y="378" text-anchor="start">Foundations (engagements with engagement_nonce)</text>
+  <text class="tx" x="70" y="378" text-anchor="start">Durability for every engagement; deterministic audit when nonce is configured</text>
   <g class="n-emerald"><rect x="70" y="384" width="92" height="44" rx="6"/><text class="ts" x="116" y="400" text-anchor="middle" dominant-baseline="central">Hash chain</text><text class="tx" x="116" y="414" text-anchor="middle" dominant-baseline="central">+ checkpoints</text></g>
-  <g class="n-emerald"><rect x="170" y="384" width="92" height="44" rx="6"/><text class="ts" x="216" y="400" text-anchor="middle" dominant-baseline="central">WAL journal</text><text class="tx" x="216" y="414" text-anchor="middle" dominant-baseline="central">jsonl + replay</text></g>
+  <g class="n-emerald"><rect x="170" y="384" width="92" height="44" rx="6"/><text class="ts" x="216" y="400" text-anchor="middle" dominant-baseline="central">WAL journal</text><text class="tx" x="216" y="414" text-anchor="middle" dominant-baseline="central">complete tx replay</text></g>
   <g class="n-emerald"><rect x="270" y="384" width="92" height="44" rx="6"/><text class="ts" x="316" y="400" text-anchor="middle" dominant-baseline="central">Evidence store</text><text class="tx" x="316" y="414" text-anchor="middle" dominant-baseline="central">sha256-keyed</text></g>
   <g class="n-emerald"><rect x="370" y="384" width="92" height="44" rx="6"/><text class="ts" x="416" y="400" text-anchor="middle" dominant-baseline="central">Det. IDs</text><text class="tx" x="416" y="414" text-anchor="middle" dominant-baseline="central">act_/evt_ sha256</text></g>
   <g class="n-emerald"><rect x="470" y="384" width="92" height="44" rx="6"/><text class="ts" x="516" y="400" text-anchor="middle" dominant-baseline="central">Watchdog</text><text class="tx" x="516" y="414" text-anchor="middle" dominant-baseline="central">heartbeat reaper</text></g>

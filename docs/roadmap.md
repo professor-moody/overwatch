@@ -1,117 +1,74 @@
 # Roadmap
 
-This page is the canonical development roadmap for Overwatch. The
-[Development Timeline](development-timeline.md) explains what already landed;
-this page explains what the project is building toward next.
+This is the current development roadmap for Overwatch. The
+[Development Timeline](development-timeline.md) records what landed; this page
+describes the completed reliability program and the candidate work that follows.
 
-The current product priority is **credentials, identity, and operations depth**:
-every panel that shows agents, sessions, actions, credentials, or identities
-should give operators distinct, actionable state language and clear lifecycle
-visibility.
+## Current delivery state
 
-## Now: Credentials, Identity, And Operations Depth
+The reliability, workflow, and architecture program is being delivered as a
+reviewed PR train. PR1 through PR15 are represented in the current release:
 
-These tracks should follow after the graph-context pass is stable.
+| Slice | Landed capability |
+|---|---|
+| PR1–PR4 | Non-destructive WAL recovery, parser/playbook correctness, dashboard operator correctness, and revisioned config/scope durability |
+| PR5–PR6 | Explicit state versioning/migration and committed transaction-journal v2 recovery |
+| PR7–PR9 | Durable agent coordination, recoverable process ownership, and truthful session resume lifecycle |
+| PR10–PR11 | Transport-neutral application commands and shared dashboard contracts/projectors |
+| PR12–PR14 | Durable playbook runs, hotspot/performance work, and semantic crash/browser CI gates |
+| PR15 | Generated public tool/schema/archetype inventories, startup-safe shared-daemon defaults, and corrected architecture/recovery documentation |
 
-### Credentials And Identity Workflow
+PR15 closes the planned train. Runtime tool registration now generates the
+public inventory and schema manifest, CI rejects drift, and the documentation
+matches the shipped recovery, runtime, dashboard, session, and playbook
+behavior.
 
-- Keep **Credentials** as the canonical credential-material inventory:
-  status, reachability, expiry, reveal/copy, graph links, and evidence links.
-- Keep **Identity** as the trust-model view: IdPs, apps, principals,
-  federation, MFA, and token relationships.
-- Add derived views for credentials that are expired, unverified, reachable, or
-  ready for cloud/SaaS expansion without duplicating secret-bearing cards in
-  Identity.
+## Operating model now
 
-### Agents, Sessions, And Actions Operations
+- Run one Overwatch daemon for an engagement. MCP, the dashboard, the terminal
+  CLI, and managed headless agents are adapters over the same application
+  commands and durable ownership records.
+- `lean` is the default sub-agent prompt. Set
+  `OVERWATCH_PROMPT_VARIANT=control` for the one-release rollback variant.
+- Durable state is versioned and journaled. Unknown or incomplete recovery and
+  unexplained config divergence fail into explicit read-only recovery rather
+  than silently reseeding state.
+- `get_state` is the operational briefing after compaction or restart. It is not
+  a lossless export of every artifact; evidence, history, reports, tapes, and
+  portable state are available through their dedicated read/export surfaces.
+- The dashboard is an authenticated operator client, not a read-only graph
+  viewer. Its mutations use the same validated command paths as MCP and the CLI.
 
-- Make agent state, heartbeat freshness, task ownership, session liveness, and
-  pending approvals easier to scan.
-- Show blocked, stale, failed, interrupted, and completed work with distinct
-  language and status treatment.
-- Tie action lifecycle views back to evidence, graph context, and trust
-  signals.
+## After the reliability program
 
-### Smoke, Demo, And Review Confidence
+Further work should start from measured operator needs rather than reopening the
+superseded reliability plan. Candidate tracks are:
 
-- Keep the deterministic demo dashboard rich enough to exercise every major
-  operator state.
-- Expand route smoke around operator workflows, not only page load.
-- Keep the dashboard review checklist current for desktop layout, narrow-width
-  layout, graph focus, trust signals, and duplicate-title regressions.
+- graph-delta plan previews for natural-language commands;
+- agent handoff, task split, and duplicate-agent merge workflows;
+- richer per-task productivity and campaign OPSEC projections;
+- deterministic runners for more reasoning-heavy archetypes;
+- technique-preference policies and campaign-scoped dispatch limits;
+- continued parser, inference, and target-surface coverage;
+- paid real-model prompt evaluation on the scheduled/manual gate.
 
-## Completed: Prompt Architecture Rethink + Behavior-Eval
+These are candidates, not commitments, and do not override recovery or data
+integrity regressions discovered during operation.
 
-The agent operating prompt is now changed against evidence, not taste. Step (a)
-trimmed the persona opener to a one-line role tag; step (b) added a context-first
-[`lean` sub-agent variant](prompt-stepb-design.md) (behind a variant seam —
-`control` is still the default). Both are gated by a two-tier
-[behavior-eval harness](prompt-eval.md): a deterministic rubric grader + structural
-guard in CI, and an on-demand, cost-bounded real-model A/B (`npm run prompt-eval`).
-Next: promote `lean` to default only on a clean real A/B, then the archetype-aware
-registry refactor it unblocks.
+## Delivery gates
 
-## Completed: Source-Trust Labels
-
-Graph elements now carry a derived `source_trust` label — `observed` (tool-observed:
-confidence ≥ 1.0, confirmed, or tested-success), `asserted` (target-asserted, the
-conservative default), or `inferred` (rule-inferred) — so reports can distinguish
-tool-observed findings from target-asserted data and inferred edges. The label is
-derived on read (never stored, no migration) and is opt-in via
-`exportGraph({ sourceTrust: true })`, which the `/api/graph/export` endpoint honors.
-
-## Completed: Graph And Evidence Context
-
-Every operator click in the graph and evidence surfaces now lands on actionable
-context: NodeDetailDrawer rows deep-link to specific findings and sessions;
-clicking an edge opens a compact EdgeDetailPanel with source → target navigation;
-the graph overlay and PathInfoBar handle narrow widths cleanly; OverviewPanel
-frontier items, objectives, and recent finding events are all interactive.
-Route smoke tests cover the `?item=` deep-link routes.
-
-## Completed: Dashboard Command Center
-
-The dashboard primitive-migration pass is done. All daily workflow panels
-(Overview, Credentials, Identity, Activity, Agents, Sessions, Actions,
-Findings, Graph, Smoke, Settings) use the shared `PageHeader`, `PanelSection`,
-`ActionButton`, `FilterBar`, `StatusPill`, and `MetricTile` primitives.
-Overview surfaces the operator queue (attention items, verification gaps, active
-access, recent changes). CredentialsPanel surfaces unverified and
-expansion-candidate counts. No duplicate titles, no decorative surfaces.
-
-## Later: Backend And Runtime Tracks
-
-These remain important but are not the active dashboard-polish sprint.
-
-- **Playbook checkpointing:** track cloud/SaaS expansion steps as planned,
-  running, parsed, failed, or skipped.
-- **Anti-canary detection:** flag honey credentials or canary-like target output
-  before it drives the frontier.
-- **Transport drivers / no-MCP internal mode:** Overwatch's engine is
-  transport-agnostic and MCP is one driver, not the brain. Add a no-MCP internal
-  driver (headless Claude + an `overwatch` CLI / local HTTP) for environments where
-  MCP is unavailable, plus operator target-execution endpoints — same executor,
-  same lifecycle and audit. The MCP driver stays first-class for external lab work.
-  See [Deployment Architecture](deployment-architecture.md).
-- **Process-isolated subagents:** move beyond the current scaffold toward
-  role-by-role parity with schema-validated IPC.
-- **Parser sandboxing:** constrain file-backed parser input and parser runtime
-  privileges.
-- **Bedrock integration:** keep the compact system-contract and middleware work
-  in [Bedrock Integration Plan](bedrock-integration-plan.md) until an
-  enterprise wrapper owns the API payload.
-
-## Acceptance Gates
-
-Dashboard roadmap work should run the normal source and docs gates:
+Each change remains independently reviewable and must pass the relevant source,
+integration, browser, package, generated-artifact, and strict-documentation
+checks. The standing local gates include:
 
 ```bash
 git diff --check
 npx tsc --noEmit
 npm run test:source
 npm run build:dashboard-next
+npm run check:docs
 mkdocs build --strict
 ```
 
-For visible dashboard work, also run live route smoke against the demo dashboard
-as described in [Development](development.md#dashboard-review-checklist).
+Backend-bearing changes also run stdio/HTTP and restart/crash suites; visible
+operator changes run deterministic browser journeys.

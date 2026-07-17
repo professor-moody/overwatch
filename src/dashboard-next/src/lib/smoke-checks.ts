@@ -1,4 +1,5 @@
 import type { McpToolRegistryResponse, ToolCheckResult } from './types';
+import { TOOL_CATEGORIES, TOOL_REGISTRY_SHA256 } from './tool-categories.generated';
 
 export interface SmokeValidationResult {
   ok: boolean;
@@ -81,16 +82,36 @@ export function validateHostToolsSmoke(data: unknown): SmokeValidationResult {
 }
 
 export function validateMcpToolsSmoke(data: unknown): SmokeValidationResult {
-  const expected = '{ total: number, categories: Record<string, number>, tools: McpToolInfo[] }';
+  const expected = '{ total: number, registry_sha256: sha256, categories: Record<string, number>, tools: McpToolInfo[] }';
   if (!data || typeof data !== 'object') {
     return fail('endpoint broken: response is not an object', expected, data);
   }
   const body = data as Partial<McpToolRegistryResponse>;
-  if (!Array.isArray(body.tools) || typeof body.total !== 'number' || !body.categories || typeof body.categories !== 'object') {
+  if (
+    !Array.isArray(body.tools)
+    || typeof body.total !== 'number'
+    || typeof body.registry_sha256 !== 'string'
+    || !body.categories
+    || typeof body.categories !== 'object'
+  ) {
     return fail('shape mismatch: MCP registry fields missing', expected, data);
   }
   if (body.total !== body.tools.length) {
     return fail('shape mismatch: total does not match tools length', expected, data);
+  }
+  const generatedTotal = TOOL_CATEGORIES.reduce((total, category) => total + category.count, 0);
+  if (body.registry_sha256 !== TOOL_REGISTRY_SHA256 || body.total !== generatedTotal) {
+    return fail(
+      'MCP registry does not match this dashboard build',
+      expected,
+      data,
+      'Rebuild the project and restart the single Overwatch daemon.',
+    );
+  }
+  for (const category of TOOL_CATEGORIES) {
+    if (body.categories[category.id] !== category.count) {
+      return fail(`MCP category ${category.id} is out of date`, expected, data);
+    }
   }
   const names = new Set(body.tools.map(tool => tool.name));
   const missingCore = CORE_MCP_TOOLS.filter(name => !names.has(name));

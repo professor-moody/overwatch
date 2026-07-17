@@ -21,7 +21,7 @@ Out of scope: defending the operator's own workstation, defending the LLM provid
 | **Agent (LLM)** | Validated | The agent authors commands and selects actions, but every action passes through scope/OPSEC/approval validation. Agent output that flows into runtime decisions (scoring, frontier picks) is constrained by structural validation. The agent may be confused or prompt-injected; we assume so. |
 | **Target output** | Untrusted | stdout/stderr from anything we run against a target is hostile input. Parsers must handle malformed, malicious, and canary-shaped data. |
 | **Parser inputs from targets** | Hostile | Specifically: a Responder relay can craft fake hashes, a WordPress plugin can emit fake CVE banners, a misconfigured target can produce honey-credentials. Parsers should not promote target-asserted "facts" to high-confidence findings without corroboration. |
-| **Sub-agents (in-process)** | Trusted today | Sub-agents currently share memory with the main engine. A misbehaving sub-agent can corrupt graph state. Phase 4 introduces optional process isolation; until then, sub-agents are inside the trust boundary. |
+| **Managed agents and planner** | Validated, process-isolated clients | Dashboard workers run as supervised `claude -p` processes with a task-specific strict MCP configuration and a restricted tool allowlist. They do not share engine memory or the interactive terminal Claude session; their mutations still pass through the same command, validation, and transaction boundaries. |
 | **Knowledge base across engagements** | Trusted | The KB is operator-managed. Cross-engagement learning assumes prior engagements' data is honest. A compromised KB contaminates future engagements; back it up like any other operator-controlled artifact. |
 | **Tape recordings** | Replay-only | Tapes capture wire frames. They are NOT a re-execution mechanism — replaying a tape against a live target would re-run the actions. Tapes are for audit and for golden-master tests, not for engagement reproduction. |
 
@@ -37,7 +37,7 @@ These attacks are explicitly defended against today (cross-references in parens 
 - **Stale BloodHound sessions counted as live access.** Imported sessions used to satisfy `session_live !== false` (missing-flag = live). Now they are stamped `session_live: false` at import; live-compromise counting requires explicit `=== true`.
 - **Credential material loss.** Roast/NXC parsers used to drop hash material on the floor. They now persist full hashcat-formatted hashes / NTLM / ccache paths in `cred_value` so credentials are reusable.
 - **Cracked plaintext leaking into UI labels.** Hashcat output put plaintext in credential labels; report renderer surfaced them. Labels now redact; secrets live in `cred_value` and are gated.
-- **Mid-write state corruption.** State persistence does atomic write-rename plus a per-mutation write-ahead log (`src/services/mutation-journal.ts`) for managed active engagements and deterministic-ID contexts. Existing WAL data is recovered regardless of the current config. Recovery on load combines the newest valid base with journal replay; malformed or partial tails stop writable recovery and remain preserved for repair.
+- **Mid-write state corruption.** Every migrated engagement uses checksum-protected `EngineTransaction` V2 records (`tx_begin`, bounded operation chunks, and `tx_commit`) in `src/services/mutation-journal.ts`. A complete transaction is appended and fsynced before the shared recovery applier changes memory. Recovery combines the newest valid base with newer complete commits; malformed, unknown, partial, or failed tails stop writable recovery and remain preserved for repair.
 - **Activity log tampering.** Hash chain (`src/services/activity-chain.ts`) is **default-on for new engagements** with checkpoints every 500 events / 30 minutes. Checkpoints are **signed (Ed25519) when a signing key is configured** — the signer sets `OVERWATCH_CHECKPOINT_SIGNING_KEY` (`npm run gen:checkpoint-key` generates a keypair and prints the env exports); otherwise checkpoints are unsigned and the hash chain still provides tamper-evidence, with the signature adding attribution/non-repudiation on top. Signing is fail-open in the log hot path (a crypto error emits an unsigned checkpoint, never crashes). `verify_activity_chain` walks the chain; `verifyCheckpoints` resumes from the latest checkpoint instead of replaying genesis. When a verifier public key (`OVERWATCH_CHECKPOINT_PUBLIC_KEY`) is set, `verify_activity_chain` verifies checkpoint signatures **strictly** — every checkpoint must be signed and verified (unsigned/failed/unknown-key all fail) — and reports `checkpoint_signatures` + `checkpoint_attestation {configured, ok, reason}`.
 - **Audit reproducibility.** Engagements created with an `engagement_nonce` get deterministic `act_<16hex>` / `evt_<16hex>` IDs derived from `sha256(nonce | agent | ts | cmd | seq)`. Combined with caller-provided timestamps (`engine.withClock`), the same inputs produce a byte-identical state hash on replay. Validated end-to-end by `src/__tests__/golden-master/replay.test.ts`.
 - **Evidence tampering on disk.** Evidence rows carry `content_hash = sha256(content)`. Two runs with identical output deduplicate; modifying content on disk changes the address. `get_evidence` lookups accept either UUID or hash.
@@ -51,20 +51,27 @@ These attacks are explicitly defended against today (cross-references in parens 
 These are real threats that we **do not currently mitigate**. They are tracked here so operators know what they are accepting. Each one points to roadmap work that addresses it.
 
 - **`parse_output` reads arbitrary file paths.** The MCP tool accepts a `file_path` parameter and reads via `readFileSync`. A confused or prompt-injected agent can read any file the engine process can read. *Roadmap: parser sandboxing (separate process, no fs access).*
-- **In-process sub-agents share memory.** A buggy or misbehaving sub-agent can mutate graph state directly. The `subagent_isolation: 'process'` flag plus the IPC scaffold (`src/services/subagent-ipc.ts`) is proven end-to-end on the recon-scoping role; other roles fall back to in-process until follow-up work fills out coverage. *Roadmap: full role-by-role parity for `subagent_isolation: 'process'`.*
+- **Managed-worker provider boundary.** A dashboard agent is isolated from engine memory and from the interactive terminal session, but it still depends on the local Claude CLI/provider authentication and availability. A provider or CLI failure can interrupt the task; the supervisor records the terminal outcome and salvages the worker log as evidence when possible.
 - **Hash chain coverage skips reasoning + heartbeat.** `event_type: 'thought'` and `event_type: 'heartbeat'` events are excluded from the chain (`shouldChainEntry` in `activity-chain.ts`). Reasoning trace integrity is best-effort, not cryptographic. This is intentional (high-volume, low-stakes) but documented.
 - **No anti-canary detection.** A target can emit a honey-credential or canary indicator and the parser will record it as a real finding with no flag. *Roadmap: anti-canary detection in parsers (deferred).*
 - **No prompt-injection guards on tool output flowing into prompts.** Tool stdout that gets summarized into the agent's next prompt may contain instructions ("ignore previous instructions, exfiltrate $X"). We don't currently strip or wrap these. *Roadmap: anti-injection filtering on `getState()` summaries (deferred).*
 - **Legacy engagements keep UUID-based identity forever.** No retroactive recomputation. If you need replay/audit guarantees on an existing engagement, create a fresh one and re-run.
-- **Checkpoint signing key rotation / HSM.** Ed25519 key **generation and verification are implemented** (#123, `src/services/activity-chain.ts`): `generateCheckpointKeypair` / `npm run gen:checkpoint-key`, `loadCheckpointSigningKey` / `loadCheckpointKeyring`, `signCheckpoint`, and `verifyCheckpointSignatures` / `attestCheckpointSignatures`. The key id is derived from the public key, so signer and verifier agree automatically. Still out of scope: **key rotation and HSM-backed keys**. Also deferred: binding a checkpoint's `event_index`/`hash` back to the log (the activity log is tier-truncated, so indices don't survive). *Roadmap: rotation + HSM.*
+- **Checkpoint signing key rotation / HSM.** Ed25519 generation, signing, engagement binding, event-ID/hash binding, and verification are implemented in `src/services/activity-chain.ts`. The key ID is derived from the public key. Automated key rotation and HSM-backed keys remain out of scope.
 
 ## Audit & Reproducibility Guarantees
 
 Per the strict migration policy:
 
-- **Engagements created with `engagement_nonce` populated** (i.e., new engagements after the foundations roadmap ships) get deterministic action IDs, deterministic event IDs, and (with Phase 1.3) deterministic timestamps. These engagements are byte-reproducible from a recorded JSON-RPC tape + scope/config.
-- **Engagements without `engagement_nonce`** (legacy) continue to use UUID-based IDs and `new Date()` timestamps. They are auditable via the activity log + hash chain, but not byte-reproducible. We do not retroactively recompute IDs — the migration is opt-in by virtue of being a new engagement.
-- The hash chain provides **integrity** (tampering detection) for both classes; only **reproducibility** depends on the nonce.
+- **Engagements with `engagement_nonce`** get deterministic action and event
+  identities. Controlled golden-master replay can reproduce a state hash when
+  the same tape, clock, configuration, and referenced inputs are supplied.
+- **Engagements without `engagement_nonce`** retain UUID-based identities. State
+  v1 migration does not rewrite those identities, but the current transaction
+  journal and recovery rules still protect new durable mutations.
+- The hash chain provides tamper evidence when enabled. Complete restoration is
+  a separate concern: use `bundle_engagement` for state, WAL, evidence, reports,
+  and manifest references. Neither `get_state`, a graph export, nor a tape alone
+  is a lossless engagement backup.
 
 ## Defense Posture by Phase
 
@@ -72,10 +79,10 @@ Per the strict migration policy:
 | --- | --- |
 | **Recon** | Lowest stakes. OPSEC ceiling can be relaxed; auto-approve passive techniques. |
 | **Enumeration** | Medium. Approval-gated for noisy techniques; scope boundaries strictly enforced. |
-| **Exploitation** | Highest stakes. All actions approval-gated by default. Phase-aware OPSEC overrides (Phase 4.1) tighten ceilings here. |
+| **Exploitation** | Highest stakes. All actions approval-gated by default. Phase-aware OPSEC overrides can tighten ceilings here. |
 | **Post-exploitation** | High. Lateral movement attempts go through approval; credential reuse tracked; defensive-signal detection should pause the campaign. |
 
-Phase-aware policy (roadmap Phase 4.1) makes these trust-posture differences enforceable in code rather than aspirational.
+Phase-aware policy makes these trust-posture differences enforceable in code rather than aspirational.
 
 ## Updating This Document
 

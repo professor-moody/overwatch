@@ -557,14 +557,25 @@ export interface McpToolInfo {
   title?: string;
   description: string;
   category: string;
-  read_only?: boolean;
-  destructive?: boolean;
-  idempotent?: boolean;
-  open_world?: boolean;
+  category_label: string;
+  category_order: number;
+  read_only: boolean;
+  destructive: boolean;
+  idempotent: boolean;
+  open_world: boolean;
+  input_schema_sha256: string;
+  output_schema_sha256: string | null;
+  documentation: { path: string; purpose: string };
+  archetype_exposure: string[];
+  persistence: {
+    mode: 'read' | 'write' | 'conditional';
+    allowed_during_recovery: boolean;
+  };
 }
 
 export interface McpToolRegistryResponse {
   total: number;
+  registry_sha256: string;
   categories: Record<string, number>;
   tools: McpToolInfo[];
 }

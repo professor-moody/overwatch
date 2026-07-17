@@ -89,4 +89,4 @@ subdomain resolves to still requires that IP to be in a scope CIDR.
 - The returned `action_id` should be passed to `log_action_event`, `report_finding`, and `parse_output` to maintain causal linkage.
 - An `invalid` result means the action should NOT be executed.
 - A `warning_only` result means proceed with caution.
-- The `action_id` is **deterministic** for engagements with `engagement_nonce` populated — same inputs (agent_id + timestamp + command + sequence) produce the same id. See [Configuration → Deterministic ID and Replay](../configuration.md#deterministic-id-and-replay).
+- The `action_id` is **deterministic** for engagements with `engagement_nonce` populated — same inputs (agent_id + timestamp + command + sequence) produce the same id. See [Configuration → Durable Transactions, Deterministic IDs, and Replay](../configuration.md#durable-transactions-deterministic-ids-and-replay).

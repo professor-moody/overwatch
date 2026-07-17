@@ -55,7 +55,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         theme: z.enum(['light', 'dark']).default('light')
           .describe('Theme for HTML output'),
         client_safe: z.boolean().default(false)
-          .describe('Phase I: produce a client-deliverable variant. Strips cred_value, raw_output, stdout/stderr previews, and operator-machine paths from the rendered report. Output files get a `.client-safe.<ext>` suffix when written to disk. Defaults to false so the operator-internal report is unchanged.'),
+          .describe('Produce a client-deliverable variant. Strips cred_value, raw_output, stdout/stderr previews, and operator-machine paths from the rendered report. Output files get a `.client-safe.<ext>` suffix when written to disk. Defaults to false so the operator-internal report is unchanged.'),
         profile: z.enum(['operator', 'client']).optional()
           .describe('Report profile. operator keeps full proof metadata; client defaults to client-safe deliverable language and redaction. client_safe:true maps to profile=client for backward compatibility.'),
         evidence_style: z.enum(['proof_cards', 'appendix', 'full_inline']).default('proof_cards')
@@ -65,7 +65,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         max_paths_per_objective: z.number().int().min(1).max(20).default(3)
           .describe('Cap on attack paths rendered per objective (top-K by confidence).'),
         persist_to_archive: z.boolean().default(true)
-          .describe('B.2: write the rendered report to the engagement\'s persistent report archive (`<engagement-dir>/reports/`). Returned `report_id` can be fetched later via the dashboard\'s /api/reports endpoints.'),
+          .describe('Write the rendered report to the engagement\'s persistent report archive (`<engagement-dir>/reports/`). The returned `report_id` can be fetched later through the dashboard report endpoints.'),
       },
       annotations: {
         readOnlyHint: false,

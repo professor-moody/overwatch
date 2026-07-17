@@ -2,7 +2,7 @@
 // Recordable demo cockpit: starts GraphEngine + DashboardServer with a
 // deterministic, local-only engagement that exercises the operator dashboard.
 
-import { unlinkSync, existsSync } from 'fs';
+import { unlinkSync, existsSync, readFileSync } from 'fs';
 import type { AdapterHandle, EdgeProperties, EngagementConfig, NodeProperties, SessionCapabilities } from '../src/types.js';
 import { GraphEngine } from '../src/services/graph-engine.js';
 import { DashboardServer } from '../src/services/dashboard-server.js';
@@ -11,6 +11,7 @@ import { SessionManager, type SessionAdapterFactory } from '../src/services/sess
 import type { OpsecContext } from '../src/services/opsec-tracker.js';
 import { setTelemetry } from '../src/tools/error-boundary.js';
 import { ToolTelemetry } from '../src/services/tool-telemetry.js';
+import type { ToolDescriptor } from '../src/services/tool-descriptor-registry.js';
 
 const STATE_FILE = './state-demo-dashboard.json';
 const requestedDashboardPort = Number.parseInt(process.env.OVERWATCH_DEMO_DASHBOARD_PORT || process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
@@ -867,14 +868,11 @@ for (let i = 0; i < 20; i++) {
 
 const dashboard = new DashboardServer(engine, DASHBOARD_PORT, undefined, sessionManager);
 dashboard.attachTape(new InProcessTapeController(engine));
-dashboard.attachMcpTools([
-  { name: 'get_state', description: 'Full engagement briefing' },
-  { name: 'validate_action', description: 'Validate a proposed action' },
-  { name: 'run_bash', description: 'Instrumented shell command execution' },
-  { name: 'parse_output', description: 'Parse raw tool output into graph artifacts' },
-  { name: 'report_finding', description: 'Submit analyst findings to the graph' },
-  { name: 'get_system_prompt', description: 'Dynamic operator instructions' },
-]);
+const toolManifest = JSON.parse(readFileSync(
+  new URL('../docs/reference/tool-schema-manifest.json', import.meta.url),
+  'utf8',
+)) as { tools: ToolDescriptor[] };
+dashboard.attachMcpTools(toolManifest.tools);
 
 const result = await dashboard.start();
 if (result.started) {

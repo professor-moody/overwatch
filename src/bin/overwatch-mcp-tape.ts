@@ -20,6 +20,7 @@
 // ============================================================
 
 import { spawn } from 'child_process';
+import { fileURLToPath } from 'node:url';
 import { processChunk, TapeWriter } from '../services/tape-recorder.js';
 
 interface ParsedArgs {
@@ -151,7 +152,7 @@ async function main(): Promise<void> {
 const isDirect = (() => {
   if (typeof require !== 'undefined' && (require as any).main === module) return true;
   try {
-    const here = new URL(import.meta.url).pathname;
+    const here = fileURLToPath(import.meta.url);
     const argv1 = process.argv[1];
     return !!argv1 && (here === argv1 || here.endsWith(argv1));
   } catch {

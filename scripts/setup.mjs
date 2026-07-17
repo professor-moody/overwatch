@@ -2,8 +2,9 @@
 import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const sourceRoot = resolve(dirname(new URL(import.meta.url).pathname), '..');
+const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(process.env.OVERWATCH_SETUP_ROOT || sourceRoot);
 
 function usage(exitCode = 0) {
@@ -17,8 +18,9 @@ Options:
   --domain <domain>   Scope domain. Can be repeated.
   --host <host>       Scope host. Can be repeated.
   --exclude <value>   Scope exclusion. Can be repeated.
-  --daemon            Configure Claude, dashboard, CLI, and agents to share one HTTP daemon.
-  --force             Overwrite existing .mcp.json/.claude/settings.json/engagement.json
+  --daemon            Use the recommended shared HTTP daemon (default).
+  --stdio             Configure a private Claude-only stdio process instead.
+  --force             Replace generated engagement/settings (never needed to switch modes)
   --dry-run           Print generated files without writing
 `);
   process.exit(exitCode);
@@ -31,7 +33,8 @@ function parseArgs(argv) {
     domains: [],
     hosts: [],
     exclusions: [],
-    daemon: false,
+    daemon: true,
+    explicitMode: null,
     force: false,
     dryRun: false,
   };
@@ -72,7 +75,20 @@ function parseArgs(argv) {
         out.exclusions.push(next());
         break;
       case '--daemon':
+        if (out.explicitMode === 'stdio') {
+          console.error('--daemon and --stdio cannot be used together');
+          usage(1);
+        }
         out.daemon = true;
+        out.explicitMode = 'daemon';
+        break;
+      case '--stdio':
+        if (out.explicitMode === 'daemon') {
+          console.error('--daemon and --stdio cannot be used together');
+          usage(1);
+        }
+        out.daemon = false;
+        out.explicitMode = 'stdio';
         break;
       case '--force':
         out.force = true;
@@ -169,8 +185,7 @@ const generatedEngagement = {
 const engagementPath = join(root, 'engagement.json');
 const mcpPath = join(root, '.mcp.json');
 const claudeSettingsPath = join(root, '.claude', 'settings.json');
-const existingEngagement = opts.daemon
-  && !opts.force
+const existingEngagement = !opts.force
   && existsSync(engagementPath)
   ? readJson(engagementPath)
   : undefined;
@@ -178,9 +193,10 @@ const engagement = existingEngagement ?? generatedEngagement;
 const tokenPath = join(root, '.overwatch-mcp-token');
 let daemonToken;
 if (opts.daemon) {
-  daemonToken = existsSync(tokenPath)
+  const environmentToken = process.env.OVERWATCH_MCP_TOKEN?.trim();
+  daemonToken = environmentToken || (existsSync(tokenPath)
     ? readFileSync(tokenPath, 'utf8').trim()
-    : randomBytes(32).toString('hex');
+    : randomBytes(32).toString('hex'));
   if (!daemonToken) daemonToken = randomBytes(32).toString('hex');
 }
 const existingMcp = existsSync(mcpPath)
@@ -215,16 +231,16 @@ const claudeSettings = readJson(join(sourceRoot, '.claude', 'settings.example.js
 
 try {
   if (existingEngagement) {
-    console.log('kept existing engagement.json (daemon setup never replaces engagement state)');
+    console.log('kept existing engagement.json (mode switching never replaces engagement state)');
   } else {
     writeJson(engagementPath, engagement, opts);
   }
   writeJson(
     mcpPath,
     mcp,
-    opts.daemon ? { ...opts, force: true, mode: 0o600 } : opts,
+    { ...opts, force: true, mode: 0o600 },
   );
-  if (existsSync(claudeSettingsPath) && opts.daemon && !opts.force && !opts.dryRun) {
+  if (existsSync(claudeSettingsPath) && !opts.force && !opts.dryRun) {
     console.log('kept existing .claude/settings.json');
   } else {
     writeJson(claudeSettingsPath, claudeSettings, opts);
@@ -239,12 +255,11 @@ try {
     // the agent/tools can't touch anything. Say so loudly + how to fix it.
     console.log(`
 ⚠  SCOPE IS EMPTY — this engagement can't touch anything until you add targets.
-   Add scope any of these ways:
-   • Re-run with flags:  npm run setup -- --template ${opts.template} --cidr 10.10.10.0/24 --domain lab.local --force
-   • Edit engagement.json → "scope": { "cidrs": ["10.10.10.0/24"] }
-   • Conversationally (once the session is running) — tell the model:
+   Preserve engagement.json and durable state. Add scope through a live surface:
+   • Conversationally — tell terminal Claude:
        "scope this engagement to 10.10.10.0/24, objective domain-admin, quiet OPSEC"
-   • In the dashboard (daemon mode): the "Add Targets" or "Deploy <ip/cidr>" button`);
+   • In the dashboard: use "Add Targets" or "Deploy <ip/cidr>"
+   Setup does not rewrite active engagement scope; the live update is journaled.`);
   } else {
     console.log(`   scope: ${scopeItems.join(', ')}`);
   }
@@ -252,7 +267,7 @@ try {
 Next steps:
   npm install
   npm run build
-  npm run doctor${scopeItems.length === 0 ? '        # add scope first — see above' : ''}${opts.daemon ? `
+  npm run doctor${scopeItems.length === 0 ? '        # safe to start; add scope after launch' : ''}${opts.daemon ? `
   npm run start:daemon
   # Leave that running, then open http://127.0.0.1:8384 and run claude in another terminal.` : `
   claude`}

@@ -30,6 +30,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - run: npm run check:docs
       - run: npm run check:dashboard-api
       - run: npx tsc --noEmit
       # The root tsconfig excludes src/dashboard-next, so the dashboard needs its
@@ -125,6 +126,7 @@ jobs:
       # Production build enforces the dashboard's <500 kB entry-chunk budget.
       - run: npm run build
       - run: npm run check:package
+      - run: npm run check:docs
       - run: npm run check:dashboard-api
       - run: pip install -r requirements-docs.txt
       - run: mkdocs build --strict

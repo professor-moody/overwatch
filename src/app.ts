@@ -80,7 +80,13 @@ import {
   writeJsonAtomicDurable,
 } from './services/engagement-config-service.js';
 import { withStateMigrationWriteGuard } from './services/state-migration.js';
-import type { ToolEntry } from './services/prompt-generator.js';
+import type {
+  ToolDescriptor,
+} from './services/tool-descriptor-registry.js';
+import {
+  buildToolDescriptor,
+  toolRequiresWritablePersistence,
+} from './services/tool-descriptor-registry.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
 import { setTelemetry, getTelemetry } from './tools/error-boundary.js';
 import { InProcessTapeController, type TapeStartSource } from './services/in-process-tape.js';
@@ -245,7 +251,7 @@ function persistenceReadOnlyToolResult(
  * tool metadata (name + description) without monkey-patching the server.
  */
 export class ToolRegistrar implements OverwatchToolRegistrar {
-  private entries: ToolEntry[] = [];
+  private entries: ToolDescriptor[] = [];
   /**
    * Stdio requests do not carry an MCP session id. Keep one opaque namespace
    * for this registrar lifetime so a retransmitted JSON-RPC request is
@@ -265,34 +271,19 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
     config: { title?: string; description?: string; inputSchema?: InputArgs; outputSchema?: OutputArgs; annotations?: ToolAnnotations; _meta?: Record<string, unknown> },
     cb: ToolCallback<InputArgs>,
   ): RegisteredTool {
-    this.entries.push({
-      name,
-      title: config?.title,
-      description: config?.description || '',
-      read_only: config?.annotations?.readOnlyHint,
-      destructive: config?.annotations?.destructiveHint,
-      idempotent: config?.annotations?.idempotentHint,
-      open_world: config?.annotations?.openWorldHint,
-    });
+    const descriptor = buildToolDescriptor(name, config);
+    this.entries.push(descriptor);
     const wrapped = (async (...args: unknown[]) => {
       const input = args[0];
       const inputRecord = input && typeof input === 'object'
         ? input as Record<string, unknown>
         : {};
-      // Tool annotations describe the common case, but a handful of public
-      // tools are conditionally mutating or perform maintenance despite being
-      // presented as reads. Keep the degraded-mode gate based on behavior,
-      // not just metadata supplied to the MCP client.
-      const conditionallyMutating =
-        (name === 'get_state' && inputRecord.snapshot === true)
-        || (name === 'get_system_prompt' && inputRecord.snapshot !== false)
-        || name === 'check_processes';
-      const explicitlyNonMutating = name === 'get_system_prompt'
-        && inputRecord.snapshot === false;
-      const recoveryResolution = name === 'resolve_config_divergence';
-      const mutatesDurableState = conditionallyMutating
-        || (config?.annotations?.readOnlyHint !== true && !explicitlyNonMutating);
-      const requiresWritablePersistence = !recoveryResolution && mutatesDurableState;
+      const requiresWritablePersistence = toolRequiresWritablePersistence(
+        descriptor,
+        inputRecord,
+      );
+      const mutatesDurableState = descriptor.persistence.mode === 'write'
+        || requiresWritablePersistence;
       if (
         requiresWritablePersistence
         && this.persistenceGate
@@ -372,7 +363,7 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
     }) as unknown as ToolCallback<InputArgs>;
     return this.server.registerTool(name, config, wrapped);
   }
-  getEntries(): ToolEntry[] { return this.entries; }
+  getEntries(): ToolDescriptor[] { return this.entries; }
 }
 
 export type OverwatchApp = {
@@ -393,6 +384,8 @@ export type OverwatchApp = {
   applicationCommands: ApplicationCommandService;
   telemetry: ToolTelemetry;
   tape: InProcessTapeController;
+  /** Canonical browser-safe descriptors captured from the actual MCP registrations. */
+  registeredTools: ToolDescriptor[];
   httpTransports?: Record<string, StreamableHTTPServerTransport>;
   httpServer?: Server;
 };
@@ -574,7 +567,7 @@ export function registerAllTools(
     engagementManager: EngagementManager;
     getDashboardStatus: DashboardStatusProvider;
   },
-): ToolEntry[] {
+): ToolDescriptor[] {
   // Initialize shared telemetry (idempotent — first caller wins)
   if (!getTelemetry()) {
     setTelemetry(new ToolTelemetry());
@@ -896,6 +889,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     applicationCommands,
     telemetry: getTelemetry()!,
     tape,
+    registeredTools,
   };
 }
 

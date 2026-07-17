@@ -1,86 +1,158 @@
-# Runtime Model: Two Surfaces, One Engine
+# Runtime Model: One Daemon, Shared Surfaces
 
-The single most important thing to understand about Overwatch's runtime: **there is one engine, and everything else is a driver routing into it.**
+The most important runtime rule is simple: **start one Overwatch daemon and let
+every operator surface connect to it**.
 
-A persistent `GraphEngine` process holds *all* engagement state — the graph, the activity log, pending approvals, agent tasks, sessions, evidence. You operate that engine through **two surfaces** that are different views of the *same* live state:
-
-1. **The terminal** — a human operator + a primary Claude (Claude Code, or a `claude -p` sub-agent) talking to Overwatch over the **MCP** protocol (stdio, or HTTP `/mcp`).
-2. **The dashboard** — a React UI over **HTTP + WebSocket**.
-
-An action taken on either surface is visible on the other, live. Approve a command in the dashboard and the terminal agent that was blocked on it resumes. Report a finding from the terminal and it appears in the dashboard graph within a frame. They are not two copies kept in sync — they are one engine with two front doors.
+With the recommended daemon setup, terminal Claude, the `overwatch` CLI, the
+browser dashboard, planner, scripted automation, and dashboard-deployed agents
+all reach one `GraphEngine`. They share graph truth, durable command outcomes,
+task leases, playbook ownership, approvals, and evidence. They do not maintain
+separate copies that later need to be merged.
 
 ![Two surfaces, one engine](assets/two-surfaces-one-engine-light.svg#only-light)
 ![Two surfaces, one engine](assets/two-surfaces-one-engine-dark.svg#only-dark)
 
-## Why this matters
+## Choose the right startup shape
 
-LLM context windows are finite; engagements are not. If state lived in the prompt, a compaction, a restart, or a handoff to a sub-agent would lose it. Overwatch moves state **out of the context window** into the engine, so:
+The supported shapes are deliberately distinct:
 
-- the primary model can compact and reconstruct everything with one `get_state()`;
-- many agents can work in parallel against one consistent graph;
-- the operator can watch and steer from the dashboard without the model knowing or caring whether anyone is watching.
+- **Shared daemon (recommended and default):** `npm run setup`, then
+  `npm run start:daemon`. The generated `.mcp.json` points terminal Claude at
+  the daemon's HTTP MCP endpoint. The dashboard and CLI use the same daemon's
+  HTTP/WebSocket API, and dispatched agents connect back to its MCP endpoint.
+- **Stdio (solo fallback):** `npm run setup:stdio` configures one Claude session
+  to launch and own one Overwatch
+  process. Do not also start a daemon for the same engagement; that would be a
+  second writer rather than another view of the same runtime.
 
-The engine is also the **single executor**: every target-facing action — whether it arrived from the terminal or was triggered from the dashboard — routes through the same `validate_action → approve → execute → capture evidence → log` lifecycle (`runInstrumentedProcess`). Scope checks, OPSEC budget, the approval gate, evidence capture, and the tamper-evident audit log apply **uniformly**, regardless of how the action arrived. (See [Drivers (Decision Record)](deployment-architecture.md) for the "one engine, many drivers" rationale and the planned internal CLI driver.)
+The state writer lease rejects competing processes, but the right operating
+model is still one daemon—not one Overwatch process per terminal or browser.
+See [Getting Started](getting-started.md) for the exact commands and `doctor`
+checks.
 
-## The three drivers
+## Shared surfaces
 
-| Driver | Transport | Who/what | What it does |
-|--------|-----------|----------|--------------|
-| **Operator + primary Claude** | MCP stdio (or HTTP `/mcp`) | The human + their reasoning model in the terminal | Drives the engagement: scores the frontier, executes through the lifecycle, dispatches sub-agents |
-| **Headless sub-agents** | MCP HTTP `/mcp` | `claude -p` processes the daemon spawns | Bounded, tool-scoped work (recon, web, CVE research, …) connecting **back** to the same engine |
-| **Dashboard** | HTTP + WebSocket | The operator's browser | Watch the graph live, approve/deny actions, answer agent questions, deploy + steer agents, review findings |
+| Surface | Transport | Role |
+|---|---|---|
+| **Terminal Claude** | HTTP MCP `/mcp` in daemon mode | Primary reasoning loop, graph reads, validated execution, agent dispatch |
+| **Terminal CLI** | Dashboard HTTP `/api/*` | Human-friendly status, approvals, dispatch, sessions, and playbook operations from another pane |
+| **Dashboard** | HTTP + WebSocket | Live projections, approvals, questions, plans, deploy/steer controls, evidence and recovery views |
+| **Headless agents** | Task-scoped HTTP MCP `/mcp` | Bounded reasoning work with an archetype/role tool allowlist |
+| **Scripted runners** | In-process application commands | Deterministic work such as supported credential validation |
 
-All three hold a reference to **one** `GraphEngine`, persist to **one** state file, and append to **one** activity log.
+All mutating surfaces call the same transport-neutral application command
+services. A command carries its actor, validated input, command/action/frontier
+references, and idempotency identity; its outcome is durable. Consequently, a
+dashboard retry cannot silently duplicate terminal work, and a playbook step
+claimed in one surface is visibly owned in the others.
 
-## How a sub-agent loops back
+## Terminal Claude and deployed agents do not share Claude sessions
 
-When the primary dispatches a sub-agent (`register_agent` / `dispatch_agents`, or the dashboard's quick-deploy), the daemon resolves an execution backend and — for reasoning work — spawns a headless `claude -p` that connects **back** to the daemon's own `/mcp` endpoint as an MCP client. It then drives itself through the real Overwatch tools (scoped to its archetype's `--allowedTools`), so its findings land in the same graph the operator is watching.
+The daemon's headless `claude -p` workers are deliberately isolated from the
+operator terminal's project-local Claude settings and MCP files. Each worker
+receives a task-specific MCP configuration that contains only the daemon
+endpoint and the tool surface allowed for its role or archetype. It does not
+load the primary session's project hooks and does not add a resumable session to
+the operator's Claude history.
 
-Headless Claude processes are deliberately isolated from the operator
-terminal's project-local Claude settings and MCP files. They use only the
-daemon endpoint supplied for their task, do not load the primary-session hooks,
-and do not add resumable sessions to the operator's Claude history. Your normal
-terminal `claude` process keeps using `.claude/settings.json` and `.mcp.json`;
-the two surfaces share Overwatch state without sharing Claude session identity.
+Your terminal Claude continues to use the repository's `.claude/settings.json`
+and daemon-mode `.mcp.json`. The workers and terminal therefore share
+**Overwatch task state**, not Claude process identity. The engine's frontier
+leases, durable command idempotency, playbook attempt ownership, and agent task
+IDs are the conflict-control boundary.
+
+## How a deployed agent loops back
+
+When the terminal or dashboard dispatches an agent, the daemon first creates a
+durable task. `TaskExecutionService` selects its backend:
+
+- **scripted** — deterministic, no-model work;
+- **headless_mcp** — an isolated `claude -p` worker connecting back to the same
+  daemon with a scoped tool allowlist; or
+- **manual** — the task remains available for a human operator.
+
+The backend follows the work type as well as the selected archetype. For
+example, supported token-validation frontier work uses the scripted path,
+whereas discovery, path analysis, or CVE research can use a reasoning worker.
 
 ![Agent dispatch backends](assets/agent-dispatch-backends-light.svg#only-light)
 ![Agent dispatch backends](assets/agent-dispatch-backends-dark.svg#only-dark)
 
-- **scripted** — deterministic, no-LLM work (e.g. credential/token validation). Fast, runs in-process.
-- **headless_mcp** — a real reasoning sub-agent (`claude -p`) over `/mcp`. Only when an HTTP endpoint is bound (daemon mode); otherwise the task defers to manual.
-- **manual** — a human drives it from the dashboard.
+Findings, evidence, action outcomes, transcripts, and task lifecycle updates
+land through the same command and transaction boundaries as terminal work.
+They appear in the dashboard because the dashboard projects that engine state,
+not because it scrapes the child process.
 
-The backend is chosen by the *frontier item type*, not the archetype label: a `credential_test` item is always claimed by the deterministic scripted handler; open-ended work (discovery, pivots, CVE research) goes to a reasoning agent.
+## Plans, approvals, and questions
 
-## The approval & question round-trip
+Planner commands, action approvals, and agent questions are durable coordination
+records rather than browser timers:
 
-This is the clearest demonstration that the two surfaces are tied to one engine. A terminal agent's target-facing call **blocks** in the engine's pending-action queue; the operator resolves it from the dashboard; the agent resumes. The same shape carries agent → operator questions.
+- A planner command remains queryable by command ID while its worker runs. The
+  browser does not declare failure merely because a local polling deadline
+  elapsed.
+- Plans preserve owner, expiry, confirmation, acknowledgement, and execution
+  outcome. A confirmed plan executes through application commands.
+- Agent questions retain their original expiry. Answers are redelivered on
+  heartbeat until the agent acknowledges the matching query ID.
+- Approval resolution is shared: a terminal request can be approved or denied
+  from the dashboard or CLI, and the waiting action observes that one durable
+  resolution.
+
+If an agent exits without producing the required plan or terminal result, the
+task is finalized truthfully and its transcript/evidence remains available for
+diagnosis. Restart does not invent a successful response.
 
 ![Approval and question round-trip](assets/approval-question-roundtrip-light.svg#only-light)
 ![Approval and question round-trip](assets/approval-question-roundtrip-dark.svg#only-dark)
 
-The engine hardens this path:
+## What survives restart
 
-- An approval that is never answered **auto-fires on timeout** (default `opsec.approval_timeout_ms` = 300s, configurable) — loud, tagged `unattended_execute` in the OPSEC log and retrospective, never a silent approval. (Note the asymmetry: timeout auto-*approves*; to stop an action you must explicitly [`deny_action`](tools/deny-action.md).)
-- If the requesting agent is **reaped, cancelled, or times out**, its blocked approval is **aborted** (never executed) and its OS process is killed — a dead agent can't run a command.
-- Pending approvals are **persisted**; on a daemon restart they're reconciled to `aborted` rather than left un-actionable.
+The persisted state contains graph/config truth and durable coordination:
+agents, campaigns, approvals, directives, leases, plans, questions and answers,
+application-command outcomes, playbook runs and attempts, process ownership,
+and secret-free session descriptors. Original identities and absolute expiry
+times are retained.
 
-(See the [Operator Cockpit](operator-cockpit.md) for the operator-facing "Needs you" strip and escalation UX.)
+Live handles do not survive. PTYs, sockets, child-process objects, WebSocket
+clients, database connections, terminal buffers, and unsaved browser state are
+ephemeral. Startup reconciles their descriptors instead of pretending they are
+still live:
 
-## Shared-state touchpoints
+- detached runtime runs are verified by PID/group/start identity, then marked
+  interrupted or unknown as appropriate;
+- PTY, SSH, and socket-connect sessions become interrupted; and
+- rearm listeners become `resume_available` and require explicit
+  `resume_session`, after which a new connection generation is created.
 
-What concretely makes the two surfaces *one* system:
+[`get_state`](tools/get-state.md) reconstructs an **operational briefing** after
+model compaction or restart. It does not contain every activity record,
+evidence byte, external artifact, terminal buffer, or other ephemeral handle.
+Use the dedicated history, evidence, graph-export, recovery, session, and bundle
+surfaces when full fidelity is required.
 
-- **One `GraphEngine` instance** is constructed once and passed to the MCP server (stdio + every HTTP session), the dashboard server, the session manager, and the task-execution service.
-- **One `EngineContext`** holds the mutable state (graph, agents, approvals, agent questions, activity log) — all modules reference this object, not copies.
-- **One state file** per engagement; the terminal and dashboard both read and write it.
-- **One activity log** records every action from either surface; the dashboard subscribes to engine updates and broadcasts deltas over WebSocket.
+## One execution policy
 
-Planner proposals and agent questions are durable coordination records. Their original absolute TTLs survive restart; expired records are marked truthfully, and confirmation, answer, delivery, acknowledgement, and execution outcomes remain available as bounded history. Only live runtime handles and buffers remain deliberately ephemeral.
+Regardless of origin, target-facing work uses the same validated process or
+session command path: scope checks, OPSEC policy, approval, action lifecycle,
+evidence capture, parser ingestion, durable outcome, and audit linkage. The
+transport adapter cannot bypass these policies by mutating graph or runtime
+state directly.
+
+The durability boundary is also shared. Application commands draft
+`EngineTransaction` operations, journal complete committed transactions before
+apply, and publish one engine update. A recovery/config/process-ownership issue
+that makes durability uncertain puts this one daemon into degraded read-only
+mode; no surface may continue target execution while another writes.
 
 ## Where to go next
 
-- [Operator Cockpit](operator-cockpit.md) — the dashboard's console-first workflow, agent types, NL command bar, and escalation.
-- [Architecture Overview](architecture.md) — the component decomposition and the deterministic-vs-LLM split.
-- [Drivers (Decision Record)](deployment-architecture.md) — why MCP is a driver, not the platform, and what other drivers are planned.
-- [Key Concepts](concepts.md) — the frontier, inference, OPSEC, compaction, and the action lifecycle in depth.
+- [Getting Started](getting-started.md) — one-daemon setup, build freshness, and
+  connection checks.
+- [Operator Cockpit](operator-cockpit.md) — dashboard plans, agent types,
+  steering, approvals, and questions.
+- [Architecture](architecture.md) — application commands, transactions,
+  recovery, and state taxonomy.
+- [Deployment Architecture](deployment-architecture.md) — why transports are
+  adapters rather than independent executors.
+- [Terminal CLI](cli.md) — operate the same daemon from another terminal pane.

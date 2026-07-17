@@ -1,12 +1,15 @@
 # get_state
 
-Full engagement state briefing from the graph. This is the primary recovery mechanism after context compaction.
+Operational engagement briefing synthesized from durable state. This is the
+primary context-recovery call after model compaction or handoff; it is not a
+lossless state-file or artifact export.
 
 **Read-only:** Yes
 
 ## Description
 
-Returns the complete current state of the engagement, synthesized from the graph. Use this as your first call in any new or compacted session to understand:
+Returns a bounded, operator-oriented view of the current engagement. Use this as
+your first call in any new or compacted model session to understand:
 
 - What targets are in scope
 - What has been discovered (nodes and edges)
@@ -17,6 +20,13 @@ Returns the complete current state of the engagement, synthesized from the graph
 
 The frontier items are pre-filtered by the deterministic layer (scope, dedup, hard OPSEC vetoes) but NOT scored — that is the LLM's job.
 
+The briefing deliberately does not embed the entire activity history, raw
+evidence bytes, report/tape/bundle contents, every graph property, or ephemeral
+runtime handles such as PTYs, sockets, process objects, database connections,
+terminal buffers, and WebSocket clients. Durable process and session
+descriptors are available through their dedicated inventory/recovery surfaces;
+they are never presented as proof that a live handle survived restart.
+
 ## Parameters
 
 | Parameter | Type | Default | Description |
@@ -25,13 +35,13 @@ The frontier items are pre-filtered by the deterministic layer (scope, dedup, ha
 | `activity_count` | `integer` | `20` | Number of recent activity entries to include (1–100). |
 | `include_reasoning` | `boolean` | `false` | Include `event_type=thought` / `category=reasoning` entries in `recent_activity`. |
 | `include_system` | `boolean` | `true` | Include `category=system` entries in `recent_activity`. |
-| `snapshot` | `boolean` | `false` | **Phase H**: persist a copy of the returned state to the evidence store and emit a `system` event so the retrospective can reconstruct exactly what the agent saw. **Defaults to `false`** so the tool is genuinely read-only — pass `true` at session bootstrap or when you want the snapshot for retrospective fidelity. De-duplicated within a 5s window when the state body is unchanged. |
+| `snapshot` | `boolean` | `false` | Persist a copy of this returned briefing to the evidence store and emit a `system` event so a retrospective can recover exactly this view. **Defaults to `false`** so the tool is genuinely read-only. De-duplicated within a 5s window when the briefing body is unchanged. |
 | `since` | `string` | — | ISO timestamp of your last `get_state` call. When set, the response adds a `changes_since` summary — new findings + which sub-agents completed since then + a recommendation — so a dispatching primary sees at a glance whether to re-synthesize without scanning `recent_activity`. Unparseable values are ignored. |
 | `compact` | `boolean` | `false` | Return compact JSON (no indentation) to save tokens. Identical payload — only whitespace differs. The evidence snapshot stays pretty-printed. |
 
 ## Returns
 
-An `EngagementState` object containing:
+An `EngagementState` briefing object containing:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -81,3 +91,10 @@ See [Concepts — Graph Compaction](../concepts.md#graph-compaction-cold-store) 
 - Pass `snapshot: true` at session bootstrap when you want the call to also persist evidence — the default is now read-only (`snapshot: false`) so casual reads do not duplicate engagement state across the evidence store.
 - The frontier items have graph metrics attached but are not scored — the LLM should score and prioritize them.
 - Use `activity_count` to control how much history is included in the briefing.
+- Use [`get_history`](get-history.md) for paginated activity,
+  [`get_evidence`](get-evidence.md) for full-fidelity blobs, `query_graph` or
+  `export_graph` for graph detail, and `bundle_engagement` for a portable
+  engagement archive.
+- Use `get_recovery_status`, `list_sessions`, and `check_processes` when startup
+  recovery or live runtime ownership matters. A clean briefing is not a
+  substitute for those explicit status surfaces.

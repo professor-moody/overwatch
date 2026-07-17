@@ -278,7 +278,7 @@ describe('prompt-generator', () => {
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       expect(prompt).toContain('## Key Principles');
-      expect(prompt).toContain('graph is your memory');
+      expect(prompt).toContain('Durable state is your operational memory');
       expect(prompt).toContain('Report early');
     });
 

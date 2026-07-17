@@ -12,7 +12,7 @@ Overwatch is operated as a **multi-agent cockpit**: a human operator drives a pr
 
 - **Dispatch.** `register_agent` / `dispatch_agents` / `dispatch_subnet_agents` / `dispatch_campaign_agents` create `AgentTask`s. `TaskExecutionService` routes each to a backend: `scripted` (deterministic in-process), `headless_mcp` (a real `claude -p` reasoning sub-agent connected back to this daemon's `/mcp`), or `manual`.
 - **Liveness.** Sub-agents call [`agent_heartbeat`](tools/agent-heartbeat.md); the watchdog reaps silent tasks past `heartbeat_ttl_seconds` (headless agents get a 300s cold-start grace so spawn + MCP bootstrap can't trip it before the first beat) and a per-task wall-clock timeout (30 min) bounds runaways. Concurrency is capped (default 3 headless agents). When a task is reaped or cancelled, its OS process is killed and any approval it was blocked on is aborted (never executed).
-- **Resilience.** An agent that ends *abnormally* (timeout / reap / process death / boot reconcile) with unfinished frontier work no longer strands it silently: once its process is gone the strand is made **loud** — a one-time `work_reoffered` alert — and the freed frontier item re-surfaces for pickup by the operator (or the Phase 3.2 orchestrator). A *deliberate* stop (cancel/dismiss/stop-directive/campaign-abort) is never surfaced as stranded. See [Agent Resilience](configuration.md#agent-resilience).
+- **Resilience.** An agent that ends *abnormally* (timeout / reap / process death / boot reconcile) with unfinished frontier work no longer strands it silently: once its process is gone the strand is made **loud** — a one-time `work_reoffered` alert — and the freed frontier item re-surfaces for pickup by the operator or persistent orchestrator. A *deliberate* stop (cancel/dismiss/stop-directive/campaign-abort) is never surfaced as stranded. See [Agent Resilience](configuration.md#agent-resilience).
 - **Reporting.** Agents record work with `report_finding` / `log_thought` / `parse_output` and close out with `submit_agent_transcript` + `update_agent`.
 
 ### Roles {#roles}
@@ -109,21 +109,25 @@ Each type bundles a tool surface **and** a default methodology **skill** (`skill
 inlined into the sub-agent's prompt; the binding is `AgentArchetype.defaultSkill`, locked
 by a test so it always resolves to a real file):
 
-| Agent type | What it does | Tool surface | Default skill |
-|------------|-------------|--------------|---------------|
-| `recon_scanner` | host/service discovery, enumeration | execute + scope; **no** sessions/credentials | `network-recon` |
-| `web_tester` | web app testing | execute + sessions | `web-discovery` |
-| `credential_operator` | validate/spray/expand credentials & tokens | execute + credential tools; no sessions | `password-spraying` |
-| `post_exploit` | work from a foothold: sessions, lateral movement | execute + sessions + credentials | `post-exploitation` |
-| `cve_researcher` | web CVE/PoC research | web research only — **no** target execution | `cve-research` |
-| `osint_recon` | passive external recon: subdomains, DNS, netblocks/ASNs, orgs, emails from public sources | `run_tool` (passive binaries) + web; **no** shell/sessions/credentials | `osint-recon` |
-| `pathfinder` | read-only attack-path analysis → proposes plans | read-only + `propose_plan` | `attack-path-planning` |
-| `report_scribe` | draft report sections from confirmed state | read-only + `generate_report` | `pentest-report-structure` |
-| `cloud_cartographer` | expand cloud creds (AWS/Entra/GitHub/OIDC), map federation + cloud↔on-prem pivots | execute + credential tools | `cloud-federation-mapping` |
-| `opsec_sentinel` | read-only OPSEC monitor: noise budget, defensive signals, recommended approach | read-only + `get_opsec_status` | `opsec-defense-signals` |
-| `session_shepherd` | read-only session oversight: live/stale/orphaned sessions + ownership | read-only + `list_sessions`/`read_session` | `session-lifecycle-monitoring` |
-| `evidence_auditor` | read-only: audit findings + evidence chains for proof readiness | read-only + `get_finding_readiness` | `evidence-auditing` |
-| `default` | the generic full-surface agent (fallback) | full `mcp__overwatch` | — |
+<!-- BEGIN:archetype-table -->
+| Agent type | What it does | Enforced tool surface | Default skill |
+|------------|--------------|-----------------------|---------------|
+| `default` | Full Overwatch surface. Use when no specialized type fits, or when a narrow type is too tight. | full Overwatch MCP surface; **target-executing** | `—` |
+| `recon_scanner` | Network + service discovery: sweep a CIDR/IP, enumerate hosts, ports, and services. No shells, no credential handling. | 24 Overwatch tools + ToolSearch; **target-executing** | `network-recon` |
+| `web_tester` | Web application testing: fuzz endpoints, probe auth, find web vulns. Can open sessions for exploitation. | 32 Overwatch tools + ToolSearch; **target-executing** | `web-discovery` |
+| `credential_operator` | Validate, spray, and expand credentials/tokens (AWS/Entra/GitHub/OIDC), executing only non-blocked playbook descriptors with explicit credential bindings. | 36 Overwatch tools + ToolSearch; **target-executing** | `password-spraying` |
+| `post_exploit` | Work from a foothold: interactive sessions, lateral movement, local enumeration from compromised hosts. | 45 Overwatch tools + ToolSearch; **target-executing** | `post-exploitation` |
+| `cve_researcher` | Read the public web for CVEs/PoCs and record findings. Never executes against targets. | 13 Overwatch tools + WebSearch, WebFetch, ToolSearch; **no target execution** | `cve-research` |
+| `pathfinder` | Read-only attack-path analysis: find gaps and next hops to objectives, propose plans. Never executes. | 18 Overwatch tools + ToolSearch; **no target execution** | `attack-path-planning` |
+| `report_scribe` | Read-only: turn confirmed graph state + evidence into draft report sections. Never executes against targets. | 18 Overwatch tools + ToolSearch; **no target execution** | `pentest-report-structure` |
+| `cloud_cartographer` | Enumerate cloud + identity (AWS/Entra/GitHub/OIDC): resolve dependency-aware credential plans, then map federation and cloud-to-on-prem pivots. | 35 Overwatch tools + ToolSearch; **target-executing** | `cloud-federation-mapping` |
+| `opsec_sentinel` | Read-only OPSEC monitor: track the noise budget + defensive signals, flag risk, and recommend an approach. Never executes. | 18 Overwatch tools + ToolSearch; **no target execution** | `opsec-defense-signals` |
+| `session_shepherd` | Watch interactive sessions: read buffers, surface stale/orphaned sessions and their ownership. Read-only — no new target execution. | 19 Overwatch tools + ToolSearch; **no target execution** | `session-lifecycle-monitoring` |
+| `evidence_auditor` | Read-only: audit findings + their evidence chains for proof readiness; surface gaps before reporting. Never executes. | 18 Overwatch tools + ToolSearch; **no target execution** | `evidence-auditing` |
+| `osint_recon` | Passive external-recon: map the attack surface (subdomains, DNS, netblocks/ASNs, orgs, emails) from PUBLIC sources via run_tool (subfinder/amass/crt.sh/whois) + web research. No shells, no sessions, no credential tools. | 23 Overwatch tools + WebSearch, WebFetch, ToolSearch; **no target execution** | `osint-recon` |
+| `research` | Legacy research role — web research + finding recording, no target execution. | 13 Overwatch tools + WebSearch, WebFetch, ToolSearch; **no target execution** | `—` |
+| `planner` | Legacy planner role — read state and propose plans, never executes or mutates. | 11 Overwatch tools + ToolSearch; **no target execution** | `operator-planner` |
+<!-- END:archetype-table -->
 
 The system **recommends** a type for a target (`recommendArchetype`, mirroring the frontier→strategy mapping), and the operator can **override** it from the catalog. Deploy two ways:
 
@@ -180,5 +184,5 @@ These same endpoints back the [Terminal CLI](cli.md) (`overwatch status` /
 
 - [Dashboard](dashboard.md) — the full panel + endpoint reference.
 - [Terminal CLI](cli.md) — `overwatch`, the standalone terminal operator client.
-- [Architecture](architecture.md#component-overview) — `CommandInterpreter`, `ProposedPlanStore`, `AgentQueryStore`.
+- [Architecture](architecture.md#component-map) — command, planning, and coordination service boundaries.
 - Tools: [`propose_plan`](tools/propose-plan.md), [`ask_operator`](tools/ask-operator.md), [`manage_agent_directive`](tools/manage-agent-directive.md).
