@@ -70,7 +70,7 @@ This single JSON file contains:
 - **Credential material** — `cred_value` and related fields when a parser/tool captured reusable material
 - **Activity log** — up to 5,000 most-recent entries (tiered truncation preserves milestones)
 - **Orchestration state** — agents, campaigns, approvals, directives, leases, frontier linkage and weights
-- **Coordination state** — proposed plans, questions/answers, command previews/outcomes, playbook slots, process ownership, and secret-free session descriptors
+- **Coordination state** — proposed plans, questions/answers, command previews/outcomes, versioned playbook runs/steps/attempts and ownership, process ownership, and secret-free session descriptors
 - **Chain checkpoints** — hash-chain integrity anchors (when `hash_chain_enabled: true`)
 - **External artifact references** — evidence/report manifests, tapes, bundles, and cookie jars by path/hash rather than embedded content
 

@@ -81,9 +81,11 @@ In your MCP-connected Claude Code session (or via any MCP client):
 
 The smoke walk does not execute the AWS command; `use_ambient_credentials: true` explicitly exercises the ambient-binding plan path. In a real engagement, set it only when the active AWS environment/default chain is known to represent this selected credential. Otherwise supply a bound `aws_profile`, or use an `aws_session_credentials` credential and populate the returned `run_bash.env.OVERWATCH_AWS_SESSION_CREDENTIALS` binding with its actual JSON value.
 
-You should get back a dependency-aware plan starting with a ready `aws sts get-caller-identity` step. The remaining descriptors are blocked, have `ready: false`, and intentionally use `command: null` until caller attribution exists. Plan generation does not stamp or retire the credential. Never execute a blocked/null descriptor; honor each ready descriptor's returned `runner` and environment binding.
+You should get back a durable `run_id` and a dependency-aware plan starting with a ready `aws sts get-caller-identity` step. The remaining descriptors are blocked, have `ready: false`, and intentionally use `command: null` until caller attribution exists. Run creation does not stamp or retire the credential.
 
-Now drive step 1 with a canned response. Pipe the fixture below through `parse_output`:
+Inspect the run with `get_playbook_run`. In a live engagement, claim only the ready caller-identity step with `start_playbook_step`, preserve the returned execution descriptor unchanged, and send it through `run_bash`. Preparing a step does not execute it; if you do not run it, call `interrupt_playbook_attempt` so another terminal or dashboard agent is not left blocked. Never execute a blocked/null descriptor; honor each ready descriptor's returned runner and environment binding.
+
+For this smoke-only canned response, do **not** claim the live step: no AWS command was executed. Pipe the fixture below through ordinary unlinked `parse_output`, then re-expand so the durable run can materialize the newly discovered bindings without inventing an execution attempt:
 
 **Fixture: `aws sts get-caller-identity` output**
 ```json

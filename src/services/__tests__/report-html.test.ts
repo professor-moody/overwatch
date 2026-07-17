@@ -86,6 +86,26 @@ describe('renderReportHtml', () => {
     expect(html).toContain('10.10.10.0/24');
     expect(html).toContain('test.local');
   });
+
+  it('renders generated, partial, and completed playbook coverage with lifecycle truth', () => {
+    const html = renderReportHtml(makeReportData({
+      playbooks: {
+        total: 3,
+        generated: 1,
+        partial: 1,
+        completed: 1,
+        runs: [
+          { run_id: 'run-generated', definition_id: 'aws-credential', credential_id: 'cred-1', status: 'pending', report_status: 'generated', steps_total: 2, steps_completed: 0, steps_skipped: 0, steps_failed: 0, attempts: 0, evidence_count: 0, finding_count: 0 },
+          { run_id: 'run-partial', definition_id: 'github-credential', credential_id: 'cred-2', status: 'interrupted', report_status: 'partial', steps_total: 2, steps_completed: 1, steps_skipped: 0, steps_failed: 0, attempts: 1, evidence_count: 1, finding_count: 1 },
+          { run_id: 'run-complete', definition_id: 'entra-credential', credential_id: 'cred-3', status: 'skipped', report_status: 'partial', steps_total: 1, steps_completed: 0, steps_skipped: 1, steps_failed: 0, attempts: 0, evidence_count: 0, finding_count: 0 },
+        ],
+      },
+    }));
+    expect(html).toContain('href="#credential-playbooks"');
+    expect(html).toContain('run-partial');
+    expect(html).toContain('interrupted');
+    expect(html).toContain('0/1');
+  });
 });
 
 describe('esc (XSS escaping)', () => {

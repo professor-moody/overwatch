@@ -16,6 +16,10 @@ import {
   DEFAULT_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
 } from './_process-runner.js';
+import {
+  playbookProcessLifecycle,
+  withPlaybookAttemptCompletion,
+} from '../services/playbook-run-service.js';
 
 export function registerRunBashTool(server: McpServer, engine: GraphEngine): void {
   server.registerTool(
@@ -72,6 +76,9 @@ terminal, then register the PID with \`track_process\`.`,
         noise_estimate: z.number().min(0).max(1).optional().describe('Predicted noise level (overrides validation estimate when present)'),
         command_id: z.string().min(1).optional().describe('Stable application-command ID for status correlation and safe retries.'),
         idempotency_key: z.string().min(1).optional().describe('Stable retry key. Reusing it with identical input returns the original result without executing again.'),
+        playbook_run_id: z.string().min(1).optional().describe('Durable playbook run linkage returned by start_playbook_step.'),
+        playbook_step_id: z.string().min(1).optional().describe('Durable playbook step linkage returned by start_playbook_step.'),
+        playbook_attempt_id: z.string().min(1).optional().describe('Durable playbook attempt linkage returned by start_playbook_step.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -81,7 +88,9 @@ terminal, then register the PID with \`track_process\`.`,
       },
     },
     withErrorBoundary('run_bash', async (params, extra) => {
-      return runInstrumentedProcess(engine, {
+      const onExecutionState = playbookProcessLifecycle(engine, params);
+      return withPlaybookAttemptCompletion(engine, params, async () => {
+        return runInstrumentedProcess(engine, {
         binary: 'bash',
         args: ['-c', params.command],
         command_repr: params.command,
@@ -112,8 +121,10 @@ terminal, then register the PID with \`track_process\`.`,
         invoking_tool: 'run_bash',
         command_id: params.command_id,
         idempotency_key: params.idempotency_key,
+        onExecutionState,
         abortSignal: extra?.signal,
       });
+      }, { begin_execution: false });
     }),
   );
 }

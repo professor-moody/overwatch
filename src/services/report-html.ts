@@ -32,6 +32,29 @@ export interface HtmlAgentStats {
   failed: number;
 }
 
+export interface HtmlPlaybookRunSummary {
+  run_id?: string;
+  definition_id: string;
+  credential_id?: string;
+  status: string;
+  report_status: 'generated' | 'partial' | 'completed';
+  steps_total: number;
+  steps_completed: number;
+  steps_skipped: number;
+  steps_failed: number;
+  attempts: number;
+  evidence_count: number;
+  finding_count: number;
+}
+
+export interface HtmlPlaybookSummary {
+  total: number;
+  generated: number;
+  partial: number;
+  completed: number;
+  runs: HtmlPlaybookRunSummary[];
+}
+
 export interface HtmlRetrospective {
   context_improvements?: { frontier_observations: { area: string; observation: string; confidence: string }[]; context_gaps: { area: string; gap: string; recommendation: string }[] };
   inference_suggestions?: { rule: { name: string }; evidence: string }[];
@@ -53,6 +76,7 @@ export interface HtmlReportData {
   credentialChains?: CredentialChain[];
   discoveryStats?: HtmlDiscoveryStats;
   agents?: HtmlAgentStats;
+  playbooks?: HtmlPlaybookSummary;
   retrospective?: HtmlRetrospective;
   timeline?: HtmlTimelineEntry[];
   recommendations?: string[];
@@ -225,6 +249,8 @@ ${data.discoveryStats ? renderDiscoverySummaryHtml(data.discoveryStats) : ''}
 
 ${data.agents && data.agents.total > 0 ? renderAgentActivityHtml(data.agents) : ''}
 
+${data.playbooks && data.playbooks.total > 0 ? renderPlaybookSummaryHtml(data.playbooks) : ''}
+
 ${data.retrospective && hasRetrospectiveContent(data.retrospective) ? renderRetrospectiveHtml(data.retrospective) : ''}
 
 ${data.timeline && data.timeline.length > 0 ? renderTimelineHtml(data.timeline) : ''}
@@ -271,6 +297,7 @@ function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data:
       ${data.credentialChains && data.credentialChains.length > 0 ? '<li><a href="#credential-chains">Credential Chains</a></li>' : ''}
       ${data.discoveryStats ? '<li><a href="#discovery-summary">Discovery Summary</a></li>' : ''}
       ${data.agents && data.agents.total > 0 ? '<li><a href="#agent-activity">Agent Activity</a></li>' : ''}
+      ${data.playbooks && data.playbooks.total > 0 ? '<li><a href="#credential-playbooks">Credential Playbooks</a></li>' : ''}
       ${data.retrospective && hasRetrospectiveContent(data.retrospective) ? '<li><a href="#retrospective">Retrospective Findings</a></li>' : ''}
       ${data.timeline && data.timeline.length > 0 ? '<li><a href="#activity-timeline">Activity Timeline</a></li>' : ''}
       ${data.recommendations && data.recommendations.length > 0 ? '<li><a href="#recommendations">Recommendations</a></li>' : ''}
@@ -602,6 +629,32 @@ function renderAgentActivityHtml(agents: HtmlAgentStats): string {
       <li><strong>Completed:</strong> ${agents.completed}</li>
       <li><strong>Failed:</strong> ${agents.failed}</li>
     </ul>
+  </section>`;
+}
+
+function renderPlaybookSummaryHtml(playbooks: HtmlPlaybookSummary): string {
+  const rows = playbooks.runs.map(run => `
+        <tr>
+          <td>${esc(run.run_id ?? '—')}</td>
+          <td>${esc(run.definition_id)}</td>
+          <td>${esc(run.credential_id ?? '—')}</td>
+          <td>${esc(run.report_status)}</td>
+          <td>${esc(run.status)}</td>
+          <td>${run.steps_completed}/${run.steps_total}</td>
+          <td>${run.steps_skipped}</td>
+          <td>${run.steps_failed}</td>
+          <td>${run.attempts}</td>
+          <td>${run.evidence_count}</td>
+          <td>${run.finding_count}</td>
+        </tr>`).join('');
+  return `
+  <section id="credential-playbooks">
+    <h2>Credential Playbooks</h2>
+    <p>${playbooks.completed} completed, ${playbooks.partial} partial, and ${playbooks.generated} generated but not meaningfully executed.</p>
+    <table>
+      <thead><tr><th>Run</th><th>Playbook</th><th>Credential</th><th>Coverage</th><th>Lifecycle</th><th>Succeeded</th><th>Skipped</th><th>Failed</th><th>Attempts</th><th>Evidence</th><th>Findings</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
   </section>`;
 }
 

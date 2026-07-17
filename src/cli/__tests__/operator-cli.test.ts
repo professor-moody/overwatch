@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { setColorEnabled, formatTable, truncate, keyValues } from '../operator/format.js';
 import { resolveClientOptions, createClient, ApiError, type ApiClient } from '../operator/client.js';
 import { READ_COMMANDS, WRITE_COMMANDS } from '../operator/commands.js';
-import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents, renderRecovery, renderSessions } from '../operator/render.js';
+import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents, renderRecovery, renderSessions, renderPlaybooks } from '../operator/render.js';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -48,6 +48,19 @@ describe('format', () => {
     }]);
     expect(output).toContain('task-owner');
     expect(output).toContain('resume_available');
+  });
+
+  it('renders ownership for prepared, approval-waiting, and running playbook attempts', () => {
+    const statuses = ['claimed', 'awaiting_approval', 'running'];
+    const output = renderPlaybooks({ total: 3, runs: statuses.map((status, index) => ({
+      run_id: `run-${index + 1}`, schema_version: 1, credential_id: 'cred-1', status, report_status: 'partial',
+      definition: { provider: 'aws' },
+      steps: [{ status, attempts: [{ status, claimed_by_task_id: `task-${status}`, claimed_via: 'mcp' }] }],
+    })) });
+    expect(output).toContain('task-claimed');
+    expect(output).toContain('task-awaiting_approval');
+    expect(output).toContain('task-running');
+    expect(output).toContain('partial');
   });
 });
 
@@ -110,6 +123,13 @@ function fakeClient(map: Record<string, unknown>): ApiClient {
 }
 
 describe('read commands', () => {
+  it('lists filtered durable playbook runs', async () => {
+    const payload = { runs: [{ run_id: 'run-1', status: 'pending', steps: [] }], total: 1 };
+    const client = fakeClient({ '/api/playbook-runs?credential_id=cred-1&open_only=true': payload });
+    const result = await READ_COMMANDS.playbooks.run({ client, args: ['--credential', 'cred-1', '--open'] });
+    expect(result.data).toEqual(payload);
+    expect(result.text).toContain('run-1');
+  });
   it('state migrate --check inspects local files without contacting HTTP', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'overwatch-cli-state-check-'));
     try {
@@ -215,6 +235,19 @@ function recordingClient(response: unknown = {}): { client: ApiClient; calls: Ar
 }
 
 describe('write commands', () => {
+  it('prepares and releases playbook attempts without claiming target execution occurred', async () => {
+    const prepared = recordingClient({ attempt: { attempt_id: 'attempt-1' }, execution: { command_id: 'exec-1' } });
+    const start = await WRITE_COMMANDS.playbook.run({ client: prepared.client, args: ['start', 'run-1', 'step-1'] });
+    expect(prepared.calls[0]).toEqual({ path: '/api/playbook-runs/run-1/steps/step-1/start', body: {} });
+    expect(start.text).toContain('does not execute');
+
+    const released = recordingClient({ run: { status: 'interrupted' } });
+    const interrupt = await WRITE_COMMANDS.playbook.run({ client: released.client, args: ['interrupt', 'run-1', 'step-1', '--reason', 'not running'] });
+    expect(released.calls[0]).toEqual({
+      path: '/api/playbook-runs/run-1/steps/step-1/interrupt', body: { reason: 'not running' },
+    });
+    expect(interrupt.text).toContain('Released step-1');
+  });
   it('session resume posts to the explicit listener-resume endpoint', async () => {
     const { client, calls } = recordingClient({
       resumed: true,

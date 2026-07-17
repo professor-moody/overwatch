@@ -64,6 +64,9 @@ import {
   ObjectiveDeleteResponseSchema,
   ObjectiveUpdateRequestSchema,
   ObjectiveUpdateResponseSchema,
+  PlaybookRunListResponseSchema,
+  PlaybookRunResponseSchema,
+  PlaybookStepClaimResponseSchema,
   RawGraphDtoSchema,
   RecoveryStatusResponseSchema,
   SettingsDtoSchema,
@@ -88,6 +91,8 @@ import {
   type ObjectiveUpdateRequest,
   type RawGraphDto,
   type ProposedPlanDto,
+  type PlaybookRunDto,
+  type PlaybookStepClaimResponse,
   type ReportRecordDto,
   type ReportsListResponseDto,
   type RecoveryStatusDto,
@@ -147,6 +152,58 @@ export async function getState(signal?: AbortSignal): Promise<{ state: Engagemen
 
 export async function getGraph(): Promise<RawGraphDto> {
   return RawGraphDtoSchema.parse(await request('getGraph'));
+}
+
+// --- Durable credential playbooks ---
+
+export async function getPlaybookRuns(params: {
+  credential_id?: string;
+  status?: PlaybookRunDto['status'];
+  open_only?: boolean;
+} = {}): Promise<{ runs: PlaybookRunDto[]; total: number }> {
+  const response = PlaybookRunListResponseSchema.parse(await request('listPlaybookRuns', { query: params }));
+  return {
+    runs: response.runs.filter((run): run is PlaybookRunDto => run.schema_version === 1),
+    total: response.total,
+  };
+}
+
+export async function getPlaybookRun(runId: string): Promise<PlaybookRunDto> {
+  const response = PlaybookRunResponseSchema.parse(await request('getPlaybookRun', { path: { run_id: runId } }));
+  if (response.run.schema_version !== 1) throw new Error('This is a legacy playbook placeholder; start a new run.');
+  return response.run;
+}
+
+export async function startPlaybookStep(runId: string, stepId: string): Promise<PlaybookStepClaimResponse> {
+  return PlaybookStepClaimResponseSchema.parse(await request('startPlaybookStep', { path: { run_id: runId, step_id: stepId }, body: {} }));
+}
+
+export async function resumePlaybookRun(runId: string): Promise<PlaybookRunDto> {
+  const response = PlaybookRunResponseSchema.parse(await request('resumePlaybookRun', { path: { run_id: runId }, body: {} }));
+  if (response.run.schema_version !== 1) throw new Error('This is a legacy playbook placeholder; start a new run.');
+  return response.run;
+}
+
+export async function retryPlaybookStep(runId: string, stepId: string): Promise<PlaybookStepClaimResponse> {
+  return PlaybookStepClaimResponseSchema.parse(await request('retryPlaybookStep', { path: { run_id: runId, step_id: stepId }, body: {} }));
+}
+
+export async function skipPlaybookStep(runId: string, stepId: string, reason?: string): Promise<PlaybookRunDto> {
+  const response = PlaybookRunResponseSchema.parse(await request('skipPlaybookStep', {
+    path: { run_id: runId, step_id: stepId },
+    body: { reason },
+  }));
+  if (response.run.schema_version !== 1) throw new Error('This is a legacy playbook placeholder; start a new run.');
+  return response.run;
+}
+
+export async function interruptPlaybookAttempt(runId: string, stepId: string, reason?: string): Promise<PlaybookRunDto> {
+  const response = PlaybookRunResponseSchema.parse(await request('interruptPlaybookAttempt', {
+    path: { run_id: runId, step_id: stepId },
+    body: { reason },
+  }));
+  if (response.run.schema_version !== 1) throw new Error('This is a legacy playbook placeholder; start a new run.');
+  return response.run;
 }
 
 // --- History ---

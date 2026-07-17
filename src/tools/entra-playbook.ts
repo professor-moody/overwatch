@@ -27,6 +27,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialUsableForAuth, isTokenCredential } from '../services/credential-utils.js';
 import { safePlaybookArg } from './_playbook-utils.js';
+import { PlaybookCommandService } from '../services/playbook-command-service.js';
 
 interface PlaybookStep {
   step: number;
@@ -45,6 +46,8 @@ interface PlaybookStep {
   ready?: boolean;
   status?: 'ready' | 'blocked';
   depends_on?: string[];
+  required_bindings?: string[];
+  produces_bindings?: string[];
   blocked_reason?: string;
 }
 
@@ -97,9 +100,10 @@ source credential is marked credential_status: 'expired'.`,
         scope: z.string().default('https://graph.microsoft.com/.default offline_access').describe('Requested OAuth scope. Defaults to MS Graph default + offline_access for refresh continuity.'),
         tenant_id: z.string().optional().describe('Tenant id or "common" / "organizations". Defaults to the credential\'s cred_issuer if available, else "common".'),
         refresh_token_env_var: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).default('OVERWATCH_ENTRA_REFRESH_TOKEN').describe('run_bash.env variable that will be populated from the selected refresh credential.'),
+        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching logical run.'),
       },
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: false,
         openWorldHint: false,
@@ -112,6 +116,7 @@ source credential is marked credential_status: 'expired'.`,
         scope: string;
         tenant_id?: string;
         refresh_token_env_var?: string;
+        new_run?: boolean;
       };
       const refreshTokenEnvVar = (params as { refresh_token_env_var?: string }).refresh_token_env_var ?? 'OVERWATCH_ENTRA_REFRESH_TOKEN';
       const cred = engine.getNode(credential_id);
@@ -169,12 +174,39 @@ source credential is marked credential_status: 'expired'.`,
         expected: 'A derived oidc_access_token credential, or a precise source-credential exchange failure update.',
         blocking: true,
       };
+      const durable = new PlaybookCommandService(engine).open({
+        definition: {
+          definition_id: 'entra-refresh-exchange',
+          definition_version: 1,
+          provider: 'entra',
+          title: 'Entra refresh-token exchange',
+        },
+        credential_id,
+        normalized_inputs: {
+          client_id,
+          scope,
+          tenant_id: tenant,
+          refresh_token_env_var: refreshTokenEnvVar,
+        },
+        bindings: {
+          tenant_id: tenant,
+          client_id,
+          credential_execution_binding: `env:${refreshTokenEnvVar}`,
+        },
+        steps: [{ ...step }],
+        new_run: (params as { new_run?: boolean }).new_run === true,
+      });
 
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             credential_id,
+            run_id: durable.run.run_id,
+            playbook_run_status: durable.run.status,
+            playbook_report_status: durable.run.report_status,
+            playbook_created: durable.created,
+            playbook_steps: durable.run.steps,
             tenant: tenant,
             command,
             parse_with: 'entra-token-exchange',
@@ -217,9 +249,10 @@ operator\'s responsibility — the plan emits a single page per resource.`,
         include_groups: z.boolean().default(true).describe('Include /groups enumeration step.'),
         token_env_var: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).default('OVERWATCH_ENTRA_TOKEN').describe('run_bash.env variable that will be populated from the selected access credential.'),
         confirm_provider: z.boolean().default(false).describe('Explicitly confirm an otherwise-unmarked access token is an Entra credential.'),
+        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching logical run.'),
       },
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
@@ -232,6 +265,7 @@ operator\'s responsibility — the plan emits a single page per resource.`,
         include_groups: boolean;
         token_env_var?: string;
         confirm_provider?: boolean;
+        new_run?: boolean;
       };
       const tokenEnvVar = (params as { token_env_var?: string }).token_env_var ?? 'OVERWATCH_ENTRA_TOKEN';
       const cred = engine.getNode(credential_id);
@@ -282,6 +316,7 @@ operator\'s responsibility — the plan emits a single page per resource.`,
         ready: true,
         status: 'ready',
         depends_on: [],
+        produces_bindings: ['tenant_id'],
       });
 
       steps.push({
@@ -299,6 +334,7 @@ operator\'s responsibility — the plan emits a single page per resource.`,
         ready: tenantResolved,
         status: tenantResolved ? 'ready' : 'blocked',
         depends_on: ['me'],
+        required_bindings: ['tenant_id'],
         blocked_reason: tenantResolved ? undefined : tenantBlockedReason,
       });
 
@@ -317,6 +353,7 @@ operator\'s responsibility — the plan emits a single page per resource.`,
         ready: tenantResolved,
         status: tenantResolved ? 'ready' : 'blocked',
         depends_on: ['me'],
+        required_bindings: ['tenant_id'],
         blocked_reason: tenantResolved ? undefined : tenantBlockedReason,
       });
 
@@ -335,6 +372,7 @@ operator\'s responsibility — the plan emits a single page per resource.`,
         ready: tenantResolved,
         status: tenantResolved ? 'ready' : 'blocked',
         depends_on: ['me'],
+        required_bindings: ['tenant_id'],
         blocked_reason: tenantResolved ? undefined : tenantBlockedReason,
       });
 
@@ -354,15 +392,43 @@ operator\'s responsibility — the plan emits a single page per resource.`,
           ready: tenantResolved,
           status: tenantResolved ? 'ready' : 'blocked',
           depends_on: ['me'],
+          required_bindings: ['tenant_id'],
           blocked_reason: tenantResolved ? undefined : tenantBlockedReason,
         });
       }
+
+      const durable = new PlaybookCommandService(engine).open({
+        definition: {
+          definition_id: 'entra-credential',
+          definition_version: 2,
+          provider: 'entra',
+          title: 'Entra credential expansion',
+        },
+        credential_id,
+        normalized_inputs: {
+          requested_tenant_id: concreteTenant(tenant_id) ?? null,
+          include_groups,
+          token_env_var: tokenEnvVar,
+          confirm_provider: (params as { confirm_provider?: boolean }).confirm_provider === true,
+        },
+        bindings: {
+          ...(tenant ? { tenant_id: tenant } : {}),
+          credential_execution_binding: credentialBinding,
+        },
+        steps: steps.map(step => ({ ...step })),
+        new_run: (params as { new_run?: boolean }).new_run === true,
+      });
 
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             credential_id,
+            run_id: durable.run.run_id,
+            playbook_run_status: durable.run.status,
+            playbook_report_status: durable.run.report_status,
+            playbook_created: durable.created,
+            playbook_steps: durable.run.steps,
             plan_version: 2,
             tenant: tenant ?? null,
             tenant_status: tenantResolved ? 'resolved' : 'unresolved',

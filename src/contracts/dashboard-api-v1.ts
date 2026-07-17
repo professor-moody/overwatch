@@ -46,6 +46,11 @@ import {
   ObjectiveUpdateRequestSchema,
   ObjectiveUpdateResponseSchema,
   PendingActionDtoSchema,
+  PlaybookRunListResponseSchema,
+  PlaybookRunResponseSchema,
+  PlaybookSkipRequestSchema,
+  PlaybookStatusSchema,
+  PlaybookStepClaimResponseSchema,
   ProposedPlansResponseSchema,
   QuickDeployResponseSchema,
   RawGraphDtoSchema,
@@ -111,6 +116,20 @@ const queryWithToken = <T extends z.ZodRawShape>(shape: T) => z.object({
   token: z.string().optional(),
 }).strict();
 const EmptyQuerySchema = queryWithToken({});
+const PlaybookRunsQuerySchema = queryWithToken({
+  credential_id: z.string().optional(),
+  status: PlaybookStatusSchema.optional(),
+  open_only: z.preprocess(
+    value => value === undefined || value === ''
+      ? undefined
+      : value === 'true'
+        ? true
+        : value === 'false'
+          ? false
+          : value,
+    z.boolean().optional(),
+  ),
+});
 
 const idPath = (name: string) => z.object({ [name]: z.string().min(1) }).strict();
 
@@ -609,6 +628,8 @@ export const DASHBOARD_OPERATION_IDS = [
   'closeSession', 'resumeSession', 'getSessionBuffer', 'updateSession',
   'getEvidenceChains', 'getObjectivePaths', 'getFindingContext',
   'downloadReport', 'deleteReport', 'getEngagement', 'updateEngagement',
+  'listPlaybookRuns', 'getPlaybookRun', 'startPlaybookStep',
+  'resumePlaybookRun', 'retryPlaybookStep', 'skipPlaybookStep', 'interruptPlaybookAttempt',
 ] as const;
 export type DashboardOperationId = (typeof DASHBOARD_OPERATION_IDS)[number];
 
@@ -638,6 +659,24 @@ const dashboardAgentCommandEndpoints = {
   getActiveApplicationCommands: endpoint({ operation_id: 'getActiveApplicationCommands', method: 'GET', path: '/api/commands/active', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: ActiveApplicationCommandsResponseSchema }, response_kind: 'json', summary: 'List active durable planner commands' }),
   getProposedPlans: endpoint({ operation_id: 'getProposedPlans', method: 'GET', path: '/api/plans', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: ProposedPlansResponseSchema }, response_kind: 'json', summary: 'List open proposed plans' }),
   getAgentQueries: endpoint({ operation_id: 'getAgentQueries', method: 'GET', path: '/api/agent-queries', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: AgentQueriesResponseSchema }, response_kind: 'json', summary: 'List operator questions from agents' }),
+} as const;
+
+const PlaybookStepPathSchema = z.object({
+  run_id: z.string().min(1),
+  step_id: z.string().min(1),
+}).strict();
+
+const dashboardPlaybookEndpoints = {
+  listPlaybookRuns: endpoint({ operation_id: 'listPlaybookRuns', method: 'GET', path: '/api/playbook-runs', path_schema: EmptyPathSchema, query_schema: PlaybookRunsQuerySchema, body_schema: NoBodySchema, responses: { 200: PlaybookRunListResponseSchema }, response_kind: 'json', summary: 'List durable credential playbook runs' }),
+  getPlaybookRun: endpoint({ operation_id: 'getPlaybookRun', method: 'GET', path: '/api/playbook-runs/{run_id}', path_schema: idPath('run_id'), query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: PlaybookRunResponseSchema, 404: DashboardErrorSchema }, response_kind: 'json', summary: 'Read one durable credential playbook run' }),
+} as const;
+
+const dashboardPlaybookLifecycleEndpoints = {
+  startPlaybookStep: endpoint({ operation_id: 'startPlaybookStep', method: 'POST', path: '/api/playbook-runs/{run_id}/steps/{step_id}/start', path_schema: PlaybookStepPathSchema, query_schema: EmptyQuerySchema, body_schema: z.union([NoBodySchema, EmptyBodySchema]), responses: { 200: PlaybookStepClaimResponseSchema, 400: DashboardErrorSchema, 404: DashboardErrorSchema, 409: DashboardErrorSchema, 503: DashboardErrorSchema }, response_kind: 'json', summary: 'Claim one ready playbook step' }),
+  resumePlaybookRun: endpoint({ operation_id: 'resumePlaybookRun', method: 'POST', path: '/api/playbook-runs/{run_id}/resume', path_schema: idPath('run_id'), query_schema: EmptyQuerySchema, body_schema: z.union([NoBodySchema, EmptyBodySchema]), responses: { 200: PlaybookRunResponseSchema, 400: DashboardErrorSchema, 404: DashboardErrorSchema, 409: DashboardErrorSchema, 503: DashboardErrorSchema }, response_kind: 'json', summary: 'Resume an interrupted playbook run' }),
+  retryPlaybookStep: endpoint({ operation_id: 'retryPlaybookStep', method: 'POST', path: '/api/playbook-runs/{run_id}/steps/{step_id}/retry', path_schema: PlaybookStepPathSchema, query_schema: EmptyQuerySchema, body_schema: z.union([NoBodySchema, EmptyBodySchema]), responses: { 200: PlaybookStepClaimResponseSchema, 400: DashboardErrorSchema, 404: DashboardErrorSchema, 409: DashboardErrorSchema, 503: DashboardErrorSchema }, response_kind: 'json', summary: 'Append a retry attempt for a playbook step' }),
+  skipPlaybookStep: endpoint({ operation_id: 'skipPlaybookStep', method: 'POST', path: '/api/playbook-runs/{run_id}/steps/{step_id}/skip', path_schema: PlaybookStepPathSchema, query_schema: EmptyQuerySchema, body_schema: PlaybookSkipRequestSchema, responses: { 200: PlaybookRunResponseSchema, 400: DashboardErrorSchema, 404: DashboardErrorSchema, 409: DashboardErrorSchema, 503: DashboardErrorSchema }, response_kind: 'json', summary: 'Skip a playbook step' }),
+  interruptPlaybookAttempt: endpoint({ operation_id: 'interruptPlaybookAttempt', method: 'POST', path: '/api/playbook-runs/{run_id}/steps/{step_id}/interrupt', path_schema: PlaybookStepPathSchema, query_schema: EmptyQuerySchema, body_schema: PlaybookSkipRequestSchema, responses: { 200: PlaybookRunResponseSchema, 400: DashboardErrorSchema, 404: DashboardErrorSchema, 409: DashboardErrorSchema, 503: DashboardErrorSchema }, response_kind: 'json', summary: 'Release an active playbook attempt as interrupted' }),
 } as const;
 
 const dashboardConfigEndpoints = {
@@ -735,6 +774,8 @@ const dashboardFinalEndpoints = {
 type DashboardHttpRegistryType =
   & typeof dashboardCoreEndpoints
   & typeof dashboardAgentCommandEndpoints
+  & typeof dashboardPlaybookEndpoints
+  & typeof dashboardPlaybookLifecycleEndpoints
   & typeof dashboardConfigEndpoints
   & typeof dashboardEngagementEndpoints
   & typeof dashboardToolingEndpoints
@@ -745,6 +786,8 @@ type DashboardHttpRegistryType =
 export const DashboardHttpRegistry: DashboardHttpRegistryType = {
   ...dashboardCoreEndpoints,
   ...dashboardAgentCommandEndpoints,
+  ...dashboardPlaybookEndpoints,
+  ...dashboardPlaybookLifecycleEndpoints,
   ...dashboardConfigEndpoints,
   ...dashboardEngagementEndpoints,
   ...dashboardToolingEndpoints,

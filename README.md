@@ -58,7 +58,7 @@ guide.
 
 ## Documentation
 
-**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 83 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
+**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, the generated MCP tool inventory, graph model, inference rules, skills library, operator playbook, and development guide.
 
 ## Disclaimer
 

@@ -189,7 +189,10 @@ describe('expand_github_credential plan shape', () => {
     expect(payload.steps[1].parse_with).toBe('gh-api-orgs');
     expect(payload.steps[2].parse_with).toBe('gh-api-repos');
 
-    expect(engine.getNode('cred-pat-1')?.recon_playbook_invoked_at).toBeUndefined();
+    expect(engine.getNode('cred-pat-1')).toMatchObject({
+      recon_playbook_invoked_at: expect.any(String),
+      recon_playbook_step_count: payload.step_count,
+    });
   });
 
   it('expands per-repo steps when candidate_repos is provided', async () => {
@@ -240,5 +243,50 @@ describe('expand_github_credential plan shape', () => {
     const branch = perRepo.find((step: any) => step.parse_with === 'gh-api-branch-protection');
     expect(branch.command).toContain("branches/'master'/protection");
     expect(branch.parser_context.branch_name).toBe('master');
+  });
+
+  it('deduplicates repositories, avoids legacy slug collisions, and resumes with stable step ids', async () => {
+    const config = {
+      id: 'test-collisions', name: 'test', created_at: '2026-01-01T00:00:00Z',
+      scope: { cidrs: [], domains: [], exclusions: [] }, objectives: [],
+      opsec: { name: 'pentest', max_noise: 0.5 },
+    } as any;
+    const engine = openEngine(config, './state-test-gh-playbook-collisions.json');
+    engine.addNode({
+      id: 'cred-pat-collisions', type: 'credential', label: 'github-pat-collisions',
+      cred_type: 'token', cred_material_kind: 'pat', credential_status: 'active',
+      cred_token_expires_at: '2099-01-01T00:00:00Z', discovered_at: '2026-01-01T00:00:00Z', confidence: 1,
+    } as any);
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const { registerGithubPlaybookTool } = await import('../tools/github-playbook.js');
+    registerGithubPlaybookTool({
+      registerTool: (name: string, _meta: unknown, handler: any) => { handlers[name] = handler; },
+    } as any, engine);
+    const expand = async (candidate_repos: any[], new_run = false) => {
+      const result = await handlers.expand_github_credential({
+        credential_id: 'cred-pat-collisions', max_repos: 200, include_orgs: false,
+        candidate_repos, new_run,
+      });
+      return JSON.parse(result.content[0].text);
+    };
+    const candidates = [
+      'foo-bar/baz',
+      { repo_full_name: 'foo/bar-baz', default_branch: 'main' },
+      { repo_full_name: 'FOO-BAR/BAZ', default_branch: 'trunk' },
+    ];
+    const first = await expand(candidates);
+    const ids = first.steps.map((step: any) => step.step_id);
+    expect(first.step_count).toBe(10);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(first.steps.filter((step: any) => step.parser_context?.repo_full_name)).toHaveLength(8);
+    expect(first.steps.find((step: any) =>
+      step.parse_with === 'gh-api-branch-protection'
+      && step.parser_context?.repo_full_name === 'foo-bar/baz')?.parser_context.branch_name).toBe('trunk');
+
+    const resumed = await expand([...candidates].reverse());
+    expect(resumed.run_id).toBe(first.run_id);
+    expect(new Set(resumed.steps.map((step: any) => step.step_id))).toEqual(new Set(ids));
+    const fresh = await expand(candidates, true);
+    expect(fresh.run_id).not.toBe(first.run_id);
   });
 });

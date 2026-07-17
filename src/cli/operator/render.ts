@@ -408,6 +408,43 @@ export function renderQueries(queries: AgentQuery[]): string {
   return queries.map(q => `  ${yellow('?')} ${dim(q.query_id)} ${dim(`[${q.agent_id ?? 'agent'}]`)}\n    ${q.question}`).join('\n');
 }
 
+interface PlaybookListResponse {
+  runs: Array<{
+    run_id: string;
+    schema_version?: number;
+    credential_id?: string;
+    definition?: { title?: string; provider?: string };
+    status?: string;
+    report_status?: string;
+    steps?: Array<{ status?: string; attempts?: Array<{ status?: string; claimed_by_task_id?: string; claimed_via?: string }> }>;
+    updated_at?: string;
+  }>;
+  total: number;
+}
+
+export function renderPlaybooks(response: PlaybookListResponse): string {
+  if (!response.runs.length) return dim('No playbook runs match the filter.');
+  return formatTable(
+    ['STATUS', 'RUN', 'PROVIDER', 'CREDENTIAL', 'PROGRESS', 'OWNER', 'REPORT'],
+    response.runs.map(run => {
+      const steps = run.steps ?? [];
+      const complete = steps.filter(step => step.status === 'succeeded').length;
+      const active = steps.flatMap(step => step.attempts ?? [])
+        .find(attempt => ['claimed', 'awaiting_approval', 'running'].includes(attempt.status ?? ''));
+      return [
+        run.status ?? 'legacy',
+        run.run_id,
+        run.definition?.provider ?? '—',
+        run.credential_id ?? '—',
+        `${complete}/${steps.length}`,
+        active?.claimed_by_task_id ?? active?.claimed_via ?? '—',
+        run.report_status ?? '—',
+      ];
+    }),
+    { color: [s => (s.trim() === 'succeeded' ? green : s.trim() === 'failed' || s.trim() === 'interrupted' ? yellow : cyan)(s), dim, undefined, dim, undefined, dim, undefined] },
+  );
+}
+
 /** A green one-line success confirmation for write commands. */
 export function ok(message: string): string {
   return `${green('✓')} ${message}`;

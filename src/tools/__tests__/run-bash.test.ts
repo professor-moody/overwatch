@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
+import { PlaybookCommandService } from '../../services/playbook-command-service.js';
+import { PlaybookRunService } from '../../services/playbook-run-service.js';
 import { registerRunBashTool } from '../run-bash.js';
 import { startAgentKeepalive } from '../_process-runner.js';
 import type { EngagementConfig } from '../../types.js';
@@ -30,6 +33,7 @@ function parseTextResult(result: any): any {
 describe('run_bash tool', () => {
   let engine: GraphEngine;
   let handlers: Record<string, (args: any) => Promise<any>>;
+  let toolConfigs: Record<string, any>;
   let testDir: string;
   const engines = new Set<GraphEngine>();
 
@@ -43,9 +47,11 @@ describe('run_bash tool', () => {
     testDir = mkdtempSync(join(tmpdir(), 'overwatch-run-bash-'));
     engine = createEngine();
     handlers = {};
+    toolConfigs = {};
     const fakeServer = {
-      registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
+      registerTool(name: string, config: unknown, handler: (args: any) => Promise<any>) {
         handlers[name] = handler;
+        toolConfigs[name] = config;
       },
     } as unknown as McpServer;
     registerRunBashTool(fakeServer, engine);
@@ -81,6 +87,287 @@ describe('run_bash tool', () => {
     const stored = engine.getEvidenceStore().getRawOutput(payload.stdout_evidence_id);
     expect(stored).toContain('hello-from-bash');
   });
+
+  it('executes a linked playbook claim exactly once and retains only durable references', async () => {
+    const commands = new PlaybookCommandService(engine);
+    const runs = new PlaybookRunService(engine);
+    const opened = commands.open({
+      definition: {
+        definition_id: 'runner-contract',
+        definition_version: 1,
+        provider: 'aws',
+        title: 'Runner contract',
+      },
+      credential_id: 'cred-runner',
+      normalized_inputs: {},
+      steps: [{
+        step_id: 'execute',
+        description: 'Execute through run_bash',
+        runner: 'run_bash',
+        command: 'printf playbook-output-%s $$',
+        validate: false,
+        ready: true,
+        status: 'ready',
+      }],
+    });
+    const claim = commands.start(opened.run.run_id, 'execute');
+
+    const first = await handlers.run_bash(claim.execution);
+    const replay = await handlers.run_bash(claim.execution);
+    const firstPayload = parseTextResult(first);
+    expect(parseTextResult(replay)).toEqual(firstPayload);
+
+    const completed = runs.getDurable(opened.run.run_id);
+    expect(completed.steps[0].attempts).toHaveLength(1);
+    expect(completed.steps[0].attempts[0]).toMatchObject({
+      status: 'succeeded',
+      action_id: claim.attempt.execution_action_id,
+      evidence_ids: [expect.any(String)],
+      plan_revision: 1,
+      execution_template_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(firstPayload.stdout).toMatch(/^playbook-output-\d+$/);
+    expect(JSON.stringify(completed)).not.toContain(firstPayload.stdout);
+    expect(engine.getRuntimeRuns()).toHaveLength(1);
+    expect(engine.getFullHistory().filter(event =>
+      event.action_id === claim.attempt.execution_action_id && event.event_type === 'action_started')).toHaveLength(1);
+  });
+
+  it('rejects added or changed claimed execution controls before creating durable work', async () => {
+    const commands = new PlaybookCommandService(engine);
+    const opened = commands.open({
+      definition: {
+        definition_id: 'sealed-runner', definition_version: 1,
+        provider: 'aws', title: 'Sealed runner',
+      },
+      credential_id: 'cred-sealed',
+      normalized_inputs: {},
+      steps: [{
+        step_id: 'execute', description: 'Execute the sealed command',
+        runner: 'run_bash', command: 'printf sealed', technique: 'local_analysis',
+        ready: true, status: 'ready',
+      }],
+    });
+    const claim = commands.start(opened.run.run_id, 'execute');
+    const mutations: Array<Record<string, unknown>> = [
+      { validate: false },
+      { allow_unverified_scope: true },
+      { operator_infra: true },
+      { target_ip: '8.8.8.8' },
+      { target_url: 'https://example.invalid/' },
+      { timeout_ms: 250 },
+      { cwd: '/tmp' },
+      { parse_with: 'nmap' },
+      { noise_estimate: 0 },
+      { tool_name: 'different-tool' },
+      { description: 'Misleading approval text' },
+    ];
+    for (const mutation of mutations) {
+      const result = await handlers.run_bash({ ...claim.execution, ...mutation });
+      expect(result.isError, JSON.stringify(mutation)).toBe(true);
+      expect(parseTextResult(result).error).toMatch(/immutable|unclaimed execution field/);
+    }
+    expect(engine.getRuntimeRuns()).toHaveLength(0);
+    expect(engine.getApplicationCommandById(claim.attempt.execution_command_id)).toBeUndefined();
+    expect(engine.getFullHistory().filter(event =>
+      event.action_id === claim.attempt.execution_action_id)).toHaveLength(0);
+
+    // Exercise the public schema path: it strips declarative plan fields and
+    // materializes validate=true, which is semantically identical to omission.
+    const publicInput = z.object(toolConfigs.run_bash.inputSchema).parse(claim.execution);
+    expect(publicInput).toMatchObject({ validate: true });
+    const accepted = await handlers.run_bash(publicInput);
+    expect(parseTextResult(accepted)).toMatchObject({ executed: true, stdout: 'sealed' });
+  });
+
+  it('cannot close a linked claim with missing durable runner identity', async () => {
+    const commands = new PlaybookCommandService(engine);
+    const runs = new PlaybookRunService(engine);
+    const opened = commands.open({
+      definition: {
+        definition_id: 'runner-identity', definition_version: 1,
+        provider: 'aws', title: 'Runner identity',
+      },
+      credential_id: 'cred-runner-identity',
+      normalized_inputs: {},
+      steps: [{
+        step_id: 'execute', description: 'Authenticated runner', runner: 'run_bash',
+        command: 'false', validate: false, ready: true, status: 'ready',
+      }],
+    });
+    const claim = commands.start(opened.run.run_id, 'execute');
+    const invalid = { ...claim.execution };
+    delete invalid.command_id;
+
+    const result = await handlers.run_bash(invalid);
+    expect(result.isError).toBe(true);
+    expect(parseTextResult(result).error).toContain('command_id/idempotency_key');
+    expect(runs.getDurable(opened.run.run_id).steps[0].attempts[0].status).toBe('claimed');
+    expect(engine.getRuntimeRuns()).toHaveLength(0);
+  });
+
+  it('reports awaiting approval before a linked playbook process starts', async () => {
+    const approvalEngine = createEngine({
+      ...makeConfig(),
+      opsec: { ...makeConfig().opsec, approval_mode: 'approve-all', approval_timeout_ms: 5_000 },
+    }, 'playbook-approval.json');
+    const approvalHandlers: Record<string, (args: any) => Promise<any>> = {};
+    registerRunBashTool({
+      registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
+        approvalHandlers[name] = handler;
+      },
+    } as unknown as McpServer, approvalEngine);
+    const commands = new PlaybookCommandService(approvalEngine);
+    const runs = new PlaybookRunService(approvalEngine);
+    const opened = commands.open({
+      definition: {
+        definition_id: 'approval-contract', definition_version: 1,
+        provider: 'aws', title: 'Approval contract',
+      },
+      credential_id: 'cred-approval',
+      normalized_inputs: {},
+      steps: [{
+        step_id: 'approve', description: 'Wait for approval', runner: 'run_bash',
+        command: 'printf approved', validate: true, technique: 'local_analysis',
+        ready: true, status: 'ready',
+      }],
+    });
+    const claim = commands.start(opened.run.run_id, 'approve');
+    const pendingResult = approvalHandlers.run_bash(claim.execution);
+    for (let attempt = 0; attempt < 100 && approvalEngine.getPendingActionQueue().getPending().length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    expect(runs.getDurable(opened.run.run_id)).toMatchObject({
+      status: 'awaiting_approval',
+      steps: [{ status: 'awaiting_approval', attempts: [{ status: 'awaiting_approval' }] }],
+    });
+    expect(approvalEngine.getPendingActionQueue().approve(claim.attempt.execution_action_id)).not.toBeNull();
+    const result = await pendingResult;
+    expect(parseTextResult(result)).toMatchObject({ executed: true, stdout: 'approved' });
+    expect(runs.getDurable(opened.run.run_id)).toMatchObject({
+      status: 'succeeded',
+      steps: [{ status: 'succeeded', attempts: [{ status: 'succeeded' }] }],
+    });
+  });
+
+  it('interrupts and exactly replays a linked command cancelled while awaiting approval', async () => {
+    const approvalEngine = createEngine({
+      ...makeConfig(),
+      opsec: { ...makeConfig().opsec, approval_mode: 'approve-all', approval_timeout_ms: 5_000 },
+    }, 'playbook-approval-abort.json');
+    const approvalHandlers: Record<string, (args: any, extra?: any) => Promise<any>> = {};
+    registerRunBashTool({
+      registerTool(name: string, _config: unknown, handler: (args: any, extra?: any) => Promise<any>) {
+        approvalHandlers[name] = handler;
+      },
+    } as unknown as McpServer, approvalEngine);
+    const commands = new PlaybookCommandService(approvalEngine);
+    const runs = new PlaybookRunService(approvalEngine);
+    const opened = commands.open({
+      definition: {
+        definition_id: 'approval-abort', definition_version: 1,
+        provider: 'aws', title: 'Approval abort',
+      },
+      credential_id: 'cred-approval-abort', normalized_inputs: {},
+      steps: [{
+        step_id: 'approve', description: 'Wait for approval then execute',
+        runner: 'run_bash', command: 'printf should-not-run', validate: true,
+        technique: 'local_analysis', ready: true, status: 'ready',
+      }],
+    });
+    const claim = commands.start(opened.run.run_id, 'approve');
+    const controller = new AbortController();
+    const pending = approvalHandlers.run_bash(claim.execution, { signal: controller.signal });
+    for (let attempt = 0; attempt < 100 && approvalEngine.getPendingActionQueue().getPending().length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    controller.abort(new Error('client disconnected'));
+    const first = await pending;
+    const payload = parseTextResult(first);
+    expect(payload).toMatchObject({
+      action_id: claim.attempt.execution_action_id,
+      executed: false,
+      approval_status: 'aborted',
+      interrupted: true,
+      code: 'COMMAND_INTERRUPTED',
+    });
+    expect(approvalEngine.getPendingActionQueue().getPending()).toHaveLength(0);
+    expect(approvalEngine.getRuntimeRuns()).toHaveLength(0);
+    expect(runs.getDurable(opened.run.run_id).steps[0].attempts[0]).toMatchObject({
+      status: 'interrupted', execution_outcome: 'interrupted',
+      action_id: claim.attempt.execution_action_id,
+    });
+    expect(approvalEngine.getApplicationCommandById(claim.attempt.execution_command_id)).toMatchObject({
+      status: 'succeeded',
+      result: { interrupted: true, approval_status: 'aborted' },
+    });
+    expect(approvalEngine.getFullHistory().filter(event =>
+      event.action_id === claim.attempt.execution_action_id && event.event_type === 'action_started')).toHaveLength(0);
+
+    const replay = await approvalHandlers.run_bash(claim.execution);
+    expect(parseTextResult(replay)).toEqual(payload);
+    expect(approvalEngine.getPendingActionQueue().getPending()).toHaveLength(0);
+    expect(approvalEngine.getRuntimeRuns()).toHaveLength(0);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'interrupts a running linked process and replays it without another spawn',
+    async () => {
+      const commands = new PlaybookCommandService(engine);
+      const runs = new PlaybookRunService(engine);
+      const opened = commands.open({
+        definition: {
+          definition_id: 'running-abort', definition_version: 1,
+          provider: 'aws', title: 'Running abort',
+        },
+        credential_id: 'cred-running-abort', normalized_inputs: {},
+        steps: [{
+          step_id: 'run', description: 'Run until cancelled', runner: 'run_bash',
+          command: 'printf started; sleep 10', validate: false, timeout_ms: 15_000,
+          ready: true, status: 'ready',
+        }],
+      });
+      const claim = commands.start(opened.run.run_id, 'run');
+      const controller = new AbortController();
+      const pending = (handlers.run_bash as any)(claim.execution, { signal: controller.signal });
+      for (let attempt = 0; attempt < 200 && !engine.getRuntimeRuns().some(run =>
+        run.action_id === claim.attempt.execution_action_id); attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      controller.abort(new Error('operator cancelled'));
+      const first = await pending;
+      const payload = parseTextResult(first);
+      expect(payload).toMatchObject({
+        action_id: claim.attempt.execution_action_id,
+        executed: true,
+        interrupted: true,
+      });
+      expect(engine.getRuntimeRuns().filter(run =>
+        run.action_id === claim.attempt.execution_action_id)).toEqual([
+        expect.objectContaining({ lifecycle: 'interrupted' }),
+      ]);
+      expect(engine.getApplicationCommandById(claim.attempt.execution_command_id)).toMatchObject({
+        status: 'succeeded', result: { interrupted: true },
+      });
+      expect(runs.getDurable(opened.run.run_id).steps[0].attempts[0]).toMatchObject({
+        status: 'interrupted', execution_outcome: 'interrupted',
+        action_id: claim.attempt.execution_action_id,
+      });
+      const firstEvents = engine.getFullHistory().filter(event =>
+        event.action_id === claim.attempt.execution_action_id);
+      expect(firstEvents.filter(event => event.event_type === 'action_started')).toHaveLength(1);
+      expect(firstEvents.filter(event => event.event_type === 'action_failed')).toHaveLength(1);
+
+      const replay = await handlers.run_bash(claim.execution);
+      expect(parseTextResult(replay)).toEqual(payload);
+      expect(engine.getRuntimeRuns().filter(run =>
+        run.action_id === claim.attempt.execution_action_id)).toHaveLength(1);
+      expect(engine.getFullHistory().filter(event =>
+        event.action_id === claim.attempt.execution_action_id)).toHaveLength(firstEvents.length);
+      expect(runs.getDurable(opened.run.run_id).steps[0].attempts).toHaveLength(1);
+    },
+    10_000,
+  );
 
   it('refreshes the calling agent heartbeat while its tool runs (no reap mid-scan)', async () => {
     // A running agent whose last beat is well past its TTL: without the keepalive

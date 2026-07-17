@@ -54,6 +54,11 @@ import {
   ParseCommandService,
   buildParseSourceFingerprint,
 } from './parse-command-service.js';
+import {
+  PlaybookRunError,
+  PlaybookRunService,
+} from './playbook-run-service.js';
+import { PlaybookCommandService } from './playbook-command-service.js';
 import { getSupportedParsers } from './parsers/index.js';
 import type { GraphUpdateDetail } from './engine-context.js';
 import type { SessionManager } from './session-manager.js';
@@ -128,6 +133,9 @@ import {
   ObjectiveDeleteResponseSchema,
   ObjectiveUpdateRequestSchema,
   ObjectiveUpdateResponseSchema,
+  PlaybookRunListResponseSchema,
+  PlaybookRunResponseSchema,
+  PlaybookStepClaimResponseSchema,
   RecoveryStatusResponseSchema,
   SettingsDtoSchema,
   SettingsPatchSchema,
@@ -285,6 +293,8 @@ export class DashboardServer {
   private readonly recoveryCommands: RecoveryCommandService;
   private readonly graphCorrectionCommands: GraphCorrectionCommandService;
   private readonly parseCommands: ParseCommandService;
+  private readonly playbookRuns: PlaybookRunService;
+  private readonly playbookCommands: PlaybookCommandService;
 
   constructor(
     engine: GraphEngine,
@@ -317,6 +327,8 @@ export class DashboardServer {
       engine,
       this.applicationCommands,
     );
+    this.playbookRuns = new PlaybookRunService(engine);
+    this.playbookCommands = new PlaybookCommandService(engine);
     this.port = port;
     this.host = host || process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
     this.sessionManager = sessionManager || null;
@@ -770,6 +782,13 @@ export class DashboardServer {
       getTimeline: () => this.serveTimeline(url, res),
       findPaths: () => this.serveFindPaths(url, res),
       getSessions: () => this.serveSessions(res),
+      listPlaybookRuns: () => this.servePlaybookRuns(url, res),
+      getPlaybookRun: () => this.servePlaybookRun(path.run_id, res),
+      startPlaybookStep: () => { void this.handlePlaybookStepStart(path.run_id, path.step_id, req, res); },
+      resumePlaybookRun: () => { void this.handlePlaybookResume(path.run_id, req, res); },
+      retryPlaybookStep: () => { void this.handlePlaybookStepRetry(path.run_id, path.step_id, req, res); },
+      skipPlaybookStep: () => { void this.handlePlaybookStepSkip(path.run_id, path.step_id, req, res); },
+      interruptPlaybookAttempt: () => { void this.handlePlaybookAttemptInterrupt(path.run_id, path.step_id, req, res); },
       getAgents: () => this.serveAgents(res),
       dispatchAgent: () => this.handleAgentDispatch(req, res),
       dispatchAgentBatch: () => this.handleAgentDispatchBatch(req, res),
@@ -1886,6 +1905,7 @@ export class DashboardServer {
       pending_actions,
       campaigns,
       history: this.engine.getFullHistory(),
+      playbook_runs: this.engine.getPlaybookRuns(),
     });
   }
 
@@ -1906,6 +1926,134 @@ export class DashboardServer {
       'Cache-Control': 'no-store',
     });
     res.end(JSON.stringify(payload));
+  }
+
+  private servePlaybookRuns(url: string, res: ServerResponse): void {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const runs = this.playbookRuns.list({
+      credential_id: params.get('credential_id') || undefined,
+      status: (params.get('status') || undefined) as import('./persisted-state.js').PlaybookRunStatus | undefined,
+      open_only: params.get('open_only') === 'true',
+    });
+    const payload = PlaybookRunListResponseSchema.parse({ runs, total: runs.length });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  }
+
+  private servePlaybookRun(runId: string, res: ServerResponse): void {
+    try {
+      const payload = PlaybookRunResponseSchema.parse({ run: this.playbookRuns.get(runId) });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error) {
+      this.respondPlaybookError(res, error);
+    }
+  }
+
+  private async handlePlaybookStepStart(
+    runId: string,
+    stepId: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
+    try {
+      await this.readJsonBody(req);
+      if (!this.requireWritablePersistence(res)) return;
+      const payload = PlaybookStepClaimResponseSchema.parse(this.playbookCommands.start(runId, stepId));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error) {
+      this.respondPlaybookError(res, error);
+    }
+  }
+
+  private async handlePlaybookResume(
+    runId: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
+    try {
+      await this.readJsonBody(req);
+      if (!this.requireWritablePersistence(res)) return;
+      const payload = PlaybookRunResponseSchema.parse({ run: this.playbookCommands.resume(runId) });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error) {
+      this.respondPlaybookError(res, error);
+    }
+  }
+
+  private async handlePlaybookStepRetry(
+    runId: string,
+    stepId: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
+    try {
+      await this.readJsonBody(req);
+      if (!this.requireWritablePersistence(res)) return;
+      const payload = PlaybookStepClaimResponseSchema.parse(this.playbookCommands.retry(runId, stepId));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error) {
+      this.respondPlaybookError(res, error);
+    }
+  }
+
+  private async handlePlaybookStepSkip(
+    runId: string,
+    stepId: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
+    try {
+      const body = await this.readJsonBody(req) as { reason?: string };
+      if (!this.requireWritablePersistence(res)) return;
+      const payload = PlaybookRunResponseSchema.parse({
+        run: this.playbookCommands.skip(runId, stepId, body.reason),
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error) {
+      this.respondPlaybookError(res, error);
+    }
+  }
+
+  private async handlePlaybookAttemptInterrupt(
+    runId: string,
+    stepId: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
+    try {
+      const body = await this.readJsonBody(req) as { reason?: string };
+      if (!this.requireWritablePersistence(res)) return;
+      const payload = PlaybookRunResponseSchema.parse({
+        run: this.playbookCommands.interrupt(runId, stepId, body.reason),
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error) {
+      this.respondPlaybookError(res, error);
+    }
+  }
+
+  private respondPlaybookError(res: ServerResponse, error: unknown): void {
+    if (error instanceof PlaybookRunError) {
+      res.writeHead(error.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message, code: error.code }));
+      return;
+    }
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: error instanceof Error ? error.message : String(error),
+      code: 'PLAYBOOK_REQUEST_INVALID',
+    }));
   }
 
   private handleResolveConfigDivergence(req: IncomingMessage, res: ServerResponse): void {

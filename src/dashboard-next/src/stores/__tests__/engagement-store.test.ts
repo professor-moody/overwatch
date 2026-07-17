@@ -17,6 +17,7 @@ describe('engagement store hydration', () => {
       objectives: [],
       agents: [],
       campaigns: [],
+      playbookRuns: [],
       sessions: [],
       pendingActions: [],
       recentActivity: [],
@@ -94,6 +95,27 @@ describe('engagement store hydration', () => {
       agents_active: 1,
       agents_total: 3,
     });
+  });
+
+  it('hydrates durable playbook runs and replaces them from a dedicated update', () => {
+    const run = {
+      schema_version: 1 as const,
+      run_id: 'playbook-store-1',
+      definition: { definition_id: 'aws-credential', definition_version: 2, provider: 'aws' as const, title: 'AWS expansion' },
+      credential_id: 'cred-1', input_hash: 'a'.repeat(64), normalized_inputs: {}, bindings: {},
+      plan_revisions: [{ revision: 1, created_at: '2026-07-16T00:00:00Z', plan_hash: 'b'.repeat(64), steps: [] }],
+      current_plan_revision: 1, steps: [], status: 'pending' as const, report_status: 'generated' as const,
+      created_at: '2026-07-16T00:00:00Z', updated_at: '2026-07-16T00:00:00Z', resume_count: 0,
+    };
+    useEngagementStore.getState().loadFullState({
+      state: { playbook_runs: [run, { run_id: 'legacy-placeholder', status: 'pending' }] },
+      graph: { nodes: [], edges: [] }, history_count: 0,
+    } as FullStateData);
+    expect(useEngagementStore.getState().playbookRuns).toEqual([run]);
+
+    const updated = { ...run, status: 'running' as const, updated_at: '2026-07-16T00:01:00Z' };
+    useEngagementStore.getState().setPlaybookRuns([updated]);
+    expect(useEngagementStore.getState().playbookRuns).toEqual([updated]);
   });
 
   it('derives engagement + access level from config/access_summary (the real backend shape)', () => {

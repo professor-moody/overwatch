@@ -10,6 +10,7 @@ import {
   type DashboardState,
 } from './dashboard-projectors.js';
 import { MainWebSocketEventSchema } from '../contracts/dashboard-v1.js';
+import { PlaybookRunService } from './playbook-run-service.js';
 
 export interface DashboardMainWebSocketHubOptions {
   buildState: () => DashboardState<unknown, unknown>;
@@ -48,6 +49,14 @@ export class DashboardMainWebSocketHub {
     }));
     this.disposers.push(engine.getPendingActionQueue().onEvent((type, data) => {
       this.broadcast({ type, timestamp: new Date().toISOString(), data });
+    }));
+    this.disposers.push(PlaybookRunService.onChange(engine, run => {
+      if (this.clients.size === 0) return;
+      this.broadcast({
+        type: 'playbook_run_update',
+        timestamp: new Date().toISOString(),
+        data: { run },
+      });
     }));
     if (typeof sessionManager?.onEvent === 'function') {
       this.disposers.push(sessionManager.onEvent((event: SessionEvent) => {

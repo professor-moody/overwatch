@@ -25,6 +25,7 @@ import { WebSocket } from 'ws';
 import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
 import type { EngagementConfig } from '../../types.js';
+import { PlaybookRunService } from '../playbook-run-service.js';
 
 let dashboard: DashboardServer;
 let engine: GraphEngine;
@@ -178,6 +179,7 @@ describe('WS full_state push on connect', () => {
       // Audit-fix invariants: these were missing/misnamed before the
       // dashboard wiring fix. Pin them so future drifts surface.
       expect(state).toHaveProperty('agents');
+      expect(state).toHaveProperty('playbook_runs');
       expect(state).toHaveProperty('sessions');
       expect(state).toHaveProperty('graph_summary');
       const summary = state.graph_summary as Record<string, unknown>;
@@ -241,6 +243,31 @@ describe('WS full_state push on connect', () => {
       engine.setRuntimeRuns([]);
     }
   }, 5_000);
+});
+
+describe('WS durable playbook updates', () => {
+  it('pushes owner-aware run changes without waiting for a graph mutation', async () => {
+    const conn = await openWs();
+    try {
+      await conn.awaitMessage(message => message.type === 'full_state');
+      const service = new PlaybookRunService(engine);
+      const opened = service.open({
+        definition: { definition_id: 'ws-playbook', definition_version: 1, provider: 'github', title: 'WS playbook' },
+        credential_id: 'cred-test',
+        normalized_inputs: {},
+        steps: [{ step_id: 'whoami', step: 1, description: 'Resolve identity', runner: 'run_tool', binary: 'gh', args: ['api', '/user'], ready: true, status: 'ready' }],
+      });
+      const update = await conn.awaitMessage(message =>
+        message.type === 'playbook_run_update'
+        && (message.data.run as { run_id?: string } | undefined)?.run_id === opened.run.run_id);
+      expect(update.data.run).toMatchObject({
+        run_id: opened.run.run_id,
+        report_status: 'generated',
+      });
+    } finally {
+      conn.close();
+    }
+  });
 });
 
 // =============================================

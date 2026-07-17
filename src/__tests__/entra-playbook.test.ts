@@ -178,6 +178,12 @@ describe('exchange_refresh_token', () => {
     expect(payload.command).toContain('$OVERWATCH_ENTRA_REFRESH_TOKEN');
     expect(payload.command).toContain('--fail-with-body');
     expect(payload.env_from_credential).toEqual({ OVERWATCH_ENTRA_REFRESH_TOKEN: 'cred-rt-1' });
+    const { PlaybookRunService } = await import('../services/playbook-run-service.js');
+    const durable = new PlaybookRunService(engine);
+    const run = durable.getDurable(payload.run_id);
+    expect(run.normalized_inputs.refresh_token_env_var).toBe('OVERWATCH_ENTRA_REFRESH_TOKEN');
+    const claim = durable.startStep(payload.run_id, run.steps[0].step_id);
+    expect(claim.execution.env_from_credential).toEqual({ OVERWATCH_ENTRA_REFRESH_TOKEN: 'cred-rt-1' });
   });
 });
 
@@ -223,7 +229,10 @@ describe('expand_entra_credential', () => {
     expect(payload.tenant).toBe(TENANT);
     expect(payload.steps.every((step: any) => step.parser_context.tenant_id === TENANT)).toBe(true);
     expect(payload.steps.every((step: any) => step.parser_context.source_credential_id === 'cred-at-1')).toBe(true);
-    expect(engine.getNode('cred-at-1')?.recon_playbook_invoked_at).toBeUndefined();
+    expect(engine.getNode('cred-at-1')).toMatchObject({
+      recon_playbook_invoked_at: expect.any(String),
+      recon_playbook_step_count: payload.step_count,
+    });
   });
 
   it('skips groups step when include_groups is false', async () => {

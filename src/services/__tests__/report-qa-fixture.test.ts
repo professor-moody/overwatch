@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { assembleReport } from '../report-assembler.js';
 import { isPdfRenderingAvailable, renderReportPdf } from '../report-pdf.js';
 import { createReportQaFixture, REPORT_QA_SECRET_MARKERS, type ReportQaFixture } from '../report-qa-fixture.js';
+import { PlaybookRunService } from '../playbook-run-service.js';
 
 const cleanups: Array<() => void> = [];
 
@@ -18,6 +19,56 @@ afterEach(() => {
 });
 
 describe('report QA fixture outputs', () => {
+  it('keeps playbook coverage aligned across Markdown, HTML, JSON, and client-safe output', () => {
+    const qa = fixture();
+    const runs = new PlaybookRunService(qa.engine);
+    const opened = runs.open({
+      definition: { definition_id: 'aws-credential', definition_version: 2, provider: 'aws', title: 'AWS credential expansion' },
+      credential_id: 'cred-report-secret-id',
+      normalized_inputs: {},
+      steps: [{ step_id: 'identity', step: 1, description: 'Resolve identity', runner: 'run_tool', binary: 'aws', args: ['sts', 'get-caller-identity'], ready: true, status: 'ready' }],
+    });
+    const claim = runs.startStep(opened.run.run_id, 'identity');
+    runs.beginAttemptExecution(claim.execution);
+    const evidenceId = qa.engine.getEvidenceStore().store({
+      action_id: claim.attempt.execution_action_id,
+      evidence_type: 'command_output',
+      raw_output: 'playbook report evidence',
+    });
+    qa.engine.logActionEvent({
+      action_id: claim.attempt.execution_action_id,
+      event_type: 'finding_ingested',
+      description: 'Playbook report finding landed',
+      category: 'finding',
+      linked_finding_ids: ['finding-duplicate'],
+      result_classification: 'success',
+    });
+    runs.finishAttempt(opened.run.run_id, 'identity', claim.attempt.attempt_id, {
+      execution_outcome: 'succeeded', parse_outcome: 'partial',
+      evidence_ids: [evidenceId, evidenceId],
+      finding_ids: ['finding-duplicate', 'finding-duplicate'],
+    });
+    qa.engine.setPlaybookRuns([
+      ...qa.engine.getPlaybookRuns(),
+      { run_id: 'legacy-playbook-placeholder', status: 'pending' },
+    ]);
+
+    const markdown = assembleReport(qa.engine, qa.skills, { format: 'markdown', profile: 'operator' }).content;
+    const html = assembleReport(qa.engine, qa.skills, { format: 'html', profile: 'operator' }).content;
+    const json = JSON.parse(assembleReport(qa.engine, qa.skills, { format: 'json', profile: 'operator' }).content) as { playbooks: { total: number; partial: number; runs: Array<Record<string, unknown>> } };
+    const client = JSON.parse(assembleReport(qa.engine, qa.skills, { format: 'json', profile: 'client', client_safe: true }).content) as { playbooks: { runs: Array<Record<string, unknown>> } };
+
+    expect(markdown).toContain('[Credential Playbooks](#credential-playbooks)');
+    expect(markdown).toContain(opened.run.run_id);
+    expect(markdown).toContain('| partial | succeeded |');
+    expect(html).toContain('id="credential-playbooks"');
+    expect(html).toContain(opened.run.run_id);
+    expect(json.playbooks).toMatchObject({ total: 1, partial: 1 });
+    expect(json.playbooks.runs[0]).toMatchObject({ evidence_count: 1, finding_count: 1, report_status: 'partial' });
+    expect(client.playbooks.runs[0]).not.toHaveProperty('credential_id');
+    expect(client.playbooks.runs[0]).not.toHaveProperty('run_id');
+  });
+
   it('renders client HTML with proof cards and no raw secret markers', () => {
     const qa = fixture();
     const clientHtml = assembleReport(qa.engine, qa.skills, {

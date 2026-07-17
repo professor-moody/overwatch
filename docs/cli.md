@@ -12,6 +12,12 @@ pane 1:  $ claude            # the model drives the engagement via MCP tools
 pane 2:  $ overwatch status   # you watch / approve / deploy directly
 ```
 
+Both panes are adapters to the **same running Overwatch daemon and durable
+engagement**. Start the daemon once; do not start a second copy for the
+dashboard. Claude, the terminal CLI, and dashboard-deployed agents see the same
+task leases, playbook claims, approvals, and findings. If one surface prepares
+a playbook step, the others show its owner instead of silently claiming it too.
+
 ## Prerequisites
 
 The engagement must be running (it serves the API on `:8384`):
@@ -44,6 +50,7 @@ overwatch <command> [options]
 | `overwatch opsec` | OPSEC noise budget + recommended approach |
 | `overwatch sessions` | Interactive sessions |
 | `overwatch queries` | Open questions agents are waiting on |
+| `overwatch playbooks [--credential ID] [--status STATUS] [--open]` | Durable credential-playbook runs, progress, and the owner of any active claim |
 
 ### Operate
 
@@ -56,6 +63,11 @@ overwatch <command> [options]
 | `overwatch dispatch --node <id…> [--skill S] [--archetype A]` | Dispatch an agent at existing graph node(s) |
 | `overwatch session resume <session-id>` | Explicitly rebind a recovered `resume_available` listener |
 | `overwatch config reconcile <use_file\|use_state> --file-hash SHA256 --state-hash SHA256` | Resolve an active config divergence using an explicit authority choice |
+| `overwatch playbook start <run> <step>` | Prepare/claim one ready step and return its stable execution descriptor with `--json`; this does not execute it |
+| `overwatch playbook retry <run> <step>` | Prepare a new append-only attempt after failure/interruption |
+| `overwatch playbook interrupt <run> <step> [--reason TEXT]` | Release an abandoned prepared claim as interrupted so it can be retried |
+| `overwatch playbook resume <run>` | Re-open an interrupted run after restart |
+| `overwatch playbook skip <run> <step> [--reason TEXT]` | Skip a non-terminal step while retaining the reason and prior attempts |
 
 A refusal (e.g. a frontier item already leased, or an out-of-scope target) prints
 the server's reason and exits non-zero; a success prints a confirmation (deploy /

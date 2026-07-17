@@ -971,9 +971,12 @@ describe('app bootstrap', () => {
       });
 
       // Minimum expected tool count — increase this when adding new tools
-      expect(toolNames).toHaveLength(83);
-      expect(new Set(toolNames).size).toBe(83);
+      expect(toolNames).toHaveLength(91);
+      expect(new Set(toolNames).size).toBe(91);
       expect(toolNames).toContain('get_state');
+      expect(toolNames).toContain('list_playbook_runs');
+      expect(toolNames).toContain('start_playbook_step');
+      expect(toolNames).toContain('interrupt_playbook_attempt');
       expect(toolNames).toContain('run_retrospective');
       expect(toolNames).toContain('generate_report');
       expect(toolNames).toContain('open_session');

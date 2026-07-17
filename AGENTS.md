@@ -31,7 +31,7 @@ Authorized offensive-engagement operator. Your state + memory are the Overwatch 
 
 ### Credential-Driven Playbooks
 
-For captured cloud / SaaS credentials, prefer the **playbook tools** over re-deriving the canonical recon chain by hand. They are read-only, stateless plan generators: execute only non-null descriptors that are not explicitly blocked (`status: "blocked"` or `ready: false`), honor the returned `runner` (`run_bash` or `run_tool`) or direct `tool`, and re-expand after a dependency lands. Resolve each `env_from_credential` mapping to the selected credential's actual value in `run_bash.env` — never the credential node ID — and pass `parse_with`, `parser_context`, and `parse_stream` through unchanged.
+For captured cloud / SaaS credentials, prefer the **playbook tools** over re-deriving the canonical recon chain by hand. Expansion creates or resumes a durable matching run; `new_run: true` explicitly starts another. Claim exactly one ready step with `start_playbook_step` (or `retry_playbook_step`), then preserve its run/step/attempt linkage and stable command identity through the returned runner or direct tool. Never execute blocked, `ready: false`, or null-command descriptors. Re-expand after a dependency lands, resolve each `env_from_credential` mapping to the selected credential's actual value in `run_bash.env` — never the credential node ID — and pass `parse_with`, `parser_context`, and `parse_stream` through unchanged. Release an unexecuted claim with `interrupt_playbook_attempt` so terminal and dashboard operators do not block each other.
 
 - **`expand_aws_credential({ credential_id, ...binding })`** — requires a bound `aws_profile`, an `aws_session_credentials` JSON value in `run_bash.env.OVERWATCH_AWS_SESSION_CREDENTIALS`, or explicit `use_ambient_credentials: true`. Run and ingest STS caller identity, then re-expand with the same binding to resolve account/caller/principal context, user-versus-role policies, CloudFox JSON, S3, and Lambda.
 - **`expand_github_credential({ credential_id })`** — binds `run_bash.env.OVERWATCH_GITHUB_TOKEN` and paginates list endpoints with `--paginate --slurp`. `candidate_repos` accepts `"owner/repo"` or `{ repo_full_name, default_branch }`; a string with no known default branch emits repo-details and leaves branch protection blocked until ingestion and re-expansion.
@@ -62,7 +62,7 @@ Console-first IA. The **Console** is the operator's home; nav is grouped **Conso
 
 ### Terminal CLI (`overwatch`)
 
-A standalone terminal operator client over the same `/api/*` surface — for operators who prefer the shell, and runnable in a second pane while the model drives. Read: `overwatch status` / `frontier` / `findings` / `agents` / `approvals` / `opsec` / `sessions` / `queries`. Operate: `approve` / `deny` / `answer` / `deploy` / `dispatch`. `--json` emits compact raw API JSON (a token-cheap way for a shell-capable sub-agent to pull state without an MCP round-trip). These live commands need the engagement running (`npm start -- --http`); loopback needs no auth (remote: `--token`/`OVERWATCH_DASHBOARD_TOKEN`). The offline `overwatch state migrate --check --state-file ... [--config-file ...]` command inspects migration readiness without a daemon or writes. See [Terminal CLI](docs/cli.md).
+A standalone terminal operator client over the same `/api/*` surface — for operators who prefer the shell, and runnable in a second pane while the model drives. Start one daemon; Claude, the CLI, dashboard, and dashboard-deployed agents share its task leases and durable playbook ownership. Read includes `status`, `frontier`, `findings`, `agents`, `approvals`, `opsec`, `sessions`, `queries`, and `playbooks`. Operate includes approvals, deploy/dispatch, and playbook prepare/resume/retry/interrupt/skip. `--json` emits compact raw API JSON. These live commands need the engagement running (`npm start -- --http`); loopback needs no auth (remote: `--token`/`OVERWATCH_DASHBOARD_TOKEN`). The offline `overwatch state migrate --check --state-file ... [--config-file ...]` command inspects migration readiness without a daemon or writes. See [Terminal CLI](docs/cli.md).
 
 ### Sessions (interactive shells / sockets)
 
@@ -137,7 +137,7 @@ Dispatch assigns each agent a typed **archetype** (bounded tool surface + missio
 
 ## Tool Reference
 
-**83 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the **live** tool table (the authoritative count + set), engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP) and may lag the live set; treat the generated prompt as source of truth. Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
+The server exposes a generated MCP tool registry. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the **live** tool table (the authoritative count + set), engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP) and may lag the live set; treat the generated prompt as source of truth. Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
@@ -185,6 +185,14 @@ Dispatch assigns each agent a typed **archetype** (bounded tool surface + missio
 | `expand_oidc_capture` | Generate direct OIDC token replay calls | Validate candidate CI/CD federation roles, then expand minted session credentials |
 | `exchange_refresh_token` | Generate an Entra refresh-token exchange step | Bind the selected token in `OVERWATCH_ENTRA_REFRESH_TOKEN` at execution time |
 | `expand_entra_credential` | Generate a tenant-bound Microsoft Graph plan | Bind `OVERWATCH_ENTRA_TOKEN`; resolve `/me` before tenant-dependent steps when needed |
+| `list_playbook_runs` | List durable playbook runs and ownership | Inspect progress before claiming work from terminal or dashboard |
+| `get_playbook_run` | Inspect one durable run | Read immutable plan revisions, dependencies, attempts, and artifact references |
+| `start_playbook_step` | Prepare and claim one ready step | Returns a stable execution descriptor; does not itself execute the target action |
+| `resume_playbook_run` | Resume an interrupted run | Re-open restart-interrupted steps without rewriting prior attempts |
+| `retry_playbook_step` | Append and prepare a retry | Retry failed/interrupted work without overwriting evidence |
+| `skip_playbook_step` | Skip a non-terminal step | Retain the reason and prior attempts |
+| `interrupt_playbook_attempt` | Release an abandoned claim | Prevent terminal/dashboard ownership conflicts when a prepared descriptor will not run |
+| `complete_playbook_attempt` | Record an explicit terminal attempt outcome | Fallback when the linked runner cannot finalize automatically |
 | `ingest_json` | Generic JSON/JSONL/file-path ingestion using caller-supplied mappings | Unsupported structured output or custom datasets |
 | `connect_postgres` | Open a session-scoped PostgreSQL connection | Temporary database-backed target inspection or ingestion |
 | `list_postgres_tables` | List visible PostgreSQL schemas/tables from the active connection | Before selecting tables to ingest |
