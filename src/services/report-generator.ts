@@ -1658,7 +1658,71 @@ function describeAccessMethod(edge: ExportedGraphEdge, source?: NodeProperties):
   }
 }
 
-export function generateFullReport(input: ReportInput, options: ReportOptions = {}): string {
+export interface ReportFindingModel {
+  findings: ReportFinding[];
+  appendix: EvidenceAppendixEntry[];
+  evidenceCount: number;
+}
+
+export interface ReportDocumentModel extends ReportFindingModel {
+  executiveSummary: ReportExecutiveSummary;
+  actionPlan: ReportActionPlanItem[];
+  severityCounts: Record<FindingSeverity, number>;
+}
+
+export function buildReportFindingModel(
+  input: ReportInput,
+  options: ReportOptions = {},
+): ReportFindingModel {
+  const evidenceOpts: EvidenceBuildOptions | undefined = options.evidence_loader || options.evidence_record_loader
+    ? {
+      evidenceLoader: options.evidence_loader,
+      evidenceRecordLoader: options.evidence_record_loader,
+      previewBytes: options.evidence_preview_bytes,
+    }
+    : undefined;
+  const baseFindings = buildFindings(input.graph, input.history, input.config, evidenceOpts);
+  return buildReportEvidenceModel(baseFindings, {
+    profile: options.report_profile ?? 'operator',
+    includeEvidence: options.include_evidence ?? true,
+  });
+}
+
+export function buildReportDocumentModel(
+  input: ReportInput,
+  options: ReportOptions = {},
+  findingModel: ReportFindingModel = buildReportFindingModel(input, options),
+): ReportDocumentModel {
+  const profile = options.report_profile ?? 'operator';
+  const severityCounts: Record<FindingSeverity, number> = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    info: 0,
+  };
+  for (const finding of findingModel.findings) severityCounts[finding.severity]++;
+  const summaryInput = {
+    config: input.config,
+    graph: input.graph,
+    findings: findingModel.findings,
+    profile,
+    evidenceCount: findingModel.evidenceCount,
+    trustSignals: options.trust_signals,
+  };
+  return {
+    ...findingModel,
+    severityCounts,
+    executiveSummary: buildExecutiveSummary(summaryInput),
+    actionPlan: buildActionPlan(summaryInput),
+  };
+}
+
+export function renderFullReportFromModel(
+  input: ReportInput,
+  model: ReportDocumentModel,
+  options: ReportOptions = {},
+): string {
   const {
     include_evidence = true,
     include_narrative = true,
@@ -1674,19 +1738,8 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   const graph = input.graph;
   const history = input.history;
 
-  const evidenceOpts: EvidenceBuildOptions | undefined = options.evidence_loader || options.evidence_record_loader
-    ? {
-      evidenceLoader: options.evidence_loader,
-      evidenceRecordLoader: options.evidence_record_loader,
-      previewBytes: options.evidence_preview_bytes,
-    }
-    : undefined;
-  const baseFindings = buildFindings(graph, history, config, evidenceOpts);
-  const proofModel = buildReportEvidenceModel(baseFindings, {
-    profile: report_profile,
-    includeEvidence: include_evidence,
-  });
-  const findings = proofModel.findings;
+  const proofModel = model;
+  const findings = model.findings;
   const narrative = include_narrative ? buildAttackNarrative(graph, history, config) : [];
   const credChains = buildCredentialChains(graph);
 
@@ -1711,34 +1764,9 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   const startTime = history.length > 0 ? history[0].timestamp : config.created_at;
   const endTime = history.length > 0 ? history[history.length - 1].timestamp : config.created_at;
 
-  const criticalFindings = findings.filter(f => f.severity === 'critical');
-  const highFindings = findings.filter(f => f.severity === 'high');
-  const mediumFindings = findings.filter(f => f.severity === 'medium');
-  const lowFindings = findings.filter(f => f.severity === 'low');
-  const infoFindings = findings.filter(f => f.severity === 'info');
-  const severityCounts: Record<FindingSeverity, number> = {
-    critical: criticalFindings.length,
-    high: highFindings.length,
-    medium: mediumFindings.length,
-    low: lowFindings.length,
-    info: infoFindings.length,
-  };
-  const executiveSummary = buildExecutiveSummary({
-    config,
-    graph,
-    findings,
-    profile: report_profile,
-    evidenceCount: proofModel.evidenceCount,
-    trustSignals: options.trust_signals,
-  });
-  const actionPlan = buildActionPlan({
-    config,
-    graph,
-    findings,
-    profile: report_profile,
-    evidenceCount: proofModel.evidenceCount,
-    trustSignals: options.trust_signals,
-  });
+  const severityCounts = model.severityCounts;
+  const executiveSummary = model.executiveSummary;
+  const actionPlan = model.actionPlan;
 
   const lines: string[] = [];
 
@@ -2172,6 +2200,14 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   lines.push('');
 
   return lines.join('\n');
+}
+
+export function generateFullReport(input: ReportInput, options: ReportOptions = {}): string {
+  return renderFullReportFromModel(
+    input,
+    buildReportDocumentModel(input, options),
+    options,
+  );
 }
 
 // ============================================================

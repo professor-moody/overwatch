@@ -51,7 +51,9 @@ export default defineConfig({
   build: {
     // A documentation preview must never overwrite the daemon's locally served
     // dashboard with assets built for the /overwatch/ Pages base path.
-    outDir: path.resolve(__dirname, '..', '..', 'dist', githubPages ? 'dashboard-pages' : 'dashboard-next'),
+    outDir: githubPages
+      ? path.resolve(__dirname, '..', '..', 'tmp', 'dashboard-pages')
+      : path.resolve(__dirname, '..', '..', 'dist', 'dashboard-next'),
     emptyOutDir: true,
     sourcemap: true,
   },

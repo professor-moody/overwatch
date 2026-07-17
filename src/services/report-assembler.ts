@@ -12,9 +12,11 @@
 import type { GraphEngine } from './graph-engine.js';
 import type { SkillIndex } from './skill-index.js';
 import {
-  generateFullReport, buildFindings, buildAttackNarrative, buildRemediationRanking,
+  buildAttackNarrative, buildRemediationRanking,
   buildAttackPaths,
-  buildReportEvidenceModel,
+  buildReportFindingModel,
+  buildReportDocumentModel,
+  renderFullReportFromModel,
 } from './report-generator.js';
 import type { ReportInput, AttackPath, ReportProfile, EvidenceStyle, ReportOptions } from './report-generator.js';
 import type { HtmlPlaybookSummary, HtmlReportData, HtmlTimelineEntry } from './report-html.js';
@@ -28,7 +30,6 @@ import { redactReportText, redactSecretKeys, sanitizeCommandForClient } from './
 import { buildTrustSignalsResponse } from './trust-signal-summary.js';
 import type { TrustSignalDto } from './trust-signal-summary.js';
 import { displayFindingCategory, displayFindingShortTitle, displayFindingTitle } from './finding-presentation.js';
-import { buildActionPlan, buildExecutiveSummary } from './report-deliverable.js';
 
 export type ReportFormat = 'markdown' | 'html' | 'json';
 /** Format the dashboard / generate_report tool can request, including PDF (which is rendered from HTML by `renderReportPdf`). */
@@ -275,38 +276,15 @@ export function assembleReport(
     evidence_style,
   };
 
-  const baseFindings = buildFindings(graph, history, config, { evidenceLoader, evidenceRecordLoader });
-  const proofModel = buildReportEvidenceModel(baseFindings, { profile, includeEvidence: include_evidence });
-  const findings = proofModel.findings;
+  const findingModel = buildReportFindingModel(reportInput, renderOptions);
+  const findings = findingModel.findings;
   const trustSignalSummary = buildTrustSignalsResponse({ history, findings });
-  const executiveSummary = buildExecutiveSummary({
-    config,
-    graph,
-    findings,
-    profile,
-    evidenceCount: proofModel.evidenceCount,
-    trustSignals: trustSignalSummary.signals,
-  });
-  const actionPlan = buildActionPlan({
-    config,
-    graph,
-    findings,
-    profile,
-    evidenceCount: proofModel.evidenceCount,
-    trustSignals: trustSignalSummary.signals,
-  });
-  const rawMarkdown = appendPlaybookSummary(appendTrustSignalNotes(generateFullReport(reportInput, {
+  const documentModel = buildReportDocumentModel(reportInput, {
     ...renderOptions,
     trust_signals: trustSignalSummary.signals,
-  }), trustSignalSummary.signals), playbookSummary);
-  const markdown = redactionOpts.client_safe ? scrubMarkdownForClient(rawMarkdown) : rawMarkdown;
-  const severitySummary = {
-    critical: findings.filter(f => f.severity === 'critical').length,
-    high: findings.filter(f => f.severity === 'high').length,
-    medium: findings.filter(f => f.severity === 'medium').length,
-    low: findings.filter(f => f.severity === 'low').length,
-    info: findings.filter(f => f.severity === 'info').length,
-  };
+  }, findingModel);
+  const { executiveSummary, actionPlan } = documentModel;
+  const severitySummary = { ...documentModel.severityCounts };
 
   let content: string;
   const navigatorLayer = include_attack_navigator
@@ -325,7 +303,7 @@ export function assembleReport(
       evidence_style,
       executive_summary: executiveSummary,
       action_plan: actionPlan,
-      evidence_appendix: proofModel.appendix,
+      evidence_appendix: documentModel.appendix,
       trust_signals: trustSignalSummary.signals,
       playbooks: playbookSummary,
       remediation_ranking: remRanking,
@@ -374,7 +352,7 @@ export function assembleReport(
       executiveSummary,
       actionPlan,
       trustSignals: trustSignalSummary.signals,
-      evidenceAppendix: proofModel.appendix,
+      evidenceAppendix: documentModel.appendix,
       reportProfile: profile,
       evidenceStyle: evidence_style,
     };
@@ -490,14 +468,19 @@ export function assembleReport(
     const renderData = redactionOpts.client_safe ? redactSecretKeys(htmlData, redactionOpts) : htmlData;
     content = renderReportHtml(renderData as HtmlReportData, { theme, include_toc: true, include_compliance });
   } else {
-    content = markdown;
+    const rawMarkdown = appendPlaybookSummary(appendTrustSignalNotes(renderFullReportFromModel(
+      reportInput,
+      documentModel,
+      { ...renderOptions, trust_signals: trustSignalSummary.signals },
+    ), trustSignalSummary.signals), playbookSummary);
+    content = redactionOpts.client_safe ? scrubMarkdownForClient(rawMarkdown) : rawMarkdown;
   }
 
   return {
     format,
     content,
     findings_count: findings.length,
-    evidence_count: proofModel.evidenceCount,
+    evidence_count: documentModel.evidenceCount,
     profile,
     redaction_mode: effectiveClientSafe ? 'client_safe' : 'operator',
     navigator_layer: navigatorLayer,
