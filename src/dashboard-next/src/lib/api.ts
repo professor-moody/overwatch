@@ -170,7 +170,7 @@ export async function getHistory(params?: {
   return { ...response, entries: normalizeActivityEntries(response.entries) };
 }
 
-function normalizeActivityEntries(entries: ActivityEntryDto[]): ActivityEntry[] {
+export function normalizeActivityEntries(entries: ActivityEntryDto[]): ActivityEntry[] {
   return entries.map(entry => ({
     ...entry,
     id: entry.id ?? entry.event_id,
