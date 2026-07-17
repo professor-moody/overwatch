@@ -11,6 +11,7 @@ import {
   ParseCommandService,
   buildParseSourceFingerprint,
 } from '../services/parse-command-service.js';
+import { withPlaybookAttemptCompletion } from '../services/playbook-run-service.js';
 
 /** Render the shared parse result into the parse_output tool's JSON response shapes. */
 function formatParseResult(
@@ -137,6 +138,9 @@ Pass either the raw output content or a local file path for large artifacts.`,
         list_parsers: z.boolean().default(false).describe('List all supported parser names'),
         command_id: z.string().min(1).optional().describe('Stable application-command ID for status correlation and safe retries.'),
         idempotency_key: z.string().min(1).optional().describe('Stable retry key. Identical retries return the original parse result without ingesting again.'),
+        playbook_run_id: z.string().min(1).optional().describe('Durable playbook run linkage returned by start_playbook_step.'),
+        playbook_step_id: z.string().min(1).optional().describe('Durable playbook step linkage returned by start_playbook_step.'),
+        playbook_attempt_id: z.string().min(1).optional().describe('Durable playbook attempt linkage returned by start_playbook_step.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -145,7 +149,8 @@ Pass either the raw output content or a local file path for large artifacts.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('parse_output', async ({ tool_name: rawToolName, tool, output, file_path, agent_id, action_id, frontier_item_id, context, ingest, list_parsers, command_id, idempotency_key }) => {
+    withErrorBoundary('parse_output', async (params) => withPlaybookAttemptCompletion(engine, params, async () => {
+      const { tool_name: rawToolName, tool, output, file_path, agent_id, action_id, frontier_item_id, context, ingest, list_parsers, command_id, idempotency_key } = params;
       const tool_name = rawToolName || tool;
       if (list_parsers) {
         return {
@@ -248,7 +253,8 @@ Pass either the raw output content or a local file path for large artifacts.`,
           frontier_item_id,
         },
       );
-      return formatParseResult(result, filePathProvided ? 'file_path' : 'output', ingest);
-    })
+      const formatted = formatParseResult(result, filePathProvided ? 'file_path' : 'output', ingest);
+      return formatted;
+    }))
   );
 }

@@ -14,14 +14,17 @@
 // ============================================================
 
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialUsableForAuth, isTokenCredential } from '../services/credential-utils.js';
 import { cloudIdentityId } from '../services/parser-utils.js';
+import { PlaybookCommandService } from '../services/playbook-command-service.js';
 
 interface ReplayStep {
   step: number;
+  step_id: string;
   description: string;
   tool: 'validate_token_credential';
   args: Record<string, unknown>;
@@ -42,15 +45,16 @@ Each replay confirms whether the OIDC token actually assumes the
 inferred role, mints temp credentials, and lets the AWS playbook
 (\`expand_aws_credential\`) chain into the resulting session.
 
-Returns the plan; does not execute. Each step is a tool invocation
-(not a shell command) — call validate_token_credential with the
-provided args.`,
+Creates or resumes a matching durable run; it does not itself execute a target
+step. Each claimed step is a tool invocation (not a shell command) — call
+validate_token_credential with the provided args and retained linkage.`,
       inputSchema: {
         credential_id: z.string().min(1).describe('Credential node id of the captured OIDC token.'),
         max_targets: z.number().int().min(1).max(20).default(10).describe('Cap on candidate roles. Highest-confidence ISSUES_TOKENS_FOR matches first.'),
+        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching open run.'),
       },
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
@@ -60,6 +64,7 @@ provided args.`,
       const { credential_id, max_targets } = params as {
         credential_id: string;
         max_targets: number;
+        new_run?: boolean;
       };
 
       const cred = engine.getNode(credential_id);
@@ -115,6 +120,7 @@ provided args.`,
 
       const steps: ReplayStep[] = top.map((c, i) => ({
         step: i + 1,
+        step_id: `replay-${createHash('sha256').update(c.cloudId).digest('hex').slice(0, 16)}`,
         description: `Replay token against ${c.roleArn ?? c.cloudId} (via ${c.appLabel ?? 'inferred federation app'}). Confirms the inferred ASSUMES_ROLE edge.`,
         tool: 'validate_token_credential',
         args: {
@@ -127,11 +133,29 @@ provided args.`,
         est_noise: 0.15,
       }));
 
+      const durable = new PlaybookCommandService(engine).open({
+        definition: {
+          definition_id: 'oidc-capture',
+          definition_version: 1,
+          provider: 'oidc',
+          title: 'CI/CD OIDC federation replay',
+        },
+        credential_id,
+        normalized_inputs: { max_targets },
+        steps: steps.map(step => ({ ...step })),
+        new_run: (params as { new_run?: boolean }).new_run === true,
+      });
+
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             credential_id,
+            run_id: durable.run.run_id,
+            playbook_run_status: durable.run.status,
+            playbook_report_status: durable.run.report_status,
+            playbook_created: durable.created,
+            playbook_steps: durable.run.steps,
             audience,
             candidates_considered: candidates.length + blockedCandidates.length,
             eligible_candidates: candidates.length,

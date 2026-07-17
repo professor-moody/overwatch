@@ -81,7 +81,9 @@ In your MCP-connected Claude Code session (or via any MCP client):
 
 The smoke walk does not execute the AWS command; `use_ambient_credentials: true` explicitly exercises the ambient-binding plan path. In a real engagement, set it only when the active AWS environment/default chain is known to represent this selected credential. Otherwise supply a bound `aws_profile`, or use an `aws_session_credentials` credential and populate the returned `run_bash.env.OVERWATCH_AWS_SESSION_CREDENTIALS` binding with its actual JSON value.
 
-You should get back a dependency-aware plan starting with a ready `aws sts get-caller-identity` step. The remaining descriptors are blocked, have `ready: false`, and intentionally use `command: null` until caller attribution exists. Plan generation does not stamp or retire the credential. Never execute a blocked/null descriptor; honor each ready descriptor's returned `runner` and environment binding.
+You should get back a durable `run_id` and a dependency-aware plan starting with a ready `aws sts get-caller-identity` step. The remaining descriptors are blocked, have `ready: false`, and intentionally use `command: null` until caller attribution exists. Run creation does not stamp or retire the credential.
+
+Inspect the run with `get_playbook_run`, then claim only the ready caller-identity step with `start_playbook_step`. Preserve the returned `playbook_run_id`, `playbook_step_id`, `playbook_attempt_id`, `command_id`, and `idempotency_key` when sending its descriptor to `run_bash`. Preparing a step does not execute it; if you do not run it, call `interrupt_playbook_attempt` so another terminal or dashboard agent is not left blocked. Never execute a blocked/null descriptor; honor each ready descriptor's returned runner and environment binding.
 
 Now drive step 1 with a canned response. Pipe the fixture below through `parse_output`:
 
@@ -101,6 +103,9 @@ Call:
     "tool_name": "aws-sts-identity",
     "output": "<paste the JSON above>",
     "agent_id": "smoke-aws",
+    "playbook_run_id": "<run_id from start_playbook_step>",
+    "playbook_step_id": "<step_id from start_playbook_step>",
+    "playbook_attempt_id": "<attempt_id from start_playbook_step>",
     "context": {
       "source_credential_id": "cred-aws-power",
       "cloud_provider": "aws",

@@ -1192,6 +1192,111 @@ export const ConfigDivergenceResolveResponseSchema = z.object({
 }).passthrough();
 export type ConfigDivergenceResolveResponse = z.infer<typeof ConfigDivergenceResolveResponseSchema>;
 
+export const PLAYBOOK_STATUSES = [
+  'pending', 'blocked', 'awaiting_approval', 'running', 'succeeded',
+  'failed', 'interrupted', 'skipped', 'cancelled',
+] as const;
+export const PlaybookStatusSchema = z.enum(PLAYBOOK_STATUSES);
+export const PlaybookAttemptSchema = z.object({
+  attempt_id: z.string(),
+  attempt_number: z.number().int().positive(),
+  status: z.enum(['claimed', 'awaiting_approval', 'running', 'succeeded', 'failed', 'interrupted', 'cancelled']),
+  started_at: z.string(),
+  claimed_via: z.enum(['mcp', 'dashboard', 'cli', 'planner', 'scripted_runner', 'headless_runner', 'system']),
+  claimed_by_task_id: z.string().optional(),
+  executed_via: z.enum(['mcp', 'dashboard', 'cli', 'planner', 'scripted_runner', 'headless_runner', 'system']).optional(),
+  executed_by_task_id: z.string().optional(),
+  execution_command_id: z.string(),
+  execution_idempotency_key: z.string(),
+  execution_action_id: z.string(),
+  execution_started_at: z.string().optional(),
+  completed_at: z.string().optional(),
+  action_id: z.string().optional(),
+  evidence_ids: z.array(z.string()),
+  finding_ids: z.array(z.string()),
+  execution_outcome: z.enum(['succeeded', 'failed', 'interrupted']).optional(),
+  parse_outcome: z.enum(['ok', 'no_data', 'validation_failed', 'parser_exception', 'partial']).optional(),
+  error: z.string().optional(),
+}).passthrough();
+export type PlaybookAttemptDto = z.infer<typeof PlaybookAttemptSchema>;
+
+export const PlaybookStepRunSchema = z.object({
+  step_id: z.string(),
+  ordinal: z.number().int().positive(),
+  description: z.string(),
+  status: PlaybookStatusSchema,
+  depends_on: z.array(z.string()),
+  required_bindings: z.array(z.string()),
+  produces_bindings: z.array(z.string()),
+  resolved_execution: z.record(z.unknown()).optional(),
+  blocked_reason: z.string().optional(),
+  attempts: z.array(PlaybookAttemptSchema),
+  started_at: z.string().optional(),
+  completed_at: z.string().optional(),
+  updated_at: z.string(),
+}).passthrough();
+export type PlaybookStepRunDto = z.infer<typeof PlaybookStepRunSchema>;
+
+export const PlaybookRunSchema = z.object({
+  schema_version: z.literal(1),
+  run_id: z.string(),
+  definition: z.object({
+    definition_id: z.string(),
+    definition_version: z.number().int().positive(),
+    provider: z.enum(['aws', 'github', 'entra', 'oidc']),
+    title: z.string(),
+  }).passthrough(),
+  credential_id: z.string(),
+  input_hash: Sha256Schema,
+  normalized_inputs: z.record(z.unknown()),
+  plan_revisions: z.array(z.object({
+    revision: z.number().int().positive(),
+    created_at: z.string(),
+    plan_hash: Sha256Schema,
+    steps: z.array(z.object({
+      step_id: z.string(),
+      ordinal: z.number().int().positive(),
+      description: z.string(),
+      depends_on: z.array(z.string()),
+      required_bindings: z.array(z.string()),
+      produces_bindings: z.array(z.string()),
+      execution_template: z.record(z.unknown()),
+    }).passthrough()),
+  }).passthrough()).min(1),
+  current_plan_revision: z.number().int().positive(),
+  steps: z.array(PlaybookStepRunSchema),
+  status: PlaybookStatusSchema,
+  report_status: z.enum(['generated', 'partial', 'completed']),
+  created_at: z.string(),
+  updated_at: z.string(),
+  started_at: z.string().optional(),
+  completed_at: z.string().optional(),
+  resume_count: z.number().int().nonnegative(),
+  recovery_warning: z.string().optional(),
+}).passthrough();
+export type PlaybookRunDto = z.infer<typeof PlaybookRunSchema>;
+
+export const LegacyPlaybookRunSchema = z.object({
+  run_id: z.string(),
+  schema_version: z.undefined().optional(),
+}).passthrough();
+export const AnyPlaybookRunSchema = z.union([PlaybookRunSchema, LegacyPlaybookRunSchema]);
+export const PlaybookRunListResponseSchema = z.object({
+  runs: z.array(AnyPlaybookRunSchema),
+  total: z.number().int().nonnegative(),
+}).passthrough();
+export type PlaybookRunListResponse = z.infer<typeof PlaybookRunListResponseSchema>;
+export const PlaybookRunResponseSchema = z.object({ run: AnyPlaybookRunSchema }).passthrough();
+export type PlaybookRunResponse = z.infer<typeof PlaybookRunResponseSchema>;
+export const PlaybookStepClaimResponseSchema = z.object({
+  run: PlaybookRunSchema,
+  step: PlaybookStepRunSchema,
+  attempt: PlaybookAttemptSchema,
+  execution: z.record(z.unknown()),
+}).passthrough();
+export type PlaybookStepClaimResponse = z.infer<typeof PlaybookStepClaimResponseSchema>;
+export const PlaybookSkipRequestSchema = z.object({ reason: z.string().max(2_000).optional() }).strict();
+
 export const DashboardStateDtoSchema = z.object({
   engagement: z.object({
     id: z.string(),
@@ -1241,6 +1346,7 @@ export const DashboardStateDtoSchema = z.object({
   campaigns: z.array(DashboardCampaignDtoSchema),
   sessions: z.array(SessionDtoSchema),
   pending_actions: z.array(PendingActionDtoSchema),
+  playbook_runs: z.array(AnyPlaybookRunSchema).optional(),
   access_level: z.string().optional(),
   history_count: z.number().int().nonnegative().optional(),
   warnings: z.object({}).passthrough(),
@@ -1311,7 +1417,8 @@ export type MainWebSocketEvent =
   | { type: 'action_pending'; timestamp: string; data: PendingActionDto; [key: string]: unknown }
   | { type: 'action_resolved'; timestamp: string; data: { action_id: string; status: 'approved' | 'denied' | 'timeout' | 'aborted'; resolved_at: string; operator_notes?: string; reason?: string; auto_approved?: boolean; unattended_execute?: boolean; [key: string]: unknown }; [key: string]: unknown }
   | { type: 'session_update'; timestamp: string; data: { type: 'session_created' | 'session_updated' | 'session_closed'; session: SessionDto; sessions: SessionDto[]; [key: string]: unknown }; [key: string]: unknown }
-  | { type: 'agent_query'; timestamp: string; data: Record<string, unknown>; [key: string]: unknown };
+  | { type: 'agent_query'; timestamp: string; data: Record<string, unknown>; [key: string]: unknown }
+  | { type: 'playbook_run_update'; timestamp: string; data: { run: PlaybookRunDto; [key: string]: unknown }; [key: string]: unknown };
 
 export const MainWebSocketEventSchema: z.ZodType<MainWebSocketEvent> = z.discriminatedUnion('type', [
   timestampedMainEvent('full_state', DashboardStateResponseSchema),
@@ -1335,6 +1442,7 @@ export const MainWebSocketEventSchema: z.ZodType<MainWebSocketEvent> = z.discrim
     sessions: z.array(SessionDtoSchema),
   }).passthrough()),
   timestampedMainEvent('agent_query', z.record(z.unknown())),
+  timestampedMainEvent('playbook_run_update', z.object({ run: PlaybookRunSchema }).passthrough()),
 ]);
 
 export const SessionWebSocketClientEventSchema = z.discriminatedUnion('type', [

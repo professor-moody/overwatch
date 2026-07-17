@@ -6425,6 +6425,26 @@ export class GraphEngine {
     return detached([...this.ctx.playbookRuns.values()]);
   }
 
+  getPlaybookRun(runId: string): PersistedPlaybookRunV1 | undefined {
+    const run = this.ctx.playbookRuns.get(runId);
+    return run ? detached(run) : undefined;
+  }
+
+  recordPlaybookRun(run: PersistedPlaybookRunV1): PersistedPlaybookRunV1 {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.transactDurableSlices(
+        `record playbook run ${run.run_id}`,
+        ['playbook_runs'],
+        () => this.recordPlaybookRun(run),
+      );
+    }
+    this.assertPersistenceWritable();
+    const stored = detached(run);
+    this.ctx.playbookRuns.set(stored.run_id, stored);
+    this.persist();
+    return detached(stored);
+  }
+
   recordApprovalRequest(action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>): DurableApprovalRecord {
     if (!this.ctx.isDraftingTransaction()) {
       return this.transactDurableSlices(

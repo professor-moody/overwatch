@@ -111,8 +111,14 @@ describe('lean variant (step b) — context-first restructure', () => {
   });
 
   it('includes the credential playbook only for credential-class archetypes', () => {
-    expect(genFor('cloud_cartographer', 'lean')).toContain('expand_aws_credential');
-    expect(genFor('recon_scanner', 'lean')).not.toContain('expand_aws_credential');
+    const cloud = genFor('cloud_cartographer', 'lean');
+    expect(cloud).toContain('expand_aws_credential');
+    expect(cloud).toContain('durable playbook');
+    expect(cloud).toContain('start_playbook_step');
+    expect(cloud).toContain('run/step/attempt linkage');
+    const recon = genFor('recon_scanner', 'lean');
+    expect(recon).not.toContain('expand_aws_credential');
+    expect(recon).not.toContain('start_playbook_step');
   });
 
   it("Brief's Done-when uses the archetype's registry done-test (not a generic frontier synthesis)", () => {

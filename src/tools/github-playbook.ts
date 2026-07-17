@@ -19,6 +19,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { safePlaybookArg } from './_playbook-utils.js';
 import { isCredentialUsableForAuth } from '../services/credential-utils.js';
+import { PlaybookCommandService } from '../services/playbook-command-service.js';
 
 interface PlaybookStep {
   step: number;
@@ -64,8 +65,9 @@ Plan walks:
      - /repos/{o}/{r}/keys                   → gh-api-deploy-keys
      - /repos/{o}/{r}/actions/oidc-customization/sub → github-actions-oidc
 
-Returns the plan; does not execute. Run each step via \`run_bash\`
-with the named \`parse_with\` value. The plan caps repo
+Creates or resumes a matching durable run; it does not itself execute a target
+step. Claim one ready step and run its descriptor via \`run_bash\` with the
+named \`parse_with\` value and retained linkage. The plan caps repo
 expansion at \`max_repos\` to stay tractable on large orgs.`,
       inputSchema: {
         credential_id: z.string().min(1).describe('Credential node id. Must be a token-shaped GitHub credential.'),
@@ -80,9 +82,10 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
         ])).optional().describe('Optional `owner/repo` strings or `{repo_full_name, default_branch}` records. A string remains compatible; branch protection is blocked until its default branch is known.'),
         token_env_var: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).default('OVERWATCH_GITHUB_TOKEN').describe('Environment variable containing this selected credential at execution time. Commands fail closed when it is unset.'),
         confirm_provider: z.boolean().default(false).describe('Explicitly confirm an otherwise-unmarked token is a GitHub credential.'),
+        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching open run.'),
       },
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
@@ -96,6 +99,7 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
         candidate_repos?: Array<string | { repo_full_name: string; default_branch: string }>;
         token_env_var?: string;
         confirm_provider?: boolean;
+        new_run?: boolean;
       };
       const tokenEnvVar = (params as { token_env_var?: string }).token_env_var ?? 'OVERWATCH_GITHUB_TOKEN';
 
@@ -255,11 +259,37 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
         }
       }
 
+      const durable = new PlaybookCommandService(engine).open({
+        definition: {
+          definition_id: 'github-credential',
+          definition_version: 2,
+          provider: 'github',
+          title: 'GitHub credential expansion',
+        },
+        credential_id,
+        normalized_inputs: {
+          max_repos,
+          include_orgs,
+          token_env_var: tokenEnvVar,
+          confirm_provider: (params as { confirm_provider?: boolean }).confirm_provider === true,
+        },
+        // candidate_repos are discovered bindings. A later expansion appends
+        // an immutable plan revision and materializes deterministic repo steps
+        // on the same logical run.
+        steps: steps.map(step => ({ ...step })),
+        new_run: (params as { new_run?: boolean }).new_run === true,
+      });
+
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             credential_id,
+            run_id: durable.run.run_id,
+            playbook_run_status: durable.run.status,
+            playbook_report_status: durable.run.report_status,
+            playbook_created: durable.created,
+            playbook_steps: durable.run.steps,
             step_count: steps.length,
             max_repos,
             credential_binding: credentialBinding,

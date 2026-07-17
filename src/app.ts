@@ -61,6 +61,7 @@ import { registerAwsPlaybookTool } from './tools/aws-playbook.js';
 import { registerGithubPlaybookTool } from './tools/github-playbook.js';
 import { registerCicdOidcPlaybookTool } from './tools/cicd-oidc-playbook.js';
 import { registerEntraPlaybookTools } from './tools/entra-playbook.js';
+import { registerPlaybookRunTools } from './tools/playbook-runs.js';
 import { registerLogThoughtTool } from './tools/log-thought.js';
 import { registerDecisionLogTools } from './tools/decision-log.js';
 import { registerIntrospectionTools } from './tools/introspection.js';
@@ -88,6 +89,7 @@ import {
   ApplicationCommandService,
   withApplicationCommandInvocation,
 } from './services/application-command-service.js';
+import { PlaybookRunService } from './services/playbook-run-service.js';
 
 type DashboardStatusProvider = () => {
   enabled: boolean;
@@ -615,6 +617,7 @@ export function registerAllTools(
   registerGithubPlaybookTool(s, deps.engine);
   registerCicdOidcPlaybookTool(s, deps.engine);
   registerEntraPlaybookTools(s, deps.engine);
+  registerPlaybookRunTools(s, deps.engine);
   registerLogThoughtTool(s, deps.engine);
   registerDecisionLogTools(s, deps.engine);
   registerIntrospectionTools(s, deps.engine);
@@ -755,6 +758,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     // recovery before process ownership and before writable service resumes.
     applicationCommands.recoverInterruptedCommands();
     reconcileRuntimeOwnershipOnStartup(engine);
+    new PlaybookRunService(engine).recoverInterruptedRuns();
   };
   engine.setRuntimeOwnershipRecoveryHandler(reconcileRuntimeOwnership);
   reconcileRuntimeOwnership();

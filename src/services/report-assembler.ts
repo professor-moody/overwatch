@@ -17,7 +17,8 @@ import {
   buildReportEvidenceModel,
 } from './report-generator.js';
 import type { ReportInput, AttackPath, ReportProfile, EvidenceStyle, ReportOptions } from './report-generator.js';
-import type { HtmlReportData, HtmlTimelineEntry } from './report-html.js';
+import type { HtmlPlaybookSummary, HtmlReportData, HtmlTimelineEntry } from './report-html.js';
+import type { PersistedDurablePlaybookRunV1 } from './persisted-state.js';
 import type { HtmlComplianceMapping } from './report-html.js';
 import { renderReportHtml } from './report-html.js';
 import { runRetrospective, buildCredentialChains } from './retrospective.js';
@@ -118,6 +119,59 @@ function escapeMarkdownTable(value: string): string {
   return value.replace(/\|/g, '\\|').replace(/\n/g, ' ');
 }
 
+function isDurablePlaybookRun(value: unknown): value is PersistedDurablePlaybookRunV1 {
+  return !!value && typeof value === 'object' && (value as { schema_version?: unknown }).schema_version === 1;
+}
+
+function buildPlaybookSummary(engine: GraphEngine, clientSafe: boolean): HtmlPlaybookSummary {
+  const runs = engine.getPlaybookRuns().filter(isDurablePlaybookRun).map(run => {
+    const attempts = run.steps.flatMap(step => step.attempts);
+    const evidenceIds = new Set(attempts.flatMap(attempt => attempt.evidence_ids));
+    const findingIds = new Set(attempts.flatMap(attempt => attempt.finding_ids));
+    return {
+      ...(clientSafe ? {} : { run_id: run.run_id }),
+      definition_id: run.definition.definition_id,
+      ...(clientSafe ? {} : { credential_id: run.credential_id }),
+      status: run.status,
+      report_status: run.report_status,
+      steps_total: run.steps.length,
+      steps_completed: run.steps.filter(step => step.status === 'succeeded' || step.status === 'skipped').length,
+      steps_skipped: run.steps.filter(step => step.status === 'skipped').length,
+      steps_failed: run.steps.filter(step => step.status === 'failed').length,
+      attempts: attempts.length,
+      evidence_count: evidenceIds.size,
+      finding_count: findingIds.size,
+    };
+  });
+  return {
+    total: runs.length,
+    generated: runs.filter(run => run.report_status === 'generated').length,
+    partial: runs.filter(run => run.report_status === 'partial').length,
+    completed: runs.filter(run => run.report_status === 'completed').length,
+    runs,
+  };
+}
+
+function appendPlaybookSummary(md: string, playbooks: HtmlPlaybookSummary): string {
+  if (playbooks.total === 0) return md;
+  const withToc = md.replace(
+    /\n\n## Executive Summary/,
+    '\n- [Credential Playbooks](#credential-playbooks)\n\n## Executive Summary',
+  );
+  const lines = [
+    '',
+    '## Credential Playbooks',
+    '',
+    `${playbooks.completed} completed, ${playbooks.partial} partial, and ${playbooks.generated} generated but not meaningfully executed.`,
+    '',
+    '| Run | Playbook | Credential | Coverage | Lifecycle | Steps | Skipped | Failed | Attempts | Evidence | Findings |',
+    '|-----|----------|------------|----------|-----------|-------|---------|--------|----------|----------|----------|',
+    ...playbooks.runs.map(run => `| ${escapeMarkdownTable(run.run_id ?? '—')} | ${escapeMarkdownTable(run.definition_id)} | ${escapeMarkdownTable(run.credential_id ?? '—')} | ${run.report_status} | ${run.status} | ${run.steps_completed}/${run.steps_total} | ${run.steps_skipped} | ${run.steps_failed} | ${run.attempts} | ${run.evidence_count} | ${run.finding_count} |`),
+    '',
+  ];
+  return `${withToc.trimEnd()}\n${lines.join('\n')}`;
+}
+
 /**
  * Assemble a rendered report from current engine state + options.
  * Pure function — does not write to disk or persist to archive.
@@ -149,6 +203,7 @@ export function assembleReport(
   const graph = engine.exportGraph();
   const history = engine.getFullHistory();
   const agents = engine.getAllAgents();
+  const playbookSummary = buildPlaybookSummary(engine, effectiveClientSafe);
 
   let retrospective: ReportInput['retrospective'];
   if (include_retrospective) {
@@ -223,10 +278,10 @@ export function assembleReport(
     evidenceCount: proofModel.evidenceCount,
     trustSignals: trustSignalSummary.signals,
   });
-  const rawMarkdown = appendTrustSignalNotes(generateFullReport(reportInput, {
+  const rawMarkdown = appendPlaybookSummary(appendTrustSignalNotes(generateFullReport(reportInput, {
     ...renderOptions,
     trust_signals: trustSignalSummary.signals,
-  }), trustSignalSummary.signals);
+  }), trustSignalSummary.signals), playbookSummary);
   const markdown = redactionOpts.client_safe ? scrubMarkdownForClient(rawMarkdown) : rawMarkdown;
   const severitySummary = {
     critical: findings.filter(f => f.severity === 'critical').length,
@@ -255,6 +310,7 @@ export function assembleReport(
       action_plan: actionPlan,
       evidence_appendix: proofModel.appendix,
       trust_signals: trustSignalSummary.signals,
+      playbooks: playbookSummary,
       remediation_ranking: remRanking,
       attack_paths: attackPaths,
       ...(navigatorLayer ? { attack_navigator_layer: navigatorLayer } : {}),
@@ -296,6 +352,7 @@ export function assembleReport(
       credentialChains,
       discoveryStats: { nodesByType, edgesByType, confirmed, inferred },
       agents: { total: agents.length, completed: completedAgents, failed: failedAgents },
+      playbooks: playbookSummary,
       timeline: timelineEntries,
       executiveSummary,
       actionPlan,

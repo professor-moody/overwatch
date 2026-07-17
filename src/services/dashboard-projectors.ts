@@ -11,6 +11,7 @@ import {
   type AgentDto,
 } from '../contracts/dashboard-v1.js';
 import type { ActivityLogEntry, GraphUpdateDetail } from './engine-context.js';
+import type { PersistedPlaybookRunV1 } from './persisted-state.js';
 import type { DefensiveSignal, OpsecContext } from './opsec-tracker.js';
 import { projectAgentDtos } from './dashboard-agent-projector.js';
 
@@ -96,6 +97,7 @@ export type DashboardState<TSession = unknown, TPendingAction = unknown> =
     sessions: TSession[];
     pending_actions: TPendingAction[];
     campaigns: DashboardCampaign[];
+    playbook_runs: PersistedPlaybookRunV1[];
   };
 
 export function projectDashboardState<TSession, TPendingAction>(input: {
@@ -104,6 +106,7 @@ export function projectDashboardState<TSession, TPendingAction>(input: {
   pending_actions: TPendingAction[];
   campaigns: DashboardCampaign[];
   history: ActivityLogEntry[];
+  playbook_runs?: PersistedPlaybookRunV1[];
 }): DashboardState<TSession, TPendingAction> {
   return {
     ...input.state,
@@ -119,6 +122,7 @@ export function projectDashboardState<TSession, TPendingAction>(input: {
     sessions: structuredClone(input.sessions),
     pending_actions: structuredClone(input.pending_actions),
     campaigns: structuredClone(input.campaigns),
+    playbook_runs: structuredClone(input.playbook_runs ?? []),
   };
 }
 

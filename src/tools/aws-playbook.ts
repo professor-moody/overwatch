@@ -1,10 +1,9 @@
 // ============================================================
 // Overwatch — expand_aws_credential
 //
-// Stateless AWS reconnaissance planning. STS attribution is the binding
+// Durable AWS reconnaissance planning. STS attribution remains the binding
 // boundary: callers run the ready identity step, ingest it, then re-expand the
-// credential. PR12 will add durable PlaybookRun/attempt state; this slice keeps
-// the public plan backward compatible while making dependencies truthful.
+// same run so dependent execution descriptors can be resolved.
 // ============================================================
 
 import { z } from 'zod';
@@ -14,6 +13,7 @@ import type { NodeProperties, ParseContext } from '../types.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialUsableForAuth } from '../services/credential-utils.js';
 import { safePlaybookArg } from './_playbook-utils.js';
+import { PlaybookCommandService } from '../services/playbook-command-service.js';
 
 const AWS_CRED_KINDS = new Set(['aws_session_credentials', 'oidc_access_token', 'token']);
 
@@ -205,8 +205,8 @@ export function registerAwsPlaybookTool(server: McpServer, engine: GraphEngine):
 Run the ready STS step first and ingest it. Re-run this tool after the caller
 identity lands; account, policy, S3, Lambda, and CloudFox steps then receive
 server-resolved account/caller/principal bindings. Blocked steps carry a null
-command rather than guessing attribution. This tool creates a
-plan only; durable playbook-run state is introduced separately.`,
+command rather than guessing attribution. The logical plan and every attempt
+are durable; repeated calls resume the matching open run by default.`,
       inputSchema: {
         credential_id: z.string().min(1).describe('AWS-shaped credential node id.'),
         regions: z.array(z.string().regex(/^[a-z]{2}(?:-[a-z0-9]+)+-\d+$/)).optional().describe('AWS regions to enumerate. Defaults to us-east-1; duplicates are removed.'),
@@ -215,9 +215,10 @@ plan only; durable playbook-run state is introduced separately.`,
         use_ambient_credentials: z.boolean().default(false).describe('Explicitly acknowledge that the current AWS environment/default chain contains this selected AWS-marked credential.'),
         skip_inventory: z.boolean().default(false).describe('Skip the optional CloudFox inventory step.'),
         include_destructive: z.boolean().default(false).describe('Include an explicit-opt-in IAM write-probe hint.'),
+        new_run: z.boolean().default(false).describe('Start another run instead of resuming the matching open run.'),
       },
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
@@ -232,6 +233,7 @@ plan only; durable playbook-run state is introduced separately.`,
         use_ambient_credentials?: boolean;
         skip_inventory: boolean;
         include_destructive: boolean;
+        new_run?: boolean;
       };
 
       const cred = engine.getNode(credential_id);
@@ -412,11 +414,36 @@ plan only; durable playbook-run state is introduced separately.`,
         });
       }
 
+      const durable = new PlaybookCommandService(engine).open({
+        definition: {
+          definition_id: 'aws-credential',
+          definition_version: 2,
+          provider: 'aws',
+          title: 'AWS credential expansion',
+        },
+        credential_id,
+        normalized_inputs: {
+          regions: effectiveRegions,
+          aws_profile: requestedProfile ?? null,
+          session_credentials_env_var: sessionCredentialsEnvVar,
+          use_ambient_credentials: useAmbientCredentials,
+          skip_inventory,
+          include_destructive,
+        },
+        steps: steps.map(step => ({ ...step })),
+        new_run: (params as { new_run?: boolean }).new_run === true,
+      });
+
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             credential_id,
+            run_id: durable.run.run_id,
+            playbook_run_status: durable.run.status,
+            playbook_report_status: durable.run.report_status,
+            playbook_created: durable.created,
+            playbook_steps: durable.run.steps,
             plan_version: 2,
             regions: effectiveRegions,
             profile: profile ?? null,

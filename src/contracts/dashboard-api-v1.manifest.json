@@ -226,6 +226,92 @@
       "summary": "List operator questions from agents"
     },
     {
+      "operation_id": "listPlaybookRuns",
+      "method": "GET",
+      "path": "/api/playbook-runs",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List durable credential playbook runs"
+    },
+    {
+      "operation_id": "getPlaybookRun",
+      "method": "GET",
+      "path": "/api/playbook-runs/{run_id}",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        404
+      ],
+      "summary": "Read one durable credential playbook run"
+    },
+    {
+      "operation_id": "startPlaybookStep",
+      "method": "POST",
+      "path": "/api/playbook-runs/{run_id}/steps/{step_id}/start",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        400,
+        404,
+        409
+      ],
+      "summary": "Claim one ready playbook step"
+    },
+    {
+      "operation_id": "resumePlaybookRun",
+      "method": "POST",
+      "path": "/api/playbook-runs/{run_id}/resume",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        400,
+        404,
+        409
+      ],
+      "summary": "Resume an interrupted playbook run"
+    },
+    {
+      "operation_id": "retryPlaybookStep",
+      "method": "POST",
+      "path": "/api/playbook-runs/{run_id}/steps/{step_id}/retry",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        400,
+        404,
+        409
+      ],
+      "summary": "Append a retry attempt for a playbook step"
+    },
+    {
+      "operation_id": "skipPlaybookStep",
+      "method": "POST",
+      "path": "/api/playbook-runs/{run_id}/steps/{step_id}/skip",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        400,
+        404,
+        409
+      ],
+      "summary": "Skip a playbook step"
+    },
+    {
+      "operation_id": "interruptPlaybookAttempt",
+      "method": "POST",
+      "path": "/api/playbook-runs/{run_id}/steps/{step_id}/interrupt",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        400,
+        404,
+        409
+      ],
+      "summary": "Release an active playbook attempt as interrupted"
+    },
+    {
       "operation_id": "answerAgentQueriesBatch",
       "method": "POST",
       "path": "/api/agent-queries/answer-batch",
@@ -980,7 +1066,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
-        "200": "d18a33fbf99a10367360fcbeb509fcbaae3c23bd67b7da5beb2098224dd4bfa2"
+        "200": "b2c0fa0a458790a9c747525416ef89e04ef4cccbc65e872fb26197b816553b4c"
       }
     },
     "getGraph": {
@@ -1137,6 +1223,78 @@
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
         "200": "f0c52a9188c29e1cc17011800a84423f3d7441944b5afafb15d4f0f59231f90f"
+      }
+    },
+    "listPlaybookRuns": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "ccf6ce4d00408abf1baf69847dd61a41b85d7e10e944ba98fd208ff38435b6b9",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "8494b7186f43cc0aeb5142a5c878fb2e92ade1d7959404cdd6991604e5cd170e"
+      }
+    },
+    "getPlaybookRun": {
+      "path": "d12b2ff4268d5cb5bc12b7ecc40cc10fc80944e887e1aaefeda65c96cc6c45dd",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "7082d1f6b21e1dc5ea826a412ac37a042a00899eb4476e3d2ff0d802805a3831",
+        "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+      }
+    },
+    "startPlaybookStep": {
+      "path": "7b3ac455feae7b9e02feefc03418453e2dfbdc4ce4a8a61d091c5fcb39821e98",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "310d667e92dace7c2938023daec225653753e89080d1f63fba9912c472d05d1c",
+      "responses": {
+        "200": "10889a0dbc3787dfe21f09538139ba0d629ba5755d279474cf127033a71bf031",
+        "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+      }
+    },
+    "resumePlaybookRun": {
+      "path": "d12b2ff4268d5cb5bc12b7ecc40cc10fc80944e887e1aaefeda65c96cc6c45dd",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "310d667e92dace7c2938023daec225653753e89080d1f63fba9912c472d05d1c",
+      "responses": {
+        "200": "7082d1f6b21e1dc5ea826a412ac37a042a00899eb4476e3d2ff0d802805a3831",
+        "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+      }
+    },
+    "retryPlaybookStep": {
+      "path": "7b3ac455feae7b9e02feefc03418453e2dfbdc4ce4a8a61d091c5fcb39821e98",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "310d667e92dace7c2938023daec225653753e89080d1f63fba9912c472d05d1c",
+      "responses": {
+        "200": "10889a0dbc3787dfe21f09538139ba0d629ba5755d279474cf127033a71bf031",
+        "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+      }
+    },
+    "skipPlaybookStep": {
+      "path": "7b3ac455feae7b9e02feefc03418453e2dfbdc4ce4a8a61d091c5fcb39821e98",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "20369f48899e1dab20493e2223ec96c729adf8de8bbb57c2a1fe0f1fcfb35e03",
+      "responses": {
+        "200": "7082d1f6b21e1dc5ea826a412ac37a042a00899eb4476e3d2ff0d802805a3831",
+        "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+      }
+    },
+    "interruptPlaybookAttempt": {
+      "path": "7b3ac455feae7b9e02feefc03418453e2dfbdc4ce4a8a61d091c5fcb39821e98",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "20369f48899e1dab20493e2223ec96c729adf8de8bbb57c2a1fe0f1fcfb35e03",
+      "responses": {
+        "200": "7082d1f6b21e1dc5ea826a412ac37a042a00899eb4476e3d2ff0d802805a3831",
+        "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
       }
     },
     "answerAgentQueriesBatch": {
@@ -1730,7 +1888,7 @@
     "main": {
       "operation_id": "dashboardMainSocket",
       "path": "/ws",
-      "server_events": "784115a55a7815b8bb2597dcb0f749357370e0c9664f2e629f657088266bc716"
+      "server_events": "69c9e31f1b3e423c2477620465a7a99195e9cab0c7e430367a88e83153350cea"
     },
     "session": {
       "operation_id": "dashboardSessionSocket",
@@ -1744,5 +1902,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "d69a567a349a7fa9ed4b398574765f4ae0b8c86fa5d31292e6af0789a66e13b2"
+  "schema_hash": "4388946e30ba11fb48116ee358297674a618d823633eed45b40ae4565a331acc"
 }

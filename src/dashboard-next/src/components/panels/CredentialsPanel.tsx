@@ -17,21 +17,37 @@ import {
   isCredentialExpansionCandidate,
 } from '../../lib/credential-display';
 import { ActionButton, DataRow, EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
+import * as api from '../../lib/api';
+import type { PlaybookRun } from '../../lib/types';
 
 type SortMode = 'recent' | 'kind' | 'status';
 type StatusFilter = 'all' | 'active' | 'stale' | 'expired';
 /** Derived "what kind of attention does this credential need" views, toggled
  *  from the count chips — orthogonal to the lifecycle StatusFilter. */
 type ViewFilter = 'all' | 'reachable' | 'unverified' | 'expansion' | 'expiring';
+type PreparedExecution = { run_id: string; step_id: string; execution: Record<string, unknown> };
+
+export function groupPlaybookRunsByCredential(runs: PlaybookRun[]): Map<string, PlaybookRun[]> {
+  const result = new Map<string, PlaybookRun[]>();
+  for (const run of [...runs].sort((a, b) => b.updated_at.localeCompare(a.updated_at))) {
+    result.set(run.credential_id, [...(result.get(run.credential_id) ?? []), run]);
+  }
+  return result;
+}
 
 export function CredentialsPanel() {
   const graph = useEngagementStore((s) => s.graph);
+  const playbookRuns = useEngagementStore((s) => s.playbookRuns);
+  const setPlaybookRuns = useEngagementStore((s) => s.setPlaybookRuns);
   const [sortMode, setSortMode] = useState<SortMode>('recent');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [viewFilter, setViewFilter] = useState<ViewFilter>('all');
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const [playbookBusy, setPlaybookBusy] = useState<string | null>(null);
+  const [playbookError, setPlaybookError] = useState<string | null>(null);
+  const [preparedExecution, setPreparedExecution] = useState<PreparedExecution | null>(null);
   const [searchParams] = useSearchParams();
   const { navigateToGraphTarget, navigateToPanel } = useNavigation();
   const nowMs = Date.now();
@@ -39,6 +55,39 @@ export function CredentialsPanel() {
   const creds = useMemo(() => {
     return graph.nodes.filter(n => n.type === 'credential');
   }, [graph.nodes]);
+
+  const playbooksByCredential = useMemo(() => groupPlaybookRunsByCredential(playbookRuns), [playbookRuns]);
+
+  const replacePlaybookRun = (run: PlaybookRun) => {
+    setPlaybookRuns([
+      ...playbookRuns.filter(candidate => candidate.run_id !== run.run_id),
+      run,
+    ].sort((a, b) => b.updated_at.localeCompare(a.updated_at)));
+  };
+
+  const runPlaybookAction = async (key: string, operation: () => Promise<PlaybookRun | { run: PlaybookRun; execution: Record<string, unknown> }>) => {
+    setPlaybookBusy(key);
+    setPlaybookError(null);
+    try {
+      const result = await operation();
+      const claim = result as { run?: PlaybookRun; execution?: Record<string, unknown> };
+      const run = claim.run?.schema_version === 1 ? claim.run : result as PlaybookRun;
+      replacePlaybookRun(run);
+      if (claim.execution) {
+        setPreparedExecution({
+          run_id: run.run_id,
+          step_id: String(claim.execution.playbook_step_id ?? ''),
+          execution: claim.execution,
+        });
+      } else {
+        setPreparedExecution(current => current?.run_id === run.run_id ? null : current);
+      }
+    } catch (error) {
+      setPlaybookError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPlaybookBusy(null);
+    }
+  };
 
   useEffect(() => {
     const item = searchParams.get('item');
@@ -228,6 +277,7 @@ export function CredentialsPanel() {
             const isExpanded = expandedId === cred.id;
             const isRevealed = revealed.has(cred.id);
             const credValue = cred.cred_value as string | undefined;
+            const playbooks = playbooksByCredential.get(cred.id) ?? [];
             const hasIdentityContext = !!(
               cred.cred_audience ||
               cred.cred_mfa_required != null ||
@@ -250,6 +300,12 @@ export function CredentialsPanel() {
                   {/* Status badge */}
                   {status && (
                     <StatusPill className={getCredentialStatusClass(status)}>{status}</StatusPill>
+                  )}
+
+                  {playbook && (
+                    <StatusPill className={playbook.report_status === 'completed' ? 'text-success bg-success/10' : playbook.status === 'failed' || playbook.status === 'interrupted' ? 'text-warning bg-warning/10' : 'text-accent bg-accent/10'}>
+                      playbook · {playbook.status}
+                    </StatusPill>
                   )}
 
                   {/* Reachable indicator — with the target count so coverage is
@@ -395,6 +451,100 @@ export function CredentialsPanel() {
                         </div>
                       </div>
                     )}
+
+                    <div className="mt-3 border-t border-border pt-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-foreground">Credential playbook</span>
+                        {playbook?.status === 'interrupted' && (
+                          <ActionButton
+                            size="xs"
+                            variant="secondary"
+                            disabled={playbookBusy !== null}
+                            onClick={() => void runPlaybookAction(`resume:${playbook.run_id}`, () => api.resumePlaybookRun(playbook.run_id))}
+                          >
+                            {playbookBusy === `resume:${playbook.run_id}` ? 'resuming…' : 'Resume'}
+                          </ActionButton>
+                        )}
+                      </div>
+                      {!playbook ? (
+                        <p className="text-muted-foreground">
+                          No durable run yet. Deploy a credential or cloud agent, or call the matching expand tool; the resulting run will appear here and survive restarts.
+                        </p>
+                      ) : (
+                        <>
+                          <div className="text-muted-foreground">
+                            {playbook.definition.title} · {playbook.report_status} · {playbook.steps.filter(step => step.status === 'succeeded' || step.status === 'skipped').length}/{playbook.steps.length} steps complete
+                          </div>
+                          <div className="space-y-1.5">
+                            {playbook.steps.map(step => {
+                              const key = `${playbook.run_id}:${step.step_id}`;
+                              const canStart = step.status === 'pending' && step.attempts.length === 0;
+                              const canRetry = step.status === 'failed' || step.status === 'interrupted';
+                              const canSkip = ['pending', 'blocked', 'failed', 'interrupted'].includes(step.status);
+                              const activeAttempt = step.attempts.find(attempt => attempt.status === 'running');
+                              return (
+                                <div key={step.step_id} className="rounded border border-border bg-background/40 p-2">
+                                  <div className="flex items-center gap-2">
+                                    <StatusPill className={step.status === 'succeeded' ? 'text-success bg-success/10' : step.status === 'blocked' ? 'text-muted-foreground bg-elevated' : step.status === 'failed' || step.status === 'interrupted' ? 'text-warning bg-warning/10' : 'text-accent bg-accent/10'}>
+                                      {step.status}
+                                    </StatusPill>
+                                    <span className="flex-1 text-foreground">{step.ordinal}. {step.description}</span>
+                                    {canStart && (
+                                      <ActionButton
+                                        size="xs"
+                                        variant="secondary"
+                                        disabled={playbookBusy !== null}
+                                        onClick={() => void runPlaybookAction(`start:${key}`, () => api.startPlaybookStep(playbook.run_id, step.step_id))}
+                                      >Prepare</ActionButton>
+                                    )}
+                                    {canRetry && (
+                                      <ActionButton
+                                        size="xs"
+                                        variant="secondary"
+                                        disabled={playbookBusy !== null}
+                                        onClick={() => void runPlaybookAction(`retry:${key}`, () => api.retryPlaybookStep(playbook.run_id, step.step_id))}
+                                      >Prepare retry</ActionButton>
+                                    )}
+                                    {activeAttempt && (
+                                      <ActionButton
+                                        size="xs"
+                                        variant="ghost"
+                                        disabled={playbookBusy !== null}
+                                        onClick={() => void runPlaybookAction(`interrupt:${key}`, () => api.interruptPlaybookAttempt(playbook.run_id, step.step_id, 'Prepared dashboard claim released by operator'))}
+                                      >Release claim</ActionButton>
+                                    )}
+                                    {canSkip && (
+                                      <ActionButton
+                                        size="xs"
+                                        variant="ghost"
+                                        disabled={playbookBusy !== null}
+                                        onClick={() => void runPlaybookAction(`skip:${key}`, () => api.skipPlaybookStep(playbook.run_id, step.step_id, 'Skipped from Credentials'))}
+                                      >Skip</ActionButton>
+                                    )}
+                                  </div>
+                                  {step.blocked_reason && <div className="mt-1 text-muted-foreground">{step.blocked_reason}</div>}
+                                  {step.attempts.length > 0 && (
+                                    <div className="mt-1 text-muted-foreground">
+                                      Attempts: {step.attempts.map(attempt => `${attempt.attempt_number} ${attempt.status} · ${attempt.claimed_by_task_id ?? attempt.claimed_via}${attempt.executed_via ? ` → ${attempt.executed_by_task_id ?? attempt.executed_via}` : ''}${attempt.finding_ids.length ? ` · ${attempt.finding_ids.length} finding` : ''}`).join(' · ')}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+                      {playbookError && <div className="text-destructive">{playbookError}</div>}
+                      {preparedExecution && (
+                        <div className="rounded border border-accent/30 bg-accent/5 p-2 space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-accent">Execution descriptor prepared; the step is now claimed.</span>
+                            <ActionButton size="xs" variant="secondary" onClick={() => navigator.clipboard.writeText(JSON.stringify(preparedExecution, null, 2))}>copy</ActionButton>
+                          </div>
+                          <p className="text-muted-foreground">This button does not execute against the target. Copy the descriptor to the indicated runner or a deployed credential agent. Its stable command identity makes retries safe; release the claim if you will not run it.</p>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </DataRow>

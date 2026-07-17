@@ -11,6 +11,7 @@ import type {
   MainWebSocketEvent,
   ObjectiveDto,
   PendingActionDto,
+  PlaybookRunDto,
   RawGraphDto,
   SessionBufferResponseDto,
   SessionDto,
@@ -112,6 +113,8 @@ export type SessionBufferResponse = SessionBufferResponseDto;
 export type PendingAction = PendingActionDto & {
   _formType?: 'approve' | 'deny';
 };
+
+export type PlaybookRun = PlaybookRunDto;
 
 // --- Activity Log ---
 
@@ -269,6 +272,7 @@ export interface EngagementState {
   campaigns?: Campaign[];
   sessions?: SessionInfo[];
   pending_actions?: PendingAction[];
+  playbook_runs?: Array<PlaybookRun | { run_id: string; schema_version?: undefined; [key: string]: unknown }>;
   access_level?: string;
   history_count?: number;
   phases?: EngagementPhase[];

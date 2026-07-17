@@ -38,6 +38,7 @@ const VALUE_FLAGS = new Set([
   'url', 'token', 'reason', 'archetype', 'skill', 'type', 'max', 'severity', 'node',
   'file-hash', 'state-hash',
   'state-file', 'config-file',
+  'credential', 'status',
 ]);
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -181,9 +182,57 @@ export const READ_COMMANDS: Record<string, Command> = {
       return { data: resp.queries ?? [], text: render.renderQueries((resp.queries ?? []) as never) };
     },
   },
+  playbooks: {
+    summary: 'Durable credential playbook runs and step progress',
+    usage: 'playbooks [--credential ID] [--status STATUS] [--open]',
+    async run({ client, args }) {
+      const query = new URLSearchParams();
+      const credential = flagValue(args, 'credential');
+      const status = flagValue(args, 'status');
+      if (credential) query.set('credential_id', credential);
+      if (status) query.set('status', status);
+      if (args.includes('--open')) query.set('open_only', 'true');
+      const suffix = query.size > 0 ? `?${query.toString()}` : '';
+      const response = await client.get<{ runs: unknown[]; total: number }>(`/api/playbook-runs${suffix}`);
+      return { data: response, text: render.renderPlaybooks(response as never) };
+    },
+  },
 };
 
 export const WRITE_COMMANDS: Record<string, Command> = {
+  playbook: {
+    summary: 'Prepare, resume, retry, release, or skip durable playbook work',
+    usage: 'playbook <start RUN STEP|resume RUN|retry RUN STEP|interrupt RUN STEP [--reason TEXT]|skip RUN STEP [--reason TEXT]>',
+    async run({ client, args }) {
+      const positional = positionals(args);
+      const action = positional[0];
+      const runId = positional[1];
+      const stepId = positional[2];
+      if (!action || !runId) throw new Error('Expected `playbook <start|resume|retry|interrupt|skip> <run-id> [step-id]`.');
+      if (action === 'resume') {
+        const data = await client.post<{ run: { status: string } }>(`/api/playbook-runs/${encodeURIComponent(runId)}/resume`, {});
+        return { data, text: render.ok(`Playbook ${runId} resumed (${data.run.status}).`) };
+      }
+      if (!stepId) throw new Error(`Missing required <step-id> for playbook ${action}.`);
+      const base = `/api/playbook-runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}`;
+      if (action === 'start' || action === 'retry') {
+        const data = await client.post<{ attempt: { attempt_id: string }; execution: unknown }>(`${base}/${action}`, {});
+        return {
+          data,
+          text: render.ok(`${action === 'start' ? 'Prepared' : 'Prepared retry for'} ${stepId} as attempt ${data.attempt.attempt_id}. This does not execute the step; use --json to copy its resolved descriptor, or interrupt the claim if you will not run it.`),
+        };
+      }
+      if (action === 'interrupt') {
+        const data = await client.post<{ run: { status: string } }>(`${base}/interrupt`, { reason: flagValue(args, 'reason') });
+        return { data, text: render.ok(`Released ${stepId}; its active attempt is interrupted and can be retried.`) };
+      }
+      if (action === 'skip') {
+        const data = await client.post<{ run: { status: string } }>(`${base}/skip`, { reason: flagValue(args, 'reason') });
+        return { data, text: render.ok(`Skipped ${stepId}; playbook is now ${data.run.status}.`) };
+      }
+      throw new Error(`Unknown playbook action: ${action}.`);
+    },
+  },
   session: {
     summary: 'Resume a recovered listener',
     usage: 'session resume <session-id>',

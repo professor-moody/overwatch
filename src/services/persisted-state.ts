@@ -213,11 +213,125 @@ export interface PersistedRuntimeRunV1 {
   recovery_warning?: string;
 }
 
-/** Seeded in V1; PR12 supplies the first producer/consumer. */
-export interface PersistedPlaybookRunV1 {
+export type PlaybookRunStatus =
+  | 'pending'
+  | 'blocked'
+  | 'awaiting_approval'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'interrupted'
+  | 'skipped'
+  | 'cancelled';
+
+export type PlaybookAttemptStatus =
+  | 'claimed'
+  | 'awaiting_approval'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'interrupted'
+  | 'cancelled';
+
+export interface PersistedPlaybookDefinitionV1 {
+  definition_id: string;
+  definition_version: number;
+  provider: 'aws' | 'github' | 'entra' | 'oidc';
+  title: string;
+}
+
+/** An immutable definition snapshot. Re-expansion appends a revision rather
+ * than overwriting the plan that an operator previously inspected. */
+export interface PersistedPlaybookPlanRevisionV1 {
+  revision: number;
+  created_at: string;
+  plan_hash: string;
+  steps: PersistedPlaybookStepDefinitionV1[];
+}
+
+export interface PersistedPlaybookStepDefinitionV1 {
+  step_id: string;
+  ordinal: number;
+  description: string;
+  depends_on: string[];
+  required_bindings: string[];
+  produces_bindings: string[];
+  execution_template: Record<string, unknown>;
+}
+
+export interface PersistedPlaybookAttemptV1 {
+  attempt_id: string;
+  attempt_number: number;
+  status: PlaybookAttemptStatus;
+  started_at: string;
+  claimed_via: ApplicationCommandTransport;
+  claimed_by_task_id?: string;
+  executed_via?: ApplicationCommandTransport;
+  executed_by_task_id?: string;
+  execution_command_id: string;
+  execution_idempotency_key: string;
+  execution_action_id: string;
+  execution_started_at?: string;
+  completed_at?: string;
+  action_id?: string;
+  evidence_ids: string[];
+  finding_ids: string[];
+  execution_outcome?: 'succeeded' | 'failed' | 'interrupted';
+  parse_outcome?: 'ok' | 'no_data' | 'validation_failed' | 'parser_exception' | 'partial';
+  error?: string;
+}
+
+export interface PersistedPlaybookStepRunV1 {
+  step_id: string;
+  ordinal: number;
+  description: string;
+  status: PlaybookRunStatus;
+  depends_on: string[];
+  required_bindings: string[];
+  produces_bindings: string[];
+  resolved_execution?: Record<string, unknown>;
+  blocked_reason?: string;
+  attempts: PersistedPlaybookAttemptV1[];
+  started_at?: string;
+  completed_at?: string;
+  updated_at: string;
+}
+
+/** Durable playbook coordination state. Runtime process handles and credential
+ * material remain outside this record; execution descriptors reference the
+ * selected credential id and are resolved only at execution time. */
+export interface PersistedDurablePlaybookRunV1 {
+  schema_version: 1;
   run_id: string;
+  definition: PersistedPlaybookDefinitionV1;
+  credential_id: string;
+  input_hash: string;
+  normalized_inputs: Record<string, unknown>;
+  plan_revisions: PersistedPlaybookPlanRevisionV1[];
+  current_plan_revision: number;
+  steps: PersistedPlaybookStepRunV1[];
+  status: PlaybookRunStatus;
+  report_status: 'generated' | 'partial' | 'completed';
+  created_at: string;
+  updated_at: string;
+  started_at?: string;
+  completed_at?: string;
+  resume_count: number;
+  recovery_warning?: string;
+}
+
+/** Compatibility for state V1 files written while playbook persistence was a
+ * reserved, producer-less slot. These records are preserved and surfaced as
+ * inert recovery warnings; they are never guessed into an executable run. */
+export interface PersistedLegacyPlaybookRunV1 {
+  run_id: string;
+  schema_version?: undefined;
   [key: string]: unknown;
 }
+
+export type PersistedPlaybookRunV1 =
+  | PersistedDurablePlaybookRunV1
+  | PersistedLegacyPlaybookRunV1;
 
 export interface PersistedArtifactReferenceV1 {
   kind: 'evidence_manifest' | 'report_manifest' | 'tape' | 'bundle' | 'cookie_jar';
@@ -490,6 +604,173 @@ function validateColdStore(value: unknown, path: string): void {
     }
     if (record.confidence !== undefined) requireFiniteNumber(record.confidence, `${recordPath}.confidence`);
   }
+}
+
+const PLAYBOOK_RUN_STATUSES = new Set<PlaybookRunStatus>([
+  'pending',
+  'blocked',
+  'awaiting_approval',
+  'running',
+  'succeeded',
+  'failed',
+  'interrupted',
+  'skipped',
+  'cancelled',
+]);
+
+function validatePlaybookRun(candidate: unknown, path: string, key: string): void {
+  const run = requireRecord(candidate, path);
+  const id = requireString(run.run_id, `${path}.run_id`);
+  if (id !== key) {
+    throw new PersistedStateVersionError(`${path}.run_id must match map key`, CURRENT_STATE_VERSION, 'invalid');
+  }
+  // State V1 originally reserved this slot with no producer. Preserve those
+  // inert placeholders instead of turning an additive upgrade into data loss.
+  if (run.schema_version === undefined) return;
+  if (run.schema_version !== 1) {
+    throw new PersistedStateVersionError(`${path}.schema_version is unsupported`, CURRENT_STATE_VERSION, 'unsupported');
+  }
+  const definition = requireRecord(run.definition, `${path}.definition`);
+  requireString(definition.definition_id, `${path}.definition.definition_id`);
+  requireSafeInteger(definition.definition_version, `${path}.definition.definition_version`, 1);
+  if (!['aws', 'github', 'entra', 'oidc'].includes(requireString(definition.provider, `${path}.definition.provider`))) {
+    throw new PersistedStateVersionError(`${path}.definition.provider is invalid`, CURRENT_STATE_VERSION, 'invalid');
+  }
+  requireString(definition.title, `${path}.definition.title`);
+  requireString(run.credential_id, `${path}.credential_id`);
+  for (const field of ['input_hash'] as const) {
+    if (!/^[a-f0-9]{64}$/.test(requireString(run[field], `${path}.${field}`))) {
+      throw new PersistedStateVersionError(`${path}.${field} must be a lowercase SHA-256 digest`, CURRENT_STATE_VERSION, 'invalid');
+    }
+  }
+  requireRecord(run.normalized_inputs, `${path}.normalized_inputs`);
+  const planRevisions = requireArray(run.plan_revisions, `${path}.plan_revisions`);
+  if (planRevisions.length === 0) {
+    throw new PersistedStateVersionError(`${path}.plan_revisions must not be empty`, CURRENT_STATE_VERSION, 'invalid');
+  }
+  const revisionIds = new Set<number>();
+  for (const [revisionIndex, candidateRevision] of planRevisions.entries()) {
+    const revisionPath = `${path}.plan_revisions[${revisionIndex}]`;
+    const revision = requireRecord(candidateRevision, revisionPath);
+    const revisionId = requireSafeInteger(revision.revision, `${revisionPath}.revision`, 1);
+    if (revisionIds.has(revisionId)) {
+      throw new PersistedStateVersionError(`${path}.plan_revisions contains duplicate revision ${revisionId}`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    revisionIds.add(revisionId);
+    requireIsoDate(revision.created_at, `${revisionPath}.created_at`);
+    if (!/^[a-f0-9]{64}$/.test(requireString(revision.plan_hash, `${revisionPath}.plan_hash`))) {
+      throw new PersistedStateVersionError(`${revisionPath}.plan_hash must be a lowercase SHA-256 digest`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    for (const [stepIndex, candidateStep] of requireArray(revision.steps, `${revisionPath}.steps`).entries()) {
+      const stepPath = `${revisionPath}.steps[${stepIndex}]`;
+      const step = requireRecord(candidateStep, stepPath);
+      requireString(step.step_id, `${stepPath}.step_id`);
+      requireSafeInteger(step.ordinal, `${stepPath}.ordinal`, 1);
+      requireString(step.description, `${stepPath}.description`);
+      for (const field of ['depends_on', 'required_bindings', 'produces_bindings'] as const) {
+        requireArray(step[field], `${stepPath}.${field}`).forEach((value, index) =>
+          requireString(value, `${stepPath}.${field}[${index}]`));
+      }
+      requireRecord(step.execution_template, `${stepPath}.execution_template`);
+    }
+  }
+  const currentRevision = requireSafeInteger(run.current_plan_revision, `${path}.current_plan_revision`, 1);
+  if (!revisionIds.has(currentRevision)) {
+    throw new PersistedStateVersionError(`${path}.current_plan_revision does not exist`, CURRENT_STATE_VERSION, 'invalid');
+  }
+  const stepIds = new Set<string>();
+  let activeAttempts = 0;
+  for (const [stepIndex, candidateStep] of requireArray(run.steps, `${path}.steps`).entries()) {
+    const stepPath = `${path}.steps[${stepIndex}]`;
+    const step = requireRecord(candidateStep, stepPath);
+    const stepId = requireString(step.step_id, `${stepPath}.step_id`);
+    if (stepIds.has(stepId)) {
+      throw new PersistedStateVersionError(`${path}.steps contains duplicate step_id ${stepId}`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    stepIds.add(stepId);
+    requireSafeInteger(step.ordinal, `${stepPath}.ordinal`, 1);
+    requireString(step.description, `${stepPath}.description`);
+    const status = requireString(step.status, `${stepPath}.status`) as PlaybookRunStatus;
+    if (!PLAYBOOK_RUN_STATUSES.has(status)) {
+      throw new PersistedStateVersionError(`${stepPath}.status is invalid`, CURRENT_STATE_VERSION, 'invalid');
+    }
+    for (const field of ['depends_on', 'required_bindings', 'produces_bindings'] as const) {
+      requireArray(step[field], `${stepPath}.${field}`).forEach((value, index) =>
+        requireString(value, `${stepPath}.${field}[${index}]`));
+    }
+    if (step.resolved_execution !== undefined) requireRecord(step.resolved_execution, `${stepPath}.resolved_execution`);
+    if (step.blocked_reason !== undefined) requireString(step.blocked_reason, `${stepPath}.blocked_reason`);
+    requireIsoDate(step.updated_at, `${stepPath}.updated_at`);
+    if (step.started_at !== undefined) requireIsoDate(step.started_at, `${stepPath}.started_at`);
+    if (step.completed_at !== undefined) requireIsoDate(step.completed_at, `${stepPath}.completed_at`);
+    const attemptIds = new Set<string>();
+    for (const [attemptIndex, candidateAttempt] of requireArray(step.attempts, `${stepPath}.attempts`).entries()) {
+      const attemptPath = `${stepPath}.attempts[${attemptIndex}]`;
+      const attempt = requireRecord(candidateAttempt, attemptPath);
+      const attemptId = requireString(attempt.attempt_id, `${attemptPath}.attempt_id`);
+      if (attemptIds.has(attemptId)) {
+        throw new PersistedStateVersionError(`${stepPath}.attempts contains duplicate attempt_id ${attemptId}`, CURRENT_STATE_VERSION, 'invalid');
+      }
+      attemptIds.add(attemptId);
+      requireSafeInteger(attempt.attempt_number, `${attemptPath}.attempt_number`, 1);
+      const attemptStatus = requireString(attempt.status, `${attemptPath}.status`);
+      if (!['claimed', 'awaiting_approval', 'running', 'succeeded', 'failed', 'interrupted', 'cancelled'].includes(attemptStatus)) {
+        throw new PersistedStateVersionError(`${attemptPath}.status is invalid`, CURRENT_STATE_VERSION, 'invalid');
+      }
+      if (attemptStatus === 'claimed' || attemptStatus === 'awaiting_approval' || attemptStatus === 'running') activeAttempts += 1;
+      requireIsoDate(attempt.started_at, `${attemptPath}.started_at`);
+      if (attempt.completed_at !== undefined) requireIsoDate(attempt.completed_at, `${attemptPath}.completed_at`);
+      if (!['mcp', 'dashboard', 'cli', 'planner', 'scripted_runner', 'headless_runner', 'system'].includes(
+        requireString(attempt.claimed_via, `${attemptPath}.claimed_via`),
+      )) {
+        throw new PersistedStateVersionError(`${attemptPath}.claimed_via is invalid`, CURRENT_STATE_VERSION, 'invalid');
+      }
+      requireString(attempt.execution_command_id, `${attemptPath}.execution_command_id`);
+      requireString(attempt.execution_idempotency_key, `${attemptPath}.execution_idempotency_key`);
+      requireString(attempt.execution_action_id, `${attemptPath}.execution_action_id`);
+      if (attempt.execution_started_at !== undefined) requireIsoDate(attempt.execution_started_at, `${attemptPath}.execution_started_at`);
+      if (attempt.executed_via !== undefined && !['mcp', 'dashboard', 'cli', 'planner', 'scripted_runner', 'headless_runner', 'system'].includes(String(attempt.executed_via))) {
+        throw new PersistedStateVersionError(`${attemptPath}.executed_via is invalid`, CURRENT_STATE_VERSION, 'invalid');
+      }
+      for (const field of ['claimed_by_task_id', 'executed_by_task_id', 'action_id', 'error'] as const) {
+        if (attempt[field] !== undefined) requireString(attempt[field], `${attemptPath}.${field}`);
+      }
+      for (const field of ['evidence_ids', 'finding_ids'] as const) {
+        requireArray(attempt[field], `${attemptPath}.${field}`).forEach((value, index) =>
+          requireString(value, `${attemptPath}.${field}[${index}]`));
+      }
+      if (attempt.execution_outcome !== undefined && !['succeeded', 'failed', 'interrupted'].includes(String(attempt.execution_outcome))) {
+        throw new PersistedStateVersionError(`${attemptPath}.execution_outcome is invalid`, CURRENT_STATE_VERSION, 'invalid');
+      }
+      if (attempt.parse_outcome !== undefined && !['ok', 'no_data', 'validation_failed', 'parser_exception', 'partial'].includes(String(attempt.parse_outcome))) {
+        throw new PersistedStateVersionError(`${attemptPath}.parse_outcome is invalid`, CURRENT_STATE_VERSION, 'invalid');
+      }
+    }
+  }
+  if (activeAttempts > 1) {
+    throw new PersistedStateVersionError(`${path} contains more than one running attempt`, CURRENT_STATE_VERSION, 'invalid');
+  }
+  for (const [stepIndex, candidateStep] of (run.steps as unknown[]).entries()) {
+    const step = candidateStep as Record<string, unknown>;
+    for (const dependency of step.depends_on as string[]) {
+      if (!stepIds.has(dependency)) {
+        throw new PersistedStateVersionError(`${path}.steps[${stepIndex}] references unknown dependency ${dependency}`, CURRENT_STATE_VERSION, 'invalid');
+      }
+    }
+  }
+  const status = requireString(run.status, `${path}.status`) as PlaybookRunStatus;
+  if (!PLAYBOOK_RUN_STATUSES.has(status)) {
+    throw new PersistedStateVersionError(`${path}.status is invalid`, CURRENT_STATE_VERSION, 'invalid');
+  }
+  if (!['generated', 'partial', 'completed'].includes(requireString(run.report_status, `${path}.report_status`))) {
+    throw new PersistedStateVersionError(`${path}.report_status is invalid`, CURRENT_STATE_VERSION, 'invalid');
+  }
+  requireIsoDate(run.created_at, `${path}.created_at`);
+  requireIsoDate(run.updated_at, `${path}.updated_at`);
+  if (run.started_at !== undefined) requireIsoDate(run.started_at, `${path}.started_at`);
+  if (run.completed_at !== undefined) requireIsoDate(run.completed_at, `${path}.completed_at`);
+  requireSafeInteger(run.resume_count, `${path}.resume_count`);
+  if (run.recovery_warning !== undefined) requireString(run.recovery_warning, `${path}.recovery_warning`);
 }
 
 function validateOpsecTracker(value: unknown, path: string): void {
@@ -1473,11 +1754,7 @@ export function validatePersistedStateV1(value: unknown): PersistedStateV1 {
   validateInferenceRules(record.inferenceRules, 'persisted inferenceRules');
   validateTrackedProcesses(record.trackedProcesses, 'persisted trackedProcesses');
   validateRuntimeRuns(record.runtimeRuns, 'persisted runtimeRuns');
-  validateMapTuples(record.playbookRuns, 'persisted playbookRuns', (candidate, path, key) => {
-    const run = requireRecord(candidate, path);
-    const id = requireString(run.run_id, `${path}.run_id`);
-    if (id !== key) throw new PersistedStateVersionError(`${path}.run_id must match map key`, CURRENT_STATE_VERSION, 'invalid');
-  });
+  validateMapTuples(record.playbookRuns, 'persisted playbookRuns', validatePlaybookRun);
   validateSessionDescriptors(record.sessionDescriptors, 'persisted sessionDescriptors');
   validateProposedPlans(record.proposedPlans, 'persisted proposedPlans');
   validateAgentQueries(record.agentQueries, 'persisted agentQueries');

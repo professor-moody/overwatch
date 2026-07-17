@@ -60,11 +60,19 @@ Overwatch exposes its MCP tools organized by function (the live count comes from
 | [`validate_token_credential`](token-credential.md) | Replay a token credential against a provider API | No |
 | [`test_webapp_credential`](test-webapp-credential.md) | Test a credential against a web app (form/basic/bearer/cookie) | No |
 | [`ingest_screenshots`](ingest-screenshots.md) | Ingest gowitness/aquatone PNGs as viewable screenshot evidence | No |
-| [`expand_aws_credential`](cloud-playbooks.md) | Generate a dependency-aware AWS recon plan from a captured credential | Yes |
-| [`expand_github_credential`](cloud-playbooks.md) | Generate a paginated GitHub recon plan from a captured token | Yes |
-| [`expand_entra_credential`](cloud-playbooks.md) | Generate a tenant-bound Entra ID / Microsoft Graph recon plan | Yes |
-| [`exchange_refresh_token`](cloud-playbooks.md) | Generate a refresh-token exchange step for Entra tokens | Yes |
-| [`expand_oidc_capture`](cloud-playbooks.md) | Generate replay steps for captured CI/CD OIDC tokens | Yes |
+| [`expand_aws_credential`](cloud-playbooks.md) | Create or resume a durable dependency-aware AWS run | No |
+| [`expand_github_credential`](cloud-playbooks.md) | Create or resume a durable paginated GitHub run | No |
+| [`expand_entra_credential`](cloud-playbooks.md) | Create or resume a durable Entra ID / Microsoft Graph run | No |
+| [`exchange_refresh_token`](cloud-playbooks.md) | Create or resume a durable Entra refresh-token exchange run | No |
+| [`expand_oidc_capture`](cloud-playbooks.md) | Create or resume durable replay steps for captured CI/CD OIDC tokens | No |
+| [`list_playbook_runs`](cloud-playbooks.md) | List durable runs, steps, attempts, and active owners | Yes |
+| [`get_playbook_run`](cloud-playbooks.md) | Inspect one durable run with immutable revisions and attempts | Yes |
+| [`start_playbook_step`](cloud-playbooks.md) | Prepare/claim one ready step and return its stable execution descriptor | No |
+| [`resume_playbook_run`](cloud-playbooks.md) | Re-open interrupted steps after restart | No |
+| [`retry_playbook_step`](cloud-playbooks.md) | Append and prepare a retry attempt | No |
+| [`skip_playbook_step`](cloud-playbooks.md) | Skip a non-terminal step while retaining history | No |
+| [`interrupt_playbook_attempt`](cloud-playbooks.md) | Release an abandoned active claim as interrupted | No |
+| [`complete_playbook_attempt`](cloud-playbooks.md) | Explicitly record an attempt outcome and artifact references | No |
 | [`check_tools`](check-tools.md) | Inspect installed offensive tooling | Yes |
 | [`track_process`](track-process.md) | Register a long-running scan | No |
 | [`check_processes`](check-processes.md) | Inspect tracked process state | Yes |

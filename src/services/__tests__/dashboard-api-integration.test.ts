@@ -33,7 +33,11 @@ import {
   RawGraphDtoSchema,
   SettingsDtoSchema,
   SettingsUpdateResultSchema,
+  PlaybookRunListResponseSchema,
+  PlaybookRunResponseSchema,
+  PlaybookStepClaimResponseSchema,
 } from '../../contracts/dashboard-v1.js';
+import { PlaybookRunService } from '../playbook-run-service.js';
 
 let dashboard: DashboardServer;
 let engine: GraphEngine;
@@ -1109,6 +1113,73 @@ describe('GET /api/campaigns', () => {
     const { status, body } = await getJson<{ campaigns: unknown[] }>('/api/campaigns');
     expect(status).toBe(200);
     expect(Array.isArray(body.campaigns)).toBe(true);
+  });
+});
+
+describe('durable playbook HTTP lifecycle', () => {
+  let runId = '';
+
+  it('lists, reads, idempotently claims, reports ownership conflicts, releases, and retries', async () => {
+    const service = new PlaybookRunService(engine);
+    const opened = service.open({
+      definition: { definition_id: 'http-playbook', definition_version: 1, provider: 'aws', title: 'HTTP playbook' },
+      credential_id: 'cred-oidc',
+      normalized_inputs: {},
+      steps: [{ step_id: 'identity', step: 1, description: 'Resolve identity', runner: 'run_tool', binary: 'aws', args: ['sts', 'get-caller-identity'], ready: true, status: 'ready' }],
+    });
+    runId = opened.run.run_id;
+
+    const list = await getJson(`/api/playbook-runs?credential_id=cred-oidc&open_only=true`);
+    expect(list.status).toBe(200);
+    expect(PlaybookRunListResponseSchema.parse(list.body).runs.some(run => run.run_id === runId)).toBe(true);
+    const detail = await getJson(`/api/playbook-runs/${encodeURIComponent(runId)}`);
+    expect(PlaybookRunResponseSchema.parse(detail.body).run.run_id).toBe(runId);
+
+    const headers = {
+      'Idempotency-Key': 'dashboard-playbook-claim-1',
+      'X-Overwatch-Actor-Task-Id': 'task-dashboard',
+    };
+    const path = `/api/playbook-runs/${encodeURIComponent(runId)}/steps/identity/start`;
+    const first = await postJson(path, {}, headers);
+    expect(first.status).toBe(200);
+    const claim = PlaybookStepClaimResponseSchema.parse(first.body);
+    expect(claim.attempt).toMatchObject({ claimed_via: 'dashboard', claimed_by_task_id: 'task-dashboard' });
+    expect(claim.execution).toMatchObject({
+      command_id: claim.attempt.execution_command_id,
+      idempotency_key: claim.attempt.execution_idempotency_key,
+    });
+    const replay = await postJson(path, {}, headers);
+    expect(replay).toEqual(first);
+
+    const conflict = await postJson(path, {}, {
+      'Idempotency-Key': 'terminal-playbook-claim-2',
+      'X-Overwatch-Actor-Task-Id': 'task-terminal',
+      'X-Overwatch-Client': 'cli',
+    });
+    expect(conflict.status).toBe(409);
+    expect(JSON.stringify(conflict.body)).toContain('task-dashboard via dashboard');
+
+    const interrupted = await postJson(`/api/playbook-runs/${encodeURIComponent(runId)}/steps/identity/interrupt`, {
+      reason: 'Dashboard descriptor was not executed.',
+    });
+    expect(interrupted.status).toBe(200);
+    expect(PlaybookRunResponseSchema.parse(interrupted.body).run).toMatchObject({ status: 'interrupted' });
+
+    const retry = await postJson(`/api/playbook-runs/${encodeURIComponent(runId)}/steps/identity/retry`, {}, {
+      'Idempotency-Key': 'terminal-playbook-retry-1',
+      'X-Overwatch-Actor-Task-Id': 'task-terminal',
+      'X-Overwatch-Client': 'cli',
+    });
+    expect(retry.status).toBe(200);
+    expect(PlaybookStepClaimResponseSchema.parse(retry.body).attempt).toMatchObject({
+      attempt_number: 2, claimed_via: 'cli', claimed_by_task_id: 'task-terminal',
+    });
+  });
+
+  it('rejects invalid queries and bodies and returns precise missing-run errors', async () => {
+    expect((await getJson('/api/playbook-runs?open_only=perhaps')).status).toBe(400);
+    expect((await getJson('/api/playbook-runs/not-found')).status).toBe(404);
+    expect((await postJson(`/api/playbook-runs/${encodeURIComponent(runId)}/steps/identity/skip`, { reason: 42 })).status).toBe(400);
   });
 });
 

@@ -16,6 +16,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
 } from './_process-runner.js';
+import { withPlaybookAttemptCompletion } from '../services/playbook-run-service.js';
 
 function shellQuote(s: string): string {
   // Lightweight pretty-printer for the description / evidence "command_repr".
@@ -74,6 +75,9 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
         noise_estimate: z.number().min(0).max(1).optional().describe('Predicted noise level (overrides validation estimate when present)'),
         command_id: z.string().min(1).optional().describe('Stable application-command ID for status correlation and safe retries.'),
         idempotency_key: z.string().min(1).optional().describe('Stable retry key. Reusing it with identical input returns the original result without executing again.'),
+        playbook_run_id: z.string().min(1).optional().describe('Durable playbook run linkage returned by start_playbook_step.'),
+        playbook_step_id: z.string().min(1).optional().describe('Durable playbook step linkage returned by start_playbook_step.'),
+        playbook_attempt_id: z.string().min(1).optional().describe('Durable playbook attempt linkage returned by start_playbook_step.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -82,7 +86,7 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
         openWorldHint: true,
       },
     },
-    withErrorBoundary('run_tool', async (params, extra) => {
+    withErrorBoundary('run_tool', async (params, extra) => withPlaybookAttemptCompletion(engine, params, async () => {
       const args = params.args ?? [];
       const command_repr = [params.binary, ...args].map(shellQuote).join(' ');
       // Default tool_name to the binary basename for cleaner attribution.
@@ -122,6 +126,6 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
         idempotency_key: params.idempotency_key,
         abortSignal: extra?.signal,
       });
-    }),
+    })),
   );
 }

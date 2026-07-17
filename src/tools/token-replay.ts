@@ -31,6 +31,7 @@ import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialMfaBlocked, isCredentialUsableForAuth, isTokenCredential } from '../services/credential-utils.js';
 import { runInstrumentedProcess, MAX_TIMEOUT_MS } from './_process-runner.js';
 import { cloudIdentityId } from '../services/parser-utils.js';
+import { withPlaybookAttemptCompletion } from '../services/playbook-run-service.js';
 
 const PROVIDERS = ['microsoft_graph', 'aws_sts', 'okta', 'github'] as const;
 type Provider = typeof PROVIDERS[number];
@@ -117,6 +118,11 @@ interface TokenReplayParams {
   agent_id?: string;
   noise_estimate?: number;
   timeout_ms?: number;
+  command_id?: string;
+  idempotency_key?: string;
+  playbook_run_id?: string;
+  playbook_step_id?: string;
+  playbook_attempt_id?: string;
 }
 
 function fingerprint(value: string): string {
@@ -159,6 +165,11 @@ Sensitive token values are NEVER logged in plain text — the action description
         agent_id: z.string().optional().describe('Agent or session responsible for the action'),
         noise_estimate: z.number().min(0).max(1).optional().describe('Override the technique default (0.05 for token_replay).'),
         timeout_ms: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional(),
+        command_id: z.string().min(1).optional().describe('Stable application-command ID for status correlation and safe retries.'),
+        idempotency_key: z.string().min(1).optional().describe('Stable retry key. Reusing it with identical input returns the original result without executing again.'),
+        playbook_run_id: z.string().min(1).optional().describe('Durable playbook run linkage returned by start_playbook_step.'),
+        playbook_step_id: z.string().min(1).optional().describe('Durable playbook step linkage returned by start_playbook_step.'),
+        playbook_attempt_id: z.string().min(1).optional().describe('Durable playbook attempt linkage returned by start_playbook_step.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -167,7 +178,7 @@ Sensitive token values are NEVER logged in plain text — the action description
         openWorldHint: true,
       },
     },
-    withErrorBoundary('validate_token_credential', async (params: TokenReplayParams) => {
+    withErrorBoundary('validate_token_credential', async (params: TokenReplayParams) => withPlaybookAttemptCompletion(engine, params, async () => {
       const credNode = engine.getNode(params.credential_id);
       if (!credNode || credNode.type !== 'credential') {
         return {
@@ -255,7 +266,7 @@ Sensitive token values are NEVER logged in plain text — the action description
           '--output', 'json',
         ];
         const commandRepr = `aws sts assume-role-with-web-identity --role-arn ${params.target_role_arn} --role-session-name ${sessionName} --web-identity-token ${tokenLabel}`;
-        return runInstrumentedProcess(engine, {
+        const result = await runInstrumentedProcess(engine, {
           binary: 'aws',
           args: stsArgs,
           command_repr: commandRepr,
@@ -276,8 +287,11 @@ Sensitive token values are NEVER logged in plain text — the action description
           } as Record<string, unknown>,
           noise_estimate: params.noise_estimate,
           timeout_ms: params.timeout_ms,
+          command_id: params.command_id,
+          idempotency_key: params.idempotency_key,
           invoking_tool: 'run_tool',
         });
+        return result;
       }
 
       const curlArgs = cfg.buildCurl(tokenValue, endpoint, params.extra_args, credNode as Record<string, unknown>);
@@ -285,7 +299,7 @@ Sensitive token values are NEVER logged in plain text — the action description
       // activity log description doesn't carry the raw token.
       const commandRepr = `curl ${curlArgs.map(a => a === tokenValue ? tokenLabel : a.includes(`Bearer ${tokenValue}`) ? a.replace(tokenValue, tokenLabel) : a.includes(`SSWS ${tokenValue}`) ? a.replace(tokenValue, tokenLabel) : /[\s'"]/.test(a) ? `'${a.replace(/'/g, "'\\''").replace(tokenValue, tokenLabel)}'` : a).join(' ')}`;
 
-      return runInstrumentedProcess(engine, {
+      const result = await runInstrumentedProcess(engine, {
         binary: 'curl',
         args: curlArgs,
         command_repr: commandRepr,
@@ -305,8 +319,11 @@ Sensitive token values are NEVER logged in plain text — the action description
         } as Record<string, unknown>,
         noise_estimate: params.noise_estimate,
         timeout_ms: params.timeout_ms,
+        command_id: params.command_id,
+        idempotency_key: params.idempotency_key,
         invoking_tool: 'run_tool',
       });
-    }),
+      return result;
+    })),
   );
 }

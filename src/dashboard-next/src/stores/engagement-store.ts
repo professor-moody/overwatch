@@ -19,6 +19,7 @@ import type {
   OpsecBudget,
   AccessSummary,
   PersistenceRecoveryStatus,
+  PlaybookRun,
 } from '../lib/types';
 
 export interface EngagementStore {
@@ -58,6 +59,9 @@ export interface EngagementStore {
   // Pending Actions
   pendingActions: PendingAction[];
 
+  // Durable credential-playbook coordination
+  playbookRuns: PlaybookRun[];
+
   // Activity
   recentActivity: ActivityEntry[];
 
@@ -86,6 +90,7 @@ export interface EngagementStore {
   setRecentActivity: (entries: ActivityEntry[]) => void;
   setOpsecBudget: (budget: OpsecBudget) => void;
   setPersistenceRecovery: (recovery: PersistenceRecoveryStatus | null) => void;
+  setPlaybookRuns: (runs: PlaybookRun[]) => void;
 }
 
 export const useEngagementStore = create<EngagementStore>((set, get) => ({
@@ -124,6 +129,8 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
 
   // Pending Actions
   pendingActions: [],
+
+  playbookRuns: [],
 
   // Activity
   recentActivity: [],
@@ -170,6 +177,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       campaigns: s.campaigns || [],
       sessions: s.sessions || [],
       pendingActions: s.pending_actions || [],
+      playbookRuns: (s.playbook_runs || []).filter((run): run is PlaybookRun => run.schema_version === 1),
       phases: s.phases || [],
       initialized: true,
       readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : null,
@@ -232,6 +240,9 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       campaigns: s.campaigns || get().campaigns,
       sessions: s.sessions || get().sessions,
       pendingActions: s.pending_actions || get().pendingActions,
+      playbookRuns: s.playbook_runs
+        ? s.playbook_runs.filter((run): run is PlaybookRun => run.schema_version === 1)
+        : get().playbookRuns,
       phases: s.phases || get().phases,
       readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : get().readiness,
       persistenceRecovery: s.persistence_recovery ?? get().persistenceRecovery,
@@ -260,4 +271,5 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   setRecentActivity: (entries) => set({ recentActivity: entries }),
   setOpsecBudget: (budget) => set({ opsecBudget: budget }),
   setPersistenceRecovery: (persistenceRecovery) => set({ persistenceRecovery }),
+  setPlaybookRuns: (playbookRuns) => set({ playbookRuns }),
 }));

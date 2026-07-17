@@ -113,6 +113,14 @@ export function WsProvider({ children }: { children: ReactNode }) {
           case 'agent_query':
             window.dispatchEvent(new CustomEvent('overwatch-agent-query-update', { detail: msg.data }));
             break;
+          case 'playbook_run_update': {
+            const run = msg.data.run;
+            s.setPlaybookRuns([
+              ...s.playbookRuns.filter(candidate => candidate.run_id !== run.run_id),
+              run,
+            ].sort((left, right) => right.updated_at.localeCompare(left.updated_at)));
+            break;
+          }
           default:
             break;
         }
