@@ -468,6 +468,9 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
       await waitFor(() =>
         app.engine.getApplicationCommandById(queued.command_id)?.status === 'succeeded',
       18_000);
+      await waitFor(() =>
+        app.engine.getTask(queued.planner_task_id)?.status === 'completed',
+      18_000);
       expect(app.engine.getProposedPlanStore().getOpen()).toHaveLength(1);
       expect(app.engine.getTask(queued.planner_task_id)?.status).toBe('completed');
     } finally {
