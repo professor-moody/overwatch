@@ -841,7 +841,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
         dashboardPort,
         undefined,
         sessionManager,
-        configPath,
+        managedConfigPath,
         applicationCommands,
       )
     : null;
@@ -859,13 +859,15 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
 
   // File-backed engagement manager for the create_engagement / list_engagements
   // tools. Stateless over engagements/ (no in-memory cache), so this instance is
-  // equivalent to the dashboard's own — no need to share a single object.
+  // equivalent to the dashboard's own — no need to share a single object. An
+  // embedded in-memory config has no authority to create storage beside the
+  // caller's cwd; only an explicit/loaded config path enables these writes.
   const engagementManager = new EngagementManager(
-    configPath,
+    resolvedConfigPath,
     undefined,
     {
-      readOnly: !engine.isPersistenceWritable(),
-      isWritable: () => engine.isPersistenceWritable(),
+      readOnly: managedConfigPath === undefined || !engine.isPersistenceWritable(),
+      isWritable: () => managedConfigPath !== undefined && engine.isPersistenceWritable(),
     },
   );
   engine.setRollbackCoordinator({

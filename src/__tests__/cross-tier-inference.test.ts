@@ -18,6 +18,9 @@ import Graph from 'graphology';
 import type { EdgeProperties, NodeProperties } from '../types.js';
 import type { OverwatchGraph } from '../services/engine-context.js';
 import { EngineContext } from '../services/engine-context.js';
+import { createTestSandbox } from '../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('cross-tier-inference');
 import { runCrossTierCorrelator } from '../services/cross-tier-correlator.js';
 import { runCrossTierInference } from '../services/cross-tier-inference.js';
 import { inferFindingTier } from '../services/finding-classifier.js';
@@ -45,7 +48,7 @@ function makeConfig(crossTierLinks?: any) {
 }
 
 function buildHost(graph: OverwatchGraph, config: any) {
-  const ctx = new EngineContext(graph, config, './test-state-cross-tier.json');
+  const ctx = new EngineContext(graph, config, testSandbox.path('test-state-cross-tier.json'));
   return {
     ctx,
     addNode: (props: NodeProperties) => {

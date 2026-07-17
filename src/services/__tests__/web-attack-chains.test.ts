@@ -3,6 +3,9 @@ import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('web-attack-chains');
 import { WebChainEnricher, WEB_CHAIN_TEMPLATES } from '../web-attack-chains.js';
 
 function makeGraph(): OverwatchGraph {
@@ -31,7 +34,7 @@ function addEdge(g: OverwatchGraph, src: string, tgt: string, type: string) {
 }
 
 function makeCtx(graph: OverwatchGraph) {
-  return new EngineContext(graph, makeConfig(), './test-state.json');
+  return new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
 }
 
 describe('WebChainEnricher', () => {

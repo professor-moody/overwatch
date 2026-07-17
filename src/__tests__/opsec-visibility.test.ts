@@ -7,12 +7,14 @@
 // ============================================================
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, rmSync, unlinkSync } from 'fs';
+import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../services/graph-engine.js';
 import type { EngagementConfig } from '../types.js';
 import { cleanupTestPersistence } from './helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-opsec-visibility.json';
+const sandbox = createTestSandbox('opsec-visibility');
+const TEST_STATE_FILE = sandbox.path('state-test-opsec-visibility.json');
 const liveEngines = new Set<GraphEngine>();
 
 function openEngine(opsec: EngagementConfig['opsec']): GraphEngine {
@@ -37,7 +39,6 @@ function cleanup(): void {
   liveEngines.clear();
   cleanupTestPersistence(TEST_STATE_FILE);
   try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { rmSync('./evidence-test-opsec-visibility', { recursive: true, force: true }); } catch {}
 }
 
 describe('OPSEC visibility (Phase B)', () => {

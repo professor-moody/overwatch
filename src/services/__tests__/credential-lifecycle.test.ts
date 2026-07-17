@@ -6,8 +6,10 @@ import { buildCredentialChains } from '../retrospective.js';
 import { validateEdgeEndpoints } from '../graph-schema.js';
 import type { NodeProperties, EngagementConfig, ExportedGraph } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-cred-lifecycle.json';
+const sandbox = createTestSandbox('credential-lifecycle');
+const TEST_STATE_FILE = sandbox.path('state-test-cred-lifecycle.json');
 const engines = new Set<BaseGraphEngine>();
 
 class GraphEngine extends BaseGraphEngine {

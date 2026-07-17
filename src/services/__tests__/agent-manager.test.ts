@@ -4,6 +4,9 @@ import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
 import { AgentManager } from '../agent-manager.js';
 import type { AgentTask } from '../../types.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const sandbox = createTestSandbox('agent-manager');
 
 function makeGraph(): OverwatchGraph {
   return new (Graph as any)({ multi: true, type: 'directed', allowSelfLoops: true }) as OverwatchGraph;
@@ -35,7 +38,7 @@ function makeTask(overrides: Partial<AgentTask> = {}): AgentTask {
 
 function setup() {
   const graph = makeGraph();
-  const ctx = new EngineContext(graph, makeConfig(), './state-test-agent-mgr.json');
+  const ctx = new EngineContext(graph, makeConfig(), sandbox.path('state-test-agent-mgr.json'));
   const mgr = new AgentManager(ctx);
   return { graph, ctx, mgr };
 }

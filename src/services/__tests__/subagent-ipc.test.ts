@@ -4,8 +4,10 @@ import { encodeMessage, decodeMessages, type SubAgentMessage } from '../subagent
 import { runSubAgent, type SubAgentRunner } from '../subagent-process-runner.js';
 import type { EngagementConfig, AgentTask, Finding } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE = './state-test-subagent-ipc.json';
+const sandbox = createTestSandbox('subagent-ipc');
+const TEST_STATE = sandbox.path('state-test-subagent-ipc.json');
 const engines = new Set<GraphEngine>();
 
 function makeConfig(): EngagementConfig {

@@ -8,6 +8,9 @@ import {
   tieredTruncate,
   isMilestoneEntry,
 } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const sandbox = createTestSandbox('engine-context');
 
 function makeGraph(): OverwatchGraph {
   return new (Graph as any)({ multi: true, type: 'directed', allowSelfLoops: true }) as OverwatchGraph;
@@ -26,7 +29,7 @@ function makeConfig(overrides: Record<string, unknown> = {}) {
 }
 
 function makeCtx(): EngineContext {
-  return new EngineContext(makeGraph(), makeConfig(), '/tmp/test-state.json');
+  return new EngineContext(makeGraph(), makeConfig(), sandbox.path('state.json'));
 }
 
 describe('EngineContext', () => {

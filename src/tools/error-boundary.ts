@@ -9,7 +9,7 @@ import type { ToolTelemetry } from '../services/tool-telemetry.js';
 // Shared telemetry instance — set once at startup via setTelemetry()
 let _telemetry: ToolTelemetry | null = null;
 
-export function setTelemetry(t: ToolTelemetry): void {
+export function setTelemetry(t: ToolTelemetry | null): void {
   _telemetry = t;
 }
 

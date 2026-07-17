@@ -5,9 +5,9 @@
 // operator's engagement files.
 
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseEngagementConfig } from '../src/config.js';
 import { DashboardServer } from '../src/services/dashboard-server.js';
 import { withConfigMetadata } from '../src/services/engagement-config-service.js';
@@ -19,10 +19,16 @@ import type { EngagementConfig, NodeProperties } from '../src/types.js';
 const dashboardPort = Number.parseInt(process.env.OVERWATCH_BROWSER_PORT ?? '18484', 10);
 const recoveryPort = Number.parseInt(process.env.OVERWATCH_BROWSER_RECOVERY_PORT ?? '18485', 10);
 const controlPort = Number.parseInt(process.env.OVERWATCH_BROWSER_CONTROL_PORT ?? '18486', 10);
+let activeDashboardPort = dashboardPort;
+let activeRecoveryPort = recoveryPort;
 const token = process.env.OVERWATCH_BROWSER_TOKEN ?? 'browser-ci-token / encoded';
 process.env.OVERWATCH_DASHBOARD_TOKEN = token;
 
-const root = mkdtempSync(join(tmpdir(), 'overwatch-browser-journey-'));
+const fixtureRoot = mkdtempSync(join(tmpdir(), 'overwatch-browser-journey-'));
+const root = join(fixtureRoot, 'engagement');
+const dashboardStaticRoot = join(fixtureRoot, 'dashboard-next');
+mkdirSync(root, { recursive: true });
+cpSync(resolve('dist', 'dashboard-next'), dashboardStaticRoot, { recursive: true });
 const now = '2026-07-17T00:00:00.000Z';
 const browserSessionId = '00000000-0000-4000-8000-000000000014';
 const browserSessionConnectionId = `${browserSessionId}:g1`;
@@ -253,19 +259,34 @@ let writableListening = false;
 let recoveryListening = false;
 let control: ReturnType<typeof createServer> | undefined;
 let stopping = false;
-async function stop(): Promise<void> {
-  if (stopping) return;
-  stopping = true;
+
+function boundPort(address: string): number {
+  return Number.parseInt(new URL(address).port, 10);
+}
+
+async function stopDashboards(): Promise<void> {
   const pending: Promise<unknown>[] = [];
   if (writableListening && writableDashboard) pending.push(writableDashboard.stop());
   if (recoveryListening && recoveryDashboard) pending.push(recoveryDashboard.stop());
-  if (control?.listening) {
-    pending.push(new Promise<void>(resolve => control!.close(() => resolve())));
-  }
   await Promise.allSettled(pending);
   writableEngine?.dispose();
   recoveryEngine?.dispose();
-  rmSync(root, { recursive: true, force: true });
+  writableEngine = undefined;
+  recoveryEngine = undefined;
+  writableDashboard = undefined;
+  recoveryDashboard = undefined;
+  writableListening = false;
+  recoveryListening = false;
+}
+
+async function stop(): Promise<void> {
+  if (stopping) return;
+  stopping = true;
+  if (control?.listening) {
+    await new Promise<void>(resolve => control!.close(() => resolve()));
+  }
+  await stopDashboards();
+  rmSync(fixtureRoot, { recursive: true, force: true });
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -274,21 +295,26 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   });
 }
 
-async function startFixture(): Promise<void> {
+async function startDashboards(): Promise<void> {
   writableEngine = seedWritableEngine();
   recoveryEngine = seedRecoveryEngine();
   writableDashboard = new DashboardServer(
     writableEngine,
-    dashboardPort,
+    activeDashboardPort,
     '0.0.0.0',
     createFixtureSessionManager(),
+    undefined,
+    undefined,
+    dashboardStaticRoot,
   );
   recoveryDashboard = new DashboardServer(
     recoveryEngine,
-    recoveryPort,
+    activeRecoveryPort,
     '0.0.0.0',
     undefined,
     join(root, 'recovery-engagement.json'),
+    undefined,
+    dashboardStaticRoot,
   );
 
   const writableStarted = await writableDashboard.start();
@@ -301,6 +327,19 @@ async function startFixture(): Promise<void> {
   if (!recoveryStarted.started) {
     throw new Error(`browser fixture failed to start recovery dashboard: ${recoveryStarted.error ?? 'unknown error'}`);
   }
+  activeDashboardPort = boundPort(writableDashboard.address);
+  activeRecoveryPort = boundPort(recoveryDashboard.address);
+}
+
+async function resetDashboards(): Promise<void> {
+  await stopDashboards();
+  rmSync(root, { recursive: true, force: true });
+  mkdirSync(root, { recursive: true });
+  await startDashboards();
+}
+
+async function startFixture(): Promise<void> {
+  await startDashboards();
 
   let mutationCounter = 0;
   control = createServer((request, response) => {
@@ -312,11 +351,24 @@ async function startFixture(): Promise<void> {
     if (url.pathname === '/health') {
       json(200, {
         ready: true,
-        dashboard_port: dashboardPort,
-        recovery_port: recoveryPort,
+        dashboard_port: boundPort(writableDashboard!.address),
+        recovery_port: boundPort(recoveryDashboard!.address),
         token,
         session_id: browserSessionId,
         action_id: browserActionId,
+      });
+      return;
+    }
+    if (url.pathname === '/reset' && request.method === 'POST') {
+      void resetDashboards().then(() => {
+        mutationCounter = 0;
+        json(200, {
+          reset: true,
+          dashboard_port: boundPort(writableDashboard!.address),
+          recovery_port: boundPort(recoveryDashboard!.address),
+        });
+      }).catch((error) => {
+        json(500, { error: error instanceof Error ? error.message : String(error) });
       });
       return;
     }
@@ -349,11 +401,16 @@ async function startFixture(): Promise<void> {
     control!.listen(controlPort, '127.0.0.1', () => resolve());
   });
 
+  const controlAddress = control.address();
+  if (!controlAddress || typeof controlAddress === 'string') {
+    throw new Error('browser fixture control server did not publish a TCP address');
+  }
+
   console.log(JSON.stringify({
     ready: true,
-    dashboard: `http://127.0.0.1:${dashboardPort}`,
-    recovery: `http://127.0.0.1:${recoveryPort}`,
-    control: `http://127.0.0.1:${controlPort}`,
+    dashboard: `http://127.0.0.1:${boundPort(writableDashboard.address)}`,
+    recovery: `http://127.0.0.1:${boundPort(recoveryDashboard.address)}`,
+    control: `http://127.0.0.1:${controlAddress.port}`,
   }));
 }
 

@@ -6,6 +6,9 @@ import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties, EdgeType } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('bloodhound-paths');
 import { BloodHoundPathEnricher, ATTACK_PATH_TEMPLATES } from '../bloodhound-paths.js';
 import { PathAnalyzer } from '../path-analyzer.js';
 
@@ -42,7 +45,7 @@ function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string, 
 }
 
 function buildEnricher(graph: OverwatchGraph, config?: any) {
-  const ctx = new EngineContext(graph, config || makeConfig(), './test-state.json');
+  const ctx = new EngineContext(graph, config || makeConfig(), testSandbox.path('test-state.json'));
   ctx.mutationJournal = null;
   return new BloodHoundPathEnricher(ctx);
 }
@@ -251,7 +254,7 @@ describe('BloodHound Path Enricher', () => {
       addEdge(graph, 'host-ws', 'grp-da', 'GENERIC_ALL');
 
       // Build enricher with shared context
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       ctx.mutationJournal = null;
       const enricher = new BloodHoundPathEnricher(ctx);
       const queryGraph = (query: any) => {
@@ -283,7 +286,7 @@ describe('BloodHound Path Enricher', () => {
       const graph = makeGraph();
       addNode(graph, 'grp-da', { type: 'group', label: 'Domain Admins', sid: 'S-1-5-21-1234-512' });
 
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       ctx.mutationJournal = null;
       const enricher = new BloodHoundPathEnricher(ctx);
       const queryGraph = () => ({ nodes: [], edges: [] });

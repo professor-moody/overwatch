@@ -90,6 +90,8 @@ export interface HeadlessMcpRunnerOptions {
   claudeBinary?: string;
   /** Directory for per-agent stream-json logs. Default 'logs/agents'. */
   logDir?: string;
+  /** Directory for short-lived per-task MCP configs. Default OS temp dir. */
+  configDir?: string;
   /** Permission mode passed to the child (default omitted; allowedTools whitelist governs). */
   permissionMode?: string;
   /** Hard cap on agentic turns (maps to --max-turns). */
@@ -180,7 +182,7 @@ export class HeadlessMcpRunner {
   private engine: GraphEngine;
   private registry: HeadlessProcessRegistry;
   private processTracker: ProcessTracker;
-  private opts: Required<Pick<HeadlessMcpRunnerOptions, 'claudeBinary' | 'logDir'>> & HeadlessMcpRunnerOptions;
+  private opts: Required<Pick<HeadlessMcpRunnerOptions, 'claudeBinary' | 'logDir' | 'configDir'>> & HeadlessMcpRunnerOptions;
   private spawnFn: SpawnFn;
   private now: () => string;
   private mutationAllowed: () => boolean;
@@ -201,6 +203,7 @@ export class HeadlessMcpRunner {
     this.opts = {
       claudeBinary: options.claudeBinary ?? process.env.OVERWATCH_CLAUDE_BINARY ?? 'claude',
       logDir: options.logDir ?? 'logs/agents',
+      configDir: options.configDir ?? tmpdir(),
       permissionMode: options.permissionMode,
       maxTurns: options.maxTurns,
       extraArgs: options.extraArgs,
@@ -800,7 +803,8 @@ export class HeadlessMcpRunner {
     const token = endpoint.tokenForTask?.(task_id) ?? endpoint.token;
     if (token) server.headers = { Authorization: `Bearer ${token}` };
     const config = { mcpServers: { overwatch: server } };
-    const path = join(tmpdir(), `overwatch-mcp-${task_id}.json`);
+    mkdirSync(this.opts.configDir, { recursive: true });
+    const path = join(this.opts.configDir, `overwatch-mcp-${task_id}.json`);
     // 0600: the file carries the bearer token; keep it owner-only.
     writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
     return path;

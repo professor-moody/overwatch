@@ -1,10 +1,64 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve as resolvePath } from 'path';
 
 const PROXY = resolvePath(__dirname, '../../bin/overwatch-mcp-tape.ts');
+
+function childIsRunning(child: ChildProcess): boolean {
+  return child.exitCode === null && child.signalCode === null;
+}
+
+function childTreeIsRunning(child: ChildProcess): boolean {
+  if (!child.pid) return false;
+  if (process.platform === 'win32') return childIsRunning(child);
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') return true;
+    throw error;
+  }
+}
+
+function signalChildTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (!child.pid || !childTreeIsRunning(child)) return;
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+      throw error;
+    }
+  }
+  child.kill(signal);
+}
+
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (!childTreeIsRunning(child)) return Promise.resolve(true);
+  return new Promise(resolveWait => {
+    const deadline = Date.now() + timeoutMs;
+    const poll = () => {
+      if (!childTreeIsRunning(child)) resolveWait(true);
+      else if (Date.now() >= deadline) resolveWait(false);
+      else setTimeout(poll, 25);
+    };
+    poll();
+  });
+}
+
+async function terminateChild(child: ChildProcess): Promise<void> {
+  if (!childTreeIsRunning(child)) return;
+  signalChildTree(child, 'SIGTERM');
+  if (await waitForChildExit(child, 2_000)) return;
+  signalChildTree(child, 'SIGKILL');
+  if (!await waitForChildExit(child, 2_000)) {
+    throw new Error(`Tape proxy ${child.pid ?? 'unknown'} did not exit after SIGKILL`);
+  }
+}
 
 /**
  * Integration test for `overwatch-mcp-tape`.
@@ -20,6 +74,7 @@ describe('overwatch-mcp-tape proxy (integration)', () => {
   let tmp: string;
   let tapePath: string;
   let upstreamPath: string;
+  let proxy: ChildProcess | undefined;
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'overwatch-tape-int-'));
@@ -49,19 +104,23 @@ process.stdin.on('end', () => process.exit(0));
 `);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (proxy) await terminateChild(proxy);
+    proxy = undefined;
     rmSync(tmp, { recursive: true, force: true });
   });
 
   it('captures 3 client frames + 3 server responses', async () => {
-    const proxy = spawn('npx', ['tsx', PROXY, '--tape', tapePath, '--quiet', '--', 'node', upstreamPath], {
+    const child = spawn(process.execPath, ['--import', 'tsx', PROXY, '--tape', tapePath, '--quiet', '--', 'node', upstreamPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
     });
+    proxy = child;
 
     const responses: string[] = [];
     let stdoutBuf = '';
-    proxy.stdout.setEncoding('utf-8');
-    proxy.stdout.on('data', (chunk: string) => {
+    child.stdout.setEncoding('utf-8');
+    child.stdout.on('data', (chunk: string) => {
       stdoutBuf += chunk;
       let idx;
       while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
@@ -72,9 +131,9 @@ process.stdin.on('end', () => process.exit(0));
     });
 
     // Send 3 frames
-    proxy.stdin.write('{"jsonrpc":"2.0","method":"a","id":1}\n');
-    proxy.stdin.write('{"jsonrpc":"2.0","method":"b","id":2}\n');
-    proxy.stdin.write('{"jsonrpc":"2.0","method":"c","id":3}\n');
+    child.stdin.write('{"jsonrpc":"2.0","method":"a","id":1}\n');
+    child.stdin.write('{"jsonrpc":"2.0","method":"b","id":2}\n');
+    child.stdin.write('{"jsonrpc":"2.0","method":"c","id":3}\n');
 
     // Wait for 3 responses (poll)
     const deadline = Date.now() + 15_000;
@@ -82,9 +141,9 @@ process.stdin.on('end', () => process.exit(0));
       await new Promise(r => setTimeout(r, 50));
     }
 
-    proxy.stdin.end();
+    child.stdin.end();
     const exitCode: number = await new Promise((resolve) => {
-      proxy.on('exit', (code) => resolve(code ?? 0));
+      child.on('exit', (code) => resolve(code ?? 0));
     });
     expect(exitCode).toBe(0);
     expect(responses.length).toBe(3);

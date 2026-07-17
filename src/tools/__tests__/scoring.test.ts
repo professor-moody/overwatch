@@ -6,8 +6,10 @@ import { registerInferenceTools } from '../inference.js';
 import { registerStateTools } from '../state.js';
 import type { EngagementConfig } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
 
-const TEST_STATE_FILE = './state-test-scoring.json';
+const sandbox = createTestSandbox('scoring');
+const TEST_STATE_FILE = sandbox.path('state-test-scoring.json');
 const engines = new Set<GraphEngine>();
 
 function makeConfig(): EngagementConfig {

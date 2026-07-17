@@ -6,7 +6,7 @@ const controlPort = Number.parseInt(process.env.OVERWATCH_BROWSER_CONTROL_PORT ?
 const dashboardBase = `http://127.0.0.1:${dashboardPort}`;
 const recoveryBase = `http://127.0.0.1:${recoveryPort}`;
 const controlBase = `http://127.0.0.1:${controlPort}`;
-const token = 'browser-ci-token / encoded';
+const token = process.env.OVERWATCH_BROWSER_TOKEN ?? 'browser-ci-token / encoded';
 const browserSessionId = '00000000-0000-4000-8000-000000000014';
 const browserActionId = 'browser-live-action';
 const browserErrors = new WeakMap<Page, string[]>();
@@ -24,7 +24,9 @@ async function land(page: Page, path: string, base = dashboardBase): Promise<voi
   await expect(page.getByText('Live', { exact: true })).toBeVisible();
 }
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, request }) => {
+  const reset = await request.post(`${controlBase}/reset`);
+  expect(reset.ok()).toBe(true);
   const errors: string[] = [];
   browserErrors.set(page, errors);
   page.on('pageerror', error => errors.push(`pageerror: ${error.message}`));

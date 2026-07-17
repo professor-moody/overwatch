@@ -100,6 +100,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
       persistenceGatePollMs: opts.persistenceGatePollMs,
       headless: {
         logDir,
+        configDir: testDir,
         spawnFn: (cmd: string, args: string[]) => {
           spawnedCmds.push(cmd);
           spawnedArgs.push(args);
@@ -796,7 +797,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
     await settle();
 
     // The per-task temp mcp-config (bearer token) exists while running.
-    const cfgPath = join(tmpdir(), 'overwatch-mcp-h-cancel.json');
+    const cfgPath = join(testDir, 'overwatch-mcp-h-cancel.json');
     expect(existsSync(cfgPath)).toBe(true);
 
     const killed = svc.cancelHeadless('h-cancel', 'operator cancel');
@@ -1294,6 +1295,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
     svc = new TaskExecutionService(engine, new ProcessTracker(), {
       headless: {
         logDir,
+        configDir: testDir,
         spawnFn: () => { throw new Error('ENOENT: claude not found'); },
       },
     });
@@ -1309,6 +1311,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
     svc = new TaskExecutionService(engine, new ProcessTracker(), {
       headless: {
         logDir,
+        configDir: testDir,
         spawnFn: () => new FakeChild(0) as any, // pid 0 → falsy: a pidless child
       },
     });
@@ -1325,7 +1328,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   it('a pidless child emitting an async error does NOT crash (error handler attached before bail-out)', async () => {
     const children: FakeChild[] = [];
     svc = new TaskExecutionService(engine, new ProcessTracker(), {
-      headless: { logDir, spawnFn: () => { const c = new FakeChild(0); children.push(c); return c as any; } },
+      headless: { logDir, configDir: testDir, spawnFn: () => { const c = new FakeChild(0); children.push(c); return c as any; } },
     });
     svc.start();
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
@@ -1386,6 +1389,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
       let configPath = '';
       const runner = new HeadlessMcpRunner(engine, registry, tracker, {
         logDir,
+        configDir: testDir,
         spawnFn: (_command, args) => {
           configPath = args[args.indexOf('--mcp-config') + 1];
           return child as any;
@@ -1497,7 +1501,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
       engine,
       new HeadlessProcessRegistry(),
       tracker,
-      { claudeBinary: fakeClaude, logDir },
+      { claudeBinary: fakeClaude, logDir, configDir: testDir },
     );
 
     try {
@@ -1545,7 +1549,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
         engine,
         new HeadlessProcessRegistry(),
         tracker,
-        { claudeBinary: fakeClaude, logDir },
+        { claudeBinary: fakeClaude, logDir, configDir: testDir },
       );
 
       try {

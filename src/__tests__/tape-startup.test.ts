@@ -58,7 +58,7 @@ describe('tape startup attribution', () => {
 
   it('attributes env-forced startup to env', () => {
     process.env.OVERWATCH_TAPE = '1';
-    const config = makeConfig();
+    const config = makeConfig({ tape: { dir: tmpDir } });
     expect(getAutoTapeStartDecision(config)).toEqual({ enabled: true, startedBy: 'env' });
 
     app = createOverwatchApp({

@@ -6,10 +6,12 @@ import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { cloudIdentityId } from '../services/parser-utils.js';
 import { GraphEngine } from '../services/graph-engine.js';
 import { cleanupTestPersistence } from './helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../test-support/test-sandbox.js';
 
+const sandbox = createTestSandbox('cicd-oidc-playbook');
 const STATE_PATHS = [
-  './state-test-oidc-playbook.json',
-  './state-test-oidc-playbook-2.json',
+  sandbox.path('state-test-oidc-playbook.json'),
+  sandbox.path('state-test-oidc-playbook-2.json'),
 ] as const;
 const liveEngines = new Set<GraphEngine>();
 
@@ -36,7 +38,7 @@ describe('expand_oidc_capture plan shape', () => {
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = openEngine(config, './state-test-oidc-playbook.json');
+    const engine = openEngine(config, STATE_PATHS[0]);
 
     // Captured OIDC token from a CI workflow.
     engine.addNode({
@@ -119,7 +121,7 @@ describe('expand_oidc_capture plan shape', () => {
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = openEngine(config, './state-test-oidc-playbook-2.json');
+    const engine = openEngine(config, STATE_PATHS[1]);
     engine.addNode({
       id: 'cred-oidc-x',
       type: 'credential',

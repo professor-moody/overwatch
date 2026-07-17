@@ -53,6 +53,14 @@ function awaitOpen(ws: WebSocket): Promise<void> {
   return new Promise((resolve, reject) => { ws.on('open', () => resolve()); ws.on('error', reject); });
 }
 
+function closeClient(ws: WebSocket): Promise<void> {
+  if (ws.readyState === WebSocket.CLOSED) return Promise.resolve();
+  return new Promise((resolve) => {
+    ws.once('close', () => resolve());
+    ws.close();
+  });
+}
+
 beforeAll(async () => {
   tempDir = mkdtempSync(join(tmpdir(), 'overwatch-actionws-'));
   engine = new GraphEngine(makeConfig(), join(tempDir, 'state.json'));
@@ -64,6 +72,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await dashboard.stop().catch(() => {});
+  engine.dispose();
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -93,7 +102,7 @@ describe('/ws/actions/:id/output', () => {
     expect(msgs.some(m => m.stream === 'stdout' && (m.text || '').includes('line1'))).toBe(true);
     expect(msgs.some(m => m.stream === 'stderr' && (m.text || '').includes('oops'))).toBe(true);
     expect(msgs.some(m => m.type === 'action_done')).toBe(true);
-    ws.close();
+    await closeClient(ws);
   });
 
   it('sends action_done immediately for an unknown/evicted action', async () => {
@@ -101,6 +110,6 @@ describe('/ws/actions/:id/output', () => {
     await awaitOpen(ws);
     await waitUntil(() => msgs.some(m => m.type === 'action_done'));
     expect(msgs.some(m => m.type === 'action_done')).toBe(true);
-    ws.close();
+    await closeClient(ws);
   });
 });

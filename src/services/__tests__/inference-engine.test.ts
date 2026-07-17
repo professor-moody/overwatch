@@ -3,6 +3,9 @@ import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties, InferenceRule } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('inference-engine');
 import { InferenceEngine } from '../inference-engine.js';
 import { BUILTIN_RULES } from '../builtin-inference-rules.js';
 
@@ -33,7 +36,7 @@ function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string, 
 
 // Build a full InferenceEngine with real EngineContext and real builtin rules from GraphEngine
 function buildEngine(graph: OverwatchGraph, rules: InferenceRule[]) {
-  const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+  const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
   ctx.inferenceRules.push(...rules);
 
   const getNode = (id: string): NodeProperties | null =>
@@ -536,7 +539,7 @@ describe('InferenceEngine', () => {
   describe('addRule', () => {
     it('deduplicates rules by name', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const engine = new InferenceEngine(
         ctx,
         (() => ({ id: '', isNew: true })) as any,
@@ -571,7 +574,7 @@ describe('InferenceEngine', () => {
 
     it('deduplicates rules by ID', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const engine = new InferenceEngine(
         ctx,
         (() => ({ id: '', isNew: true })) as any,

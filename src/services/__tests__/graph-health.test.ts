@@ -8,8 +8,8 @@ import { parseBloodHoundFile } from '../bloodhound-ingest.js';
 import { parseNmapXml, parseSecretsdump } from '../parsers/index.js';
 import type { EngagementConfig } from '../../types.js';
 
-const TEST_STATE_FILE = './state-test-health.json';
 let testDir: string;
+let TEST_STATE_FILE: string;
 let engineIndex = 0;
 const engines = new Set<BaseGraphEngine>();
 
@@ -22,6 +22,7 @@ class GraphEngine extends BaseGraphEngine {
 
 beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), 'overwatch-graph-health-'));
+  TEST_STATE_FILE = join(testDir, 'requested-state.json');
   engineIndex = 0;
 });
 
@@ -53,7 +54,7 @@ describe('graph health', () => {
   afterEach(cleanup);
 
   it('reports duplicate hosts by IP as critical', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = new GraphEngine(makeConfig(), join(testDir, 'requested-state.json'));
     engine.addNode({ id: 'host-a', type: 'host', label: 'host-a', ip: '10.10.10.10', alive: true, discovered_at: '2026-03-21T10:00:00Z', confidence: 1 });
     engine.addNode({ id: 'host-b', type: 'host', label: 'host-b', ip: '10.10.10.10', alive: true, discovered_at: '2026-03-21T10:00:00Z', confidence: 1 });
 
@@ -63,7 +64,7 @@ describe('graph health', () => {
   });
 
   it('converges mixed hostname/ip host identities into one canonical host', () => {
-    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const engine = new GraphEngine(makeConfig(), join(testDir, 'requested-state.json'));
     const bhResult = parseBloodHoundFile(JSON.stringify({
       data: [{
         ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1001',

@@ -114,6 +114,14 @@ function parseUsage(ndjson: string): { tokens: number; costUsd?: number } {
 export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptions = {}): Promise<EvalRunResult> {
   const binary = opts.claudeBinary ?? FAKE_CLAUDE;
   const usingFake = binary === FAKE_CLAUDE;
+  const prev = {
+    mode: process.env.OVERWATCH_FAKE_MODE,
+    binary: process.env.OVERWATCH_CLAUDE_BINARY,
+    variant: process.env.OVERWATCH_PROMPT_VARIANT,
+    actionTimeout: process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS,
+    tokenFile: process.env.OVERWATCH_MCP_TOKEN_FILE,
+    token: process.env.OVERWATCH_MCP_TOKEN,
+  };
   if (usingFake) { chmodSync(FAKE_CLAUDE, 0o755); process.env.OVERWATCH_FAKE_MODE = scenario.fakeMode; }
   process.env.OVERWATCH_CLAUDE_BINARY = binary;
   // Selects the sub_agent prompt variant the in-process app's get_system_prompt
@@ -121,12 +129,10 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
   // (one app per run, like the FAKE_MODE/binary env above), so an env selector is
   // sufficient; set it explicitly every run, and restore it in cleanup so the
   // arm never leaks into a later in-process get_system_prompt.
-  const prevVariant = process.env.OVERWATCH_PROMPT_VARIANT;
   process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
   // Unattended eval against synthetic/unreachable targets: make tools fail fast
   // (real `claude` picks slow scans like nmap -p- that would otherwise run to the
   // 1-hour default and stall the whole run). Restored in cleanup.
-  const prevActionTimeout = process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS;
   if (!usingFake) process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = '20000';
 
   // Restore the env we mutated above — called from cleanup on success AND from the
@@ -134,13 +140,20 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
   // port-bind failure), so a thrown run can't leak its arm/timeout into a later
   // in-process run or test.
   const restoreEnv = () => {
-    if (prevVariant === undefined) delete process.env.OVERWATCH_PROMPT_VARIANT;
-    else process.env.OVERWATCH_PROMPT_VARIANT = prevVariant;
-    if (prevActionTimeout === undefined) delete process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS;
-    else process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = prevActionTimeout;
+    const set = (key: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    };
+    set('OVERWATCH_FAKE_MODE', prev.mode);
+    set('OVERWATCH_CLAUDE_BINARY', prev.binary);
+    set('OVERWATCH_PROMPT_VARIANT', prev.variant);
+    set('OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS', prev.actionTimeout);
+    set('OVERWATCH_MCP_TOKEN_FILE', prev.tokenFile);
+    set('OVERWATCH_MCP_TOKEN', prev.token);
   };
 
   const tempDir = mkdtempSync(join(tmpdir(), 'ow-prompt-eval-'));
+  process.env.OVERWATCH_MCP_TOKEN_FILE = join(tempDir, '.overwatch-mcp-token');
   const logDir = join(tempDir, 'agents');
   let app: ReturnType<typeof createOverwatchApp> | undefined;
   try {
@@ -159,6 +172,7 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
           // so the run doesn't depend on env-mutation ordering.
           claudeBinary: binary,
           logDir,
+          configDir: join(tempDir, 'mcp-configs'),
           maxTurns: opts.maxTurns ?? 10,
           // A real headless `claude -p` has no stdin to answer permission prompts,
           // so it would hang on the first tool call in the default mode. Bypass
@@ -270,6 +284,8 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     variant: process.env.OVERWATCH_PROMPT_VARIANT,
     primaryVariant: process.env.OVERWATCH_PRIMARY_VARIANT,
     actionTimeout: process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS,
+    tokenFile: process.env.OVERWATCH_MCP_TOKEN_FILE,
+    token: process.env.OVERWATCH_MCP_TOKEN,
   };
   // restoreEnv closes over `prev` (captured above) and only RESTORES, so it's safe to
   // define before the mutations — the mutations live inside the try so any throw (incl.
@@ -281,6 +297,8 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     set('OVERWATCH_PROMPT_VARIANT', prev.variant);
     set('OVERWATCH_PRIMARY_VARIANT', prev.primaryVariant);
     set('OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS', prev.actionTimeout);
+    set('OVERWATCH_MCP_TOKEN_FILE', prev.tokenFile);
+    set('OVERWATCH_MCP_TOKEN', prev.token);
   };
 
   let tempDir: string | undefined;
@@ -299,6 +317,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     if (!usingFakePrimary) process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = '20000';
 
     tempDir = mkdtempSync(join(tmpdir(), 'ow-orch-eval-'));
+    process.env.OVERWATCH_MCP_TOKEN_FILE = join(tempDir, '.overwatch-mcp-token');
     const logDir = join(tempDir, 'agents');
     const config = parseEngagementConfig(rawConfig);
     config.opsec = { ...config.opsec, approval_timeout_ms: 3000 } as typeof config.opsec;
@@ -311,6 +330,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
         headless: {
           claudeBinary: FAKE_CLAUDE,
           logDir,
+          configDir: join(tempDir, 'mcp-configs'),
           maxTurns: opts.maxTurns ?? 14,
           permissionMode: usingFakePrimary ? undefined : 'bypassPermissions',
           extraArgs: opts.model ? ['--model', opts.model] : undefined,

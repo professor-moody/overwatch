@@ -1,9 +1,13 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
+import { resetBrowserStorageMemoryForTest } from '../lib/browser-storage';
+import { resetDashboardAuthMemoryForTest } from '../lib/dashboard-transport';
 
 afterEach(() => {
   cleanup();
+  resetBrowserStorageMemoryForTest();
+  resetDashboardAuthMemoryForTest();
   vi.restoreAllMocks();
 });
 

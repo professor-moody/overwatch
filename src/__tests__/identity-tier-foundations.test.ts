@@ -18,6 +18,9 @@ import Graph from 'graphology';
 import type { EdgeType, NodeProperties, EdgeProperties } from '../types.js';
 import type { OverwatchGraph } from '../services/engine-context.js';
 import { EngineContext } from '../services/engine-context.js';
+import { createTestSandbox } from '../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('identity-tier-foundations');
 import {
   isCredentialUsableForAuth,
   isCredentialMfaBlocked,
@@ -175,7 +178,7 @@ describe('Phase 1 — coverage filters MFA-blocked creds + emits mfa_bypass_cand
     addNode(graph, 'svc-smb', { type: 'service', service_name: 'smb', port: 445 });
     addEdge(graph, 'host-1', 'svc-smb', 'RUNS');
 
-    const ctx = new EngineContext(graph, makeConfig(), './test-state-identity.json');
+    const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state-identity.json'));
     const tracker = new CredentialCoverageTracker(ctx);
     const result = tracker.compute();
     expect(result.untested_pairs.length).toBe(0);
@@ -193,7 +196,7 @@ describe('Phase 1 — coverage filters MFA-blocked creds + emits mfa_bypass_cand
     });
     addEdge(graph, 'user-1', 'cred-mfa', 'OWNS_CRED');
 
-    const ctx = new EngineContext(graph, makeConfig(), './test-state-identity.json');
+    const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state-identity.json'));
     const tracker = new CredentialCoverageTracker(ctx);
     const items = tracker.computeFrontierItems();
     const mfaItem = items.find(i => i.type === 'mfa_bypass_candidate');

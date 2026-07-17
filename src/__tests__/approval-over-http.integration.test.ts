@@ -184,11 +184,13 @@ describe.skipIf(!supportsLocalListen)('/mcp auth fail-closed default (generated 
   let generatedToken: string | undefined;
   const prevToken = process.env.OVERWATCH_MCP_TOKEN;
   const prevRequire = process.env.OVERWATCH_MCP_REQUIRE_TOKEN;
+  const prevTokenFile = process.env.OVERWATCH_MCP_TOKEN_FILE;
 
   beforeAll(async () => {
     delete process.env.OVERWATCH_MCP_TOKEN;       // no token configured
     delete process.env.OVERWATCH_MCP_REQUIRE_TOKEN; // default (require)
     tempDir = mkdtempSync(join(tmpdir(), 'overwatch-mcpauth-default-'));
+    process.env.OVERWATCH_MCP_TOKEN_FILE = join(tempDir, '.overwatch-mcp-token');
     const config = parseEngagementConfig(rawConfig);
     app = createOverwatchApp({ config, skillDir: resolve('./skills'), dashboardPort: 0, stateFilePath: join(tempDir, `state-${config.id}.json`) });
     await startHttpApp(app, { port: 0, host: '127.0.0.1' });
@@ -203,6 +205,7 @@ describe.skipIf(!supportsLocalListen)('/mcp auth fail-closed default (generated 
     try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
     if (prevToken === undefined) delete process.env.OVERWATCH_MCP_TOKEN; else process.env.OVERWATCH_MCP_TOKEN = prevToken;
     if (prevRequire === undefined) delete process.env.OVERWATCH_MCP_REQUIRE_TOKEN; else process.env.OVERWATCH_MCP_REQUIRE_TOKEN = prevRequire;
+    if (prevTokenFile === undefined) delete process.env.OVERWATCH_MCP_TOKEN_FILE; else process.env.OVERWATCH_MCP_TOKEN_FILE = prevTokenFile;
   });
 
   const initBody = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'c', version: '0' } } });

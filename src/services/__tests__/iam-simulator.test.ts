@@ -3,6 +3,9 @@ import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('iam-simulator');
 import { evaluateIAM } from '../iam-simulator.js';
 
 function makeGraph(): OverwatchGraph {
@@ -36,7 +39,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'AdminPolicy', effect: 'allow', actions: ['s3:*'], resources: ['*'] });
       addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::my-bucket/file.txt', ctx);
       expect(result.allowed).toBe(true);
       expect(result.provider).toBe('aws');
@@ -51,7 +54,7 @@ describe('IAM Simulator', () => {
       addEdge(graph, 'user-1', 'allow-policy', 'HAS_POLICY');
       addEdge(graph, 'user-1', 'deny-policy', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::restricted/secret.txt', ctx);
       expect(result.allowed).toBe(false);
       expect(result.deny_policies).toContain('DenyS3');
@@ -63,7 +66,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'ReadOnly', effect: 'allow', actions: ['s3:GetObject'], resources: ['*'] });
       addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 's3:PutObject', 'arn:aws:s3:::my-bucket/file.txt', ctx);
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('Implicitly denied');
@@ -78,7 +81,7 @@ describe('IAM Simulator', () => {
       });
       addEdge(graph, 'user-1', 'conditional-allow', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::private/key', ctx);
       expect(result).toMatchObject({ allowed: false, decision: 'indeterminate' });
       expect(result.reason).toContain('conditional allow');
@@ -97,7 +100,7 @@ describe('IAM Simulator', () => {
       addEdge(graph, 'user-1', 'allow', 'HAS_POLICY');
       addEdge(graph, 'user-1', 'conditional-deny', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::private/key', ctx);
       expect(result).toMatchObject({ allowed: false, decision: 'indeterminate' });
       expect(result.deny_policies).toContain('DenyOutsideNetwork');
@@ -112,7 +115,7 @@ describe('IAM Simulator', () => {
         permission_expansion: 'unevaluable',
       });
       addEdge(graph, 'user-1', 'attached', 'HAS_POLICY');
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
 
       const result = evaluateIAM('user-1', 'iam:CreateUser', '*', ctx);
       expect(result).toMatchObject({
@@ -129,7 +132,7 @@ describe('IAM Simulator', () => {
       addEdge(graph, 'user-1', 'group-1', 'MEMBER_OF');
       addEdge(graph, 'group-1', 'policy-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 'ec2:RunInstances', 'arn:aws:ec2:us-east-1:123:instance/*', ctx);
       expect(result.allowed).toBe(true);
       expect(result.matching_policies).toContain('DevPolicy');
@@ -137,7 +140,7 @@ describe('IAM Simulator', () => {
 
     it('returns error for unknown principal', () => {
       const graph = makeGraph();
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('nonexistent', 's3:GetObject', '*', ctx);
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('Principal not found');
@@ -147,7 +150,7 @@ describe('IAM Simulator', () => {
       const graph = makeGraph();
       addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::123456789:user/orphan' });
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 's3:GetObject', '*', ctx);
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('No policies');
@@ -159,7 +162,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'FullAdmin', effect: 'allow', actions: ['*'], resources: ['*'] });
       addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 'iam:CreateUser', 'arn:aws:iam::123:user/new', ctx);
       expect(result.allowed).toBe(true);
     });
@@ -174,7 +177,7 @@ describe('IAM Simulator', () => {
       addEdge(graph, 'user-1', 'role-admin', 'ASSUMES_ROLE');
       addEdge(graph, 'role-admin', 'policy-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 'iam:CreateUser', 'arn:aws:iam::123:user/new', ctx);
       expect(result.allowed).toBe(true);
       expect(result.matching_policies).toContain('AdminPolicy');
@@ -190,7 +193,7 @@ describe('IAM Simulator', () => {
       addEdge(graph, 'user-1', 'role-admin', 'ASSUMES_ROLE', { assumption_confirmed: false, assumption_basis: 'trust_policy' });
       addEdge(graph, 'role-admin', 'policy-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 'iam:CreateUser', 'arn:aws:iam::123:user/new', ctx);
       expect(result.allowed).toBe(false);
       expect(result.matching_policies).toEqual([]);
@@ -206,7 +209,7 @@ describe('IAM Simulator', () => {
       addEdge(graph, 'user-1', 'role-admin', 'ASSUMES_ROLE', { tested: true, test_result: 'success' });
       addEdge(graph, 'role-admin', 'policy-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 'iam:CreateUser', 'arn:aws:iam::123:user/new', ctx);
       expect(result.allowed).toBe(true);
       expect(result.matching_policies).toContain('AdminPolicy');
@@ -225,7 +228,7 @@ describe('IAM Simulator', () => {
       addEdge(graph, 'role-b', 'role-a', 'ASSUMES_ROLE');
       addEdge(graph, 'role-b', 'policy-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('role-a', 's3:GetObject', 'arn:aws:s3:::bucket/key', ctx);
       expect(result.allowed).toBe(true);
       expect(result.evaluated_principals).toEqual(['role-a', 'role-b']);
@@ -239,7 +242,7 @@ describe('IAM Simulator', () => {
       addEdge(graph, 'user-1', 'role-admin', 'ASSUMES_ROLE', { tested: true, test_result: 'success' });
       addEdge(graph, 'role-admin', 'policy-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, { ...makeConfig(), iam_assume_depth: 0 }, './test.json');
+      const ctx = new EngineContext(graph, { ...makeConfig(), iam_assume_depth: 0 }, testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 'iam:CreateUser', 'arn:aws:iam::123:user/new', ctx);
       expect(result.allowed).toBe(false);
       expect(result.decision).toBe('indeterminate');
@@ -260,7 +263,7 @@ describe('IAM Simulator', () => {
       addEdge(graph, 'user-1', 'role-1', 'ASSUMES_ROLE');
       addEdge(graph, 'role-1', 'deny-policy', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::secret/key', ctx);
       expect(result.allowed).toBe(false);
       expect(result.deny_policies).toContain('DenySecret');
@@ -271,7 +274,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
       addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'MidStar', effect: 'allow', actions: ['s3:*Object'], resources: ['*'] });
       addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       // Suffix-only matching would have missed this — s3:GetObject ends in "Object".
       expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::b/f', ctx).allowed).toBe(true);
       expect(evaluateIAM('user-1', 's3:ListBucket', 'arn:aws:s3:::b', ctx).allowed).toBe(false);
@@ -283,7 +286,7 @@ describe('IAM Simulator', () => {
       // Allow all actions except iam:* (an "Allow NotAction: iam:*" statement).
       addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'NotIam', effect: 'allow', not_actions: ['iam:*'], resources: ['*'] });
       addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::b/f', ctx).allowed).toBe(true);
       expect(evaluateIAM('user-1', 'iam:CreateUser', '*', ctx).allowed).toBe(false);
     });
@@ -293,7 +296,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
       addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'NotSecret', effect: 'allow', actions: ['s3:*'], not_resources: ['arn:aws:s3:::secret/*'], resources: [] });
       addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::public/f', ctx).allowed).toBe(true);
       expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::secret/key', ctx).allowed).toBe(false);
     });
@@ -306,7 +309,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'deny', { type: 'cloud_policy', policy_name: 'DenyNotS3', effect: 'deny', not_actions: ['s3:*'], resources: ['*'] });
       addEdge(graph, 'user-1', 'allow', 'HAS_POLICY');
       addEdge(graph, 'user-1', 'deny', 'HAS_POLICY');
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       expect(evaluateIAM('user-1', 'ec2:RunInstances', '*', ctx).allowed).toBe(false);
       expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::b/f', ctx).allowed).toBe(true);
     });
@@ -316,7 +319,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
       addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'NotSecret', effect: 'allow', actions: ['s3:*'], not_resources: ['arn:aws:s3:::secret/*'], resources: [] });
       addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       // "can P GetObject anywhere?" — must NOT be a blanket allow (secret/* is excluded).
       expect(evaluateIAM('user-1', 's3:GetObject', '*', ctx).allowed).toBe(false);
       // but a concrete non-excluded resource is still allowed.
@@ -331,7 +334,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'deny', { type: 'cloud_policy', policy_name: 'DenyNotPublic', effect: 'deny', actions: ['*'], not_resources: ['arn:aws:s3:::public/*'], resources: [] });
       addEdge(graph, 'user-1', 'allow', 'HAS_POLICY');
       addEdge(graph, 'user-1', 'deny', 'HAS_POLICY');
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       // '*' query: the scoped deny doesn't fire, so the blanket allow governs.
       expect(evaluateIAM('user-1', 's3:GetObject', '*', ctx).allowed).toBe(true);
       // concrete excluded resource: deny still correctly skips (public/* excluded from deny).
@@ -347,7 +350,7 @@ describe('IAM Simulator', () => {
       // blanket-match a resource with no colon.
       addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'Weird', effect: 'allow', actions: ['*:*'], resources: ['*:*'] });
       addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::b/f', ctx).allowed).toBe(true); // colon-bearing ARN
       expect(evaluateIAM('user-1', 's3:GetObject', 'plainname', ctx).allowed).toBe(false); // no colon → not matched
     });
@@ -357,7 +360,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
       addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'OneChar', effect: 'allow', actions: ['s3:*'], resources: ['?'] });
       addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       // '?' glob-matches the literal 1-char string '*' but is NOT match-all.
       expect(evaluateIAM('user-1', 's3:GetObject', '*', ctx).allowed).toBe(false);
       expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::b/f', ctx).allowed).toBe(false);
@@ -368,7 +371,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
       addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'Globby', effect: 'allow', actions: ['s3:*'], resources: ['arn:*:*:*:*:*:*:*:*:*x'] });
       addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       // A long resource that does NOT end in 'x' is the classic ReDoS trigger.
       const longResource = 'arn:aws:s3:::' + 'a'.repeat(5000);
       const start = Date.now();
@@ -385,7 +388,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'role-1', { type: 'cloud_policy', policy_name: 'Contributor', effect: 'allow', actions: ['Microsoft.Compute/*'], resources: ['/subscriptions/123'] });
       addEdge(graph, 'user-1', 'role-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 'Microsoft.Compute/virtualMachines/start', '/subscriptions/123/resourceGroups/rg1/vm/1', ctx);
       expect(result.allowed).toBe(true);
       expect(result.provider).toBe('azure');
@@ -397,7 +400,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'role-1', { type: 'cloud_policy', policy_name: 'SubReader', effect: 'allow', actions: ['Microsoft.Compute/*'], resources: ['/subscriptions/abc'] });
       addEdge(graph, 'user-1', 'role-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       // Resource is under the subscription scope
       const result = evaluateIAM('user-1', 'Microsoft.Compute/virtualMachines/read', '/subscriptions/abc/resourceGroups/rg1', ctx);
       expect(result.allowed).toBe(true);
@@ -419,7 +422,7 @@ describe('IAM Simulator', () => {
         role_definition_name: 'Custom Mystery Operator',
       });
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('user-1', 'Microsoft.Compute/virtualMachines/start', '/subscriptions/123/resourceGroups/rg1/vm/1', ctx);
       expect(result.allowed).toBe(false);
       expect(result.decision).toBe('indeterminate');
@@ -435,7 +438,7 @@ describe('IAM Simulator', () => {
       addNode(graph, 'binding-1', { type: 'cloud_policy', policy_name: 'StorageAdmin', effect: 'allow', actions: ['storage.objects.get', 'storage.objects.create'], resources: ['*'] });
       addEdge(graph, 'sa-1', 'binding-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('sa-1', 'storage.objects.get', 'projects/myproj/buckets/b1', ctx);
       expect(result.allowed).toBe(true);
       expect(result.provider).toBe('gcp');
@@ -449,7 +452,7 @@ describe('IAM Simulator', () => {
       addEdge(graph, 'sa-1', 'allow-1', 'HAS_POLICY');
       addEdge(graph, 'sa-1', 'deny-1', 'HAS_POLICY');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test.json'));
       const result = evaluateIAM('sa-1', 'storage.objects.delete', 'projects/p/buckets/b', ctx);
       expect(result.allowed).toBe(false);
       expect(result.deny_policies).toContain('DenyDelete');

@@ -263,6 +263,7 @@ export class DashboardServer {
     sessionManager?: SessionManager,
     configPath?: string,
     applicationCommands?: ApplicationCommandService,
+    dashboardStaticDir?: string,
   ) {
     this.engine = engine;
     this.dashboardProjections = new DashboardProjectionService(engine);
@@ -294,6 +295,7 @@ export class DashboardServer {
     this.host = host || process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
     this.sessionManager = sessionManager || null;
     this.configPath = configPath;
+    if (dashboardStaticDir) this.dashboardDir = dashboardStaticDir;
     if (configPath) {
       this.engagementManager = new EngagementManager(
         configPath,

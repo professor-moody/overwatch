@@ -9,12 +9,14 @@ import { parseMsGraphServicePrincipals } from '../services/parsers/msgraph-servi
 import { parseMsGraphGroups } from '../services/parsers/msgraph-groups.js';
 import { GraphEngine } from '../services/graph-engine.js';
 import { cleanupTestPersistence } from './helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../test-support/test-sandbox.js';
 
 const TENANT = 'acme.onmicrosoft.com';
+const sandbox = createTestSandbox('entra-playbook');
 const STATE_PATHS = [
-  './state-test-entra-refresh.json',
-  './state-test-entra-expand.json',
-  './state-test-entra-expand-nogroups.json',
+  sandbox.path('state-test-entra-refresh.json'),
+  sandbox.path('state-test-entra-expand.json'),
+  sandbox.path('state-test-entra-expand-nogroups.json'),
 ] as const;
 const liveEngines = new Set<GraphEngine>();
 
@@ -144,7 +146,7 @@ describe('exchange_refresh_token', () => {
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = openEngine(config, './state-test-entra-refresh.json');
+    const engine = openEngine(config, STATE_PATHS[0]);
     engine.addNode({
       id: 'cred-rt-1',
       type: 'credential',
@@ -195,7 +197,7 @@ describe('expand_entra_credential', () => {
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = openEngine(config, './state-test-entra-expand.json');
+    const engine = openEngine(config, STATE_PATHS[1]);
     engine.addNode({
       id: 'cred-at-1',
       type: 'credential',
@@ -242,7 +244,7 @@ describe('expand_entra_credential', () => {
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = openEngine(config, './state-test-entra-expand-nogroups.json');
+    const engine = openEngine(config, STATE_PATHS[2]);
     engine.addNode({
       id: 'cred-at-2',
       type: 'credential',

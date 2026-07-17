@@ -3,6 +3,9 @@ import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('frontier');
 import { FrontierComputer } from '../frontier.js';
 import { KnowledgeBase } from '../knowledge-base.js';
 
@@ -33,7 +36,7 @@ function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string, 
 }
 
 function buildFrontier(graph: OverwatchGraph, config?: any) {
-  const ctx = new EngineContext(graph, config || makeConfig(), './test-state.json');
+  const ctx = new EngineContext(graph, config || makeConfig(), testSandbox.path('test-state.json'));
   const hopsToObjective = () => null;
   return { frontier: new FrontierComputer(ctx, hopsToObjective), ctx };
 }
@@ -434,7 +437,7 @@ describe('FrontierComputer', () => {
       addNode(graph, 'host-dc', { type: 'host', ip: '10.10.10.1', alive: true, os: 'Windows Server 2019' });
       addEdge(graph, 'user-1', 'host-dc', 'CAN_DCSYNC', { tested: false });
 
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const kb = new KnowledgeBase('/tmp/test-kb-frontier-' + Date.now() + '.json');
       // Record a high-success technique (DCSync = T1003.006)
       kb.recordTechniqueAttempt('T1003.006', 'DCSync', true, 0.8);
@@ -461,7 +464,7 @@ describe('FrontierComputer', () => {
       addNode(graph, 'svc-1', { type: 'service' });
       addEdge(graph, 'user-1', 'svc-1', 'KERBEROASTABLE', { tested: false });
 
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const kb = new KnowledgeBase('/tmp/test-kb-frontier2-' + Date.now() + '.json');
       // Record a low-success technique (Kerberoasting = T1558.003)
       kb.recordTechniqueAttempt('T1558.003', 'Kerberoasting', false, 0.5);

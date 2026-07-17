@@ -3,6 +3,9 @@ import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties, EdgeType } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('path-analyzer');
 import { PathAnalyzer } from '../path-analyzer.js';
 function makeGraph(): OverwatchGraph {
   return new (Graph as any)({ multi: true, type: 'directed', allowSelfLoops: true }) as OverwatchGraph;
@@ -37,7 +40,7 @@ function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string, 
 }
 
 function buildAnalyzer(graph: OverwatchGraph, config?: any) {
-  const ctx = new EngineContext(graph, config || makeConfig(), './test-state.json');
+  const ctx = new EngineContext(graph, config || makeConfig(), testSandbox.path('test-state.json'));
   const queryGraph = (query: any) => {
     const nodes: any[] = [];
     graph.forEachNode((id: string, attrs) => {
@@ -153,7 +156,7 @@ describe('PathAnalyzer', () => {
       addEdge(graph, 'host-a', 'host-b', 'REACHABLE');
       addEdge(graph, 'host-a', 'host-b', 'ADMIN_TO');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const analyzer = new PathAnalyzer(ctx, BIDIR, () => ({ nodes: [], edges: [] }));
       const result = analyzer.findShortestPathDetailed('host-a', 'host-b');
 
@@ -311,7 +314,7 @@ describe('PathAnalyzer', () => {
       addNode(graph, 'host-b', { type: 'host' });
       addEdge(graph, 'host-a', 'host-b', 'REACHABLE');
 
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const analyzer = new PathAnalyzer(ctx, BIDIR, () => ({ nodes: [], edges: [] }));
 
       // Query with two different modes

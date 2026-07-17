@@ -3,6 +3,9 @@ import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties, FrontierItem } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('campaign-planner');
 import { CampaignPlanner } from '../campaign-planner.js';
 import type { ChainGroup } from '../chain-scorer.js';
 
@@ -33,7 +36,7 @@ function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string, 
 }
 
 function buildPlanner(graph: OverwatchGraph, config?: any) {
-  const ctx = new EngineContext(graph, config || makeConfig(), './test-state.json');
+  const ctx = new EngineContext(graph, config || makeConfig(), testSandbox.path('test-state.json'));
   return new CampaignPlanner(ctx);
 }
 
@@ -248,7 +251,7 @@ describe('CampaignPlanner', () => {
     it('keeps a canonical chain campaign authoritative after clone/split reindexing', () => {
       const graph = makeGraph();
       addNode(graph, 'cred-1', { type: 'credential', cred_type: 'plaintext', cred_value: 'pass123' });
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const planner = new CampaignPlanner(ctx);
       const items = ['fi-1', 'fi-2', 'fi-3', 'fi-4'].map((id, index) => makeFrontierItem({
         id, chain_id: 'chain-cred-1', edge_source: 'cred-1', edge_target: `svc-${index + 1}`,
@@ -271,7 +274,7 @@ describe('CampaignPlanner', () => {
     it('never lets an ambiguous legacy chain-id clone hijack regeneration', () => {
       const graph = makeGraph();
       addNode(graph, 'cred-1', { type: 'credential', cred_type: 'plaintext', cred_value: 'pass123' });
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const planner = new CampaignPlanner(ctx);
       const items = ['fi-1', 'fi-2'].map((id, index) => makeFrontierItem({
         id, chain_id: 'chain-cred-1', edge_source: 'cred-1', edge_target: `svc-${index + 1}`,
@@ -296,7 +299,7 @@ describe('CampaignPlanner', () => {
         addNode(graph, id, { type: 'host', ip: `10.10.10.${id.slice(1)}` });
         return makeFrontierItem({ id: `fi-${id}`, type: 'incomplete_node', node_id: id });
       });
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const planner = new CampaignPlanner(ctx);
       const [canonical] = planner.generateCampaigns(items, []);
       const clone = planner.cloneCampaign(canonical.id)!;
@@ -324,7 +327,7 @@ describe('CampaignPlanner', () => {
         makeFrontierItem({ id: 'post-2', edge_source: 'host-1', edge_target: 'svc-2', edge_type: 'ADMIN_TO' as any }),
       ];
       const discovery = makeFrontierItem({ id: 'disc-1', type: 'network_discovery', target_cidr: '10.10.10.0/28' });
-      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
       const planner = new CampaignPlanner(ctx);
       const generated = planner.generateCampaigns([...postItems, discovery], []);
       const post = generated.find(campaign => campaign.strategy === 'post_exploitation')!;

@@ -70,37 +70,61 @@ export async function runArchetype(opts: {
   scopeSeededNodes?: boolean;
   timeoutMs?: number;
 }): Promise<ArchetypeEvalResult> {
+  const previousClaudeBinary = process.env.OVERWATCH_CLAUDE_BINARY;
+  const previousFakeMode = process.env.OVERWATCH_FAKE_MODE;
+  const previousTokenFile = process.env.OVERWATCH_MCP_TOKEN_FILE;
+  const previousMcpToken = process.env.OVERWATCH_MCP_TOKEN;
   chmodSync(FAKE_CLAUDE, 0o755);
   process.env.OVERWATCH_CLAUDE_BINARY = FAKE_CLAUDE;
   process.env.OVERWATCH_FAKE_MODE = opts.fakeMode;
 
   const tempDir = mkdtempSync(join(tmpdir(), 'ow-archetype-eval-'));
-  const config = parseEngagementConfig(rawConfig);
-  const app = createOverwatchApp({
-    config,
-    skillDir: resolve('./skills'),
-    dashboardPort: 0,
-    stateFilePath: join(tempDir, `state-${config.id}.json`),
-  });
-  await startHttpApp(app, { port: 0, host: '127.0.0.1' });
+  process.env.OVERWATCH_MCP_TOKEN_FILE = join(tempDir, '.overwatch-mcp-token');
+  let app: OverwatchApp | undefined;
+  const restoreEnvironment = () => {
+    if (previousClaudeBinary === undefined) delete process.env.OVERWATCH_CLAUDE_BINARY;
+    else process.env.OVERWATCH_CLAUDE_BINARY = previousClaudeBinary;
+    if (previousFakeMode === undefined) delete process.env.OVERWATCH_FAKE_MODE;
+    else process.env.OVERWATCH_FAKE_MODE = previousFakeMode;
+    if (previousTokenFile === undefined) delete process.env.OVERWATCH_MCP_TOKEN_FILE;
+    else process.env.OVERWATCH_MCP_TOKEN_FILE = previousTokenFile;
+    if (previousMcpToken === undefined) delete process.env.OVERWATCH_MCP_TOKEN;
+    else process.env.OVERWATCH_MCP_TOKEN = previousMcpToken;
+  };
 
-  let seededNodeIds: string[] = [];
-  if (opts.seedNodes?.length) {
-    const ingest = app.engine.ingestFinding({
+  try {
+    const config = parseEngagementConfig(rawConfig);
+    app = createOverwatchApp({
+      config,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+      stateFilePath: join(tempDir, `state-${config.id}.json`),
+      taskExecution: {
+        headless: {
+          logDir: join(tempDir, 'agents'),
+          configDir: join(tempDir, 'mcp-configs'),
+        },
+      },
+    });
+    await startHttpApp(app, { port: 0, host: '127.0.0.1' });
+
+    let seededNodeIds: string[] = [];
+    if (opts.seedNodes?.length) {
+      const ingest = app.engine.ingestFinding({
       id: `seed-${opts.archetype}`, agent_id: 'seed', timestamp: new Date().toISOString(),
       nodes: opts.seedNodes, edges: [],
     } as never);
     // Node ids canonicalize on ingest; capture the actual stored ids for scoping.
-    seededNodeIds = (ingest as { new_nodes?: string[] }).new_nodes ?? [];
-  }
+      seededNodeIds = (ingest as { new_nodes?: string[] }).new_nodes ?? [];
+    }
 
-  if (opts.seedSession) {
-    app.sessionManager.registerAdapter(mockPtyAdapter());
-    await app.sessionManager.create({ kind: 'local_pty', title: `eval-seed-${opts.archetype}` });
-  }
+    if (opts.seedSession) {
+      app.sessionManager.registerAdapter(mockPtyAdapter());
+      await app.sessionManager.create({ kind: 'local_pty', title: `eval-seed-${opts.archetype}` });
+    }
 
-  const taskId = `eval-${opts.archetype}`;
-  app.engine.registerAgent({
+    const taskId = `eval-${opts.archetype}`;
+    app.engine.registerAgent({
     id: taskId,
     agent_id: `agent-${opts.archetype}`,
     assigned_at: new Date().toISOString(),
@@ -110,14 +134,22 @@ export async function runArchetype(opts: {
     archetype: opts.archetype,
   } as AgentTask);
 
-  await waitFor(
-    () => { const s = app.engine.getTask(taskId)?.status; return s === 'completed' || s === 'failed' || s === 'interrupted'; },
-    opts.timeoutMs ?? 15000,
-  ).catch(() => { /* leave the terminal-status assertion to the test */ });
+    await waitFor(
+      () => { const s = app!.engine.getTask(taskId)?.status; return s === 'completed' || s === 'failed' || s === 'interrupted'; },
+      opts.timeoutMs ?? 15000,
+    ).catch(() => { /* leave the terminal-status assertion to the test */ });
 
-  const cleanup = async () => {
-    await shutdownOverwatchApp(app).catch(() => { /* ignore */ });
+    const runningApp = app;
+    const cleanup = async () => {
+      restoreEnvironment();
+      await shutdownOverwatchApp(runningApp).catch(() => { /* ignore */ });
+      try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    };
+    return { app, task: app.engine.getTask(taskId), cleanup };
+  } catch (error) {
+    restoreEnvironment();
+    if (app) await shutdownOverwatchApp(app).catch(() => { /* ignore */ });
     try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  };
-  return { app, task: app.engine.getTask(taskId), cleanup };
+    throw error;
+  }
 }

@@ -10,10 +10,13 @@ import { parseGhApiBranchProtection } from '../services/parsers/gh-api-branch-pr
 import { parseGhApiDeployKeys } from '../services/parsers/gh-api-deploy-keys.js';
 import { GraphEngine } from '../services/graph-engine.js';
 import { cleanupTestPersistence } from './helpers/cleanup-test-persistence.js';
+import { createTestSandbox } from '../test-support/test-sandbox.js';
 
+const sandbox = createTestSandbox('github-playbook');
 const STATE_PATHS = [
-  './state-test-gh-playbook.json',
-  './state-test-gh-playbook-2.json',
+  sandbox.path('state-test-gh-playbook.json'),
+  sandbox.path('state-test-gh-playbook-2.json'),
+  sandbox.path('state-test-gh-playbook-collisions.json'),
 ] as const;
 const liveEngines = new Set<GraphEngine>();
 
@@ -159,7 +162,7 @@ describe('expand_github_credential plan shape', () => {
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = openEngine(config, './state-test-gh-playbook.json');
+    const engine = openEngine(config, STATE_PATHS[0]);
     engine.addNode({
       id: 'cred-pat-1',
       type: 'credential',
@@ -202,7 +205,7 @@ describe('expand_github_credential plan shape', () => {
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = openEngine(config, './state-test-gh-playbook-2.json');
+    const engine = openEngine(config, STATE_PATHS[1]);
     engine.addNode({
       id: 'cred-pat-2',
       type: 'credential',
@@ -251,7 +254,7 @@ describe('expand_github_credential plan shape', () => {
       scope: { cidrs: [], domains: [], exclusions: [] }, objectives: [],
       opsec: { name: 'pentest', max_noise: 0.5 },
     } as any;
-    const engine = openEngine(config, './state-test-gh-playbook-collisions.json');
+    const engine = openEngine(config, STATE_PATHS[2]);
     engine.addNode({
       id: 'cred-pat-collisions', type: 'credential', label: 'github-pat-collisions',
       cred_type: 'token', cred_material_kind: 'pat', credential_status: 'active',

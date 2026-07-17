@@ -1,5 +1,5 @@
-import { describe, expect, it, beforeEach } from 'vitest';
-import { setColorEnabled, formatTable, truncate, keyValues } from '../operator/format.js';
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { setColorEnabled, isColorEnabled, formatTable, truncate, keyValues } from '../operator/format.js';
 import { resolveClientOptions, createClient, ApiError, type ApiClient } from '../operator/client.js';
 import { READ_COMMANDS, WRITE_COMMANDS } from '../operator/commands.js';
 import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents, renderRecovery, renderSessions, renderPlaybooks } from '../operator/render.js';
@@ -8,7 +8,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 // Deterministic output: force color off for all assertions.
+const initialColorEnabled = isColorEnabled();
 beforeEach(() => setColorEnabled(false));
+afterEach(() => setColorEnabled(initialColorEnabled));
 
 describe('format', () => {
   it('truncate adds an ellipsis past the limit', () => {

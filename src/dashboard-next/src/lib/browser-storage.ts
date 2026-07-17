@@ -2,6 +2,7 @@ export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): unknown;
   removeItem(key: string): unknown;
+  clear?(): unknown;
 }
 
 export interface SafeBrowserStorage extends StorageLike {
@@ -13,6 +14,13 @@ export type BrowserStorageArea = 'local' | 'session';
 
 const localMemory = new Map<string, string>();
 const sessionMemory = new Map<string, string>();
+
+export function resetBrowserStorageMemoryForTest(): void {
+  localMemory.clear();
+  sessionMemory.clear();
+  try { resolveBrowserStorage('local')?.clear?.(); } catch { /* synthetic storage may be disabled */ }
+  try { resolveBrowserStorage('session')?.clear?.(); } catch { /* synthetic storage may be disabled */ }
+}
 
 function resolveBrowserStorage(area: BrowserStorageArea): StorageLike | undefined {
   if (typeof window === 'undefined') return undefined;

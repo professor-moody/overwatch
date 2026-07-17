@@ -10,6 +10,9 @@ import Graph from 'graphology';
 import type { EdgeProperties, NodeProperties } from '../types.js';
 import type { OverwatchGraph } from '../services/engine-context.js';
 import { EngineContext } from '../services/engine-context.js';
+import { createTestSandbox } from '../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('regression-eight-findings');
 import { runCrossTierCorrelator } from '../services/cross-tier-correlator.js';
 import { runCrossTierInference } from '../services/cross-tier-inference.js';
 import { parseEvilginx, parseMicroBurst, parseRoadrecon } from '../services/parsers/index.js';
@@ -36,7 +39,7 @@ function makeConfig(crossTierLinks?: any) {
   } as any;
 }
 function buildHost(graph: OverwatchGraph, config: any) {
-  const ctx = new EngineContext(graph, config, './test-state-eight.json');
+  const ctx = new EngineContext(graph, config, testSandbox.path('test-state-eight.json'));
   return {
     ctx,
     addNode: (props: NodeProperties) => {

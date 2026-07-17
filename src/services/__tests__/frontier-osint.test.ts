@@ -3,6 +3,9 @@ import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
+import { createTestSandbox } from '../../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('frontier-osint');
 import { FrontierComputer } from '../frontier.js';
 
 function makeGraph(): OverwatchGraph {
@@ -26,7 +29,7 @@ function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string) 
   return graph.addEdge(src, tgt, { type, confidence: 1.0, discovered_at: now } as EdgeProperties);
 }
 function build(graph: OverwatchGraph, config?: any) {
-  const ctx = new EngineContext(graph, config || makeConfig(), './test-state.json');
+  const ctx = new EngineContext(graph, config || makeConfig(), testSandbox.path('test-state.json'));
   return new FrontierComputer(ctx, () => null);
 }
 const byType = <T extends { type: string }>(items: T[], t: string): T[] => items.filter(i => i.type === t);

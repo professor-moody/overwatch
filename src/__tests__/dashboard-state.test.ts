@@ -131,6 +131,7 @@ describe.skipIf(!supportsLocalListen)('dashboard state API', () => {
       expect(hydratedCampaign.completion_pct).toBe(total > 0 ? Math.round((completed / total) * 100) : 0);
     } finally {
       if (startedDashboard) await dashboard.stop();
+      engine.dispose();
     }
   });
 });

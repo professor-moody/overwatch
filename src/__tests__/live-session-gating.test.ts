@@ -16,6 +16,9 @@ import Graph from 'graphology';
 import type { EdgeType, NodeProperties, EdgeProperties } from '../types.js';
 import type { OverwatchGraph } from '../services/engine-context.js';
 import { EngineContext } from '../services/engine-context.js';
+import { createTestSandbox } from '../test-support/test-sandbox.js';
+
+const testSandbox = createTestSandbox('live-session-gating');
 import { PathAnalyzer } from '../services/path-analyzer.js';
 import { evaluateObjectives } from '../services/objective-manager.js';
 import { isLiveSessionEdge, isHasSessionEdge } from '../services/session-edge-utils.js';
@@ -81,7 +84,7 @@ describe('PathAnalyzer with closed sessions (F1)', () => {
     // from user-1 should NOT consider this edge.
     addEdge(graph, 'user-1', 'host-a', 'HAS_SESSION', { session_live: false, confidence: 1.0 });
     // host-a is otherwise unreachable from user-1.
-    const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+    const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
     const analyzer = new PathAnalyzer(ctx, BIDIR, () => ({ nodes: [], edges: [] }));
     const path = analyzer.findShortestPath('user-1', 'host-a');
     expect(path).toBeNull();
@@ -92,7 +95,7 @@ describe('PathAnalyzer with closed sessions (F1)', () => {
     addNode(graph, 'user-1', { type: 'user' });
     addNode(graph, 'host-a', { type: 'host', ip: '10.10.10.5', alive: true });
     addEdge(graph, 'user-1', 'host-a', 'HAS_SESSION', { session_live: true, confidence: 1.0 });
-    const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+    const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
     const analyzer = new PathAnalyzer(ctx, BIDIR, () => ({ nodes: [], edges: [] }));
     const path = analyzer.findShortestPath('user-1', 'host-a');
     expect(path).toEqual(['user-1', 'host-a']);
@@ -116,7 +119,7 @@ describe('Objective achievement with closed sessions (F1)', () => {
         achieved: false,
       }],
     });
-    const ctx = new EngineContext(graph, config, './test-state.json');
+    const ctx = new EngineContext(graph, config, testSandbox.path('test-state.json'));
     const queryGraph = (q: any) => {
       const nodes: any[] = [];
       graph.forEachNode((id: string, attrs) => {
@@ -159,7 +162,7 @@ describe('Objective achievement with closed sessions (F1)', () => {
         achieved: false,
       }],
     });
-    const ctx = new EngineContext(graph, config, './test-state.json');
+    const ctx = new EngineContext(graph, config, testSandbox.path('test-state.json'));
     const queryGraph = (q: any) => {
       const nodes: any[] = [];
       graph.forEachNode((id: string, attrs) => {
