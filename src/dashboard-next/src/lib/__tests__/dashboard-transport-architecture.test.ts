@@ -25,4 +25,19 @@ describe('dashboard transport architecture', () => {
     }
     expect(violations).toEqual([]);
   });
+
+  it('builds API and WebSocket request paths from the shared registries', () => {
+    const violations: string[] = [];
+    for (const path of sourceFiles(SOURCE_ROOT)) {
+      const name = relative(SOURCE_ROOT, path);
+      const source = readFileSync(path, 'utf8');
+      if (name !== 'lib/api.generated.ts' && /["'`]\/api\//.test(source)) {
+        violations.push(`${name}: handwritten API route`);
+      }
+      if (/createDashboardWebSocket\s*\(\s*["'`]\//.test(source)) {
+        violations.push(`${name}: handwritten WebSocket route`);
+      }
+    }
+    expect(violations).toEqual([]);
+  });
 });

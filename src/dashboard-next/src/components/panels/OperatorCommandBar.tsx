@@ -148,16 +148,36 @@ export function OperatorCommandBar() {
   }, [clearPoll, clearStoredPlanner]);
 
   useEffect(() => {
+    let restoredFromBrowser = false;
     try {
       const raw = sessionStorage.getItem(ACTIVE_PLANNER_COMMAND_KEY);
-      if (!raw) return;
-      const restored = JSON.parse(raw) as { commandId?: unknown; plannerTaskId?: unknown };
-      if (typeof restored.commandId !== 'string') return;
-      startPolling(
-        restored.commandId,
-        typeof restored.plannerTaskId === 'string' ? restored.plannerTaskId : undefined,
-      );
+      if (raw) {
+        const restored = JSON.parse(raw) as { commandId?: unknown; plannerTaskId?: unknown };
+        if (typeof restored.commandId === 'string') {
+          restoredFromBrowser = true;
+          startPolling(
+            restored.commandId,
+            typeof restored.plannerTaskId === 'string' ? restored.plannerTaskId : undefined,
+          );
+        }
+      }
     } catch { /* ignore malformed/unavailable transient browser storage */ }
+    if (restoredFromBrowser) return;
+
+    // sessionStorage is only a fast pointer. Durable server state remains the
+    // source of truth, so a new tab or privacy-restricted browser can still
+    // rediscover the newest queued/running planner after navigation or reload.
+    const controller = new AbortController();
+    void api.getActiveApplicationCommands(controller.signal)
+      .then(({ commands }) => {
+        const activeCommand = commands[0];
+        if (!activeCommand || controller.signal.aborted) return;
+        const projected = projectPlannerCommand(activeCommand);
+        if (projected.kind !== 'planning') return;
+        startPolling(activeCommand.command_id, projected.plannerTaskId);
+      })
+      .catch(() => { /* transient discovery failure; a submitted command still polls directly */ });
+    return () => controller.abort();
   }, [startPolling]);
 
   const submit = useCallback(async () => {

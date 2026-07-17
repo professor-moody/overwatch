@@ -9,7 +9,7 @@ function action(o: Partial<PendingAction> = {}): PendingAction {
   return { action_id: 'act-1', technique: 'ssh', description: 'spray', submitted_at: new Date(NOW).toISOString(), ...o };
 }
 function query(o: Partial<AgentQuery> = {}): AgentQuery {
-  return { query_id: 'q1', agent_id: 'recon-1', question: 'increase intensity?', status: 'open', created_at: NOW, ...o };
+  return { query_id: 'q1', agent_id: 'recon-1', question: 'increase intensity?', status: 'open', created_at: NOW, expires_at: NOW + 30 * 60_000, ...o };
 }
 function agent(o: Partial<AgentInfo> = {}): AgentInfo {
   return { task_id: 't1', agent_label: 'recon-1', id: 't1', agent_id: 'recon-1', status: 'running', assigned_at: new Date(NOW - 10_000).toISOString(), queued: false, lifecycle: 'live', live: true, subgraph_node_ids: [], findings_count: 0, ...o };
@@ -38,7 +38,7 @@ describe('buildAttentionQueue', () => {
   it('surfaces only OPEN proposed plans (confirm handle + TTL countdown), ranked approval > plan > stuck', () => {
     const plan = (o: Partial<import('../api').ProposedPlan> = {}): import('../api').ProposedPlan => ({
       plan_id: 'p1', command: 'what next?', ops: [{ op: 'directive' } as never], summary: 'Prioritize app01 recon',
-      source_agent_id: 'planner-1', created_at: NOW - 60_000, status: 'open', ...o,
+      source_agent_id: 'planner-1', created_at: NOW - 60_000, expires_at: NOW + 9 * 60_000, status: 'open', ...o,
     });
     // a heartbeating-but-idle running agent (stuck) — same construction as the stuck suite
     const stuck = agent({

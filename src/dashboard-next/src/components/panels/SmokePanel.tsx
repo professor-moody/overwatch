@@ -24,6 +24,7 @@ import type { DashboardReadinessSummary } from '../../lib/types';
 import type { PanelId } from '../layout/OperatorLayout';
 import { ActionButton, PageHeader } from '../shared/primitives';
 import { dashboardFetch } from '../../lib/dashboard-transport';
+import { buildDashboardPath } from '@overwatch/dashboard-api-contracts';
 
 // ---- types ----
 
@@ -97,15 +98,39 @@ async function probeJson<T>(
 
 // ---- check definitions ----
 
+const SMOKE_PATHS = {
+  health: buildDashboardPath('getHealth', {}),
+  state: buildDashboardPath('getState', {}),
+  graph: buildDashboardPath('getGraph', {}),
+  config: buildDashboardPath('getConfig', {}),
+  readiness: buildDashboardPath('getReadiness', {}),
+  agents: buildDashboardPath('getAgents', {}),
+  sessions: buildDashboardPath('getSessions', {}),
+  pendingActions: buildDashboardPath('getPendingActions', {}),
+  campaigns: buildDashboardPath('listCampaigns', {}),
+  opsecBudget: buildDashboardPath('getOpsecBudget', {}),
+  findings: buildDashboardPath('getFindings', {}),
+  reports: buildDashboardPath('listReports', {}),
+  trustSignals: buildDashboardPath('getTrustSignals', {}),
+  tools: buildDashboardPath('getTools', {}),
+  mcpTools: buildDashboardPath('getMcpTools', {}),
+  inferenceRules: buildDashboardPath('getInferenceRules', {}),
+  telemetry: buildDashboardPath('getTelemetry', {}),
+  frontierWeights: buildDashboardPath('getFrontierWeights', {}),
+  engagements: buildDashboardPath('listEngagements', {}),
+  templates: buildDashboardPath('getTemplates', {}),
+  tape: buildDashboardPath('getTapeStatus', {}),
+} as const;
+
 const CHECKS: CheckDef[] = [
   // Core API
   {
     id: 'api_health',
-    label: '/api/health',
+    label: SMOKE_PATHS.health,
     description: 'Graph engine health endpoint',
     group: 'Core API',
     severity: 'required',
-    run: () => probeJson<{ health_checks?: { status?: string } }>('/api/health', d => {
+    run: () => probeJson<{ health_checks?: { status?: string } }>(SMOKE_PATHS.health, d => {
       if (!d.health_checks) return 'health_checks field missing';
       if (d.health_checks.status === 'critical') {
         return {
@@ -122,41 +147,41 @@ const CHECKS: CheckDef[] = [
   },
   {
     id: 'api_state',
-    label: '/api/state',
+    label: SMOKE_PATHS.state,
     description: 'Engagement state + graph summary',
     group: 'Core API',
     severity: 'required',
     panel: 'overview',
-    run: () => probeJson<{ state: unknown }>('/api/state', d =>
+    run: () => probeJson<{ state: unknown }>(SMOKE_PATHS.state, d =>
       !d.state ? 'no state in response' : undefined,
     ),
   },
   {
     id: 'api_graph',
-    label: '/api/graph',
+    label: SMOKE_PATHS.graph,
     description: 'Raw graph export (nodes + edges)',
     group: 'Core API',
     severity: 'required',
-    run: () => probeJson<{ nodes: unknown[] }>('/api/graph', d =>
+    run: () => probeJson<{ nodes: unknown[] }>(SMOKE_PATHS.graph, d =>
       !Array.isArray(d.nodes) ? 'nodes field missing' : undefined,
     ),
   },
   {
     id: 'api_config',
-    label: '/api/config',
+    label: SMOKE_PATHS.config,
     description: 'Engagement config (scope, OPSEC)',
     group: 'Core API',
     severity: 'required',
     panel: 'settings',
-    run: () => probe('/api/config'),
+    run: () => probe(SMOKE_PATHS.config),
   },
   {
     id: 'api_readiness',
-    label: '/api/readiness',
+    label: SMOKE_PATHS.readiness,
     description: 'Operator readiness summary',
     group: 'Core API',
     severity: 'required',
-    run: () => probeJson<{ status?: string; graph?: unknown; api?: unknown }>('/api/readiness', d => {
+    run: () => probeJson<{ status?: string; graph?: unknown; api?: unknown }>(SMOKE_PATHS.readiness, d => {
       if (!d.status || !d.graph || !d.api) return 'readiness summary fields missing';
       return undefined;
     }),
@@ -165,86 +190,86 @@ const CHECKS: CheckDef[] = [
   // Subsystems
   {
     id: 'agents',
-    label: '/api/agents',
+    label: SMOKE_PATHS.agents,
     description: 'Agent manager — task list',
     group: 'Subsystems',
     severity: 'required',
     panel: 'agents',
-    run: () => probeJson<{ agents: unknown[] }>('/api/agents', d =>
+    run: () => probeJson<{ agents: unknown[] }>(SMOKE_PATHS.agents, d =>
       !Array.isArray(d.agents) ? 'agents field missing' : undefined,
     ),
   },
   {
     id: 'sessions',
-    label: '/api/sessions',
+    label: SMOKE_PATHS.sessions,
     description: 'Session manager — active shells',
     group: 'Subsystems',
     severity: 'required',
     panel: 'sessions',
-    run: () => probeJson<{ sessions: unknown[] }>('/api/sessions', d =>
+    run: () => probeJson<{ sessions: unknown[] }>(SMOKE_PATHS.sessions, d =>
       !Array.isArray(d.sessions) ? 'sessions field missing' : undefined,
     ),
   },
   {
     id: 'actions_pending',
-    label: '/api/actions/pending',
+    label: SMOKE_PATHS.pendingActions,
     description: 'Approval queue — pending actions',
     group: 'Subsystems',
     severity: 'required',
     panel: 'actions',
-    run: () => probeJson('/api/actions/pending', validatePendingActionsSmoke),
+    run: () => probeJson(SMOKE_PATHS.pendingActions, validatePendingActionsSmoke),
   },
   {
     id: 'campaigns',
-    label: '/api/campaigns',
+    label: SMOKE_PATHS.campaigns,
     description: 'Campaign list',
     group: 'Subsystems',
     severity: 'required',
     panel: 'campaigns',
-    run: () => probeJson<{ campaigns: unknown[] }>('/api/campaigns', d =>
+    run: () => probeJson<{ campaigns: unknown[] }>(SMOKE_PATHS.campaigns, d =>
       !Array.isArray(d.campaigns) ? 'campaigns field missing' : undefined,
     ),
   },
   {
     id: 'opsec_budget',
-    label: '/api/opsec/budget',
+    label: SMOKE_PATHS.opsecBudget,
     description: 'OPSEC noise budget and window',
     group: 'Subsystems',
     severity: 'profile',
-    run: () => probe('/api/opsec/budget'),
+    run: () => probe(SMOKE_PATHS.opsecBudget),
   },
 
   // Evidence + Reports
   {
     id: 'findings',
-    label: '/api/findings',
+    label: SMOKE_PATHS.findings,
     description: 'Classified findings from current graph',
     group: 'Evidence & Reports',
     severity: 'required',
     panel: 'findings',
-    run: () => probeJson<{ findings: unknown[] }>('/api/findings', d =>
+    run: () => probeJson<{ findings: unknown[] }>(SMOKE_PATHS.findings, d =>
       !Array.isArray(d.findings) ? 'findings field missing' : undefined,
     ),
   },
   {
     id: 'reports',
-    label: '/api/reports',
+    label: SMOKE_PATHS.reports,
     description: 'Report archive manifest',
     group: 'Evidence & Reports',
     severity: 'required',
     panel: 'findings',
-    run: () => probeJson<{ reports: unknown[] }>('/api/reports', d =>
+    run: () => probeJson<{ reports: unknown[] }>(SMOKE_PATHS.reports, d =>
       !Array.isArray(d.reports) ? 'reports field missing' : undefined,
     ),
   },
   {
     id: 'trust_signals',
-    label: '/api/trust-signals',
+    label: SMOKE_PATHS.trustSignals,
     description: 'Operator verification signal summary',
     group: 'Evidence & Reports',
     severity: 'required',
     panel: 'activity',
-    run: () => probeJson<{ signals: unknown[]; counts?: Record<string, number>; total?: number }>('/api/trust-signals', d => {
+    run: () => probeJson<{ signals: unknown[]; counts?: Record<string, number>; total?: number }>(SMOKE_PATHS.trustSignals, d => {
       if (!Array.isArray(d.signals)) return 'signals field missing';
       if (!d.counts || typeof d.total !== 'number') return 'summary fields missing';
       return undefined;
@@ -254,27 +279,27 @@ const CHECKS: CheckDef[] = [
   // Tooling + Inference
   {
     id: 'host_tools',
-    label: '/api/tools',
+    label: SMOKE_PATHS.tools,
     description: 'Host binary availability (nmap, certipy, nxc, etc.)',
     group: 'Tooling',
     severity: 'optional',
-    run: () => probeJson('/api/tools', validateHostToolsSmoke),
+    run: () => probeJson(SMOKE_PATHS.tools, validateHostToolsSmoke),
   },
   {
     id: 'mcp_tools',
-    label: '/api/mcp-tools',
+    label: SMOKE_PATHS.mcpTools,
     description: 'Registered MCP tool surface',
     group: 'Tooling',
     severity: 'required',
-    run: () => probeJson('/api/mcp-tools', validateMcpToolsSmoke),
+    run: () => probeJson(SMOKE_PATHS.mcpTools, validateMcpToolsSmoke),
   },
   {
     id: 'inference_rules',
-    label: '/api/inference-rules',
+    label: SMOKE_PATHS.inferenceRules,
     description: 'Loaded inference rule definitions',
     group: 'Tooling',
     severity: 'required',
-    run: () => probeJson<{ rules: unknown[] }>('/api/inference-rules', d => {
+    run: () => probeJson<{ rules: unknown[] }>(SMOKE_PATHS.inferenceRules, d => {
       if (!Array.isArray(d.rules)) return 'rules field missing';
       if (d.rules.length < 30) return `only ${d.rules.length} rules loaded (expected 60+)`;
       return undefined;
@@ -282,51 +307,51 @@ const CHECKS: CheckDef[] = [
   },
   {
     id: 'telemetry',
-    label: '/api/telemetry',
+    label: SMOKE_PATHS.telemetry,
     description: 'Tool usage telemetry + graph health',
     group: 'Tooling',
     severity: 'optional',
-    run: () => probe('/api/telemetry'),
+    run: () => probe(SMOKE_PATHS.telemetry),
   },
   {
     id: 'frontier_weights',
-    label: '/api/frontier/weights',
+    label: SMOKE_PATHS.frontierWeights,
     description: 'Frontier scoring weight config',
     group: 'Tooling',
     severity: 'required',
-    run: () => probe('/api/frontier/weights'),
+    run: () => probe(SMOKE_PATHS.frontierWeights),
   },
 
   // Engagements
   {
     id: 'engagements',
-    label: '/api/engagements',
+    label: SMOKE_PATHS.engagements,
     description: 'Engagement registry list',
     group: 'Engagements',
     severity: 'optional',
     panel: 'engagements',
-    run: () => probeJson<{ engagements: unknown[] }>('/api/engagements', d =>
+    run: () => probeJson<{ engagements: unknown[] }>(SMOKE_PATHS.engagements, d =>
       !Array.isArray(d.engagements) ? 'engagements field missing' : undefined,
     ),
   },
   {
     id: 'templates',
-    label: '/api/templates',
+    label: SMOKE_PATHS.templates,
     description: 'Engagement template catalog',
     group: 'Engagements',
     severity: 'optional',
     panel: 'engagements',
-    run: () => probe('/api/templates'),
+    run: () => probe(SMOKE_PATHS.templates),
   },
 
   // Tape
   {
     id: 'tape',
-    label: '/api/tape',
+    label: SMOKE_PATHS.tape,
     description: 'JSON-RPC tape recorder status',
     group: 'Tape & Audit',
     severity: 'optional',
-    run: () => probeOptional('/api/tape', 'Attach the tape controller through normal app bootstrap to toggle recording from the dashboard.'),
+    run: () => probeOptional(SMOKE_PATHS.tape, 'Attach the tape controller through normal app bootstrap to toggle recording from the dashboard.'),
   },
 ];
 

@@ -9,13 +9,24 @@ function agent(o: Partial<AgentInfo> = {}): AgentInfo {
   return { task_id: 'task-1', agent_label: 'recon-1', id: 'task-1', agent_id: 'recon-1', status: 'running', assigned_at: new Date(NOW - 10_000).toISOString(), queued: false, lifecycle: 'live', live: true, subgraph_node_ids: [], findings_count: 0, ...o };
 }
 function query(o: Partial<AgentQuery> = {}): AgentQuery {
-  return { query_id: 'q1', task_id: 'task-1', agent_id: 'recon-1', question: 'go?', status: 'open', created_at: NOW, ...o };
+  return { query_id: 'q1', task_id: 'task-1', agent_id: 'recon-1', question: 'go?', status: 'open', created_at: NOW, expires_at: NOW + 30 * 60_000, ...o };
 }
 function action(o: Partial<PendingAction> = {}): PendingAction {
   return { action_id: 'act-1', description: 'spray', submitted_at: new Date(NOW).toISOString(), ...o };
 }
 function session(o: Partial<SessionInfo> = {}): SessionInfo {
-  return { id: 's1', kind: 'pty', state: 'connected', ...o };
+  return {
+    id: 's1',
+    kind: 'pty',
+    transport: 'pty',
+    state: 'connected',
+    title: 'Shell',
+    started_at: new Date(NOW).toISOString(),
+    last_activity_at: new Date(NOW).toISOString(),
+    capabilities: {},
+    buffer_end_pos: 0,
+    ...o,
+  };
 }
 
 describe('buildMissionCard', () => {

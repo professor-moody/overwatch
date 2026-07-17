@@ -11,8 +11,11 @@ function command(
   return {
     command_id: 'command-1',
     idempotency_key: 'plan-command-1',
+    input_sha256: 'a'.repeat(64),
     command_kind: 'operator.plan',
     validated_input: { command: 'inspect the strange host' },
+    transport: 'dashboard',
+    actor_task_id: null,
     status: 'accepted',
     created_at: '2000-01-01T00:00:00.000Z',
     ...overrides,
@@ -25,6 +28,7 @@ const plan: ProposedPlan = {
   ops: [{ op: 'scope', add_cidrs: ['10.20.30.0/24'] }],
   summary: 'Inspect the strange host',
   created_at: 1,
+  expires_at: 600_001,
   status: 'open',
 };
 

@@ -22,8 +22,13 @@ import type { ActivityEntry, FrontierItem, PendingAction, SessionInfo } from '..
 const session = (props: Partial<SessionInfo>): SessionInfo => ({
   id: 'session-1',
   kind: 'pty',
+  transport: 'pty',
   state: 'connected',
   title: 'Shell',
+  started_at: '2026-05-15T00:00:00Z',
+  last_activity_at: '2026-05-15T00:00:00Z',
+  capabilities: {},
+  buffer_end_pos: 0,
   ...props,
 });
 

@@ -5,6 +5,7 @@ import type { WsMessage, FullStateData, GraphUpdateData, SessionInfo, AgentConso
 import * as api from '../lib/api';
 import { createDashboardWebSocket } from '../lib/dashboard-transport';
 import { FallbackPollCoordinator, GenerationSocketController } from '../lib/generation-socket';
+import { buildDashboardWebSocketPath, MainWebSocketEventSchema } from '@overwatch/dashboard-contracts';
 
 interface WsContextValue {
   connected: boolean;
@@ -32,13 +33,13 @@ export function WsProvider({ children }: { children: ReactNode }) {
 
     const handleMessage = (raw: unknown, generation: number, controller: GenerationSocketController) => {
       try {
-        const msg: WsMessage = JSON.parse(String(raw));
+        const msg: WsMessage = MainWebSocketEventSchema.parse(JSON.parse(String(raw)));
         const s = store.getState();
         const toast = useToastStore.getState().addToast;
 
         if (msg.type === 'full_state') {
           abortFallbackPoll();
-          s.loadFullState(msg.data as FullStateData);
+          s.loadFullState(msg.data as unknown as FullStateData);
           controller.markSynchronized(generation);
           return;
         }
@@ -49,7 +50,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
         switch (msg.type) {
           case 'graph_update': {
             const prevAgents = s.agents;
-            s.applyGraphUpdate(msg.data as GraphUpdateData);
+            s.applyGraphUpdate(msg.data as unknown as GraphUpdateData);
             for (const agent of store.getState().agents) {
               const previous = prevAgents.find(candidate => candidate.id === agent.id);
               if (previous?.status === 'running' && agent.status === 'completed') {
@@ -139,7 +140,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
     };
 
     controller = new GenerationSocketController({
-      createSocket: () => createDashboardWebSocket('/ws'),
+      createSocket: () => createDashboardWebSocket(buildDashboardWebSocketPath('main', {})),
       onMessage: (data, generation) => handleMessage(data, generation, controller),
       onSynchronizedChange: synchronized => {
         if (!active) return;

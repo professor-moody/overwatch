@@ -5,7 +5,6 @@ import { useToastStore } from '../../stores/toast-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import * as api from '../../lib/api';
 import type { AgentInfo, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
-import { buildOperatorConsoleEvents } from '../../lib/operator-console';
 import { sessionsForAgent } from '../../lib/session-workspace';
 import { buildMissionCard, groupMissionCards } from '../../lib/agent-mission';
 import { buildAgentThread } from '../../lib/agent-thread';
@@ -270,13 +269,13 @@ export function AgentsPanel() {
         const data = await api.getAgentConsole(activeAgent.id, { limit: 140 });
         setConsoleEvents(data.events || []);
       } else {
-        const data = await api.getHistory({ limit: 300 });
-        setConsoleEvents(buildOperatorConsoleEvents(data.entries || [], { agents, limit: 180 }));
+        const data = await api.getOperatorConsole({ limit: 180 });
+        setConsoleEvents(data.events || []);
       }
     } catch {
       setConsoleEvents([]);
     }
-  }, [activeAgent?.id, agents]);
+  }, [activeAgent?.id]);
 
   useEffect(() => { loadConsole(); }, [loadConsole]);
 
@@ -292,20 +291,15 @@ export function AgentsPanel() {
   }, [activeAgent, connected, consolePaused, loadConsole]);
 
   useEffect(() => {
-    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
     const handleUpdate = (event: Event) => {
       if (consolePaused) return;
       const detail = (event as CustomEvent<{ events?: AgentConsoleEvent[] }>).detail;
       const all = detail?.events || [];
       if (all.length === 0) return;
       if (!activeAgent) {
-        // The primary cockpit is rendered by the CLIENT builder
-        // (buildOperatorConsoleEvents off /api/history). The WS payload is built
-        // by the SERVER builder, which titles/labels the same event_id slightly
-        // differently — merging it would flip rows on every poll. So in the
-        // primary view the push is just a "something changed" signal: debounce a
-        // re-fetch so the client builder stays the single source of truth.
-        if (!refreshTimer) refreshTimer = setTimeout(() => { refreshTimer = null; void loadConsole(); }, 400);
+        // HTTP and WS use the same server projector, so the live event can merge
+        // immediately without changing labels or titles on the next poll.
+        setConsoleEvents(prev => mergeConsoleEvents(prev, all));
         return;
       }
       // Per-agent drawer: both the poll (getAgentConsole) and the WS push use the
@@ -318,7 +312,6 @@ export function AgentsPanel() {
     window.addEventListener('overwatch-agent-console-update', handleUpdate);
     return () => {
       window.removeEventListener('overwatch-agent-console-update', handleUpdate);
-      if (refreshTimer) clearTimeout(refreshTimer);
     };
   }, [activeAgent, consolePaused, loadConsole]);
 

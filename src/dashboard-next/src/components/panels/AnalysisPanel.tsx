@@ -13,6 +13,7 @@ import { ActionButton, FilterBar, PageHeader, PanelSection, SegmentedControl, St
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { useNavigation } from '../../hooks/useNavigation';
 import { createDashboardWebSocket } from '../../lib/dashboard-transport';
+import { ActionOutputWebSocketEventSchema, buildDashboardWebSocketPath } from '@overwatch/dashboard-contracts';
 
 const MAX_BYTES_INITIAL = 64 * 1024;
 const MAX_BYTES_CEIL = 1024 * 1024; // server clamps reads to 1 MiB
@@ -204,12 +205,12 @@ function AssessmentView({ run, outOfWindow }: { run: ActionRun | null; outOfWind
     let se = '';
     let dropped = false;
     let ws: WebSocket;
-    try { ws = createDashboardWebSocket(`/ws/actions/${encodeURIComponent(run.actionId)}/output`); } catch { return; }
+    try { ws = createDashboardWebSocket(buildDashboardWebSocketPath('action_output', { action_id: run.actionId })); } catch { return; }
     setLive({ stdout: '', stderr: '', done: false, dropped: false });
     ws.onmessage = (ev) => {
       if (typeof ev.data !== 'string') return;
       try {
-        const msg = JSON.parse(ev.data);
+        const msg = ActionOutputWebSocketEventSchema.parse(JSON.parse(ev.data));
         if (msg.type === 'output') {
           if (msg.dropped) dropped = true;
           if (msg.stream === 'stderr') se += msg.text; else so += msg.text;

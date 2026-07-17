@@ -477,7 +477,9 @@ function ActionDetail({
           {signals.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {signals.map(signal => (
-                <span key={signal} className="text-[10px] px-1.5 py-0.5 rounded bg-warning/10 text-warning">{signal}</span>
+                <span key={`${signal.type}:${signal.detected_at}`} className="text-[10px] px-1.5 py-0.5 rounded bg-warning/10 text-warning">
+                  {signal.type}: {signal.description}
+                </span>
               ))}
             </div>
           )}
