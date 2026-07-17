@@ -25,17 +25,23 @@ export function CountdownTimer({
 
   useEffect(() => {
     if (!targetIso) return;
+    let expired = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
     const tick = () => {
       const left = new Date(targetIso).getTime() - Date.now();
       setRemaining(left);
-      if (left <= 0) {
-        clearInterval(timer);
+      if (left <= 0 && !expired) {
+        expired = true;
+        if (timer) clearInterval(timer);
         onExpire?.();
       }
     };
     tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
+    if (!expired) timer = setInterval(tick, 1000);
+    return () => {
+      expired = true;
+      if (timer) clearInterval(timer);
+    };
   }, [targetIso, onExpire]);
 
   if (!targetIso) return null;

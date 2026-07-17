@@ -422,6 +422,7 @@ export class GraphEngine {
 
       // Reconcile runtime-dependent state on startup only when the resulting
       // mutations can be durably checkpointed.
+      this.reconcileCoordinationExpiryOnStartup();
       this.reconcileSessionEdgesOnStartup();
       this.reconcileSessionDescriptorsOnStartup();
       this.reconcileAgentsOnStartup();
@@ -3948,6 +3949,26 @@ export class GraphEngine {
   }
 
   /**
+   * Replay is deliberately clock-neutral so repeated WAL recovery is
+   * deterministic. Once complete recovery is writable, apply the real clock
+   * exactly once through the normal transaction boundary. Absolute deadlines
+   * are retained, so later restarts are stable and never extend an inbox item.
+   */
+  private reconcileCoordinationExpiryOnStartup(): void {
+    if (!this.ctx.isDraftingTransaction()) {
+      this.transactDurableSlices(
+        'reconcile coordination expiry on startup',
+        ['plans_questions'],
+        () => this.reconcileCoordinationExpiryOnStartup(),
+      );
+      return;
+    }
+    const now = Date.parse(this.ctx.nowIso());
+    this.ctx.proposedPlanStore.prune(now);
+    this.ctx.agentQueryStore.prune(now);
+  }
+
+  /**
    * P1.4: list active frontier leases (used by `next_task` filtering and
    * by the dashboard to surface "in progress" indicators).
    */
@@ -5532,6 +5553,7 @@ export class GraphEngine {
     try {
       if (this.startupReconciliationDeferred) {
         this.evaluateObjectives();
+        this.reconcileCoordinationExpiryOnStartup();
         this.reconcileSessionEdgesOnStartup();
         this.reconcileSessionDescriptorsOnStartup();
         this.reconcileAgentsOnStartup();

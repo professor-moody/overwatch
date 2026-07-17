@@ -431,6 +431,10 @@ export function GraphPage() {
       s.pathEdges.clear();
       setSelectedNodeId(null);
       refresh();
+      // The logical focus is authoritative even if Sigma has not produced
+      // renderable positions yet. Redraw now so the banner/filter state is not
+      // stranded while a later effect retries the camera movement.
+      forceGraphUi();
       const moved = zoomToNodes(focusNodes, {
         ...focusedFitOptions('filter'),
         padding: graphFitPadding(false),
@@ -441,7 +445,6 @@ export function GraphPage() {
         return false;
       }
       setRenderIssue(null);
-      forceGraphUi();
       return true;
     }
 
@@ -468,6 +471,9 @@ export function GraphPage() {
     for (const node of focus.pathNodes) s.pathNodes.add(node);
     setSelectedNodeId(focus.primaryNode);
     refresh();
+    // Deep-link selection must render independently of camera readiness. On a
+    // cold graph load zoomToNodes can briefly fail before Sigma has positions.
+    forceGraphUi();
     const moved = zoomToNodes(focus.focusNodes, {
       ...focusedFitOptions(focus.kind),
       duration: 300,
@@ -477,7 +483,6 @@ export function GraphPage() {
       return false;
     }
     setRenderIssue(null);
-    forceGraphUi();
     return true;
   }, [forceGraphUi, graph, focusedFitOptions, graphFitPadding, refresh, stateRef, toast, zoomToNodes]);
 

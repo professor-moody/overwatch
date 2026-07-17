@@ -48,8 +48,9 @@ export interface AddAgentQueryArgs {
   now?: number;
 }
 
-// 30 min — matches the headless wall-clock timeout; a question outliving the
-// agent that asked it is dead weight.
+// 30 min — matches the headless wall-clock timeout. Restart may interrupt the
+// asking runtime, but the question remains an operator decision until this
+// original absolute deadline (it can inform an explicit resume/retry).
 const DEFAULT_TTL_MS = 30 * 60_000;
 const RECORD_CAP = 500;
 

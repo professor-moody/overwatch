@@ -420,17 +420,18 @@ describe('EngineTransaction v2 coordination boundary', () => {
     const first = open();
     first.flushNow();
     const base = checkpoint(statePath);
+    const now = Date.now();
     const plan = first.getProposedPlanStore().add({
       command: 'scan the target',
       ops: [],
       summary: 'scan',
-      now: 10_000,
+      now,
     });
     const query = first.getAgentQueryStore().add({
       task_id: 'task-question',
       agent_id: 'agent-question',
       question: 'Proceed?',
-      now: 10_000,
+      now,
     });
     const transactions = new MutationJournal(statePath).readTransactionsSince(base);
     expect(transactions).toHaveLength(2);
@@ -449,6 +450,77 @@ describe('EngineTransaction v2 coordination boundary', () => {
       question: 'Proceed?',
       status: 'open',
     });
+  });
+
+  it('expires replayed proposal and question deadlines once, then remains stable across restarts', () => {
+    const first = open();
+    first.flushNow();
+    const base = checkpoint(statePath);
+    const planCreatedAt = Date.now() - 11 * 60_000;
+    const queryCreatedAt = Date.now() - 31 * 60_000;
+    const plan = first.getProposedPlanStore().add({
+      command: 'expired recovery plan',
+      ops: [],
+      summary: 'must not return to the inbox',
+      now: planCreatedAt,
+    });
+    const query = first.getAgentQueryStore().add({
+      task_id: 'task-expired',
+      agent_id: 'agent-expired',
+      question: 'Expired recovery question?',
+      now: queryCreatedAt,
+    });
+    expect(new MutationJournal(statePath).readTransactionsSince(base)).toHaveLength(2);
+    crash(first);
+
+    const second = open();
+    expect(second.getProposedPlanStore().get(plan.plan_id)).toMatchObject({
+      status: 'expired',
+      expires_at: planCreatedAt + 10 * 60_000,
+      expired_at: planCreatedAt + 10 * 60_000,
+    });
+    expect(second.getAgentQueryStore().get(query.query_id)).toMatchObject({
+      status: 'expired',
+      expires_at: queryCreatedAt + 30 * 60_000,
+      expired_at: queryCreatedAt + 30 * 60_000,
+    });
+    second.flushNow();
+    crash(second);
+
+    const third = open();
+    expect(third.getProposedPlanStore().get(plan.plan_id)?.expired_at)
+      .toBe(planCreatedAt + 10 * 60_000);
+    expect(third.getAgentQueryStore().get(query.query_id)?.expired_at)
+      .toBe(queryCreatedAt + 30 * 60_000);
+  });
+
+  it('keeps an unexpired running-agent question visible after restart interruption', () => {
+    const first = open();
+    const now = Date.now();
+    expect(first.registerAgent({
+      id: 'task-resume-question',
+      agent_id: 'planner-resume-question',
+      assigned_at: new Date(now).toISOString(),
+      status: 'running',
+      subgraph_node_ids: [],
+    }).ok).toBe(true);
+    const query = first.getAgentQueryStore().add({
+      owner_task_id: 'task-resume-question',
+      owner_agent_label: 'planner-resume-question',
+      question: 'Should this recovered plan continue?',
+      now,
+    });
+    crash(first);
+
+    const second = open();
+    expect(second.getTask('task-resume-question')?.status).toBe('interrupted');
+    expect(second.getAgentQueryStore().get(query.query_id)).toMatchObject({
+      status: 'open',
+      owner_task_id: 'task-resume-question',
+      expires_at: now + 30 * 60_000,
+    });
+    expect(second.getAgentQueryStore().getOpen(now + 1).map(item => item.query_id))
+      .toContain(query.query_id);
   });
 
   it('journals frontier-generated campaigns before exposing them', () => {

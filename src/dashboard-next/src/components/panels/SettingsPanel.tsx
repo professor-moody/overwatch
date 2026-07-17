@@ -435,7 +435,13 @@ function ObjectivesSection({ objectives, onReload }: { objectives: Objective[]; 
         <div className="space-y-2">
           {objectives.map(obj => (
             <div key={obj.id} className={cn('flex items-start gap-2 p-2 rounded border', obj.achieved ? 'border-success/20 bg-success/5' : 'border-border bg-elevated')}>
-              <input type="checkbox" checked={obj.achieved} onChange={() => toggle(obj)} className="mt-0.5 accent-success" />
+              <input
+                type="checkbox"
+                aria-label={`Mark objective ${obj.description} ${obj.achieved ? 'incomplete' : 'achieved'}`}
+                checked={obj.achieved}
+                onChange={() => toggle(obj)}
+                className="mt-0.5 accent-success"
+              />
               <div className="flex-1 min-w-0">
                 <div className="text-xs">{obj.description}</div>
                 <div className="text-[10px] text-muted-foreground mt-0.5 flex gap-2">
@@ -444,7 +450,11 @@ function ObjectivesSection({ objectives, onReload }: { objectives: Objective[]; 
                   {obj.achieved_at && <span className="text-success">{'✓'} {new Date(obj.achieved_at).toLocaleDateString()}</span>}
                 </div>
               </div>
-              <button onClick={() => remove(obj.id)} className="text-muted-foreground hover:text-destructive text-xs">&times;</button>
+              <button
+                aria-label={`Delete objective ${obj.description}`}
+                onClick={() => remove(obj.id)}
+                className="text-muted-foreground hover:text-destructive text-xs"
+              >&times;</button>
             </div>
           ))}
         </div>

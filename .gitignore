@@ -18,6 +18,8 @@ AGENTS.md
 CLAUDE.md
 HANDOFF.md
 site/
+playwright-report/
+test-results/
 .venv/
 tmp/
 retrospective/

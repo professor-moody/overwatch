@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Columns3, Copy, LayoutList, Pause, Play, Plus, RefreshCw, Scissors, Send, Square, Trash2 } from 'lucide-react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { cn, formatRelativeTime } from '../../lib/utils';
@@ -51,6 +52,16 @@ export function CampaignsPanel() {
   const [view, setView] = useState<'list' | 'board'>('list');
   const [query, setQuery] = useState('');
   const [agentQueries, setAgentQueries] = useState<AgentQuery[]>([]);
+  const [searchParams] = useSearchParams();
+  const requestedCampaignId = searchParams.get('item');
+
+  useEffect(() => {
+    if (requestedCampaignId && campaigns.some(campaign => campaign.id === requestedCampaignId)) {
+      setSelectedId(requestedCampaignId);
+      setMode('detail');
+      setView('list');
+    }
+  }, [campaigns, requestedCampaignId]);
 
   // Board view buckets agents into per-campaign lanes; agent→operator questions
   // drive the "Needs You"/Blocked lanes, so fetch them while the board is shown
@@ -373,6 +384,7 @@ function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign;
             <label className="text-muted-foreground">Children</label>
             <input
               type="number"
+              aria-label="Campaign child count"
               min={2}
               max={campaign.items.length}
               value={splitCount}

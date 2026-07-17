@@ -188,6 +188,7 @@ export class AgentManager {
       eventType: 'agent_updated' | 'instrumentation_warning';
       reason?: string;
       details?: Record<string, unknown>;
+      preserveOpenQuestions?: boolean;
     },
   ): boolean {
     // Terminal states are strictly monotonic. Once durable truth says a task
@@ -204,7 +205,9 @@ export class AgentManager {
     if (incomingTerminal) {
       task.completed_at = task.completed_at ?? options.completedAt;
       this.ctx.frontierLeases.releaseByTask(taskId);
-      this.ctx.agentQueryStore.expireForTask(taskId, Date.parse(options.completedAt));
+      if (!options.preserveOpenQuestions) {
+        this.ctx.agentQueryStore.expireForTask(taskId, Date.parse(options.completedAt));
+      }
     }
     this.ctx.logEvent({
       description: `Agent ${agentLabel} ${status}${options.summary ? `: ${options.summary}` : ''}`,
@@ -359,6 +362,10 @@ export class AgentManager {
           completedAt: this.ctx.nowIso(),
           eventType: 'agent_updated',
           reason: 'startup_reconciliation',
+          // Restart interrupts the runtime, not the operator decision. Keep an
+          // unexpired question in the inbox so it remains answerable for a
+          // future resume/retry instead of silently discarding the handoff.
+          preserveOpenQuestions: true,
         })) count++;
       }
     }

@@ -192,6 +192,12 @@ export function WsProvider({ children }: { children: ReactNode }) {
       window.clearInterval(pollTimer);
       abortFallbackPoll();
       controller.stop();
+      // `active` intentionally suppresses controller callbacks after unmount,
+      // so the controller's final synchronized=false notification cannot own
+      // this store transition. Clear the shared connection flag explicitly;
+      // otherwise remounts and sibling consumers can inherit a stale "Live"
+      // state after the physical socket has already closed.
+      store.getState().setConnected(false);
     };
   }, [store]);
 
