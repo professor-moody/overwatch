@@ -209,7 +209,11 @@ function productionTypeScriptFiles(directory: string): string[] {
     if (entry.isDirectory()) {
       // The browser keeps a separate Graphology view model; it is not durable
       // engine state and intentionally mutates for layout/interaction.
-      if (entry.name === '__tests__' || entry.name === 'dashboard-next') continue;
+      if (
+        entry.name === '__tests__'
+        || entry.name === 'dashboard-next'
+        || entry.name === 'test-support'
+      ) continue;
       files.push(...productionTypeScriptFiles(full));
       continue;
     }
