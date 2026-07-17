@@ -463,7 +463,7 @@ describe('PlaybookRunService', () => {
     expect(extended.run.steps[1].status).toBe('pending');
   });
 
-  it('ties a retained step retry to the latest immutable revision that actually defines it', () => {
+  it('retains superseded steps as non-actionable history', () => {
     const service = new PlaybookRunService(openEngine());
     const first = service.open({
       definition, credential_id: 'cred-1', normalized_inputs: {},
@@ -480,11 +480,72 @@ describe('PlaybookRunService', () => {
       steps: [{ ...baseSteps(true)[0], step_id: 'step-b', command: 'command-b' }],
     });
     expect(narrowed.run.current_plan_revision).toBe(2);
-    const retry = service.retryStep(first.run.run_id, 'step-a');
-    expect(retry.attempt.plan_revision).toBe(1);
+    expect(narrowed.run.steps.find(step => step.step_id === 'step-a')).toMatchObject({
+      status: 'cancelled',
+      blocked_reason: 'Superseded by playbook plan revision 2.',
+      attempts: [{ status: 'failed', plan_revision: 1 }],
+    });
+    expect(() => service.startStep(first.run.run_id, 'step-a')).toThrow(/not actionable in current plan revision 2/);
+    expect(() => service.retryStep(first.run.run_id, 'step-a')).toThrow(/not actionable in current plan revision 2/);
     expect(narrowed.run.plan_revisions[0].steps.map(step => step.step_id)).toContain('step-a');
     expect(narrowed.run.plan_revisions[1].steps.map(step => step.step_id)).not.toContain('step-a');
   });
+
+  it('reactivates a superseded step only after a later plan emits it again', () => {
+    const service = new PlaybookRunService(openEngine());
+    const first = service.open({
+      definition, credential_id: 'cred-1', normalized_inputs: {},
+      steps: [{ ...baseSteps(true)[0], step_id: 'step-a', command: 'command-a' }],
+    });
+    service.open({
+      definition, credential_id: 'cred-1', normalized_inputs: {},
+      steps: [{ ...baseSteps(true)[0], step_id: 'step-b', command: 'command-b' }],
+    });
+    const restored = service.open({
+      definition, credential_id: 'cred-1', normalized_inputs: {},
+      steps: [{ ...baseSteps(true)[0], step_id: 'step-a', command: 'command-a' }],
+    });
+
+    expect(restored.run.steps.find(step => step.step_id === 'step-a')).toMatchObject({ status: 'pending' });
+    expect(restored.run.steps.find(step => step.step_id === 'step-b')).toMatchObject({ status: 'cancelled' });
+    const claim = service.startStep(first.run.run_id, 'step-a');
+    expect(claim.attempt.plan_revision).toBe(restored.run.current_plan_revision);
+  });
+
+  it.each(['failed', 'succeeded'] as const)(
+    'restores a re-emitted identical step to its retained %s outcome',
+    outcome => {
+      const service = new PlaybookRunService(openEngine());
+      const first = service.open({
+        definition, credential_id: 'cred-1', normalized_inputs: {},
+        steps: [{ ...baseSteps(true)[0], step_id: 'repeat', command: 'repeat-command' }],
+      });
+      const claim = service.startStep(first.run.run_id, 'repeat');
+      service.beginAttemptExecution(claim.execution);
+      service.finishAttempt(first.run.run_id, 'repeat', claim.attempt.attempt_id, {
+        execution_outcome: outcome === 'succeeded' ? 'succeeded' : 'failed',
+        ...(outcome === 'succeeded' ? { parse_outcome: 'ok' as const } : { error: 'retry later' }),
+      });
+      service.open({
+        definition, credential_id: 'cred-1', normalized_inputs: {},
+        steps: [{ ...baseSteps(true)[0], step_id: 'replacement', command: 'replacement-command' }],
+      });
+      const restored = service.open({
+        definition, credential_id: 'cred-1', normalized_inputs: {},
+        steps: [{ ...baseSteps(true)[0], step_id: 'repeat', command: 'repeat-command' }],
+      });
+
+      expect(restored.run.steps.find(step => step.step_id === 'repeat')).toMatchObject({ status: outcome });
+      if (outcome === 'failed') {
+        const retry = service.retryStep(first.run.run_id, 'repeat');
+        expect(retry.attempt).toMatchObject({ attempt_number: 2, plan_revision: restored.run.current_plan_revision });
+      } else {
+        expect(restored.run.status).toBe('succeeded');
+        expect(() => service.startStep(first.run.run_id, 'repeat')).toThrow(/use retry for a prior failed attempt/);
+        expect(() => service.retryStep(first.run.run_id, 'repeat')).toThrow(/only failed or interrupted steps can be retried/);
+      }
+    },
+  );
 
   it('reopens a succeeded logical step when its execution semantics change', () => {
     const service = new PlaybookRunService(openEngine());

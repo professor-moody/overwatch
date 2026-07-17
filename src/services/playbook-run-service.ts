@@ -234,14 +234,11 @@ function attemptPlanReference(
   step: PersistedPlaybookStepRunV1,
 ): { revision: number; template_hash: string } {
   const templateHash = sha256(step.resolved_execution);
-  const revision = [...run.plan_revisions]
-    .sort((left, right) => right.revision - left.revision)
-    .find(candidate => candidate.steps.some(definition =>
-      definition.step_id === step.step_id
-      && sha256(definition.execution_template) === templateHash));
-  if (!revision) {
+  const revision = run.plan_revisions.find(candidate => candidate.revision === run.current_plan_revision);
+  const definition = revision?.steps.find(candidate => candidate.step_id === step.step_id);
+  if (!revision || !definition || sha256(definition.execution_template) !== templateHash) {
     throw new PlaybookRunError(
-      `Playbook step ${step.step_id} is not backed by an immutable plan revision. Re-expand the playbook before execution.`,
+      `Playbook step ${step.step_id} is not actionable in current plan revision ${run.current_plan_revision}. Re-expand the playbook before execution.`,
       'PLAYBOOK_CONFLICT',
     );
   }
@@ -374,10 +371,24 @@ function activeAttempt(step: PersistedPlaybookStepRunV1): PersistedPlaybookAttem
   return step.attempts.find(attempt => ['claimed', 'awaiting_approval', 'running'].includes(attempt.status));
 }
 
+function currentPlanStepIds(run: PersistedDurablePlaybookRunV1): Set<string> {
+  const revision = run.plan_revisions.find(candidate => candidate.revision === run.current_plan_revision);
+  return new Set(revision?.steps.map(step => step.step_id) ?? []);
+}
+
 function updateDerivedStatus(run: PersistedDurablePlaybookRunV1): void {
-  const steps = run.steps;
-  const attempts = steps.flatMap(step => step.attempts);
+  const currentIds = currentPlanStepIds(run);
+  const steps = run.steps.filter(step => currentIds.has(step.step_id));
+  const attempts = run.steps.flatMap(step => step.attempts);
   const hasPartial = attempts.some(attempt => attempt.parse_outcome === 'partial');
+  const active = run.steps.map(step => step.status)
+    .find(status => status === 'running' || status === 'awaiting_approval');
+  if (active) {
+    delete run.completed_at;
+    run.status = active;
+    run.report_status = attempts.length === 0 ? 'generated' : 'partial';
+    return;
+  }
   if (steps.length > 0 && steps.every(step => step.status === 'succeeded' || step.status === 'skipped')) {
     const allSkipped = steps.every(step => step.status === 'skipped');
     run.status = allSkipped ? 'skipped' : 'succeeded';
@@ -530,6 +541,14 @@ export class PlaybookRunService {
       }
       run.current_plan_revision = run.plan_revisions.find(revision => revision.plan_hash === planHash)!.revision;
       const byId = new Map(run.steps.map(step => [step.step_id, step]));
+      const currentStepIds = new Set(normalizedSteps.map(normalized => normalized.step.step_id));
+      for (const prior of run.steps) {
+        if (currentStepIds.has(prior.step_id) || activeAttempt(prior)) continue;
+        prior.status = 'cancelled';
+        prior.completed_at ??= at;
+        prior.updated_at = at;
+        prior.blocked_reason = `Superseded by playbook plan revision ${run.current_plan_revision}.`;
+      }
       for (const normalized of normalizedSteps) {
         const prior = byId.get(normalized.step.step_id);
         if (!prior) {
@@ -552,7 +571,17 @@ export class PlaybookRunService {
         prior.required_bindings = normalized.step.required_bindings;
         prior.produces_bindings = normalized.step.produces_bindings;
         prior.resolved_execution = normalized.step.resolved_execution;
-        if (prior.status === 'succeeded' && executionChanged) {
+        if (prior.status === 'cancelled') {
+          const lastAttempt = prior.attempts.at(-1);
+          const sameCompletedTemplate = !!lastAttempt
+            && lastAttempt.execution_template_hash === sha256(normalized.step.resolved_execution)
+            && ['succeeded', 'failed', 'interrupted'].includes(lastAttempt.status);
+          prior.status = sameCompletedTemplate
+            ? lastAttempt.status as PlaybookRunStatus
+            : normalized.step.status;
+          prior.blocked_reason = normalized.step.blocked_reason;
+          if (!sameCompletedTemplate) delete prior.completed_at;
+        } else if (prior.status === 'succeeded' && executionChanged) {
           prior.status = normalized.step.status;
           prior.blocked_reason = normalized.step.blocked_reason;
           delete prior.completed_at;
@@ -859,25 +888,25 @@ export class PlaybookRunService {
     if (step.status === 'blocked') {
       throw new PlaybookRunError(step.blocked_reason ?? `Playbook step ${stepId} is blocked.`, 'PLAYBOOK_BLOCKED');
     }
+    if (!step.resolved_execution) {
+      throw new PlaybookRunError(`Playbook step ${stepId} has no resolved execution descriptor.`, 'PLAYBOOK_BLOCKED');
+    }
+    const planReference = attemptPlanReference(run, step);
     if (retry) {
       const lastAttempt = step.attempts.at(-1);
       const resumedInterrupted = step.status === 'pending' && lastAttempt?.status === 'interrupted';
       const replannedTerminal = step.status === 'pending'
         && !!lastAttempt
-        && lastAttempt.execution_template_hash !== attemptPlanReference(run, step).template_hash;
+        && lastAttempt.execution_template_hash !== planReference.template_hash;
       if (!['failed', 'interrupted'].includes(step.status) && !resumedInterrupted && !replannedTerminal) {
         throw new PlaybookRunError(`Playbook step ${stepId} is ${step.status}; only failed or interrupted steps can be retried.`, 'PLAYBOOK_CONFLICT');
       }
     } else if (step.attempts.length > 0 || step.status !== 'pending') {
       throw new PlaybookRunError(`Playbook step ${stepId} is ${step.status}; use retry for a prior failed attempt.`, 'PLAYBOOK_CONFLICT');
     }
-    if (!step.resolved_execution) {
-      throw new PlaybookRunError(`Playbook step ${stepId} has no resolved execution descriptor.`, 'PLAYBOOK_BLOCKED');
-    }
     const at = now(this.engine);
     const invocation = getApplicationCommandInvocation();
     const attemptId = `attempt_${randomUUID()}`;
-    const planReference = attemptPlanReference(run, step);
     const attempt: PersistedPlaybookAttemptV1 = {
       attempt_id: attemptId,
       attempt_number: step.attempts.length + 1,
