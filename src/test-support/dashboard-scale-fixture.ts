@@ -41,6 +41,11 @@ export function seedDashboardScaleFixture(
         type: 'REACHABLE',
         confidence: 1,
         discovered_at: FIXTURE_TIME,
+        // This fixture measures graph projection and changed-ID scaling. Mark
+        // its observed topology as already tested so it does not also create
+        // one synthetic operator action for every edge. Incomplete live hosts
+        // still exercise a substantial frontier in the full-state projection.
+        tested: true,
       } satisfies EdgeProperties,
     );
   }

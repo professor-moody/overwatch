@@ -29,10 +29,14 @@ for (const size of [1_000, 10_000, 50_000]) {
     const fixture = seedDashboardScaleFixture(engine, size);
     const fullStarted = performance.now();
     const state = engine.getState();
+    const stateProjectedAt = performance.now();
     const full = engine.exportGraph({ includeDerivedCommunities: false });
+    const graphExportedAt = performance.now();
     RawGraphDtoSchema.parse(full);
+    const graphValidatedAt = performance.now();
     JSON.stringify({ state, graph: full });
-    const fullMs = performance.now() - fullStarted;
+    const serializedAt = performance.now();
+    const fullMs = serializedAt - fullStarted;
 
     const deltaSamples: number[] = [];
     for (let iteration = 0; iteration < 9; iteration++) {
@@ -51,7 +55,12 @@ for (const size of [1_000, 10_000, 50_000]) {
     results.push({
       nodes: size,
       edges: size,
+      frontier_items: state.frontier.length,
       full_projection_ms: Number(fullMs.toFixed(2)),
+      state_projection_ms: Number((stateProjectedAt - fullStarted).toFixed(2)),
+      graph_export_ms: Number((graphExportedAt - stateProjectedAt).toFixed(2)),
+      schema_validation_ms: Number((graphValidatedAt - graphExportedAt).toFixed(2)),
+      serialization_ms: Number((serializedAt - graphValidatedAt).toFixed(2)),
       ten_item_delta_median_ms: Number(median(deltaSamples).toFixed(2)),
     });
   } finally {
