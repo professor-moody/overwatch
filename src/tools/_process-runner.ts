@@ -29,6 +29,24 @@ import {
 } from '../services/managed-runtime-supervisor.js';
 import { currentDaemonOwner } from '../services/process-identity.js';
 import type { ParseContext } from '../types.js';
+import {
+  BoundedStreamBuffer,
+  EVIDENCE_PARSE_MAX_BYTES,
+  STREAM_INLINE_CAP,
+  captureStream,
+  joinAndCap,
+  scrubSecretsFromText,
+} from './process-output-buffer.js';
+export {
+  BoundedStreamBuffer,
+  EVIDENCE_PARSE_MAX_BYTES,
+  REDACTED_SECRET,
+  STREAM_HARD_CAP,
+  STREAM_HEAD_KEEP,
+  STREAM_TAIL_KEEP,
+  TRUNCATION_MARKER,
+  scrubSecretsFromText,
+} from './process-output-buffer.js';
 
 // F3: argv/command target extraction.
 //
@@ -467,76 +485,6 @@ export function resolveDefaultActionTimeoutMs(): number {
   if (Number.isFinite(override) && override >= 1000) return Math.min(MAX_TIMEOUT_MS, override);
   return DEFAULT_TIMEOUT_MS;
 }
-const STREAM_INLINE_CAP = 256 * 1024;                  // 256 KiB inline per stream
-/**
- * Hard memory cap per stream. Beyond this we keep a head + rolling tail
- * window only and drop the middle, so a runaway noisy command can't OOM
- * the MCP server before evidence is written.
- */
-export const STREAM_HARD_CAP = 16 * 1024 * 1024;       // 16 MiB per stream
-export const STREAM_HEAD_KEEP = 4 * 1024 * 1024;       // 4 MiB head
-export const STREAM_TAIL_KEEP = 4 * 1024 * 1024;       // 4 MiB tail
-
-/**
- * Phase E: maximum evidence bytes we'll load into memory when re-reading
- * a streamed blob for parser ingestion. Bigger files fall back to a head
- * window via `getRawOutputHead` and the parse is marked partial. Picked
- * to comfortably accommodate large nuclei/azurehound outputs without
- * risking the MCP server's heap on a runaway capture.
- */
-export const EVIDENCE_PARSE_MAX_BYTES = 50 * 1024 * 1024; // 50 MiB
-export const TRUNCATION_MARKER = '\n…[output truncated; full output stored in evidence]…\n';
-const HARD_CAP_DROPPED_MARKER = '\n…[output exceeded in-memory cap; middle bytes dropped]…\n';
-
-/** Replacement written in place of a caller-supplied secret reflected in captured output. */
-export const REDACTED_SECRET = '<redacted:reflected-secret>';
-
-/**
- * Scrub caller-supplied secret strings from captured stdout/stderr — for tools
- * (token replay, web credential test) that submit a secret and don't want a
- * target that reflects it back to surface the plaintext in the parser input,
- * the tool response, or a parser-exception echo. Also catches a secret split
- * across an inline-truncation marker (head|marker|tail), which a plain
- * whole-string replace would miss. Operates on the already-materialized text,
- * so it doesn't affect the stored evidence blob (which reports redact
- * separately).
- */
-export function scrubSecretsFromText(text: string, secrets: string[] | undefined): string {
-  if (!secrets || secrets.length === 0 || !text) return text;
-  let out = text;
-  for (const secret of secrets) {
-    if (!secret) continue;
-    if (out.includes(secret)) out = out.split(secret).join(REDACTED_SECRET);
-    // Catch a secret split across a truncation marker (head|marker|tail). Uses an
-    // O(len) overlap test (no O(len²) per-prefix scan) and handles every marker
-    // occurrence (combined streams can carry more than one).
-    for (const marker of [TRUNCATION_MARKER, HARD_CAP_DROPPED_MARKER]) {
-      let from = 0;
-      for (;;) {
-        const idx = out.indexOf(marker, from);
-        if (idx === -1) break;
-        const before = out.slice(0, idx);
-        const after = out.slice(idx + marker.length);
-        // The secret can straddle by at most len-1 chars on each side.
-        const tail = before.slice(Math.max(0, before.length - (secret.length - 1)));
-        const head = after.slice(0, secret.length - 1);
-        const pos = (tail + head).indexOf(secret);
-        // A real straddle spans the join point (tail | head).
-        if (pos !== -1 && pos < tail.length && pos + secret.length > tail.length) {
-          const headFrag = tail.length - pos;             // secret chars at end of `before`
-          const tailFrag = secret.length - headFrag;      // secret chars at start of `after`
-          const prefix = before.slice(0, before.length - headFrag);
-          out = prefix + REDACTED_SECRET + marker + after.slice(tailFrag);
-          from = prefix.length + REDACTED_SECRET.length + marker.length;
-        } else {
-          from = idx + marker.length;
-        }
-      }
-    }
-  }
-  return out;
-}
-
 // Per-technique noise defaults (0–1 ratio, same scale as opsec.max_noise).
 // Used only when the caller does not provide an explicit noise_estimate;
 // previously the runner substituted `global_noise_spent`, which double-
@@ -621,105 +569,6 @@ export function buildChildEnv(extra: Record<string, string> | undefined): NodeJS
     }
   }
   return base;
-}
-
-/**
- * Bounded per-stream byte sink. Keeps every chunk until the running total
- * exceeds STREAM_HARD_CAP, then retains only:
- *   - the first STREAM_HEAD_KEEP bytes ever seen, and
- *   - a rolling tail of the most recent STREAM_TAIL_KEEP bytes,
- * dropping everything in between. `total_bytes` counts what was produced,
- * not what is retained.
- */
-export class BoundedStreamBuffer {
-  private head: Buffer[] = [];
-  private headBytes = 0;
-  private tailChunks: Buffer[] = [];
-  private tailBytes = 0;
-  private totalBytes = 0;
-  private droppedBytes = 0;
-  private capExceeded = false;
-
-  push(chunk: Buffer): void {
-    this.totalBytes += chunk.length;
-
-    // Phase 1: still under the hard cap → keep everything in head.
-    if (!this.capExceeded && this.headBytes + chunk.length <= STREAM_HARD_CAP) {
-      this.head.push(chunk);
-      this.headBytes += chunk.length;
-      return;
-    }
-
-    // Transition: split the incoming chunk between completing the head
-    // window and starting the tail buffer.
-    if (!this.capExceeded) {
-      this.capExceeded = true;
-      const headRoom = Math.max(0, STREAM_HEAD_KEEP - this.headBytes);
-      if (headRoom > 0) {
-        const toHead = chunk.subarray(0, headRoom);
-        this.head.push(toHead);
-        this.headBytes += toHead.length;
-        chunk = chunk.subarray(headRoom);
-      } else if (this.headBytes > STREAM_HEAD_KEEP) {
-        // Trim accumulated head down to the keep window; the trimmed bytes
-        // become the start of the tail buffer.
-        const flat = Buffer.concat(this.head, this.headBytes);
-        this.head = [flat.subarray(0, STREAM_HEAD_KEEP)];
-        this.headBytes = STREAM_HEAD_KEEP;
-        const overflow = flat.subarray(STREAM_HEAD_KEEP);
-        if (overflow.length > 0) {
-          this.tailChunks.push(overflow);
-          this.tailBytes += overflow.length;
-        }
-      }
-    }
-
-    if (chunk.length === 0) return;
-
-    // Phase 2: rolling tail window.
-    this.tailChunks.push(chunk);
-    this.tailBytes += chunk.length;
-    while (this.tailBytes > STREAM_TAIL_KEEP && this.tailChunks.length > 0) {
-      const first = this.tailChunks[0];
-      const overflow = this.tailBytes - STREAM_TAIL_KEEP;
-      if (first.length <= overflow) {
-        this.tailChunks.shift();
-        this.tailBytes -= first.length;
-        this.droppedBytes += first.length;
-      } else {
-        this.tailChunks[0] = first.subarray(overflow);
-        this.tailBytes -= overflow;
-        this.droppedBytes += overflow;
-      }
-    }
-  }
-
-  get total_bytes(): number { return this.totalBytes; }
-  get dropped_bytes(): number { return this.droppedBytes; }
-  get cap_exceeded(): boolean { return this.capExceeded; }
-
-  /** Concatenated retained output as utf-8, with a marker if middle bytes were dropped. */
-  toFullString(): string {
-    if (!this.capExceeded) {
-      return Buffer.concat(this.head, this.headBytes).toString('utf8');
-    }
-    const headStr = Buffer.concat(this.head, this.headBytes).toString('utf8');
-    const tailStr = Buffer.concat(this.tailChunks, this.tailBytes).toString('utf8');
-    return headStr + HARD_CAP_DROPPED_MARKER + tailStr;
-  }
-}
-
-function captureStream(buf: BoundedStreamBuffer, chunk: Buffer): void {
-  buf.push(chunk);
-}
-
-function joinAndCap(buf: BoundedStreamBuffer, cap: number): { text: string; truncated: boolean; total: number } {
-  const full = buf.toFullString();
-  const total = buf.total_bytes;
-  if (full.length <= cap) return { text: full, truncated: total > full.length, total };
-  const head = full.slice(0, Math.floor(cap * 0.75));
-  const tail = full.slice(full.length - Math.floor(cap * 0.25));
-  return { text: head + TRUNCATION_MARKER + tail, truncated: true, total };
 }
 
 interface ProcessResult {
