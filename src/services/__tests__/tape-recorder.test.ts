@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { splitFrames, buildRecord, processChunk, TapeWriter } from '../tape-recorder.js';
@@ -85,8 +85,9 @@ describe('tape-recorder TapeWriter + processChunk', () => {
     const w = new TapeWriter(tapePath);
     w.write({ ts: 't', direction: 'client_to_server', parsed: { id: 1 } });
     w.write({ ts: 't', direction: 'server_to_client', parsed: { id: 1, result: 'ok' } });
-    expect(w.count).toBe(2);
+    expect(w.accepted).toBe(2);
     await w.close();
+    expect(w.count).toBe(2);
 
     const lines = readFileSync(tapePath, 'utf-8').trim().split('\n');
     expect(lines.length).toBe(2);
@@ -99,11 +100,12 @@ describe('tape-recorder TapeWriter + processChunk', () => {
     let buf = '';
     buf = processChunk(w, 'client_to_server', buf, '{"id":1}\n{"id":');
     expect(buf).toBe('{"id":');
-    expect(w.count).toBe(1);
+    expect(w.accepted).toBe(1);
     buf = processChunk(w, 'client_to_server', buf, '2}\n');
     expect(buf).toBe('');
-    expect(w.count).toBe(2);
+    expect(w.accepted).toBe(2);
     await w.close();
+    expect(w.count).toBe(2);
 
     const lines = readFileSync(tapePath, 'utf-8').trim().split('\n');
     expect(lines.length).toBe(2);
@@ -116,13 +118,38 @@ describe('tape-recorder TapeWriter + processChunk', () => {
     let buf = '';
     buf = processChunk(w, 'server_to_client', buf, '\n{"good":1}\n{bad}\n');
     expect(buf).toBe('');
-    expect(w.count).toBe(2); // blank skipped; good + bad written
+    expect(w.accepted).toBe(2); // blank skipped; good + bad admitted
     await w.close();
+    expect(w.count).toBe(2); // both writes committed before durable close
     const lines = readFileSync(tapePath, 'utf-8').trim().split('\n');
     const recs = lines.map(l => JSON.parse(l));
     expect(recs[0].parsed).toEqual({ good: 1 });
     expect(recs[1].parse_error).toBeTruthy();
     expect(recs[1].raw).toBe('{bad}');
+  });
+
+  it('preserves a torn tail and inserts a recovery marker before appending', async () => {
+    mkdirSync(join(tmp, 'sub'), { recursive: true });
+    const torn = '{"ts":"old","direction":"client_to_server"';
+    writeFileSync(tapePath, torn);
+    const writer = new TapeWriter(tapePath);
+    writer.write({ ts: 'new', direction: 'server_to_client', parsed: { ok: true } });
+    await writer.close();
+
+    const bytes = readFileSync(tapePath, 'utf8');
+    expect(bytes.startsWith(`${torn}\n`)).toBe(true);
+    const lines = bytes.split('\n');
+    expect(JSON.parse(lines[1]).parse_error).toBe('recovered_after_torn_tail');
+    expect(JSON.parse(lines[2]).parsed).toEqual({ ok: true });
+  });
+
+  it('refuses to append through a symbolic-link tape path', () => {
+    mkdirSync(join(tmp, 'sub'), { recursive: true });
+    const outside = join(tmp, 'outside.jsonl');
+    writeFileSync(outside, 'preserve\n');
+    symlinkSync(outside, tapePath);
+    expect(() => new TapeWriter(tapePath)).toThrow(/regular file/i);
+    expect(readFileSync(outside, 'utf8')).toBe('preserve\n');
   });
 
   it('write after close is a no-op', async () => {

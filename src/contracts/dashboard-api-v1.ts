@@ -107,7 +107,13 @@ const EmptyPathSchema = z.object({}).strict();
 const NoBodySchema = z.undefined();
 const EmptyBodySchema = z.object({}).strict();
 const OkResponseSchema = z.object({ ok: z.boolean() }).passthrough();
-const DeletedResponseSchema = z.object({ deleted: z.boolean() }).passthrough();
+const ReportDeleteResponseSchema = z.object({
+  deleted: z.boolean(),
+  cleanup_complete: z.boolean().optional(),
+  commit_durability: z.enum(['confirmed', 'uncertain']).optional(),
+  reference_persisted: z.boolean().optional(),
+  warning: z.string().optional(),
+}).passthrough();
 
 const queryInteger = (minimum = 0) => z.preprocess(
   value => value === undefined || value === '' ? undefined : Number(value),
@@ -426,7 +432,17 @@ const TelemetryResponseSchema = z.object({
   graph_stats: z.object({}).passthrough(),
   credential_coverage: z.unknown().nullable(),
 }).passthrough();
-const TapeStatusResponseSchema = z.object({ enabled: z.boolean() }).passthrough();
+const TapeStatusResponseSchema = z.object({
+  enabled: z.boolean(),
+  path: z.string().optional(),
+  session_id: z.string().optional(),
+  frame_count: z.number().int().nonnegative(),
+  accepted_frame_count: z.number().int().nonnegative().optional(),
+  dropped_frame_count: z.number().int().nonnegative().optional(),
+  started_at: z.string().optional(),
+  started_by: z.enum(['env', 'config', 'dashboard']).optional(),
+  error: z.string().optional(),
+}).passthrough();
 const EvidenceChainsResponseSchema = z.object({
   node_id: z.string(),
   chains: z.array(z.object({
@@ -798,7 +814,7 @@ const dashboardFinalEndpoints = {
   getObjectivePaths: endpoint({ operation_id: 'getObjectivePaths', method: 'GET', path: '/api/paths/{objective_id}', path_schema: idPath('objective_id'), query_schema: PathsQuerySchema, body_schema: NoBodySchema, responses: { 200: ObjectivePathsResponseSchema }, response_kind: 'json', summary: 'Read paths to an objective' }),
   getFindingContext: endpoint({ operation_id: 'getFindingContext', method: 'GET', path: '/api/findings/{finding_id}/context', path_schema: idPath('finding_id'), query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: FindingContextResponseSchema }, response_kind: 'json', summary: 'Read finding context' }),
   downloadReport: endpoint({ operation_id: 'downloadReport', method: 'GET', path: '/api/reports/{report_id}', path_schema: idPath('report_id'), query_schema: ReportDownloadQuerySchema, body_schema: NoBodySchema, responses: { 200: z.unknown() }, response_kind: 'binary', summary: 'Download or open a report' }),
-  deleteReport: endpoint({ operation_id: 'deleteReport', method: 'DELETE', path: '/api/reports/{report_id}', path_schema: idPath('report_id'), query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: DeletedResponseSchema, 404: DeletedResponseSchema }, response_kind: 'json', summary: 'Delete a report' }),
+  deleteReport: endpoint({ operation_id: 'deleteReport', method: 'DELETE', path: '/api/reports/{report_id}', path_schema: idPath('report_id'), query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: ReportDeleteResponseSchema, 404: ReportDeleteResponseSchema }, response_kind: 'json', summary: 'Delete a report' }),
   getEngagement: endpoint({ operation_id: 'getEngagement', method: 'GET', path: '/api/engagements/{engagement_id}', path_schema: idPath('engagement_id'), query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: EngagementConfigResponseSchema }, response_kind: 'json', summary: 'Read engagement configuration' }),
   updateEngagement: endpoint({ operation_id: 'updateEngagement', method: 'PATCH', path: '/api/engagements/{engagement_id}', path_schema: idPath('engagement_id'), query_schema: EmptyQuerySchema, body_schema: EngagementUpdateBodySchema, responses: { 200: EngagementUpdateResponseSchema }, response_kind: 'json', summary: 'Update engagement configuration' }),
 } as const;

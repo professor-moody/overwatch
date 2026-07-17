@@ -29,10 +29,14 @@ Returns a JSON summary with:
 - `report_preview` — first 800 characters of the report
 - `report_length` — total character count
 - `output_dir` — path where files were written (when `write_to_disk` is true)
+- `report_id` — immutable engagement-archive ID (when `persist_to_archive` is true)
+- `archive_committed`, `archive_commit_durability`, `aggregate_manifest_persisted`, and `archive_reference_persisted` — separate archive, aggregate-index, and state-reference durability outcomes
+- `generation_id`, `generation_path`, `generation_manifest`, `pointer_path`, `generation_committed`, and `generation_commit_durability` — the authoritative checksummed disk generation (when `write_to_disk` is true)
+- `legacy_mirror_complete` — whether every fixed-name compatibility file was refreshed after the generation pointer
 
-When `write_to_disk` is true, writes:
-- `{output_dir}/{engagement_id}/report.md` — markdown report (always)
-- `{output_dir}/{engagement_id}/report.html` — HTML report (when format is html)
+When `write_to_disk` is true, the authoritative result is the immutable directory named by `generation_path` plus the atomically published `pointer_path`. The selected report format and optional `attack-navigator.json` are committed as one generation. Fixed files such as `{output_dir}/{engagement_id}/report.md` or `report.html` are post-commit compatibility mirrors and may be repaired from the pointer after an interrupted refresh.
+
+A visible name whose directory fsync failed is returned with `*_commit_durability: "uncertain"` and is not described as durably committed. Callers should surface the warning and reconcile rather than silently retrying a non-idempotent render.
 
 ## Report Structure
 

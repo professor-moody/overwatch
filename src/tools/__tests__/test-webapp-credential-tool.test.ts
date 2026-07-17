@@ -1,5 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { dirname, join } from 'path';
 
 vi.mock('../_process-runner.js', () => ({
   MAX_TIMEOUT_MS: 4 * 60 * 60 * 1000,
@@ -11,6 +14,8 @@ vi.mock('../_process-runner.js', () => ({
 import { registerTestWebappCredentialTool } from '../test-webapp-credential.js';
 import { runInstrumentedProcess } from '../_process-runner.js';
 
+let testRoot: string;
+
 function buildHandlers(credential: Record<string, unknown> | null) {
   const handlers: Record<string, (args: any) => Promise<any>> = {};
   const fakeServer = {
@@ -20,7 +25,9 @@ function buildHandlers(credential: Record<string, unknown> | null) {
   } as unknown as McpServer;
   const engine = {
     getNode: vi.fn((id: string) => (credential && id === credential.id ? credential : null)),
-    getStateFilePath: vi.fn(() => '/tmp/ow-test-state/state.json'),
+    getStateFilePath: vi.fn(() => join(testRoot, 'state.json')),
+    logActionEvent: vi.fn(),
+    flushNow: vi.fn(),
   };
   registerTestWebappCredentialTool(fakeServer, engine as any);
   return { handlers, engine };
@@ -43,7 +50,33 @@ function lastOpts() {
 }
 
 describe('test_webapp_credential tool', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    testRoot = mkdtempSync(join(tmpdir(), 'ow-web-credential-tool-'));
+    vi.mocked(runInstrumentedProcess).mockImplementation(async (_engine, opts) => {
+      const cookieIndex = opts.args.indexOf('-c');
+      if (cookieIndex >= 0) {
+        const path = opts.args[cookieIndex + 1];
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, '# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tsession\tvalue\n');
+      }
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(opts, null, 2) }],
+        parse_summary: {
+          parsed: true,
+          parse_status: 'ok' as const,
+          parse_outcome: 'ok' as const,
+          isError: false,
+          tool: 'test_webapp_credential',
+          action_id: 'act-test',
+          nodes_parsed: 1,
+          edges_parsed: 1,
+          parser_details: { auth_verdict: 'success' },
+        },
+      };
+    });
+  });
+  afterEach(() => rmSync(testRoot, { recursive: true, force: true }));
 
   it('form: POSTs username/password to the resolved login endpoint, redacting the secret', async () => {
     const { handlers } = buildHandlers(usableCred());
@@ -184,12 +217,13 @@ describe('test_webapp_credential tool', () => {
       success: { redirect_contains: '/dashboard' }, session_jar_id: 'sess-1',
     });
     const opts = lastOpts();
-    const jar = '/tmp/ow-test-state/session-jars/sess-1.jar';
+    const jar = join(testRoot, 'session-jars', 'sess-1.jar');
     // -c saves Set-Cookie, -b replays saved cookies; the path is in both the
     // real argv and the redacted repr (it isn't a secret).
     expect(opts.args).toContain('-c');
     expect(opts.args).toContain('-b');
-    expect(opts.args).toContain(jar);
+    expect(opts.args[opts.args.indexOf('-b') + 1]).toBe(jar);
+    expect(opts.args[opts.args.indexOf('-c') + 1]).toMatch(/\.sess-1\.jar\.tmp-/);
     expect(opts.command_repr).toContain(jar);
   });
 
@@ -200,21 +234,21 @@ describe('test_webapp_credential tool', () => {
       success: { status: 200 }, session_jar_id: 'sess-1',
     });
     const opts = lastOpts();
-    const jar = '/tmp/ow-test-state/session-jars/sess-1.jar';
+    const jar = join(testRoot, 'session-jars', 'sess-1.jar');
     expect(opts.args).toContain('-c');
-    expect(opts.args).toContain(jar); // -c <jar> present
+    expect(opts.args[opts.args.indexOf('-c') + 1]).toMatch(/\.sess-1\.jar\.tmp-/);
     // The only -b value is the tested cookie (name=value), never the jar path.
     const bIdxs = opts.args.reduce((acc: number[], a: string, i: number) => (a === '-b' ? [...acc, i] : acc), []);
     for (const i of bIdxs) expect(opts.args[i + 1]).not.toBe(jar);
   });
 
   it('surfaces the jar PATH (not the cookie) in the response so an auth crawl can target it', async () => {
-    const { handlers } = buildHandlers(usableCred());
+    const { handlers, engine } = buildHandlers(usableCred());
     const res = await handlers.test_webapp_credential({
       credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'form', login_path: '/login',
       success: { redirect_contains: '/dashboard' }, session_jar_id: 'sess-1',
     });
-    const jar = '/tmp/ow-test-state/session-jars/sess-1.jar';
+    const jar = join(testRoot, 'session-jars', 'sess-1.jar');
     // The handoff note the tool appends (the mock echoes opts separately; the
     // real runner redacts those args — covered by the redact_secrets test).
     const handoff = res.content.find((c: { text: string }) => c.text.includes('--load-cookies'));
@@ -222,6 +256,40 @@ describe('test_webapp_credential tool', () => {
     expect(handoff!.text).toContain(jar);        // path surfaced for the crawl handoff
     expect(handoff!.text).toContain('parse_output');
     expect(handoff!.text).not.toContain('p@ss word'); // the note never carries the secret
+    expect(res).toMatchObject({
+      session_jar_published: true,
+      session_jar_commit_durability: 'confirmed',
+      session_jar_reference_persisted: true,
+    });
+    expect(engine.logActionEvent).toHaveBeenCalledWith(expect.objectContaining({
+      details: expect.objectContaining({
+        session_jar_id: 'sess-1',
+        session_jar_path: jar,
+        session_jar_published: true,
+      }),
+    }));
+    expect(engine.flushNow).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a published jar truthfully when its state reference checkpoint fails', async () => {
+    const { handlers, engine } = buildHandlers(usableCred());
+    engine.flushNow.mockImplementationOnce(() => { throw new Error('synthetic checkpoint failure'); });
+    const response = await handlers.test_webapp_credential({
+      credential_id: 'cred-1',
+      target_url: 'https://app.acme.com',
+      method: 'form',
+      login_path: '/login',
+      success: { redirect_contains: '/dashboard' },
+      session_jar_id: 'sess-checkpoint',
+    });
+    expect(response).toMatchObject({
+      session_jar_published: true,
+      session_jar_commit_durability: 'confirmed',
+      session_jar_reference_persisted: false,
+      session_jar_warning: expect.stringContaining('synthetic checkpoint failure'),
+    });
+    expect(response.content.some((part: { text: string }) =>
+      part.text.includes('durable state reference could not be checkpointed'))).toBe(true);
   });
 
   it('does NOT append the handoff note when the run errored (isError:true)', async () => {
@@ -232,6 +300,92 @@ describe('test_webapp_credential tool', () => {
       success: { redirect_contains: '/dashboard' }, session_jar_id: 'sess-1',
     });
     expect(res.content.some((c: { text: string }) => c.text.includes('--load-cookies'))).toBe(false);
+  });
+
+  it('preserves an existing jar and warns when successful form auth yields no cookies', async () => {
+    const { handlers } = buildHandlers(usableCred());
+    const canonical = join(testRoot, 'session-jars', 'sess-1.jar');
+    mkdirSync(dirname(canonical), { recursive: true });
+    writeFileSync(canonical, '# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tsession\tknown-good\n');
+    vi.mocked(runInstrumentedProcess).mockImplementationOnce(async (_engine, opts) => {
+      const path = opts.args[opts.args.indexOf('-c') + 1];
+      writeFileSync(path, '# Netscape HTTP Cookie File\n');
+      return {
+        content: [{ type: 'text', text: '200' }],
+        parse_summary: {
+          parsed: true, parse_status: 'ok', parse_outcome: 'ok', isError: false,
+          tool: 'test_webapp_credential', action_id: 'act-empty', nodes_parsed: 1,
+          edges_parsed: 1, parser_details: { auth_verdict: 'success' },
+        },
+      };
+    });
+    const response = await handlers.test_webapp_credential({
+      credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'form',
+      login_path: '/login', session_jar_id: 'sess-1',
+    });
+    expect(readFileSync(canonical, 'utf8')).toContain('\tsession\tknown-good');
+    expect(response.content.some((part: { text: string }) => part.text.includes('no reusable cookies'))).toBe(true);
+    expect(response.content.some((part: { text: string }) => part.text.includes('--load-cookies'))).toBe(false);
+  });
+
+  it('publishes the tested cookie without exposing it when the server sends no Set-Cookie', async () => {
+    const { handlers } = buildHandlers(usableCred({
+      cred_value: 'cookie-secret',
+      cred_material_kind: 'session_cookie',
+    }));
+    vi.mocked(runInstrumentedProcess).mockImplementationOnce(async (_engine, opts) => {
+      const path = opts.args[opts.args.indexOf('-c') + 1];
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, '# Netscape HTTP Cookie File\n');
+      return {
+        content: [{ type: 'text', text: '200' }],
+        parse_summary: {
+          parsed: true, parse_status: 'ok', parse_outcome: 'ok', isError: false,
+          tool: 'test_webapp_credential', action_id: 'act-cookie', nodes_parsed: 1,
+          edges_parsed: 1, parser_details: { auth_verdict: 'success' },
+        },
+      };
+    });
+    const response = await handlers.test_webapp_credential({
+      credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'cookie',
+      header_name: 'PHPSESSID', session_jar_id: 'sess-1',
+    });
+    const canonical = join(testRoot, 'session-jars', 'sess-1.jar');
+    expect(readFileSync(canonical, 'utf8')).toContain('\tPHPSESSID\tcookie-secret');
+    const returned = response.content.map((part: { text: string }) => part.text).join('\n');
+    expect(returned).toContain('--load-cookies');
+    expect(returned).not.toContain('cookie-secret');
+  });
+
+  it('preserves the prior jar when parsing reports a definitive auth failure', async () => {
+    const { handlers } = buildHandlers(usableCred());
+    const canonical = join(testRoot, 'session-jars', 'sess-1.jar');
+    mkdirSync(dirname(canonical), { recursive: true });
+    writeFileSync(canonical, '# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tsession\tknown-good\n');
+    vi.mocked(runInstrumentedProcess).mockImplementationOnce(async (_engine, opts) => {
+      const path = opts.args[opts.args.indexOf('-c') + 1];
+      writeFileSync(path, '# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tsession\trejected\n');
+      return {
+        content: [{ type: 'text', text: '401' }],
+        parse_summary: {
+          parsed: true,
+          parse_status: 'ok',
+          parse_outcome: 'ok',
+          isError: false,
+          tool: 'test_webapp_credential',
+          action_id: 'act-failure',
+          nodes_parsed: 2,
+          edges_parsed: 2,
+          parser_details: { auth_verdict: 'failure' },
+        },
+      };
+    });
+    const response = await handlers.test_webapp_credential({
+      credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'form', login_path: '/login',
+      success: { redirect_contains: '/dashboard' }, session_jar_id: 'sess-1',
+    });
+    expect(readFileSync(canonical, 'utf8')).toContain('\tsession\tknown-good');
+    expect(response.content.some((part: { text: string }) => part.text.includes('--load-cookies'))).toBe(false);
   });
 
   it('omitting session_jar_id spawns no cookie-jar args and adds no handoff note', async () => {

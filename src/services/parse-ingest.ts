@@ -28,6 +28,7 @@ export interface ParseIngestOpts {
   parsed_from_evidence?: boolean;
   evidence_read_error?: string;
   exit_code?: number | null;
+  parser_details?: Record<string, unknown>;
   /**
    * Optional application-command terminalizer. The callback is responsible for
    * committing `appendAudit` with the supplied result in one durable boundary.
@@ -66,6 +67,7 @@ export interface ParseIngestResult {
   parsed_from_evidence?: boolean;
   evidence_read_error?: string;
   exit_code?: number | null;
+  parser_details?: Record<string, unknown>;
 }
 
 export type ParseIngestCommandCompletion = (
@@ -295,6 +297,7 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
         }
       : undefined,
     warnings: warnings.length > 0 ? warnings : undefined,
+    ...(finding.parser_details ? { parser_details: finding.parser_details } : {}),
     ...findingQuality,
   });
   const buildSuccessAudit = (

@@ -187,6 +187,34 @@ describe('DashboardServer', () => {
     rmSync(tapeDir, { recursive: true, force: true });
   });
 
+  it('allows an active tape to be stopped after persistence becomes read-only', async () => {
+    const tapeDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-tape-degraded-'));
+    const tape = new InProcessTapeController(engine, { defaultDir: tapeDir });
+    tape.enable({ startedBy: 'dashboard' });
+    dashboard.attachTape(tape);
+    vi.spyOn(engine, 'isPersistenceWritable').mockReturnValue(false);
+
+    const req = new PassThrough() as any;
+    req.headers = {};
+    req.url = '/api/tape/toggle';
+    req.method = 'POST';
+    const res = {
+      statusCode: 0,
+      body: '',
+      writeHead(statusCode: number) { this.statusCode = statusCode; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+    const pending = (dashboard as any).handleTapeToggle(req, res);
+    req.end(JSON.stringify({ action: 'disable' }));
+    await pending;
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ enabled: false, frame_count: 0 });
+    expect(tape.getStatus().enabled).toBe(false);
+    rmSync(tapeDir, { recursive: true, force: true });
+  });
+
   it('streams dashboard bundle with manifest and journal entries', async () => {
     engine.addNode({
       id: 'host-bundle',

@@ -135,6 +135,21 @@ describe('dashboard v1 contracts', () => {
           message: 'PID identity could not be verified.',
           future_runtime_field: 'additive',
         }],
+        artifact_recovery: {
+          reports: {
+            writable: false,
+            uncertain_deletion_ids: ['report-ambiguous'],
+            reason: 'ambiguous deletion tombstone',
+            future_report_recovery_field: 'additive',
+          },
+          generation_warnings: [{
+            root: '/tmp/reports',
+            namespace: 'report',
+            message: 'mirror refresh pending',
+            future_generation_field: 'additive',
+          }],
+          future_artifact_field: 'additive',
+        },
         config_recovery: {
           status: 'diverged',
           resolution_required: true,
@@ -166,6 +181,11 @@ describe('dashboard v1 contracts', () => {
       run_id: 'run-unresolved',
       pid: 4242,
       future_runtime_field: 'additive',
+    });
+    expect(parsed.recovery.artifact_recovery).toMatchObject({
+      reports: { writable: false, future_report_recovery_field: 'additive' },
+      generation_warnings: [{ future_generation_field: 'additive' }],
+      future_artifact_field: 'additive',
     });
     expect(parsed.recovery.config_recovery?.conflicted_intent?.future_conflict_field).toBe('additive');
     expect(parsed.recovery.future_recovery_field).toBe('additive');

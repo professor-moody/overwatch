@@ -69,6 +69,27 @@ export function recoveryPresentation(
     };
   }
 
+  const reportRecovery = recovery.artifact_recovery?.reports;
+  const generationWarnings = recovery.artifact_recovery?.generation_warnings ?? [];
+  if (reportRecovery?.writable === false || generationWarnings.length > 0) {
+    const parts: string[] = [];
+    if (reportRecovery?.writable === false) {
+      parts.push(reportRecovery.reason
+        ?? 'The report archive is read-only until its recovery metadata is reconciled.');
+    }
+    if (generationWarnings.length > 0) {
+      parts.push(`${generationWarnings.length} external artifact generation${generationWarnings.length === 1 ? '' : 's'} still need compatibility-mirror repair; their generation pointers remain authoritative.`);
+    }
+    return {
+      tone: 'warning',
+      title: 'Artifact recovery needs review',
+      message: parts.join(' '),
+      canUseFile: false,
+      canUseState: false,
+      restartRequired: false,
+    };
+  }
+
   if (recovery.runtime_ownership_warnings?.length) {
     const count = recovery.runtime_ownership_warnings.length;
     return {

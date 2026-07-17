@@ -199,7 +199,14 @@ function parseWriterContenderName(
 function removeWriterContender(path: string, directory: string): void {
   try {
     unlinkSync(path);
-    fsyncDirectory(directory);
+    try {
+      fsyncDirectory(directory);
+    } catch (error) {
+      // The ownership name is already gone. A crash can at worst resurrect a
+      // dead-owner contender, which the PID/start-identity reclaimer removes;
+      // do not turn an already-committed caller mutation into a false failure.
+      process.stderr.write(`[state-writer-lock] contender removal fsync deferred: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }

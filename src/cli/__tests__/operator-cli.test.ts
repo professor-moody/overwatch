@@ -387,6 +387,18 @@ describe('renderers', () => {
           lifecycle: 'unknown',
           message: 'The recorded PID belongs to a different process.',
         }],
+        artifact_recovery: {
+          reports: {
+            writable: false,
+            uncertain_deletion_ids: ['report-ambiguous'],
+            reason: 'ambiguous deletion tombstone',
+          },
+          generation_warnings: [{
+            root: '/tmp/operator-reports',
+            namespace: 'report',
+            message: 'mirror refresh pending',
+          }],
+        },
         config_recovery: {
           status: 'diverged',
           resolution_required: true,
@@ -422,6 +434,9 @@ describe('renderers', () => {
     expect(out).toContain('run-reused');
     expect(out).toContain('PID 4242');
     expect(out).toContain('belongs to a different process');
+    expect(out).toContain('Artifact recovery');
+    expect(out).toContain('report-ambiguous');
+    expect(out).toContain('/tmp/operator-reports');
   });
 
   it('renderRecovery identifies a config-only write gate without blaming state or WAL recovery', () => {

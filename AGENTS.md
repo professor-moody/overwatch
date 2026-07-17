@@ -223,14 +223,14 @@ The server exposes a generated MCP tool registry. When the MCP connection is ava
 | [`resolve_config_divergence`](docs/tools/resolve-config-divergence.md) | Explicitly choose file or durable-state authority when active configuration representations diverge. | Configuration & scope | Mutating |
 | [`set_opsec`](docs/tools/set-opsec.md) | Update the ACTIVE engagement's OPSEC policy (noise ceiling, enforcement, approval mode, time window, technique blacklist) — no hand-edited config. | Configuration & scope | Mutating |
 | [`update_scope`](docs/tools/update-scope.md) | Expand or contract the engagement scope at runtime. | Configuration & scope | Mutating |
-| [`bundle_engagement`](docs/tools/bundle-engagement.md) | Package all engagement artefacts into a single portable .tar.gz archive. | Audit & reporting | Mutating |
+| [`bundle_engagement`](docs/tools/bundle-engagement.md) | Package all engagement artefacts into a single portable .tar.gz archive. | Audit & reporting | Conditional |
 | [`explain_action`](docs/tools/explain-action.md) | Returns the full "why" for any action_id: the frontier item that motivated it, the agent's recorded thoughts and considered alternatives, prior action references, validation and approval state, and the terminal outcome. | Audit & reporting | Read-only |
-| [`generate_report`](docs/tools/generate-report.md) | Generate a comprehensive penetration test report from the engagement graph and activity history. | Audit & reporting | Mutating |
+| [`generate_report`](docs/tools/generate-report.md) | Generate a comprehensive penetration test report from the engagement graph and activity history. | Audit & reporting | Conditional |
 | [`get_decision_log`](docs/tools/get-decision-log.md) | Returns the derived decision log: each entry is one decision (frontier item or action) with its full chain of stages — frontier_emitted → agent_picked → log_thought → validated → approved/denied → started → completed/… | Audit & reporting | Read-only |
 | [`get_history`](docs/tools/get-history.md) | Returns paginated activity log entries for the engagement. | Audit & reporting | Read-only |
 | [`get_timeline`](docs/tools/get-timeline.md) | Returns per-node and per-edge timeline entries. | Audit & reporting | Read-only |
 | [`ingest_transcript`](docs/tools/transcripts.md) | Pull an external chat/IDE transcript JSONL into the engagement after the fact. | Audit & reporting | Mutating |
 | [`register_tape_session`](docs/tools/tape-sessions.md) | Register an external JSON-RPC tape (produced by overwatch-mcp-tape) with this engagement. | Audit & reporting | Mutating |
-| [`run_retrospective`](docs/tools/run-retrospective.md) | Perform a structured post-engagement retrospective analysis. | Audit & reporting | Mutating |
+| [`run_retrospective`](docs/tools/run-retrospective.md) | Perform a structured post-engagement retrospective analysis. | Audit & reporting | Conditional |
 | [`verify_activity_chain`](docs/tools/verify-activity-chain.md) | Verify the tamper-evident hash chain over the engagement's live activity log. | Audit & reporting | Read-only |
 <!-- END:tool-inventory -->

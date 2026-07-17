@@ -5,8 +5,11 @@
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { readFileSync, existsSync } from 'fs';
-import { extname } from 'path';
+import { createReadStream, readFileSync, existsSync, mkdtempSync, rmSync } from 'fs';
+import type { FileHandle } from 'fs/promises';
+import { extname, join } from 'path';
+import { tmpdir } from 'os';
+import { pipeline } from 'stream/promises';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { GraphEngine } from './graph-engine.js';
@@ -61,6 +64,7 @@ import { PlaybookCommandService } from './playbook-command-service.js';
 import { getSupportedParsers } from './parsers/index.js';
 import type { GraphUpdateDetail } from './engine-context.js';
 import type { SessionManager } from './session-manager.js';
+import type { InProcessTapeOptions, TapeStatus } from './in-process-tape.js';
 import { interpretCommand, type InterpreterState } from './command-interpreter.js';
 import { interpretQuery, executeQuery, type QueryAnswer } from './query-interpreter.js';
 import { listArchetypes } from './agent-archetypes.js';
@@ -79,10 +83,9 @@ import {
 import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
 import { assembleReport, type ReportFormat } from './report-assembler.js';
-import { prepareBundle, pipeTarGzToStream } from './bundle-builder.js';
+import { buildBundle } from './bundle-builder.js';
 import { buildFindings } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
-import type { ReportRecord } from './report-archive.js';
 import type { DurableApprovalRecord, PendingAction } from './pending-action-queue.js';
 import {
   buildToolRegistryManifest,
@@ -204,9 +207,17 @@ export class DashboardServer {
    * never owns the controller — toggling here mirrors what env / config
    * achieve at startup.
    */
-  private tape: { getStatus(): unknown; enable(opts?: { defaultDir?: string; file?: string; sessionId?: string; startedBy?: 'env' | 'config' | 'dashboard' }): unknown; disable(): Promise<unknown> } | null = null;
+  private tape: {
+    getStatus(): TapeStatus;
+    enable(opts?: InProcessTapeOptions): TapeStatus;
+    disable(options?: { audit?: boolean }): Promise<TapeStatus>;
+  } | null = null;
 
-  attachTape(controller: { getStatus(): unknown; enable(opts?: { defaultDir?: string; file?: string; sessionId?: string; startedBy?: 'env' | 'config' | 'dashboard' }): unknown; disable(): Promise<unknown> }): void {
+  attachTape(controller: {
+    getStatus(): TapeStatus;
+    enable(opts?: InProcessTapeOptions): TapeStatus;
+    disable(options?: { audit?: boolean }): Promise<TapeStatus>;
+  }): void {
     this.tape = controller;
   }
 
@@ -599,12 +610,11 @@ export class DashboardServer {
     // complete.  Keep the two POST-shaped pure-read operations available.
     const readOnlyPost = pathname === '/api/config/scope/preview' || pathname === '/api/graph/export';
     const recoveryResolution = pathname === '/api/recovery/config/resolve' && method === 'POST';
-    // Bundle generation records a durable audit event after streaming, so it
-    // is a mutating operation even though its historical route uses GET.
-    const mutatingGet = method === 'GET' && pathname === '/api/bundle';
     if (
       pathname.startsWith('/api/')
-      && ((['POST', 'PATCH', 'DELETE'].includes(method) && !readOnlyPost && !recoveryResolution) || mutatingGet)
+      && ['POST', 'PATCH', 'DELETE'].includes(method)
+      && !readOnlyPost
+      && !recoveryResolution
       && !this.engine.isPersistenceWritable()
     ) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -773,7 +783,7 @@ export class DashboardServer {
       getEvidenceChains: () => this.serveEvidenceChains(path.node_id, res),
       getObjectivePaths: () => this.servePaths(path.objective_id, url, res),
       getFindingContext: () => this.serveFindingContext(path.finding_id, res),
-      downloadReport: () => this.serveReportDownload(path.report_id, url, res),
+      downloadReport: () => { void this.serveReportDownload(path.report_id, url, res); },
       deleteReport: () => this.handleReportDelete(path.report_id, req, res),
       getEngagement: () => this.serveEngagementDetail(path.engagement_id, res),
       updateEngagement: () => this.handleUpdateEngagement(path.engagement_id, req, res),
@@ -4409,17 +4419,21 @@ export class DashboardServer {
       const dir = (body as { dir?: string }).dir;
       const file = (body as { file?: string }).file;
       const sessionId = (body as { session_id?: string }).session_id;
-      if (!this.requireWritablePersistence(res)) return;
+      const current = this.tape.getStatus();
+      const disabling = action === 'disable' || (action !== 'enable' && current.enabled);
+      // Runtime shutdown must remain available when persistence degrades. It
+      // closes the file without attempting an audit mutation; only starting a
+      // new durable capture requires writable engagement persistence.
+      if (!disabling && !this.requireWritablePersistence(res)) return;
       let status;
       if (action === 'enable') {
         status = this.tape.enable({ defaultDir: dir, file, sessionId, startedBy: 'dashboard' });
       } else if (action === 'disable') {
-        status = await this.tape.disable();
+        status = await this.tape.disable({ audit: this.engine.isPersistenceWritable() });
       } else {
         // Default = toggle: if currently enabled, disable; else enable.
-        const cur = this.tape.getStatus() as { enabled?: boolean };
-        status = cur.enabled
-          ? await this.tape.disable()
+        status = current.enabled
+          ? await this.tape.disable({ audit: this.engine.isPersistenceWritable() })
           : this.tape.enable({ defaultDir: dir, file, sessionId, startedBy: 'dashboard' });
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -4465,38 +4479,78 @@ export class DashboardServer {
     }));
   }
 
-  /** GET /api/bundle — stream the engagement archive as a .tar.gz download. */
-  private async streamBundle(_req: IncomingMessage, res: ServerResponse): Promise<void> {
-    let prepared: ReturnType<typeof prepareBundle> | null = null;
+  /** GET /api/bundle — build and verify before committing a successful response. */
+  private async streamBundle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let spoolDirectory: string | undefined;
+    const abortController = new AbortController();
+    let responseCompleted = false;
+    const abort = () => {
+      if (!responseCompleted && !res.writableFinished) abortController.abort();
+    };
+    req.once?.('aborted', abort);
+    res.once('close', abort);
     try {
-      prepared = prepareBundle(this.engine, { includeSnapshots: false });
+      spoolDirectory = mkdtempSync(join(tmpdir(), 'overwatch-bundle-http-'));
       const cfg = this.engine.getConfig();
       const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
       const filename = `bundle-${cfg.id}-${ts}.tar.gz`;
+      const spoolPath = join(spoolDirectory, filename);
+      const bundle = await buildBundle(this.engine, {
+        includeSnapshots: false,
+        outputPath: spoolPath,
+        signal: abortController.signal,
+      });
+      if (abortController.signal.aborted) throw new Error('Bundle download aborted.');
+      const digest = Buffer.from(bundle.sha256, 'hex').toString('base64');
 
       res.writeHead(200, {
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="${filename}"`,
-        'Transfer-Encoding': 'chunked',
+        'Content-Length': String(bundle.sizeBytes),
+        'Content-Digest': `sha-256=:${digest}:`,
+        'X-Overwatch-Durability': bundle.durabilityConfirmed ? 'confirmed' : 'uncertain',
         'Cache-Control': 'no-store',
       });
+      await pipeline(createReadStream(bundle.archivePath), res, { signal: abortController.signal });
+      responseCompleted = true;
 
-      await pipeTarGzToStream(res, prepared.stateDir, prepared.entries);
-      res.end();
-
-      this.engine.logActionEvent({
-        description: `Dashboard bundle downloaded: ${filename}`,
-        event_type: 'system',
-        category: 'system',
-      });
-      this.engine.flushNow();
+      // Diagnostic export remains available in degraded read-only mode. Audit
+      // only when the durable mutation boundary is writable, and never turn a
+      // completed download into a transport failure because audit persistence
+      // later became unavailable.
+      if (this.engine.isPersistenceWritable()) {
+        try {
+          this.engine.logActionEvent({
+            description: `Dashboard bundle downloaded: ${filename}`,
+            event_type: 'system',
+            category: 'system',
+            details: {
+              bundle_id: bundle.bundleId,
+              size_bytes: bundle.sizeBytes,
+              sha256: bundle.sha256,
+              transport: 'dashboard_download',
+            },
+          });
+          this.engine.flushNow();
+        } catch (error) {
+          console.error(`[dashboard] bundle download audit failed after delivery: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     } catch (err) {
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      } else {
+        res.destroy(err instanceof Error ? err : new Error(String(err)));
       }
     } finally {
-      prepared?.cleanup();
+      req.removeListener?.('aborted', abort);
+      res.removeListener('close', abort);
+      if (spoolDirectory) {
+        try { rmSync(spoolDirectory, { recursive: true, force: true }); } catch (error) {
+          console.error(`[dashboard] bundle spool cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     }
   }
 
@@ -4505,32 +4559,61 @@ export class DashboardServer {
     const archive = this.engine.getReportArchive();
     const records = archive.list();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ reports: records, total: records.length, total_bytes: archive.totalBytes() }));
+    res.end(JSON.stringify({ reports: records, total: records.length, total_bytes: archive.totalBytes(records) }));
   }
 
   /** GET /api/reports/:id — stream the file content. */
-  private serveReportDownload(id: string, url: string, res: ServerResponse): void {
-    const archive = this.engine.getReportArchive();
-    const result = archive.get(id);
-    if (!result) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'report not found' }));
-      return;
+  private async serveReportDownload(id: string, url: string, res: ServerResponse): Promise<void> {
+    let handle: FileHandle | undefined;
+    try {
+      const archive = this.engine.getReportArchive();
+      const result = await archive.verifyForRead(id);
+      if (result.status === 'not_found') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'report not found' }));
+        return;
+      }
+      if (result.status === 'integrity_failed') {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'report integrity verification failed', reason: result.reason }));
+        return;
+      }
+      if (result.status === 'unavailable') {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'report is temporarily unavailable', reason: result.reason }));
+        return;
+      }
+      handle = result.handle;
+      const { record } = result;
+      const contentType = record.format === 'html' ? 'text/html'
+        : record.format === 'json' ? 'application/json'
+        : record.format === 'pdf' ? 'application/pdf'
+        : 'text/markdown';
+      const ext = record.format === 'markdown' ? 'md' : record.format;
+      const downloadName = `report-${record.id.slice(0, 8)}-${record.redaction_mode}.${ext}`;
+      const inline = new URL(url, 'http://localhost').searchParams.get('disposition') === 'inline';
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${downloadName}"`,
+        'Content-Length': record.size_bytes,
+        'Content-Digest': `sha-256=:${Buffer.from(record.content_sha256, 'hex').toString('base64')}:`,
+      });
+      await pipeline(handle.createReadStream({ autoClose: false, start: 0 }), res);
+    } catch (error) {
+      if (!res.headersSent) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'report is temporarily unavailable',
+          reason: error instanceof Error ? error.message : String(error),
+        }));
+      } else {
+        res.destroy(error instanceof Error ? error : new Error(String(error)));
+      }
+    } finally {
+      if (handle) {
+        try { await handle.close(); } catch { /* preserve the primary result */ }
+      }
     }
-    const { record, content } = result;
-    const contentType = record.format === 'html' ? 'text/html'
-      : record.format === 'json' ? 'application/json'
-      : record.format === 'pdf' ? 'application/pdf'
-      : 'text/markdown';
-    const ext = record.format === 'markdown' ? 'md' : record.format;
-    const downloadName = `report-${record.id.slice(0, 8)}-${record.redaction_mode}.${ext}`;
-    const inline = new URL(url, 'http://localhost').searchParams.get('disposition') === 'inline';
-    res.writeHead(200, {
-      'Content-Type': contentType,
-      'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${downloadName}"`,
-      'Content-Length': content.byteLength,
-    });
-    res.end(content);
   }
 
   /** DELETE /api/reports/:id — remove from manifest + filesystem. */
@@ -4540,9 +4623,35 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     if (!this.requireWritablePersistence(res)) return;
     const archive = this.engine.getReportArchive();
-    const ok = archive.delete(id);
+    const deletion = archive.deleteWithStatus(id);
+    const ok = deletion.deleted;
+    let referencePersisted = !ok;
+    let warning: string | undefined = deletion.warning;
+    if (ok && deletion.commit_durability === 'confirmed') {
+      try {
+        this.engine.logActionEvent({
+          description: `Archived report deleted: ${id}`,
+          event_type: 'system',
+          category: 'system',
+          details: { report_id: id, report_deleted: true },
+        });
+        this.engine.flushNow();
+        referencePersisted = true;
+      } catch (error) {
+        const checkpointWarning = `Report deletion committed, but its state artifact reference could not be checkpointed: ${error instanceof Error ? error.message : String(error)}`;
+        warning = warning ? `${warning} ${checkpointWarning}` : checkpointWarning;
+      }
+    }
     res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ deleted: ok }));
+    res.end(JSON.stringify(ok
+      ? {
+          deleted: true,
+          cleanup_complete: deletion.cleanup_complete,
+          commit_durability: deletion.commit_durability,
+          reference_persisted: referencePersisted,
+          ...(warning ? { warning } : {}),
+        }
+      : { deleted: false }));
   }
 
   /** POST /api/reports/render — assemble + persist a new report. Body shape mirrors generate_report's options. */
@@ -4616,7 +4725,7 @@ export class DashboardServer {
       // rather than trusting the request-entry check.
       if (!this.requireWritablePersistence(res)) return;
       const archive = this.engine.getReportArchive();
-      const record: ReportRecord = archive.add(stored, {
+      const record = archive.add(stored, {
         generated_at: new Date().toISOString(),
         format,
         redaction_mode: assembled.redaction_mode,
@@ -4636,12 +4745,40 @@ export class DashboardServer {
         },
       });
 
+      let referencePersisted = false;
+      let warning: string | undefined = record.warning;
+      if (record.commit_durability === 'confirmed') {
+        try {
+          this.engine.logActionEvent({
+            description: `Dashboard report archived: ${record.id}`,
+            event_type: 'system',
+            category: 'system',
+            details: {
+              report_id: record.id,
+              report_format: record.format,
+              report_size_bytes: record.size_bytes,
+              report_sha256: record.content_sha256,
+            },
+          });
+          this.engine.flushNow();
+          referencePersisted = true;
+        } catch (error) {
+          const checkpointWarning = `Report bytes were archived, but the state artifact reference could not be checkpointed: ${error instanceof Error ? error.message : String(error)}`;
+          warning = warning ? `${warning} ${checkpointWarning}` : checkpointWarning;
+        }
+      }
+
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         report: record,
+        report_committed: record.commit_durability === 'confirmed',
+        commit_durability: record.commit_durability,
+        aggregate_manifest_persisted: record.manifest_persisted,
         findings_count: assembled.findings_count,
         evidence_count: assembled.evidence_count,
         severity_summary: assembled.severity_summary,
+        reference_persisted: referencePersisted,
+        ...(warning ? { warning } : {}),
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

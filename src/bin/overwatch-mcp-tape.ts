@@ -127,8 +127,8 @@ async function main(): Promise<void> {
     if (serverBuffer.length > 0) {
       writer.write({ ts: new Date().toISOString(), direction: 'server_to_client', raw: serverBuffer, parse_error: 'unterminated_frame_at_close' });
     }
-    log(`captured ${writer.count} frames`);
     await writer.close();
+    log(`captured ${writer.count} committed frames (${writer.accepted} accepted, ${writer.dropped} dropped)`);
     process.exit(code);
   };
 

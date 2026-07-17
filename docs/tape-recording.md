@@ -65,7 +65,9 @@ Click to flip state. The toggle calls `POST /api/tape/toggle` (with mutation aut
 ### REST API
 
 ```
-GET  /api/tape           → { enabled, path, session_id, frame_count, started_at, started_by }
+GET  /api/tape           → { enabled, path, session_id, frame_count,
+                             accepted_frame_count, dropped_frame_count,
+                             started_at, started_by, error? }
 POST /api/tape/toggle    → flip state, returns updated status
                          body: { action?: "enable" | "disable",
                                  dir?, file?, session_id? }
@@ -73,7 +75,7 @@ POST /api/tape/toggle    → flip state, returns updated status
 
 ### Activity log integration
 
-Every enable/disable pair emits a matched `tape_session_started` / `tape_session_stopped` event under `provenance: system`. Both events include `started_by`; the stop event records the `frame_count` and links back to the start event id, so retrospectives can reconstruct exact recording windows from the activity log alone.
+Every enable/disable pair emits a matched `tape_session_started` / `tape_session_stopped` event under `provenance: system`. Both events include `started_by`; the stop event records committed, accepted, and dropped frame counts and links back to the start event id. Durable close fsyncs the tape and its directory. An asynchronous write failure detaches the recorder immediately, then records a terminal failure only after pending callbacks and close settle so its counts are final. Reopening a tape with a torn final line preserves that fragment and inserts an explicit recovery marker before appending new frames.
 
 ## Standalone Proxy
 

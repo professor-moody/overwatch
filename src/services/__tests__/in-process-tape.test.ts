@@ -96,7 +96,14 @@ describe('InProcessTapeController', () => {
     fake.emit({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'x' } });
 
     const stopped = await c.disable();
-    expect(stopped.enabled).toBe(false);
+    expect(stopped).toMatchObject({
+      enabled: false,
+      frame_count: 3,
+      accepted_frame_count: 3,
+      dropped_frame_count: 0,
+      path: status.path,
+    });
+    expect(c.getStatus()).toMatchObject({ frame_count: 3, accepted_frame_count: 3 });
 
     const lines = readFileSync(status.path!, 'utf-8').trim().split('\n');
     expect(lines).toHaveLength(3);
@@ -139,11 +146,28 @@ describe('InProcessTapeController', () => {
 
     await expect(c.disable({ audit: false })).rejects.toThrow('synthetic close failure');
     expect(c.getStatus()).toMatchObject({ enabled: false, frame_count: 0 });
-    expect(c.getStatus().path).toBeUndefined();
-    expect(c.getStatus().session_id).toBeUndefined();
+    expect(c.getStatus().path).toBeDefined();
+    expect(c.getStatus().session_id).toBeDefined();
+    expect(c.getStatus().error).toContain('synthetic close failure');
 
     closeSpy.mockRestore();
     await writer.close();
+  });
+
+  it('detaches a failed writer, audits failure, and can enable a fresh session', async () => {
+    const c = new InProcessTapeController(engine, { defaultDir: tmpDir });
+    const first = c.enable();
+    const writer = (c as unknown as { writer: { stream: { emit: (event: string, error: Error) => boolean } } }).writer;
+    writer.stream.emit('error', new Error('ENOSPC: disk full'));
+    expect(c.getStatus()).toMatchObject({ enabled: false, error: expect.stringContaining('ENOSPC') });
+    await vi.waitFor(() => {
+      expect(engine.getFullHistory().some(event => event.details?.tape_lifecycle === 'failed')).toBe(true);
+    });
+    const second = c.enable();
+    expect(second.enabled).toBe(true);
+    expect(second.path).not.toBe(first.path);
+    expect(second.error).toBeUndefined();
+    await c.disable();
   });
 
   it('emits paired tape_session_started / tape_session_stopped activity events', async () => {
@@ -158,6 +182,19 @@ describe('InProcessTapeController', () => {
     expect(recent[0].event_type).toBe('tape_session_started');
     expect(recent[1].event_type).toBe('tape_session_stopped');
     expect(recent[1].details?.frame_count).toBe(0);
+  });
+
+  it('coalesces concurrent disable calls into one terminal lifecycle audit', async () => {
+    const c = new InProcessTapeController(engine, { defaultDir: tmpDir });
+    c.enable();
+    const before = engine.getFullHistory().filter(event => event.event_type === 'tape_session_stopped').length;
+    const first = c.disable();
+    const second = c.disable();
+    expect(second).toBe(first);
+    const [left, right] = await Promise.all([first, second]);
+    expect(left).toEqual(right);
+    const after = engine.getFullHistory().filter(event => event.event_type === 'tape_session_stopped').length;
+    expect(after - before).toBe(1);
   });
 
   it('rotates to a fresh file across enable/disable cycles', async () => {

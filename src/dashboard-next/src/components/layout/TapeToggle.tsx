@@ -45,12 +45,17 @@ export function TapeToggle() {
   if (!available) return null;
 
   const enabled = !!status?.enabled;
+  const failed = !!status?.error;
   const frames = status?.frame_count ?? 0;
+  const dropped = status?.dropped_frame_count ?? 0;
   const source = status?.started_by;
   const sourceLabel = source ? ` via ${source}` : '';
-  const title = enabled
-    ? `Recording${sourceLabel} → ${status?.path || '(memory)'} — click to stop`
-    : 'JSON-RPC tape: off — click to start recording';
+  const dropSummary = dropped > 0 ? `, ${dropped} dropped` : '';
+  const title = failed
+    ? `Tape recording failed: ${status?.error}${status?.path ? ` (${status.path})` : ''}`
+    : enabled
+    ? `Recording${sourceLabel} → ${status?.path || '(memory)'} — ${frames} written${dropSummary} — click to stop`
+    : `JSON-RPC tape: off${frames > 0 || dropped > 0 ? ` — last session ${frames} written${dropSummary}` : ''} — click to start recording`;
 
   return (
     <button
@@ -60,7 +65,9 @@ export function TapeToggle() {
       title={title}
       className={cn(
         'flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full border transition-colors',
-        enabled
+        failed
+          ? 'bg-warning/10 text-warning border-warning/30 hover:bg-warning/20'
+          : enabled
           ? 'bg-destructive/10 text-destructive border-destructive/30 hover:bg-destructive/20'
           : 'bg-surface text-muted-foreground border-border hover:text-foreground hover:border-foreground/40',
         busy && 'opacity-50 cursor-wait',
@@ -69,11 +76,15 @@ export function TapeToggle() {
       <span
         className={cn(
           'w-1.5 h-1.5 rounded-full',
-          enabled ? 'bg-destructive animate-pulse' : 'bg-muted-foreground/50',
+          failed ? 'bg-warning' : enabled ? 'bg-destructive animate-pulse' : 'bg-muted-foreground/50',
         )}
       />
       <span className="tabular-nums">
-        {enabled ? `Tape${source ? ` ${source}` : ''} ● ${frames}` : 'Tape'}
+        {failed
+          ? `Tape error${dropped > 0 ? ` · ${dropped} dropped` : ''}`
+          : enabled
+            ? `Tape${source ? ` ${source}` : ''} ● ${frames}${dropped > 0 ? ` · ${dropped} dropped` : ''}`
+            : dropped > 0 ? `Tape · ${dropped} dropped` : 'Tape'}
       </span>
     </button>
   );

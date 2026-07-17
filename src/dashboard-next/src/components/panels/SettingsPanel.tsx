@@ -295,6 +295,31 @@ export function RecoverySection({
             </div>
           ) : null}
 
+          {recovery.artifact_recovery?.reports.writable === false
+            || recovery.artifact_recovery?.generation_warnings?.length ? (
+              <div className="mt-3 rounded border border-warning/20 bg-warning/5 px-3 py-2 text-xs text-warning">
+                <div className="font-medium">Artifact recovery needs review</div>
+                {recovery.artifact_recovery.reports.writable === false && (
+                  <div className="mt-1">
+                    {recovery.artifact_recovery.reports.reason
+                      ?? 'Report archive mutations are read-only.'}
+                    {recovery.artifact_recovery.reports.uncertain_deletion_ids.length > 0 && (
+                      <> Affected reports: <code>{recovery.artifact_recovery.reports.uncertain_deletion_ids.join(', ')}</code>.</>
+                    )}
+                  </div>
+                )}
+                {recovery.artifact_recovery.generation_warnings?.length ? (
+                  <ul className="mt-1 space-y-1">
+                    {recovery.artifact_recovery.generation_warnings.map((warning, index) => (
+                      <li key={`${warning.namespace}:${warning.root}:${index}`}>
+                        <code>{warning.namespace}</code> · <code title={warning.root}>{warning.root}</code> · {warning.message}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+
           {config?.status === 'diverged' && view && (
             <div className="mt-4 flex flex-wrap gap-2">
               {view.canUseFile && (

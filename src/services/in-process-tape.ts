@@ -27,7 +27,7 @@
 //     does not require restarting the transport.
 // ============================================================
 
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { resolve as resolvePath } from 'path';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -55,6 +55,10 @@ export interface TapeStatus {
   session_id?: string;
   /** Frames written since enable(). */
   frame_count: number;
+  /** Frames admitted to the bounded writer queue. */
+  accepted_frame_count?: number;
+  /** Frames rejected or failed before durable close. */
+  dropped_frame_count?: number;
   /** ISO timestamp of last enable(). */
   started_at?: string;
   /** What caused this tape recording session to start. */
@@ -66,7 +70,9 @@ export interface TapeStatus {
 
 function autoTapePath(dir: string, sessionId?: string): string {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const sid = sessionId ? `${sessionId}-` : '';
+  const sid = sessionId
+    ? `${sessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40)}-${createHash('sha256').update(sessionId).digest('hex').slice(0, 8)}-`
+    : '';
   return resolvePath(`${dir}/tape-${sid}${ts}.jsonl`);
 }
 
@@ -82,6 +88,18 @@ export class InProcessTapeController {
   private currentStartedBy: TapeStartSource | undefined;
   private startedAt: string | undefined;
   private startEventId: string | undefined;
+  private writerFailureUnsubscribe: (() => void) | undefined;
+  private tapeGeneration = 0;
+  private disablePromise: Promise<TapeStatus> | undefined;
+  private lastFailure: {
+    error: string;
+    path?: string;
+    session_id?: string;
+    frame_count: number;
+    accepted_frame_count: number;
+    dropped_frame_count: number;
+  } | undefined;
+  private lastCompleted: Omit<TapeStatus, 'enabled'> | undefined;
   private defaults: InProcessTapeOptions;
 
   constructor(private engine: GraphEngine, defaults: InProcessTapeOptions = {}) {
@@ -89,20 +107,103 @@ export class InProcessTapeController {
   }
 
   isEnabled(): boolean {
-    return this.writer !== null;
+    return this.writer !== null && this.writer.error === undefined;
   }
 
   getStatus(): TapeStatus {
+    const inactive = this.lastFailure
+      ? {
+          error: this.lastFailure.error,
+          path: this.lastFailure.path,
+          session_id: this.lastFailure.session_id,
+          frame_count: this.lastFailure.frame_count,
+          accepted_frame_count: this.lastFailure.accepted_frame_count,
+          dropped_frame_count: this.lastFailure.dropped_frame_count,
+        }
+      : this.lastCompleted;
     return {
       enabled: this.isEnabled(),
-      path: this.currentPath,
-      session_id: this.currentSessionId,
-      frame_count: this.writer?.count ?? 0,
-      started_at: this.startedAt,
-      started_by: this.currentStartedBy,
+      path: this.currentPath ?? inactive?.path,
+      session_id: this.currentSessionId ?? inactive?.session_id,
+      frame_count: this.writer?.count ?? inactive?.frame_count ?? 0,
+      accepted_frame_count: this.writer?.accepted ?? inactive?.accepted_frame_count ?? 0,
+      dropped_frame_count: this.writer?.dropped ?? inactive?.dropped_frame_count ?? 0,
+      started_at: this.startedAt ?? inactive?.started_at,
+      started_by: this.currentStartedBy ?? inactive?.started_by,
       // Surface a writer stream failure so silent tape loss is observable.
-      ...(this.writer?.error ? { error: this.writer.error.message } : {}),
+      ...(this.writer?.error
+        ? { error: this.writer.error.message }
+        : this.lastFailure ? { error: this.lastFailure.error } : {}),
     };
+  }
+
+  private detachFailedWriter(error: unknown): void {
+    const writer = this.writer;
+    if (!writer) return;
+    const generation = this.tapeGeneration;
+    const failure = error instanceof Error ? error : new Error(String(error));
+    const path = this.currentPath;
+    const sessionId = this.currentSessionId;
+    const startedBy = this.currentStartedBy;
+    this.lastFailure = {
+      error: failure.message,
+      path,
+      session_id: sessionId,
+      frame_count: writer.count,
+      accepted_frame_count: writer.accepted,
+      dropped_frame_count: writer.dropped,
+    };
+    this.writer = null;
+    this.writerFailureUnsubscribe?.();
+    this.writerFailureUnsubscribe = undefined;
+    this.currentPath = undefined;
+    this.currentSessionId = undefined;
+    this.currentStartedBy = undefined;
+    this.startedAt = undefined;
+    const startedEventId = this.startEventId;
+    this.startEventId = undefined;
+    void (async () => {
+      let terminalFailure = failure;
+      try {
+        await writer.close();
+      } catch (closeError) {
+        terminalFailure = closeError instanceof Error ? closeError : new Error(String(closeError));
+      }
+      const terminal = {
+        error: terminalFailure.message,
+        path,
+        session_id: sessionId,
+        frame_count: writer.count,
+        accepted_frame_count: writer.accepted,
+        dropped_frame_count: writer.dropped,
+      };
+      if (generation === this.tapeGeneration) this.lastFailure = terminal;
+      if (!this.engine.isPersistenceWritable()) return;
+      try {
+        this.engine.logActionEvent({
+          description: `In-process tape session failed: ${sessionId ?? 'unknown'} (${failure.message})`,
+          event_type: 'system',
+          category: 'system',
+          provenance: 'system',
+          result_classification: 'failure',
+          details: {
+            session_id: sessionId,
+            tape_path: path,
+            capture_mode: 'in_process',
+            tape_lifecycle: 'failed',
+            frame_count: terminal.frame_count,
+            accepted_frame_count: terminal.accepted_frame_count,
+            dropped_frame_count: terminal.dropped_frame_count,
+            started_event_id: startedEventId,
+            started_by: startedBy,
+            error: terminal.error,
+            failed_at: new Date().toISOString(),
+          },
+        });
+      } catch (auditError) {
+        process.stderr.write(`[overwatch-tape] failed to persist tape failure audit: ${auditError instanceof Error ? auditError.message : String(auditError)}\n`);
+      }
+    })();
   }
 
   /**
@@ -110,6 +211,7 @@ export class InProcessTapeController {
    * must `disable()` first to rotate). Returns the resolved tape path.
    */
   enable(opts: InProcessTapeOptions = {}): TapeStatus {
+    if (this.writer?.error) this.detachFailedWriter(this.writer.error);
     if (this.writer) return this.getStatus();
     // The writer creates directories/files immediately. Check the durable gate
     // before constructing it so degraded startup cannot leave an untracked tape
@@ -119,7 +221,14 @@ export class InProcessTapeController {
     const explicit = opts.file ?? this.defaults.file;
     const dir = opts.defaultDir ?? this.defaults.defaultDir ?? './tapes';
     const path = explicit ? resolvePath(explicit) : autoTapePath(dir, sessionId);
-    this.writer = new TapeWriter(path);
+    const writer = new TapeWriter(path);
+    this.writer = writer;
+    this.tapeGeneration++;
+    this.writerFailureUnsubscribe = writer.onFailure(error => {
+      if (this.writer === writer) this.detachFailedWriter(error);
+    });
+    this.lastFailure = undefined;
+    this.lastCompleted = undefined;
     this.currentPath = path;
     this.currentSessionId = sessionId;
     this.currentStartedBy = opts.startedBy ?? this.defaults.startedBy;
@@ -143,6 +252,8 @@ export class InProcessTapeController {
       this.startEventId = event.event_id;
     } catch (error) {
       this.writer.abortAndRemoveCreatedFile();
+      this.writerFailureUnsubscribe?.();
+      this.writerFailureUnsubscribe = undefined;
       this.writer = null;
       this.currentPath = undefined;
       this.currentSessionId = undefined;
@@ -159,25 +270,56 @@ export class InProcessTapeController {
    * frame count + path so the activity log shows both endpoints. No-op if
    * not currently enabled.
    */
-  async disable(options: { audit?: boolean } = {}): Promise<TapeStatus> {
+  disable(options: { audit?: boolean } = {}): Promise<TapeStatus> {
+    if (this.disablePromise) return this.disablePromise;
+    const pending = this.disableActive(options);
+    this.disablePromise = pending;
+    void pending.then(
+      () => { if (this.disablePromise === pending) this.disablePromise = undefined; },
+      () => { if (this.disablePromise === pending) this.disablePromise = undefined; },
+    );
+    return pending;
+  }
+
+  private async disableActive(options: { audit?: boolean } = {}): Promise<TapeStatus> {
     if (!this.writer) return this.getStatus();
     const path = this.currentPath;
     const sessionId = this.currentSessionId;
     const startedBy = this.currentStartedBy;
-    const frames = this.writer.count;
+    const writer = this.writer;
+    this.writerFailureUnsubscribe?.();
+    this.writerFailureUnsubscribe = undefined;
+    let frames = writer.count;
+    let acceptedFrames = writer.accepted;
+    let droppedFrames = writer.dropped;
     let closeError: unknown;
     try {
       try {
-        await this.writer.close();
+        await writer.close();
       } catch (error) {
         closeError = error;
       } finally {
+        // Commit callbacks have all settled at the durable close boundary.
+        frames = writer.count;
+        acceptedFrames = writer.accepted;
+        droppedFrames = writer.dropped;
         this.writer = null;
       }
       // Shutdown must still close the runtime writer after persistence has
       // entered read-only mode, but it must not attempt another durable audit
       // mutation. Recheck after the asynchronous writer close as the gate may
       // have crossed while the stream was draining.
+      if (closeError === undefined) {
+        this.lastCompleted = {
+          path,
+          session_id: sessionId,
+          frame_count: frames,
+          accepted_frame_count: acceptedFrames,
+          dropped_frame_count: droppedFrames,
+          started_at: this.startedAt,
+          started_by: startedBy,
+        };
+      }
       if (closeError === undefined && options.audit !== false && this.engine.isPersistenceWritable()) {
         this.engine.logActionEvent({
           description: `In-process tape session stopped: ${sessionId} (${frames} frames)`,
@@ -189,11 +331,44 @@ export class InProcessTapeController {
             tape_path: path,
             capture_mode: 'in_process',
             frame_count: frames,
+            accepted_frame_count: acceptedFrames,
+            dropped_frame_count: droppedFrames,
             started_event_id: this.startEventId,
             started_by: startedBy,
             stopped_at: new Date().toISOString(),
           },
         });
+      } else if (closeError !== undefined) {
+        this.lastFailure = {
+          error: closeError instanceof Error ? closeError.message : String(closeError),
+          path,
+          session_id: sessionId,
+          frame_count: frames,
+          accepted_frame_count: acceptedFrames,
+          dropped_frame_count: droppedFrames,
+        };
+        if (options.audit !== false && this.engine.isPersistenceWritable()) {
+          this.engine.logActionEvent({
+            description: `In-process tape session failed while closing: ${sessionId ?? 'unknown'}`,
+            event_type: 'system',
+            category: 'system',
+            provenance: 'system',
+            result_classification: 'failure',
+            details: {
+              session_id: sessionId,
+              tape_path: path,
+              capture_mode: 'in_process',
+              tape_lifecycle: 'failed',
+              frame_count: frames,
+              accepted_frame_count: acceptedFrames,
+              dropped_frame_count: droppedFrames,
+              started_event_id: this.startEventId,
+              started_by: startedBy,
+              error: closeError instanceof Error ? closeError.message : String(closeError),
+              failed_at: new Date().toISOString(),
+            },
+          });
+        }
       }
     } finally {
       // The writer is already closed. Never leave the controller reporting an
@@ -222,14 +397,12 @@ export class InProcessTapeController {
         ...(session_id ? { session_id } : {}),
         parsed: message as unknown,
       });
+      if (this.writer.error) this.detachFailedWriter(this.writer.error);
     } catch (err) {
       // Best-effort: detach writer to avoid storms; surface once on stderr.
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[overwatch-tape] write failed, detaching: ${msg}\n`);
-      this.writer = null;
-      this.currentPath = undefined;
-      this.currentSessionId = undefined;
-      this.currentStartedBy = undefined;
+      this.detachFailedWriter(err);
     }
   }
 

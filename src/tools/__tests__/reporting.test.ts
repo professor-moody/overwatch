@@ -20,6 +20,19 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(() => false),
 }));
 
+vi.mock('../../services/artifact-generation.js', () => ({
+  publishArtifactGenerationDurable: vi.fn(() => ({
+    generation_id: 'gen-1',
+    generation_committed: true,
+    commit_durability: 'confirmed',
+    generation_path: '/tmp/gen-1',
+    generation_manifest: '/tmp/gen-1/manifest.json',
+    manifest_sha256: 'a'.repeat(64),
+    pointer_path: '/tmp/current.json',
+    legacy_mirror_complete: true,
+  })),
+}));
+
 import { registerReportingTools } from '../reporting.js';
 import { assembleReport } from '../../services/report-assembler.js';
 
@@ -43,6 +56,8 @@ function buildHandlers() {
     getFullHistory: vi.fn(() => []),
     getAllAgents: vi.fn(() => []),
     getInferenceRules: vi.fn(() => []),
+    assertPersistenceWritable: vi.fn(),
+    registerArtifactGenerationRecovery: vi.fn(),
   };
 
   const skills = {
@@ -132,5 +147,31 @@ describe('generate_report tool', () => {
         include_narrative: false,
       }),
     );
+  });
+
+  it('returns the committed disk generation when archive gating fails afterward', async () => {
+    const { handlers, engine } = buildHandlers();
+    engine.assertPersistenceWritable
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => { throw new Error('persistence became read-only'); });
+    const result = await handlers.generate_report({
+      format: 'markdown',
+      include_evidence: true,
+      include_narrative: true,
+      include_retrospective: false,
+      write_to_disk: true,
+      output_dir: '/tmp/reports',
+      theme: 'light',
+      persist_to_archive: true,
+    });
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload).toMatchObject({
+      generation_committed: true,
+      generation_id: 'gen-1',
+      archive_committed: false,
+      archive_reference_persisted: false,
+    });
+    expect(payload.warning).toContain('engagement-archive publication failed');
   });
 });

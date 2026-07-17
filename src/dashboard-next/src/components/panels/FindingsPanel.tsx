@@ -156,9 +156,7 @@ export function FindingsPanel() {
       />
 
       {/* Reports archive (past renders) */}
-      {reports.length > 0 && (
-        <ReportsList reports={reports} onRefresh={refreshReports} />
-      )}
+      <ReportsList reports={reports} onRefresh={refreshReports} />
 
       {(selectedFindingId || findingContext) && (
         <FindingInspector

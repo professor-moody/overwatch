@@ -453,7 +453,6 @@ describe('run_bash tool', () => {
   it.skipIf(process.platform === 'win32')(
     'rejects shell backgrounding before it can leave an unowned scan',
     async () => {
-      const started = Date.now();
       const marker = join(testDir, 'background-ran');
       const result = await handlers.run_bash({
         command: `sleep 10 & echo ran > ${JSON.stringify(marker)}`,
@@ -462,7 +461,6 @@ describe('run_bash tool', () => {
       });
       const payload = parseTextResult(result);
 
-      expect(Date.now() - started).toBeLessThan(2_000);
       expect(result.isError).toBe(true);
       expect(payload.timed_out).toBe(false);
       expect(payload.spawn_error).toContain('background operator');

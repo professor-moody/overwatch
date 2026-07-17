@@ -4,9 +4,12 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import type { SkillIndex } from '../services/skill-index.js';
 import { assembleReport, type ReportFormat } from '../services/report-assembler.js';
 import { validateFilePath } from '../utils/path-validation.js';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { withErrorBoundary } from './error-boundary.js';
+import {
+  publishArtifactGenerationDurable,
+  type ArtifactGenerationPublication,
+} from '../services/artifact-generation.js';
 
 export function registerReportingTools(server: McpServer, engine: GraphEngine, skills: SkillIndex): void {
 
@@ -32,7 +35,11 @@ Produces a client-deliverable report with:
 - **Credential chains** — derivation paths showing how credentials were obtained
 - **Objectives status** and recommendations
 
-Use this at the end of an engagement to produce the final deliverable report.`,
+Use this at the end of an engagement to produce the final deliverable report.
+
+When writing to output_dir, the returned generation_path and pointer_path are
+the checksummed authority. Fixed report.* and attack-navigator.json paths are
+post-commit compatibility mirrors.`,
       inputSchema: {
         format: z.enum(['markdown', 'md', 'html', 'json', 'pdf']).default('markdown')
           .describe('Output format: markdown (or md), html, json (structured findings data), or pdf (HTML rendered through headless Chromium via puppeteer-core; requires a chromium binary).'),
@@ -70,7 +77,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: false
       }
     },
@@ -116,11 +123,9 @@ Use this at the end of an engagement to produce the final deliverable report.`,
 
       const output = assembled.content;
       const stored: string | Buffer = format === 'pdf' ? pdfBuffer! : output;
+      let diskPublication: ArtifactGenerationPublication | undefined;
 
       if (write_to_disk) {
-        // PDF rendering is asynchronous; storage may have crossed the failure
-        // threshold after the MCP entry gate admitted this call.
-        engine.assertPersistenceWritable();
         let validatedDir: string;
         try {
           validatedDir = validateFilePath(join(output_dir, config.id));
@@ -130,43 +135,112 @@ Use this at the end of an engagement to produce the final deliverable report.`,
             isError: true,
           };
         }
-        if (!existsSync(validatedDir)) {
-          mkdirSync(validatedDir, { recursive: true });
-        }
+        // PDF rendering and path validation may take time; gate the actual
+        // generation commit at the last possible boundary.
+        engine.assertPersistenceWritable();
         const suffix = assembled.redaction_mode === 'client_safe' ? '.client-safe' : '';
         const ext = format === 'markdown' ? 'md' : format;
-        writeFileSync(join(validatedDir, `report${suffix}.${ext}`), stored);
+        const reportName = `report${suffix}.${ext}`;
+        const files: Record<string, { content: string | Buffer; media_type?: string }> = {
+          [reportName]: {
+            content: stored,
+            media_type: format === 'pdf' ? 'application/pdf'
+              : format === 'html' ? 'text/html'
+              : format === 'json' ? 'application/json'
+              : 'text/markdown',
+          },
+        };
         if (include_attack_navigator && assembled.navigator_layer) {
-          writeFileSync(join(validatedDir, 'attack-navigator.json'), JSON.stringify(assembled.navigator_layer, null, 2));
+          files['attack-navigator.json'] = {
+            content: `${JSON.stringify(assembled.navigator_layer, null, 2)}\n`,
+            media_type: 'application/json',
+          };
         }
+        const legacyNames = [
+          'report.md', 'report.html', 'report.json', 'report.pdf',
+          'report.client-safe.md', 'report.client-safe.html',
+          'report.client-safe.json', 'report.client-safe.pdf',
+          'attack-navigator.json',
+        ];
+        engine.registerArtifactGenerationRecovery({
+          root: validatedDir,
+          namespace: 'report',
+          legacy_names: legacyNames,
+        });
+        diskPublication = publishArtifactGenerationDurable({
+          root: validatedDir,
+          namespace: 'report',
+          files,
+          legacy_names: legacyNames,
+        });
       }
 
       let archivedReportId: string | undefined;
+      let archiveReferencePersisted: boolean | undefined;
+      let archiveCommitted: boolean | undefined;
+      let archiveCommitDurability: 'confirmed' | 'uncertain' | undefined;
+      let aggregateManifestPersisted: boolean | undefined;
+      let archivePersistenceWarning: string | undefined;
       if (persist_to_archive) {
-        engine.assertPersistenceWritable();
-        const archive = engine.getReportArchive();
-        const record = archive.add(stored, {
-          generated_at: new Date().toISOString(),
-          format,
-          redaction_mode: assembled.redaction_mode,
-          profile: assembled.profile,
-          evidence_style: evidenceStyle,
-          findings_count: assembled.findings_count,
-          evidence_count: assembled.evidence_count,
-          options: {
-            include_evidence,
-            include_narrative,
-            include_retrospective,
-            include_compliance,
-            include_attack_paths,
-            include_attack_navigator,
-            include_gap_analysis,
+        try {
+          engine.assertPersistenceWritable();
+          const archive = engine.getReportArchive();
+          const record = archive.add(stored, {
+            generated_at: new Date().toISOString(),
+            format,
+            redaction_mode: assembled.redaction_mode,
             profile: assembled.profile,
             evidence_style: evidenceStyle,
-            theme: format === 'html' || format === 'pdf' ? theme : undefined,
-          },
-        });
-        archivedReportId = record.id;
+            findings_count: assembled.findings_count,
+            evidence_count: assembled.evidence_count,
+            options: {
+              include_evidence,
+              include_narrative,
+              include_retrospective,
+              include_compliance,
+              include_attack_paths,
+              include_attack_navigator,
+              include_gap_analysis,
+              profile: assembled.profile,
+              evidence_style: evidenceStyle,
+              theme: format === 'html' || format === 'pdf' ? theme : undefined,
+            },
+          });
+          archivedReportId = record.id;
+          archiveCommitDurability = record.commit_durability;
+          archiveCommitted = record.commit_durability === 'confirmed';
+          aggregateManifestPersisted = record.manifest_persisted;
+          if (record.warning) archivePersistenceWarning = record.warning;
+          if (record.commit_durability === 'confirmed') {
+            try {
+              engine.logActionEvent({
+                description: `Report archived: ${record.id}`,
+                event_type: 'system',
+                category: 'system',
+                details: {
+                  report_id: record.id,
+                  report_format: record.format,
+                  report_size_bytes: record.size_bytes,
+                  report_sha256: record.content_sha256,
+                },
+              });
+              engine.flushNow();
+              archiveReferencePersisted = true;
+            } catch (error) {
+              archiveReferencePersisted = false;
+              const checkpointWarning = `Report bytes were archived, but the state artifact reference could not be checkpointed: ${error instanceof Error ? error.message : String(error)}`;
+              archivePersistenceWarning = archivePersistenceWarning
+                ? `${archivePersistenceWarning} ${checkpointWarning}`
+                : checkpointWarning;
+            }
+          } else archiveReferencePersisted = false;
+        } catch (error) {
+          if (!diskPublication) throw error;
+          archiveCommitted = false;
+          aggregateManifestPersisted = false;
+          archiveReferencePersisted = false;
+          archivePersistenceWarning = `Disk generation committed, but engagement-archive publication failed: ${error instanceof Error ? error.message : String(error)}`;
+        }
       }
 
       return {
@@ -182,7 +256,27 @@ Use this at the end of an engagement to produce the final deliverable report.`,
             report_preview: output.slice(0, 800) + (output.length > 800 ? '...' : ''),
             report_length: Buffer.isBuffer(stored) ? stored.byteLength : stored.length,
             ...(archivedReportId ? { report_id: archivedReportId } : {}),
+            ...(archiveCommitted !== undefined ? { archive_committed: archiveCommitted } : {}),
+            ...(archiveCommitDurability !== undefined ? { archive_commit_durability: archiveCommitDurability } : {}),
+            ...(aggregateManifestPersisted !== undefined
+              ? { aggregate_manifest_persisted: aggregateManifestPersisted }
+              : {}),
+            ...(archiveReferencePersisted !== undefined ? { archive_reference_persisted: archiveReferencePersisted } : {}),
+            ...(archivePersistenceWarning ? { warning: archivePersistenceWarning } : {}),
             ...(write_to_disk ? { output_dir: join(output_dir, config.id) } : {}),
+            ...(diskPublication ? {
+              generation_id: diskPublication.generation_id,
+              generation_committed: diskPublication.generation_committed,
+              generation_pointer_visible: diskPublication.pointer_visible,
+              generation_path: diskPublication.generation_path,
+              generation_manifest: diskPublication.generation_manifest,
+              pointer_path: diskPublication.pointer_path,
+              generation_commit_durability: diskPublication.commit_durability,
+              legacy_mirror_complete: diskPublication.legacy_mirror_complete,
+            } : {}),
+            ...(diskPublication?.warning ? {
+              output_warning: diskPublication.warning,
+            } : {}),
           }, null, 2),
         }],
       };

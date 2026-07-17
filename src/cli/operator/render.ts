@@ -96,6 +96,8 @@ function renderPersistenceRecovery(recovery: PersistenceRecoveryStatus): string 
   if (
     recovery.consecutive_persistence_failures > 0
     || recovery.journal.preserved
+    || recovery.artifact_recovery?.reports.writable === false
+    || (recovery.artifact_recovery?.generation_warnings?.length ?? 0) > 0
     || (recovery.runtime_ownership_warnings?.length ?? 0) > 0
     || (recovery.outcome === 'recovered' && recovery.source === 'snapshot')
   ) {
@@ -230,6 +232,22 @@ export function renderRecovery(data: RecoveryResponse): string {
   }
   if (recovery.state_migration) {
     out.push('', heading('State format'), renderStateMigrationStatus(recovery.state_migration));
+  }
+  if (recovery.artifact_recovery) {
+    const reports = recovery.artifact_recovery.reports;
+    out.push('', heading('Artifact recovery'));
+    out.push(keyValues([
+      ['report archive mutations', reports.writable ? 'enabled' : 'paused'],
+      ['ambiguous report deletions', reports.uncertain_deletion_ids.length > 0
+        ? reports.uncertain_deletion_ids.join(', ')
+        : 'none'],
+      ...(reports.reason ? [['report archive reason', reports.reason] as [string, string]] : []),
+    ]));
+    if (recovery.artifact_recovery.generation_warnings?.length) {
+      out.push(recovery.artifact_recovery.generation_warnings
+        .map(warning => `  ${yellow('!')} ${warning.namespace} · ${warning.root}: ${warning.message}`)
+        .join('\n'));
+    }
   }
   if (recovery.runtime_ownership_warnings?.length) {
     out.push('', heading('Runtime ownership warnings'));

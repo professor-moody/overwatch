@@ -1952,7 +1952,9 @@ describe('app bootstrap', () => {
       await expect(shutdownOverwatchApp(app)).resolves.toBeUndefined();
 
       expect(tape.getStatus()).toMatchObject({ enabled: false, frame_count: 0 });
-      expect(tape.getStatus().path).toBeUndefined();
+      // The closed descriptor remains visible for operator diagnostics and
+      // bundle discovery even though no live handle remains.
+      expect(tape.getStatus().path).toContain(tapeDir);
       expect(logActionEvent).toHaveBeenCalledTimes(1);
       expect(engine.setTrackedProcesses).not.toHaveBeenCalled();
       expect(engine.persist).not.toHaveBeenCalled();
