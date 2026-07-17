@@ -74,6 +74,7 @@ import {
   SettingsUpdateResultSchema,
   normalizeLegacyAgentDispatchDescription,
   type AgentListResponse,
+  type AgentDto,
   type AgentArchetypeSummary as ContractAgentArchetypeSummary,
   type AgentQueryDto,
   type ApplicationCommandRecordDto,
@@ -311,7 +312,15 @@ export async function getAgents(): Promise<AgentListResponse> {
   return AgentListResponseSchema.parse(await request('getAgents'));
 }
 
-export async function getAgentContext(agentId: string): Promise<unknown> {
+export async function getAgentContext(agentId: string): Promise<{
+  task: AgentDto | (Record<string, unknown> & {
+    id: string;
+    agent_id: string;
+    task_id?: string;
+    agent_label?: string;
+  });
+  subgraph: { nodes: unknown[]; edges: unknown[] };
+}> {
   return request('getAgentContext', { path: { task_id: agentId } });
 }
 
@@ -322,8 +331,8 @@ export async function cancelAgent(agentId: string): Promise<{ ok: boolean }> {
 export type DirectiveKind = 'pause' | 'resume' | 'stop' | 'narrow_scope' | 'skip_types' | 'prioritize' | 'instruct';
 
 /**
- * Steer a single running agent. Routes through the same validated executeOps
- * path as the command bar (POST /api/agents/:id/directive). 200 with the op
+ * Steer a single running agent. Routes through the same validated application-
+ * command path as the command bar (POST /api/agents/:id/directive). 200 with the op
  * result, 409 if the agent isn't running, 400 on an unknown kind.
  */
 export async function issueDirective(
@@ -533,8 +542,8 @@ export async function denyCommandPlan(planId: string): Promise<{ denied: boolean
 }
 
 /** Open planner-proposed plans awaiting operator confirmation. */
-export async function getProposedPlans(): Promise<{ plans: ProposedPlan[] }> {
-  return request('getProposedPlans');
+export async function getProposedPlans(signal?: AbortSignal): Promise<{ plans: ProposedPlan[] }> {
+  return request('getProposedPlans', { signal });
 }
 
 export type ApplicationCommandRecord = ApplicationCommandRecordDto;

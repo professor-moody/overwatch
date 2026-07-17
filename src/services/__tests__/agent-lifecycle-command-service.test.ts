@@ -9,7 +9,10 @@ import {
   AgentLifecycleCommandService,
 } from '../agent-lifecycle-command-service.js';
 import { GraphEngine } from '../graph-engine.js';
-import { ApplicationCommandService } from '../application-command-service.js';
+import {
+  ApplicationCommandService,
+  withApplicationCommandInvocation,
+} from '../application-command-service.js';
 
 function config(): EngagementConfig {
   return {
@@ -50,6 +53,7 @@ describe('AgentLifecycleCommandService', () => {
   });
 
   afterEach(() => {
+    engine.dispose();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -141,6 +145,76 @@ describe('AgentLifecycleCommandService', () => {
     });
   });
 
+  it('rejects a planner terminal update until it records a structured conclusion', () => {
+    const commandId = 'planner-conclusion-command';
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: 'inspect the target' },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: { command_id: commandId, idempotency_key: commandId },
+      reserve: () => ({
+        status: 'running',
+        result: { phase: 'planning_running', planner_task_id: 'planner-conclusion-task' },
+      }),
+    });
+    expect(engine.registerAgent(task({
+      id: 'planner-conclusion-task',
+      task_id: 'planner-conclusion-task',
+      agent_id: 'planner-conclusion',
+      agent_label: 'planner-conclusion',
+      role: 'planner',
+      archetype: 'planner',
+      application_command_id: commandId,
+    })).ok).toBe(true);
+
+    expect(() => service.updateStatus({
+      task_id: 'planner-conclusion-task',
+      status: 'completed',
+      summary: 'done',
+    })).toThrow(expect.objectContaining({
+      code: 'PLANNER_CONCLUSION_REQUIRED',
+      http_status: 409,
+    }));
+    expect(engine.getTask('planner-conclusion-task')?.status).toBe('running');
+    expect(engine.getApplicationCommandById(commandId)?.status).toBe('running');
+  });
+
+  it.each([
+    ['failed', 'PLANNER_FAILED', 'planner tool invocation failed'],
+    ['interrupted', 'PLANNER_INTERRUPTED', 'operator stopped the planner'],
+  ] as const)('settles a planner %s outcome without recasting it as no-plan', (status, code, summary) => {
+    const commandId = `planner-${status}-command`;
+    const taskId = `planner-${status}-task`;
+    new ApplicationCommandService(engine).reserveSync({
+      command_kind: 'operator.plan',
+      input: { command: `exercise ${status} planner handling` },
+      schema: z.object({ command: z.string() }).strict(),
+      metadata: { command_id: commandId, idempotency_key: commandId },
+      reserve: () => ({
+        status: 'running',
+        result: { phase: 'planning_running', planner_task_id: taskId },
+      }),
+    });
+    expect(engine.registerAgent(task({
+      id: taskId,
+      task_id: taskId,
+      agent_id: `planner-${status}`,
+      agent_label: `planner-${status}`,
+      role: 'planner',
+      archetype: 'planner',
+      application_command_id: commandId,
+    })).ok).toBe(true);
+
+    service.updateStatus({ task_id: taskId, status, summary });
+
+    expect(engine.getTask(taskId)).toMatchObject({ status, result_summary: summary });
+    expect(engine.getApplicationCommandById(commandId)).toMatchObject({
+      status,
+      error: { code, message: summary },
+      result: { phase: status, planner_task_id: taskId, reason: summary },
+    });
+  });
+
   it('replays a canonical transcript after the task has been dismissed', () => {
     const metadata = {
       command_id: 'dismissed-transcript-command',
@@ -184,6 +258,37 @@ describe('AgentLifecycleCommandService', () => {
     expect(engine.getFullHistory().filter(entry =>
       (entry.details as { warning?: string } | undefined)?.warning
         === 'missing_agent_transcript')).toHaveLength(1);
+  });
+
+  it('rejects actorless and cross-task MCP lifecycle spoofing', () => {
+    expect(() => withApplicationCommandInvocation({
+      transport: 'mcp',
+      actor_task_id: null,
+    }, () => service.updateStatus({
+      task_id: 'task-1',
+      status: 'failed',
+      summary: 'spoofed by terminal',
+    }, { transport: 'mcp' }))).toThrow(expect.objectContaining({
+      code: 'AGENT_ACTOR_REQUIRED',
+      http_status: 403,
+    }));
+    expect(engine.getTask('task-1')?.status).toBe('running');
+
+    expect(engine.registerAgent(task({
+      id: 'task-2',
+      task_id: 'task-2',
+      agent_id: 'agent-2',
+      agent_label: 'agent-2',
+    })).ok).toBe(true);
+    expect(() => withApplicationCommandInvocation({
+      transport: 'mcp',
+      actor_task_id: 'task-2',
+    }, () => service.heartbeat({ task_id: 'task-1' }, { transport: 'mcp' })))
+      .toThrow(expect.objectContaining({
+        code: 'AGENT_ACTOR_MISMATCH',
+        http_status: 409,
+      }));
+    expect(engine.getTask('task-1')?.status).toBe('running');
   });
 
   it('delivers and acknowledges question answers through durable heartbeats', () => {

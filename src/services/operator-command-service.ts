@@ -2,13 +2,14 @@
 // Overwatch — operator plans and command confirmation
 // ============================================================
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { ActionResolution } from './pending-action-queue.js';
 import type { GraphEngine } from './graph-engine.js';
 import {
   ApplicationCommandConflictError,
   ApplicationCommandService,
+  getApplicationCommandInvocation,
   type ApplicationCommandExecution,
   type ApplicationCommandMetadata,
 } from './application-command-service.js';
@@ -150,6 +151,25 @@ function executionFromRecord<T>(
   };
 }
 
+function normalizePlannerCommand(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function plannerRequestKey(value: string): string {
+  return `planner_${createHash('sha256')
+    .update(normalizePlannerCommand(value))
+    .digest('hex')}`;
+}
+
+function commandFromRecord(
+  record: PersistedApplicationCommandV1 | undefined,
+): string | undefined {
+  const input = record?.validated_input;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const value = (input as Record<string, unknown>).command;
+  return typeof value === 'string' ? value : undefined;
+}
+
 export class OperatorCommandService {
   private readonly dispatch: DispatchCommandService;
 
@@ -206,11 +226,29 @@ export class OperatorCommandService {
       metadata,
     );
 
-    const normalize = (value: string) =>
-      value.trim().replace(/\s+/g, ' ').toLowerCase();
-    const wanted = normalize(input.command);
-    const openPlan = this.engine.getProposedPlanStore().getOpen()
-      .find(plan => normalize(plan.command) === wanted);
+    const wanted = normalizePlannerCommand(input.command);
+    const requestKey = plannerRequestKey(input.command);
+    const matchingOpenPlans = this.engine.getProposedPlanStore().getOpen()
+      .filter(plan => {
+        if (normalizePlannerCommand(plan.command) === wanted) return true;
+        const linked = plan.command_id
+          ? this.engine.getApplicationCommandById(plan.command_id)
+          : undefined;
+        const linkedCommand = commandFromRecord(linked);
+        return Boolean(
+          linkedCommand
+          && normalizePlannerCommand(linkedCommand) === wanted,
+        );
+      });
+    if (matchingOpenPlans.length > 1) {
+      throw new OperatorCommandError(
+        'Multiple open planner plans match this command; resolve or dismiss them before retrying.',
+        'PLANNER_REQUEST_AMBIGUOUS',
+        409,
+        { plan_ids: matchingOpenPlans.map(plan => plan.plan_id) },
+      );
+    }
+    const openPlan = matchingOpenPlans[0];
     if (openPlan) {
       const existingCommand = openPlan.command_id
         ? this.engine.getApplicationCommandById(openPlan.command_id)
@@ -237,6 +275,7 @@ export class OperatorCommandService {
         record: (_parsed, result) => ({
           plan_id: result.plan_id,
           entity_refs: {
+            planner_request_key: requestKey,
             ...(result.planner_task_id
               ? { planner_task_id: result.planner_task_id }
               : {}),
@@ -246,24 +285,28 @@ export class OperatorCommandService {
       });
       return execution;
     }
-    const livePlanner = this.engine.getAgentTasks().find(task => {
+    const liveCommands = this.engine.listApplicationCommands().filter(record => {
       if (
-        task.role !== 'planner'
-        || !task.application_command_id
-        || (task.status !== 'running' && task.status !== 'pending')
-      ) {
-        return false;
-      }
-      const match = task.objective?.match(
-        /^OPERATOR COMMAND \(free-form\): "([\s\S]*?)"$/m,
+        record.command_kind !== 'operator.plan'
+        || (record.status !== 'accepted' && record.status !== 'running')
+      ) return false;
+      if (record.entity_refs?.planner_request_key === requestKey) return true;
+      const existingCommand = commandFromRecord(record);
+      return Boolean(
+        existingCommand
+        && normalizePlannerCommand(existingCommand) === wanted,
       );
-      return Boolean(match && normalize(match[1]) === wanted);
     });
-    if (livePlanner?.application_command_id) {
-      const existing = this.engine.getApplicationCommandById(
-        livePlanner.application_command_id,
+    if (liveCommands.length > 1) {
+      throw new OperatorCommandError(
+        'Multiple active planners match this command; cancel the duplicates before retrying.',
+        'PLANNER_REQUEST_AMBIGUOUS',
+        409,
+        { command_ids: liveCommands.map(record => record.command_id) },
       );
-      if (existing) return executionFromRecord<PlannerRequestResult>(existing);
+    }
+    if (liveCommands[0]) {
+      return executionFromRecord<PlannerRequestResult>(liveCommands[0]);
     }
 
     const execution = this.commands.reserveSync({
@@ -309,7 +352,10 @@ export class OperatorCommandService {
           agent_id: label,
           agent_label: label,
           assigned_at: this.engine.now(),
-          status: 'running',
+          // A reserved planner has not necessarily acquired the bounded planner
+          // lane yet. TaskExecutionService advances it to running only after the
+          // managed target process is acknowledged.
+          status: 'pending',
           subgraph_node_ids: [],
           backend: 'headless_mcp',
           role: 'planner',
@@ -330,7 +376,10 @@ export class OperatorCommandService {
         }
         return {
           status: 'accepted',
-          entity_refs: { planner_task_id: taskId },
+          entity_refs: {
+            planner_task_id: taskId,
+            planner_request_key: requestKey,
+          },
           result: {
             phase: 'planning_queued' as const,
             command_id: identity.command_id,
@@ -356,9 +405,15 @@ export class OperatorCommandService {
       rationale,
     } = parsed;
     const ops = structuredClone(parsed.ops) as OperatorOp[];
-    const ownerReference = task_id ?? agent_id;
-    const normalizeCommand = (value: string) =>
-      value.trim().replace(/\s+/g, ' ').toLowerCase();
+    const invocation = getApplicationCommandInvocation();
+    if (invocation?.transport === 'mcp' && !invocation.actor_task_id) {
+      return {
+        ok: false,
+        error: 'an authenticated planner task is required to submit an MCP proposal; task_id and agent_id body aliases cannot claim ownership',
+      };
+    }
+    const invocationActorTaskId = invocation?.actor_task_id ?? undefined;
+    const ownerReference = invocationActorTaskId ?? task_id ?? agent_id;
     const inferredOwner = ownerReference
       ? undefined
       : this.engine.getAgentTasks().filter(task => {
@@ -375,7 +430,7 @@ export class OperatorCommandService {
           );
           return Boolean(
             match
-            && normalizeCommand(match[1]) === normalizeCommand(command),
+            && normalizePlannerCommand(match[1]) === normalizePlannerCommand(command),
           );
         });
     if (inferredOwner && inferredOwner.length > 1) {
@@ -405,8 +460,23 @@ export class OperatorCommandService {
     const ownerTaskId = ownerTask?.task_id ?? ownerTask?.id;
     const ownerAgentLabel = ownerTask?.agent_label ?? ownerTask?.agent_id;
     if (
-      task_id
-      && agent_id
+      ownerTask
+      && ownerTask.status !== 'running'
+      && ownerTask.status !== 'pending'
+    ) {
+      return {
+        ok: false,
+        error: `planner task ${ownerTaskId} is already ${ownerTask.status}; no new plan can be attached`,
+      };
+    }
+    if (task_id && ownerTask && task_id !== ownerTaskId) {
+      return {
+        ok: false,
+        error: `task_id "${task_id}" does not match invoking planner task ${ownerTaskId}`,
+      };
+    }
+    if (
+      agent_id
       && ownerTask
       && agent_id !== ownerTaskId
       && agent_id !== ownerAgentLabel
@@ -418,15 +488,31 @@ export class OperatorCommandService {
     }
 
     const commandId = ownerTask?.application_command_id;
+    let owningCommand: PersistedApplicationCommandV1 | undefined;
+    let canonicalCommand = command ?? '';
     if (commandId) {
       const existingPlan = this.engine.getProposedPlanStore()
         .getByCommandId(commandId);
       if (existingPlan) {
         return proposalResult(existingPlan);
       }
-      const owningCommand = this.engine.getApplicationCommandById(commandId);
+      owningCommand = this.engine.getApplicationCommandById(commandId);
       if (!owningCommand) {
         return { ok: false, error: `planner command not found: ${commandId}` };
+      }
+      const persistedCommand = commandFromRecord(owningCommand);
+      if (persistedCommand) {
+        if (
+          command !== undefined
+          && normalizePlannerCommand(command)
+            !== normalizePlannerCommand(persistedCommand)
+        ) {
+          return {
+            ok: false,
+            error: `proposal command does not match owning planner command ${commandId}`,
+          };
+        }
+        canonicalCommand = persistedCommand;
       }
       if (
         owningCommand.status === 'failed'
@@ -470,7 +556,7 @@ export class OperatorCommandService {
         }
         const plan = this.engine.getProposedPlanStore().add({
           command_id: commandId,
-          command: command ?? '',
+          command: canonicalCommand,
           ops,
           summary,
           rationale,
@@ -489,7 +575,7 @@ export class OperatorCommandService {
             reason: 'plan_proposed',
             command_id: commandId,
             plan_id: plan.plan_id,
-            command: command ?? '',
+            command: canonicalCommand,
             summary,
             ops,
           },
@@ -891,10 +977,25 @@ export class OperatorCommandService {
         const body = dispatch.result!.body;
         if (body.dispatched === true) {
           const task = body.task as { task_id?: string; id?: string; agent_label?: string; agent_id?: string };
+          const taskId = task.task_id ?? task.id;
+          const agentLabel = task.agent_label ?? task.agent_id;
+          if (!taskId || !agentLabel) {
+            throw new OperatorCommandError(
+              'Dispatch succeeded without canonical task identity.',
+              'DISPATCH_IDENTITY_MISSING',
+              500,
+            );
+          }
           results.push({
             op,
             ok: true,
-            detail: `deployed ${task.agent_label ?? task.agent_id ?? 'agent'} as ${task.task_id ?? task.id ?? 'task'}`,
+            detail: `deployed ${agentLabel} as ${taskId}`,
+            task: {
+              task_id: taskId,
+              agent_label: agentLabel,
+              id: taskId,
+              agent_id: agentLabel,
+            },
           });
         } else {
           results.push({

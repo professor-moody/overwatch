@@ -1,18 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
-import { GraphEngine } from '../graph-engine.js';
-import { interpretCommand, executeOps, buildPlannerObjective, type InterpreterState } from '../command-interpreter.js';
-import type { EngagementConfig, AgentTask } from '../../types.js';
-
-function makeConfig(): EngagementConfig {
-  return {
-    id: 'test-cmd', name: 'cmd test', created_at: new Date().toISOString(),
-    scope: { cidrs: ['10.10.10.0/24'], domains: [], exclusions: [] },
-    objectives: [], opsec: { name: 'pentest', max_noise: 0.7 },
-  };
-}
+import { describe, it, expect } from 'vitest';
+import { interpretCommand, buildPlannerObjective, type InterpreterState } from '../command-interpreter.js';
 
 const state = (tasks: InterpreterState['tasks'], pending: string[] = []): InterpreterState => ({ tasks, pendingActionIds: pending });
 const t = (id: string, agent_id: string, status = 'running', skill?: string) => ({ id, agent_id, status, skill });
@@ -128,97 +115,6 @@ describe('interpretCommand (grammar)', () => {
     const r = interpretCommand('go find me something cool', state([t('1', 'a1')]));
     expect(r.ops).toHaveLength(0);
     expect(r.unresolved[0].reason).toMatch(/not recognized/);
-  });
-});
-
-describe('executeOps (engine effects)', () => {
-  let engine: GraphEngine;
-  let testDir: string;
-  beforeEach(() => {
-    testDir = mkdtempSync(join(tmpdir(), 'overwatch-command-interpreter-'));
-    engine = new GraphEngine(makeConfig(), join(testDir, 'state.json'));
-  });
-  afterEach(() => {
-    engine.dispose();
-    rmSync(testDir, { recursive: true, force: true });
-  });
-
-  it('directive op issues a pending directive on the task', () => {
-    engine.registerAgent({ id: 'task-1', agent_id: 'a1', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [] } as AgentTask);
-    const results = executeOps(engine, [{ op: 'directive', task_id: 'task-1', agent_label: 'a1', kind: 'pause' }]);
-    expect(results[0].ok).toBe(true);
-    expect(engine.getPendingAgentDirective('task-1')?.kind).toBe('pause');
-  });
-
-  it('directive to a manual-backend agent is reported as ADVISORY (no live agent to auto-apply)', () => {
-    engine.registerAgent({ id: 'task-m', agent_id: 'am', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], backend: 'manual' } as AgentTask);
-    const results = executeOps(engine, [{ op: 'directive', task_id: 'task-m', agent_label: 'am', kind: 'narrow_scope', node_ids: ['h1'] }]);
-    expect(results[0].ok).toBe(true);
-    expect(results[0].detail).toMatch(/advisory/i); // honest: not auto-applied
-    expect(engine.getPendingAgentDirective('task-m')?.kind).toBe('narrow_scope'); // still recorded
-  });
-
-  it('directive to a live headless agent is reported as ISSUED (not advisory)', () => {
-    engine.registerAgent({ id: 'task-h', agent_id: 'ah', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], backend: 'headless_mcp' } as AgentTask);
-    const results = executeOps(engine, [{ op: 'directive', task_id: 'task-h', agent_label: 'ah', kind: 'prioritize' }]);
-    expect(results[0].ok).toBe(true);
-    expect(results[0].detail).toMatch(/issued/i);
-    expect(results[0].detail).not.toMatch(/advisory/i);
-  });
-
-  it('scope op adds CIDRs/domains through the validated engine path', () => {
-    const results = executeOps(engine, [{ op: 'scope', add_cidrs: ['10.99.0.0/24'], add_domains: ['new.example.com'] }]);
-    expect(results[0].ok).toBe(true);
-    expect(engine.getConfig().scope.cidrs).toContain('10.99.0.0/24');
-    expect(engine.getConfig().scope.domains).toContain('new.example.com');
-  });
-
-  it('approve of a non-existent action returns ok:false (no throw)', () => {
-    const results = executeOps(engine, [{ op: 'approve', action_id: 'nope' }]);
-    expect(results[0].ok).toBe(false);
-    expect(results[0].error).toMatch(/not found/);
-  });
-
-  it('dispatch op deploys a running agent scoped to the target node(s)', () => {
-    engine.addNode({
-      id: 'host-10-99-0-5', type: 'host', label: '10.99.0.5', ip: '10.99.0.5',
-      discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0,
-    });
-    const before = engine.getAgentTasks().length;
-    const results = executeOps(engine, [{ op: 'dispatch', target_node_ids: ['host-10-99-0-5'], archetype: 'recon_scanner' }]);
-    expect(results[0].ok).toBe(true);
-    const tasks = engine.getAgentTasks();
-    expect(tasks.length).toBe(before + 1);
-    const task = tasks.find(t => t.subgraph_node_ids.includes('host-10-99-0-5'));
-    expect(task).toBeDefined();
-    expect(task!.status).toBe('running');
-    expect(task!.archetype).toBe('recon_scanner');
-  });
-
-  it('a duplicate dispatch at the same node is refused (node dedup), not launched twice', () => {
-    engine.addNode({
-      id: 'host-10-99-0-9', type: 'host', label: '10.99.0.9', ip: '10.99.0.9',
-      discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0,
-    });
-    const first = executeOps(engine, [{ op: 'dispatch', target_node_ids: ['host-10-99-0-9'], archetype: 'recon_scanner' }]);
-    expect(first[0].ok).toBe(true);
-    // Re-issue the same command → same archetype + same node while the first still runs.
-    const dup = executeOps(engine, [{ op: 'dispatch', target_node_ids: ['host-10-99-0-9'], archetype: 'recon_scanner' }]);
-    expect(dup[0].ok).toBe(false);
-    expect(dup[0].error).toContain('already being worked');
-    // Only one agent actually landed at the node.
-    expect(engine.getAgentTasks().filter(t => t.subgraph_node_ids.includes('host-10-99-0-9') && t.status === 'running')).toHaveLength(1);
-  });
-
-  it('dispatch op auto-selects an archetype when none is given', () => {
-    engine.addNode({
-      id: 'host-10-99-0-6', type: 'host', label: '10.99.0.6', ip: '10.99.0.6',
-      discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0,
-    });
-    const results = executeOps(engine, [{ op: 'dispatch', target_node_ids: ['host-10-99-0-6'] }]);
-    expect(results[0].ok).toBe(true);
-    const task = engine.getAgentTasks().find(t => t.subgraph_node_ids.includes('host-10-99-0-6'));
-    expect(task?.archetype).toBeTruthy();   // auto-resolved
   });
 });
 

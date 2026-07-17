@@ -85,7 +85,7 @@ export function CampaignsPanel() {
   }, [view, loadAgentQueries]);
 
   const missionCards = useMemo(
-    () => agents.map(a => buildMissionCard(a, { sessions, pendingActions, agentQueries })),
+    () => agents.map(a => buildMissionCard(a, { agents, sessions, pendingActions, agentQueries })),
     [agents, sessions, pendingActions, agentQueries],
   );
 

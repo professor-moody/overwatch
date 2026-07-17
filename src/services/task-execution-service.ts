@@ -40,6 +40,7 @@ export function resolveTaskBackend(task: AgentTask): TaskBackend {
 }
 
 const DEFAULT_MAX_HEADLESS = 3;
+const DEFAULT_MAX_HEADLESS_PLANNERS = 1;
 const DEFAULT_HEADLESS_TIMEOUT_MS = 30 * 60_000; // 30 minutes
 // Persistent orchestrator crash-loop backoff: exponential from 30s, capped at
 // 10 min; a run that lasted this long counts as healthy and resets the backoff.
@@ -59,6 +60,9 @@ export interface TaskExecutionServiceOptions {
   watchdogIntervalMs?: number;
   /** Max concurrently-running headless sub-agents. Default 3. */
   maxConcurrentHeadless?: number;
+  /** Max concurrently-running operator planners. Planners use a bounded
+   *  control-plane lane outside the target-worker pool. Default 1. */
+  maxConcurrentPlanners?: number;
   /** Per-task wall-clock timeout for headless sub-agents (ms). Default 30 min. */
   headlessTimeoutMs?: number;
   /** Poll interval for detecting a live writable→read-only persistence
@@ -82,7 +86,11 @@ export class TaskExecutionService {
   private registry: HeadlessProcessRegistry;
   private headlessRunner: HeadlessMcpRunner;
   private running = false;
+  private startRequested = false;
   private persistenceGateTimer: ReturnType<typeof setInterval> | null = null;
+  private updateUnsubscribe: (() => void) | null = null;
+  private recoveryResumeTimer: ReturnType<typeof setTimeout> | null = null;
+  private recoveryResumeFailures = 0;
 
   /** HTTP endpoint headless children connect to. Unset in stdio mode. */
   private endpoint: HeadlessEndpoint | null = null;
@@ -102,6 +110,7 @@ export class TaskExecutionService {
   private orchestratorNextSpawnAt = 0;
 
   private maxConcurrentHeadless: number;
+  private maxConcurrentPlanners: number;
   private headlessTimeoutMs: number;
   private persistenceGatePollMs: number;
   private orchestratorHealthyMs: number;
@@ -126,6 +135,7 @@ export class TaskExecutionService {
     // state. Only persistence degradation suppresses those durable callbacks.
     this.headlessRunner.setMutationGuard(() => this.engine.isPersistenceWritable());
     this.maxConcurrentHeadless = options.maxConcurrentHeadless ?? DEFAULT_MAX_HEADLESS;
+    this.maxConcurrentPlanners = options.maxConcurrentPlanners ?? DEFAULT_MAX_HEADLESS_PLANNERS;
     this.headlessTimeoutMs = options.headlessTimeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS;
     this.persistenceGatePollMs = options.persistenceGatePollMs ?? 250;
     this.orchestratorHealthyMs = options.orchestratorHealthyMs ?? ORCHESTRATOR_HEALTHY_MS;
@@ -163,6 +173,7 @@ export class TaskExecutionService {
   }
 
   start(): void {
+    this.startRequested = true;
     if (this.running) return;
     if (!this.engine.isPersistenceWritable()) {
       const recovery = this.engine.getPersistenceRecoveryStatus();
@@ -172,23 +183,87 @@ export class TaskExecutionService {
       return;
     }
     this.running = true;
-    this.startPersistenceGateMonitor();
-    // The scripted runner only picks up tasks our routing assigns to it.
-    this.scripted.setShouldHandle((task) => (
-      this.engine.isPersistenceWritable() && this.resolveBackend(task) === 'scripted'
-    ));
-    this.scripted.start();
-    this.watchdog.start();
-    this.engine.onUpdate(() => {
-      if (!this.running) return;
-      if (!this.ensurePersistenceWritable()) return;
-      this.drainDirectives();
+    let subscribedDuringStart = false;
+    try {
+      this.startPersistenceGateMonitor();
+      // The scripted runner only picks up tasks our routing assigns to it.
+      this.scripted.setShouldHandle((task) => (
+        this.engine.isPersistenceWritable() && this.resolveBackend(task) === 'scripted'
+      ));
+      this.scripted.start();
+      this.watchdog.start();
+      if (!this.updateUnsubscribe) {
+        subscribedDuringStart = true;
+        this.updateUnsubscribe = this.engine.onUpdate(() => {
+          if (!this.running) return;
+          if (!this.ensurePersistenceWritable()) return;
+          this.drainDirectives();
+          this.drainCveResearch();
+          this.drainHeadless();
+        });
+      }
       this.drainCveResearch();
       this.drainHeadless();
-    });
-    this.drainCveResearch();
-    this.drainHeadless();
-    this.reconcileOrchestrator(); // in case the endpoint is already set
+      this.reconcileOrchestrator(); // in case the endpoint is already set
+      this.clearRecoveryResumeRetry();
+    } catch (error) {
+      // Startup is an all-or-nothing lifecycle boundary. A synchronous drain
+      // failure must not leave `running=true` (which would make every future
+      // recovery resume a no-op) or leave timers/subscriptions/processes alive.
+      this.running = false;
+      this.stopPersistenceGateMonitor();
+      this.scripted.stop();
+      this.watchdog.stop();
+      for (const timer of this.timeoutTimers.values()) clearTimeout(timer);
+      this.timeoutTimers.clear();
+      if (subscribedDuringStart) {
+        this.updateUnsubscribe?.();
+        this.updateUnsubscribe = null;
+      }
+      if (this.engine.isPersistenceWritable()) {
+        for (const entry of this.registry.listActive()) {
+          this.cancelHeadless(entry.task_id, 'task execution startup failed');
+        }
+      }
+      this.registry.killAll();
+      throw error;
+    }
+  }
+
+  /** Resume a start that was intentionally deferred by read-only recovery. */
+  resumeAfterRecovery(): void {
+    if (!this.startRequested) return;
+    try {
+      this.start();
+    } catch (error) {
+      this.scheduleRecoveryResumeRetry();
+      throw error;
+    }
+  }
+
+  private scheduleRecoveryResumeRetry(): void {
+    if (this.recoveryResumeTimer || !this.startRequested || this.running) return;
+    const delays = [250, 1_000, 5_000, 30_000] as const;
+    const failure = this.recoveryResumeFailures++;
+    const delay = delays[Math.min(failure, delays.length - 1)];
+    this.recoveryResumeTimer = setTimeout(() => {
+      this.recoveryResumeTimer = null;
+      if (!this.startRequested || this.running || !this.engine.isPersistenceWritable()) return;
+      try {
+        this.start();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[recovery] task execution retry ${this.recoveryResumeFailures} failed: ${message}`);
+        this.scheduleRecoveryResumeRetry();
+      }
+    }, delay);
+    this.recoveryResumeTimer.unref?.();
+  }
+
+  private clearRecoveryResumeRetry(): void {
+    if (this.recoveryResumeTimer) clearTimeout(this.recoveryResumeTimer);
+    this.recoveryResumeTimer = null;
+    this.recoveryResumeFailures = 0;
   }
 
   /**
@@ -253,7 +328,7 @@ export class TaskExecutionService {
     if (!this.endpoint) return;
     if (this.engine.getConfig().cve_research?.enabled === false) return;
 
-    // Budget against ALL non-terminal headless work (launched or queued) — count
+    // Budget against all non-terminal target-facing headless work (launched or queued) — count
     // by the RESOLVED backend, NOT the persisted field. Normal dispatched agents
     // (recon/web/cred/…) never set task.backend yet still run headless, so the old
     // `t.backend === 'headless_mcp'` check counted 0 of them and over-registered
@@ -262,7 +337,11 @@ export class TaskExecutionService {
     // CVE research was silently abandoned for the session. resolveBackend matches
     // exactly what drainHeadless will launch, so the budget is now honest.
     const activeHeadless = this.engine.getAgentTasks().filter(
-      t => (t.status === 'running' || t.status === 'pending') && this.resolveBackend(t) === 'headless_mcp',
+      t => (t.status === 'running' || t.status === 'pending')
+        && t.role !== 'planner'
+        && t.role !== 'orchestrator'
+        && t.orchestrator !== true
+        && this.resolveBackend(t) === 'headless_mcp',
     ).length;
     let budget = this.maxConcurrentHeadless - activeHeadless;
     if (budget <= 0) return;
@@ -332,12 +411,16 @@ export class TaskExecutionService {
   }
 
   stop(): void {
+    this.startRequested = false;
+    this.clearRecoveryResumeRetry();
     this.running = false;
     this.stopPersistenceGateMonitor();
     this.scripted.stop();
     this.watchdog.stop();
     for (const t of this.timeoutTimers.values()) clearTimeout(t);
     this.timeoutTimers.clear();
+    this.updateUnsubscribe?.();
+    this.updateUnsubscribe = null;
     this.interruptHeadlessTasks('task execution service stopped');
     // Best-effort, fire-and-forget (sync callers). Daemon shutdown should use
     // shutdown() to actually AWAIT termination.
@@ -349,12 +432,16 @@ export class TaskExecutionService {
    * exiting (SIGTERM→SIGKILL escalation) so none outlive the process.
    */
   async shutdown(): Promise<void> {
+    this.startRequested = false;
+    this.clearRecoveryResumeRetry();
     this.running = false;
     this.stopPersistenceGateMonitor();
     this.scripted.stop();
     this.watchdog.stop();
     for (const t of this.timeoutTimers.values()) clearTimeout(t);
     this.timeoutTimers.clear();
+    this.updateUnsubscribe?.();
+    this.updateUnsubscribe = null;
     this.interruptHeadlessTasks('daemon shutdown');
     await this.registry.killAllAndWait();
   }
@@ -377,7 +464,9 @@ export class TaskExecutionService {
    * that can only defer to manual.
    */
   isHeadlessAvailable(): boolean {
-    return this.endpoint !== null;
+    return this.running
+      && this.endpoint !== null
+      && this.engine.isPersistenceWritable();
   }
 
   /**
@@ -626,7 +715,7 @@ export class TaskExecutionService {
       if (proc) {
         // Launched & process alive. Fall back to assigned_at before the first output
         // chunk so a just-launched agent gets the full ceiling, not an instant reap.
-        const genuineAt = proc.last_output_at ?? Date.parse(task.assigned_at);
+        const genuineAt = proc.last_output_at ?? Date.parse(proc.started_at);
         const withinCeiling = Number.isFinite(genuineAt) && now - genuineAt <= this.orchestratorWedgedCeilingMs;
         if (withinCeiling && isStale(task)) this.engine.agentHeartbeat(task.id, undefined, { silent: true });
         continue;
@@ -710,13 +799,26 @@ export class TaskExecutionService {
     }
   }
 
-  /** Running headless SUB-agents in the registry, excluding the persistent
-   *  orchestrator (which runs outside the concurrency pool). */
-  private activeSubAgentCount(): number {
+  /** Running target-facing workers in the registry. Persistent orchestration and
+   *  operator planners use their own bounded control-plane lanes. */
+  private activeWorkerCount(): number {
     let n = 0;
     for (const entry of this.registry.listActive()) {
       const t = this.engine.getTask(entry.task_id);
-      if (t && t.role !== 'orchestrator' && t.orchestrator !== true) n++;
+      if (
+        t
+        && t.role !== 'orchestrator'
+        && t.orchestrator !== true
+        && t.role !== 'planner'
+      ) n++;
+    }
+    return n;
+  }
+
+  private activePlannerCount(): number {
+    let n = 0;
+    for (const entry of this.registry.listActive()) {
+      if (this.engine.getTask(entry.task_id)?.role === 'planner') n++;
     }
     return n;
   }
@@ -724,7 +826,8 @@ export class TaskExecutionService {
   private drainHeadless(): void {
     if (!this.running || !this.engine.isPersistenceWritable()) return;
     for (const task of this.engine.getAgentTasks()) {
-      if (task.status !== 'running') continue;
+      const queuedPlanner = task.status === 'pending' && task.role === 'planner';
+      if (task.status !== 'running' && !queuedPlanner) continue;
       const backend = this.resolveBackend(task);
       if (backend === 'scripted') continue; // handled by ScriptedAgentRunner
 
@@ -735,10 +838,18 @@ export class TaskExecutionService {
       if (!this.endpoint) { this.logDeferral(task, 'headless_mcp'); continue; }
       // The persistent orchestrator runs OUTSIDE the concurrency pool — it is
       // long-lived and dispatches the sub-agents, so counting it against the cap
-      // would starve them (a deadlock at maxConcurrentHeadless=1). Only sub-agents
-      // are capped, and the orchestrator's slot is never counted against them.
+      // would starve them (a deadlock at maxConcurrentHeadless=1). Target workers
+      // and planners each have bounded lanes; the orchestrator consumes neither.
       const isOrchestrator = task.orchestrator === true || task.role === 'orchestrator';
-      if (!isOrchestrator && this.activeSubAgentCount() >= this.maxConcurrentHeadless) {
+      const isPlanner = task.role === 'planner';
+      if (isPlanner && this.activePlannerCount() >= this.maxConcurrentPlanners) {
+        continue;
+      }
+      if (
+        !isOrchestrator
+        && !isPlanner
+        && this.activeWorkerCount() >= this.maxConcurrentHeadless
+      ) {
         // At capacity — a later drain (when a slot frees) will pick it up.
         continue;
       }
@@ -749,7 +860,13 @@ export class TaskExecutionService {
   private launchHeadless(task: AgentTask): void {
     if (!this.running || !this.engine.isPersistenceWritable()) return;
     this.launched.add(task.id);
-    const child = this.headlessRunner.launch(task, this.endpoint!);
+    let child;
+    try {
+      child = this.headlessRunner.launch(task, this.endpoint!);
+    } catch (error) {
+      this.launched.delete(task.id);
+      throw error;
+    }
     if (!child) {
       // Launch failed; runner already marked the task failed. Allow a future
       // retry only if it somehow returns to 'running'.

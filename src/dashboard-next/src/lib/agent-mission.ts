@@ -43,6 +43,7 @@ export interface MissionCard {
 }
 
 export interface MissionContext {
+  agents?: AgentInfo[];
   sessions?: SessionInfo[];
   pendingActions?: PendingAction[];
   agentQueries?: AgentQuery[];
@@ -80,14 +81,23 @@ export function awaitingAnswerFor(agent: AgentInfo, queries: AgentQuery[]): bool
  * card to "waiting on approval". (A real agent_id on validate_action is tracked
  * as backend work in Phase 2.)
  */
-export function pendingApprovalFor(agent: AgentInfo, actions: PendingAction[]): boolean {
+export function pendingApprovalFor(
+  agent: AgentInfo,
+  actions: PendingAction[],
+  agents: AgentInfo[] = [],
+): boolean {
   const taskId = agent.task_id ?? agent.id;
+  const agentLabel = agent.agent_label ?? agent.agent_id;
+  const uniqueLabel = agents.filter(candidate =>
+    (candidate.agent_label ?? candidate.agent_id) === agentLabel).length === 1;
   const frontier = agent.frontier_item_id;
-  return actions.some(a =>
-    a.task_id === taskId
-    || (!a.task_id && a.agent_id === taskId)
-    || (!!frontier && !!a.frontier_item_id && a.frontier_item_id === frontier),
-  );
+  return actions.some(a => {
+    const actionLabel = a.agent_label ?? a.agent_id;
+    return a.task_id === taskId
+      || (!a.task_id && a.agent_id === taskId)
+      || (!a.task_id && uniqueLabel && actionLabel === agentLabel)
+      || (!!frontier && !!a.frontier_item_id && a.frontier_item_id === frontier);
+  });
 }
 
 /**
@@ -102,10 +112,17 @@ export function pendingApprovalFor(agent: AgentInfo, actions: PendingAction[]): 
 export function isStuck(
   agent: AgentInfo,
   now: number,
-  ctx: { pendingActions?: PendingAction[]; agentQueries?: AgentQuery[] } = {},
+  ctx: {
+    agents?: AgentInfo[];
+    pendingActions?: PendingAction[];
+    agentQueries?: AgentQuery[];
+  } = {},
 ): boolean {
   if (agent.status !== 'running') return false;
-  if (awaitingAnswerFor(agent, ctx.agentQueries ?? []) || pendingApprovalFor(agent, ctx.pendingActions ?? [])) return false;
+  if (
+    awaitingAnswerFor(agent, ctx.agentQueries ?? [])
+    || pendingApprovalFor(agent, ctx.pendingActions ?? [], ctx.agents ?? [])
+  ) return false;
   const assignedAge = agent.assigned_at ? now - new Date(agent.assigned_at).getTime() : NaN;
   if (!Number.isFinite(assignedAge) || assignedAge <= STUCK_IDLE_MS) return false;
   // Require a REAL last-action timestamp — don't fall back to assigned_at. The
@@ -131,11 +148,15 @@ export function buildMissionCard(agent: AgentInfo, ctx: MissionContext = {}): Mi
   const ownedSessionIds = sessionsForAgent(ctx.sessions ?? [], agent).map(s => s.id);
 
   const awaitingAnswer = awaitingAnswerFor(agent, queries);
-  const pendingApproval = pendingApprovalFor(agent, actions);
+  const pendingApproval = pendingApprovalFor(agent, actions, ctx.agents ?? []);
   const terminalBad = agent.status === 'failed' || agent.status === 'interrupted';
   // isStuck already excludes blocked agents, so the tone ladder's blocked check
   // (above stuck) keeps blocked winning — an agent waiting on you is "blocked".
-  const stuck = isStuck(agent, now, { pendingActions: actions, agentQueries: queries });
+  const stuck = isStuck(agent, now, {
+    agents: ctx.agents,
+    pendingActions: actions,
+    agentQueries: queries,
+  });
 
   let blocker: string | undefined;
   if (awaitingAnswer) blocker = 'waiting on your answer';

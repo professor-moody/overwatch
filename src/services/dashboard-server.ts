@@ -1371,12 +1371,14 @@ export class DashboardServer {
       && !Array.isArray(command.result)
       ? command.result as Record<string, unknown>
       : {};
-    const linkedPlan = command.plan_id
-      && !existingResult.plan
-      ? this.engine.getProposedPlanStore().get(command.plan_id)
-      : undefined;
-    const projectedCommand = linkedPlan
-      ? {
+    if (!command.plan_id) return command;
+    // Force absolute-TTL reconciliation before trusting the embedded result.
+    // Application-command results are immutable history; the plan store is the
+    // authoritative current decision state.
+    this.engine.getProposedPlanStore().getOpen();
+    const linkedPlan = this.engine.getProposedPlanStore().get(command.plan_id);
+    if (linkedPlan?.status === 'open' && linkedPlan.expires_at > Date.now()) {
+      return {
           ...command,
           result: {
             ...existingResult,
@@ -1388,9 +1390,21 @@ export class DashboardServer {
             plan_id: linkedPlan.plan_id,
             plan: linkedPlan,
           },
-        }
-      : command;
-    return projectedCommand;
+        };
+    }
+    const { plan: _stalePlan, ...withoutStalePlan } = existingResult;
+    return {
+      ...command,
+      result: {
+        ...withoutStalePlan,
+        phase: linkedPlan?.status === 'open'
+          ? 'plan_expired'
+          : linkedPlan
+            ? `plan_${linkedPlan.status}`
+            : 'plan_unavailable',
+        plan_id: command.plan_id,
+      },
+    };
   }
 
   // ---- Agent→operator question inbox (Phase 3D) ----
@@ -2536,8 +2550,13 @@ export class DashboardServer {
       return;
     }
     const subgraph = this.engine.getSubgraphForAgent(task.subgraph_node_ids, { hops: 2 });
+    const [projectedTask] = projectAgentDtos(
+      [task],
+      this.engine.getFullHistory(),
+      this.engine.listCampaigns(),
+    );
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ task, subgraph }));
+    res.end(JSON.stringify({ task: projectedTask, subgraph }));
   }
 
   private serveAgentHistory(taskId: string, res: ServerResponse): void {
@@ -2666,7 +2685,7 @@ export class DashboardServer {
 
   // ---- Per-agent steering (Phase 3B) ----
   // Single-click directive on one agent. Builds one OperatorOp and runs it
-  // through the SAME validated executeOps path the command bar uses — no new
+  // through the SAME validated application-command path the command bar uses — no new
   // mutation surface. Kinds: pause/resume/stop/narrow_scope/skip_types/prioritize
   // (+ free-text 'instruct' once Stage 2 adds it).
   private static DIRECTIVE_KINDS: readonly AgentDirectiveKind[] = [
@@ -2731,7 +2750,7 @@ export class DashboardServer {
 
   // ---- Fleet-level steering (Phase 3C) ----
   // Apply one directive kind to ALL running agents (optionally one campaign).
-  // Just a fan-out of the same validated executeOps directive op — the grammar's
+  // Just a fan-out of the same validated directive command — the grammar's
   // "pause all" does this in NL; this is the one-click UI equivalent.
   private handleFleetDirective(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;

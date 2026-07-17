@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createMcpAuthMiddleware, isLoopbackHost } from '../mcp-auth.js';
+import {
+  createMcpAuthMiddleware,
+  getAuthenticatedMcpActorTaskId,
+  isLoopbackHost,
+  McpTaskCredentialAuthority,
+} from '../mcp-auth.js';
 
 function makeReqRes(headers: Record<string, string> = {}) {
   const req = { headers } as any;
@@ -50,6 +55,21 @@ describe('createMcpAuthMiddleware', () => {
     expect(res.statusCode).toBe(0);
   });
 
+  it('keeps managed-worker identity in open loopback mode without a global token', () => {
+    const authority = new McpTaskCredentialAuthority();
+    const taskToken = authority.issue('open-loopback-planner');
+    const mw = createMcpAuthMiddleware({
+      host: '127.0.0.1',
+      getToken: () => undefined,
+      resolveTaskToken: token => authority.resolve(token),
+    });
+    const { req, res, next } = makeReqRes({ authorization: `Bearer ${taskToken}` });
+    mw(req, res as any, next);
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBe(0);
+    expect(getAuthenticatedMcpActorTaskId(req)).toBe('open-loopback-planner');
+  });
+
   it('non-loopback + no token → 403 (token required but unset)', () => {
     const mw = createMcpAuthMiddleware({ host: '0.0.0.0', getToken: () => undefined });
     const { req, res, next } = makeReqRes();
@@ -72,6 +92,29 @@ describe('createMcpAuthMiddleware', () => {
     mw(req, res as any, next);
     expect(next).toHaveBeenCalledOnce();
     expect(res.statusCode).toBe(0);
+    expect(getAuthenticatedMcpActorTaskId(req)).toBeNull();
+  });
+
+  it('binds a daemon-issued worker credential to its server-owned task identity', () => {
+    const authority = new McpTaskCredentialAuthority();
+    const taskToken = authority.issue('planner-task-1');
+    expect(authority.issue('planner-task-1')).toBe(taskToken);
+    const mw = createMcpAuthMiddleware({
+      host: '127.0.0.1',
+      getToken: () => 'operator-token',
+      resolveTaskToken: token => authority.resolve(token),
+    });
+    const { req, res, next } = makeReqRes({ authorization: `Bearer ${taskToken}` });
+    mw(req, res as any, next);
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBe(0);
+    expect(getAuthenticatedMcpActorTaskId(req)).toBe('planner-task-1');
+
+    authority.revoke('planner-task-1');
+    const revoked = makeReqRes({ authorization: `Bearer ${taskToken}` });
+    mw(revoked.req, revoked.res as any, revoked.next);
+    expect(revoked.next).not.toHaveBeenCalled();
+    expect(revoked.res.statusCode).toBe(401);
   });
 
   it('token configured + missing/wrong bearer → 401 (enforced even on loopback)', () => {

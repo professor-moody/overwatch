@@ -69,6 +69,50 @@ describe('buildMissionCard', () => {
     expect(card.tone).toBe('blocked');
   });
 
+  it('accepts a legacy approval label only when it identifies one task', () => {
+    const current = agent();
+    const legacyAction = action({ agent_id: 'recon-1' });
+    expect(buildMissionCard(current, {
+      now: NOW,
+      agents: [current],
+      pendingActions: [legacyAction],
+    }).pendingApproval).toBe(true);
+
+    const duplicate = agent({
+      task_id: 'task-2',
+      id: 'task-2',
+      agent_label: 'recon-1',
+      agent_id: 'recon-1',
+    });
+    expect(buildMissionCard(current, {
+      now: NOW,
+      agents: [current, duplicate],
+      pendingActions: [legacyAction],
+    }).pendingApproval).toBe(false);
+  });
+
+  it('attributes a canonical agent_label and rejects an ambiguous canonical label', () => {
+    const current = agent();
+    const canonicalAction = action({ agent_label: 'recon-1' });
+    expect(buildMissionCard(current, {
+      now: NOW,
+      agents: [current],
+      pendingActions: [canonicalAction],
+    }).pendingApproval).toBe(true);
+
+    const duplicate = agent({
+      task_id: 'task-2',
+      id: 'task-2',
+      agent_label: 'recon-1',
+      agent_id: 'legacy-other',
+    });
+    expect(buildMissionCard(current, {
+      now: NOW,
+      agents: [current, duplicate],
+      pendingActions: [canonicalAction],
+    }).pendingApproval).toBe(false);
+  });
+
   it('attributes an approval by shared frontier_item_id when it lacks agent_id (validate_action path)', () => {
     // action() sets no agent_id; match on the frontier item the agent owns.
     const card = buildMissionCard(agent({ frontier_item_id: 'fi-7' }), { now: NOW, pendingActions: [action({ frontier_item_id: 'fi-7' })] });

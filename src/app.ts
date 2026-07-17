@@ -23,7 +23,11 @@ import { ProcessTracker } from './services/process-tracker.js';
 import { DashboardServer } from './services/dashboard-server.js';
 import { SessionManager } from './services/session-manager.js';
 import { LocalPtyAdapter, SshAdapter, SocketAdapter } from './services/session-adapters.js';
-import { createMcpAuthMiddleware } from './services/mcp-auth.js';
+import {
+  createMcpAuthMiddleware,
+  getAuthenticatedMcpActorTaskId,
+  McpTaskCredentialAuthority,
+} from './services/mcp-auth.js';
 import { TaskExecutionService, type TaskExecutionServiceOptions } from './services/task-execution-service.js';
 import type { EngagementConfig } from './types.js';
 import { engagementConfigSchema } from './types.js';
@@ -265,6 +269,7 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
       GraphEngine,
       'isPersistenceWritable' | 'getPersistenceRecoveryStatus'
     > & Partial<Pick<GraphEngine, 'resolveAgentTaskReference'>>,
+    private readonly authenticatedActorTaskId: string | null = null,
   ) {}
   registerTool<OutputArgs extends ZodRawShapeCompat | AnySchema, InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined>(
     name: string,
@@ -299,28 +304,14 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
               sessionId?: string;
             }
           : undefined;
-        const explicitTaskId = typeof inputRecord.task_id === 'string'
-          ? inputRecord.task_id
-          : undefined;
-        const agentReference = typeof inputRecord.agent_id === 'string'
-          ? inputRecord.agent_id
-          : undefined;
-        const actorResolution = !explicitTaskId
-          && agentReference
-          && this.persistenceGate?.resolveAgentTaskReference
-          ? this.persistenceGate.resolveAgentTaskReference(agentReference)
-          : undefined;
-        const resolvedActorTaskId = explicitTaskId
-          ?? (
-            actorResolution?.status === 'exact'
-            || actorResolution?.status === 'unique_legacy_label'
-              ? actorResolution.task.task_id ?? actorResolution.task.id
-              : undefined
-          );
         const result = await withApplicationCommandInvocation(
           {
             transport: 'mcp',
-            actor_task_id: resolvedActorTaskId ?? null,
+            // HTTP workers are bound to a daemon-issued credential at session
+            // initialization. The operator/stdio connection is deliberately
+            // actorless. Caller-supplied task_id/agent_id fields are tool input,
+            // never connection authority.
+            actor_task_id: this.authenticatedActorTaskId,
             ...(extra?.requestId !== undefined
               ? { request_id: String(extra.requestId) }
               : {}),
@@ -388,6 +379,8 @@ export type OverwatchApp = {
   registeredTools: ToolDescriptor[];
   httpTransports?: Record<string, StreamableHTTPServerTransport>;
   httpServer?: Server;
+  /** Removes terminal-worker credential/session observers and clears secrets. */
+  mcpCredentialCleanup?: () => void;
 };
 
 export type CreateOverwatchAppOptions = {
@@ -610,6 +603,7 @@ export function registerAllTools(
     sessionManager: SessionManager;
     engagementManager: EngagementManager;
     getDashboardStatus: DashboardStatusProvider;
+    authenticatedActorTaskId?: string | null;
   },
 ): ToolDescriptor[] {
   // Initialize shared telemetry (idempotent — first caller wins)
@@ -617,7 +611,11 @@ export function registerAllTools(
     setTelemetry(new ToolTelemetry());
   }
 
-  const registrar = new ToolRegistrar(server as McpServer, deps.engine);
+  const registrar = new ToolRegistrar(
+    server as McpServer,
+    deps.engine,
+    deps.authenticatedActorTaskId ?? null,
+  );
   const s = registrar as unknown as McpServer;
 
   registerStateTools(s, deps.engine, {
@@ -802,7 +800,6 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     reconcileRuntimeOwnershipOnStartup(engine);
     new PlaybookRunService(engine).recoverInterruptedRuns();
   };
-  engine.setRuntimeOwnershipRecoveryHandler(reconcileRuntimeOwnership);
   reconcileRuntimeOwnership();
 
   const savedProcesses = engine.getTrackedProcesses();
@@ -832,12 +829,6 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     engine.recordSessionDescriptor(event.session);
   });
   sessionManager.restorePersistedDescriptors(engine.getSessionDescriptors());
-  engine.setRuntimeOwnershipRecoveryHandler(() => {
-    reconcileRuntimeOwnership();
-    sessionManager.reconcileAfterStateRollback();
-    sessionManager.restorePersistedDescriptors(engine.getSessionDescriptors());
-  });
-
   const server = new McpServer({
     name: 'overwatch-mcp-server',
     version: '0.1.0',
@@ -920,6 +911,30 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   // dashboard is enabled. Started in startStdioApp/startHttpApp; the HTTP
   // endpoint for headless sub-agents is supplied later via setHttpEndpoint.
   const taskExecution = new TaskExecutionService(engine, processTracker, options.taskExecution);
+  // A config-divergent daemon starts read-only, so the initial executor start is
+  // intentionally deferred. Reconciliation must reopen the executor as part of
+  // the same post-recovery lifecycle; otherwise the dashboard can reserve a
+  // planner forever with no drain loop running.
+  engine.setRuntimeOwnershipRecoveryHandler(() => {
+    reconcileRuntimeOwnership();
+    sessionManager.reconcileAfterStateRollback();
+    sessionManager.restorePersistedDescriptors(engine.getSessionDescriptors());
+    // The engine invokes this handler before it clears the deferred-startup
+    // maintenance flag. Resume on the next microtask so no worker can observe
+    // the temporary recovery write allowance as an open execution gate.
+    queueMicrotask(() => {
+      if (!engine.isPersistenceWritable()) return;
+      try {
+        taskExecution.resumeAfterRecovery();
+      } catch (error) {
+        // TaskExecutionService owns an indefinite bounded retry (250ms → 30s).
+        // This catch prevents an uncaught recovery microtask from crashing the
+        // daemon while preserving a visible diagnostic for the first failure.
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[recovery] task execution resume failed; retry scheduled: ${message}`);
+      }
+    });
+  });
   // Let the dashboard's cancel endpoint kill headless sub-agent processes.
   dashboard?.attachTaskExecution(taskExecution);
 
@@ -1013,6 +1028,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
   maybeAutoEnableTape(app);
 
   const expressApp = createMcpExpressApp({ host });
+  const taskCredentials = new McpTaskCredentialAuthority();
 
   // Guard /mcp with bearer-token auth before any route handlers run. The HTTP
   // daemon exposes the full Overwatch tool surface — including target-facing
@@ -1053,14 +1069,57 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
       ? `[overwatch] /mcp auth required — using the stable token at ${tokenPath} (sha256:${fingerprint}…).`
       : `[overwatch] /mcp auth required — using an in-memory token for this run (sha256:${fingerprint}…).`);
   }
-  expressApp.use('/mcp', createMcpAuthMiddleware({ host, requireToken: requireMcpToken }));
+  expressApp.use('/mcp', createMcpAuthMiddleware({
+    host,
+    requireToken: requireMcpToken,
+    resolveTaskToken: token => taskCredentials.resolve(token),
+  }));
 
   const transports: Record<string, StreamableHTTPServerTransport> = {};
+  const transportActors: Record<string, string | null> = {};
   app.httpTransports = transports;
+  let credentialCleanupTimer: ReturnType<typeof setTimeout> | null = null;
+  let credentialCleanupClosed = false;
+  const revokeTerminalWorkerCredentials = (): void => {
+    credentialCleanupTimer = null;
+    if (credentialCleanupClosed) return;
+    const terminalTaskIds = new Set(taskCredentials.taskIds().filter(taskId => {
+      const status = app.engine.getTask(taskId)?.status;
+      return status === undefined
+        || status === 'completed'
+        || status === 'failed'
+        || status === 'interrupted';
+    }));
+    if (terminalTaskIds.size === 0) return;
+    for (const taskId of terminalTaskIds) taskCredentials.revoke(taskId);
+    for (const [sessionId, actorTaskId] of Object.entries(transportActors)) {
+      if (!actorTaskId || !terminalTaskIds.has(actorTaskId)) continue;
+      const transport = transports[sessionId];
+      delete transports[sessionId];
+      delete transportActors[sessionId];
+      void transport?.close().catch(() => { /* terminal worker cleanup is best-effort */ });
+    }
+  };
+  const credentialUpdateUnsubscribe = app.engine.onUpdate(() => {
+    if (credentialCleanupClosed || credentialCleanupTimer) return;
+    // Do not close the transport from inside the update_agent request that made
+    // the task terminal. Let its response flush, then revoke the credential and
+    // close any actor-owned sessions on the next event-loop turn.
+    credentialCleanupTimer = setTimeout(revokeTerminalWorkerCredentials, 0);
+    credentialCleanupTimer.unref?.();
+  });
+  app.mcpCredentialCleanup = () => {
+    if (credentialCleanupClosed) return;
+    credentialCleanupClosed = true;
+    credentialUpdateUnsubscribe();
+    if (credentialCleanupTimer) clearTimeout(credentialCleanupTimer);
+    credentialCleanupTimer = null;
+    taskCredentials.clear();
+  };
 
   // Each HTTP session needs its own McpServer (SDK limitation: one connect() per server).
   // All sessions share the same engine, skills, and services.
-  function createSessionServer(): McpServer {
+  function createSessionServer(authenticatedActorTaskId: string | null): McpServer {
     const server = new McpServer({
       name: 'overwatch-mcp-server',
       version: '0.1.0',
@@ -1076,6 +1135,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
         running: app.dashboard?.running ?? false,
         address: app.dashboard?.address,
       }),
+      authenticatedActorTaskId,
     });
     return server;
   }
@@ -1083,8 +1143,13 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
   // MCP POST — initialize new session or route to existing
   expressApp.post('/mcp', async (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    const actorTaskId = getAuthenticatedMcpActorTaskId(req);
 
     if (sessionId && transports[sessionId]) {
+      if (transportActors[sessionId] !== actorTaskId) {
+        res.status(401).json({ error: 'MCP session credential does not match its authenticated owner' });
+        return;
+      }
       await transports[sessionId].handleRequest(req, res, req.body);
       return;
     }
@@ -1107,16 +1172,18 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
           // wrapper. The wrapper is only used for the MCP Server connect
           // path so its send/recv hooks can mirror frames into the tape.
           transports[sid] = baseTransport;
+          transportActors[sid] = actorTaskId;
         },
       });
       baseTransport.onclose = () => {
         const sid = baseTransport.sessionId;
         if (sid) {
           delete transports[sid];
+          delete transportActors[sid];
         }
       };
       const wrappedTransport = app.tape.wrapTransport(baseTransport);
-      const server = createSessionServer();
+      const server = createSessionServer(actorTaskId);
       await server.connect(wrappedTransport);
       await baseTransport.handleRequest(req, res, req.body);
       return;
@@ -1136,6 +1203,10 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
       res.status(400).send('Invalid or missing session ID');
       return;
     }
+    if (transportActors[sessionId] !== getAuthenticatedMcpActorTaskId(req)) {
+      res.status(401).json({ error: 'MCP session credential does not match its authenticated owner' });
+      return;
+    }
     await transports[sessionId].handleRequest(req, res);
   });
 
@@ -1144,6 +1215,10 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !transports[sessionId]) {
       res.status(400).send('Invalid or missing session ID');
+      return;
+    }
+    if (transportActors[sessionId] !== getAuthenticatedMcpActorTaskId(req)) {
+      res.status(401).json({ error: 'MCP session credential does not match its authenticated owner' });
       return;
     }
     await transports[sessionId].handleRequest(req, res);
@@ -1189,7 +1264,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
       // This enables the headless_mcp backend (only available in daemon mode).
       app.taskExecution.setHttpEndpoint({
         url: `http://${host}:${boundPort}/mcp`,
-        token: process.env.OVERWATCH_MCP_TOKEN,
+        tokenForTask: taskId => taskCredentials.issue(taskId),
       });
       console.error(`Overwatch MCP HTTP transport at http://${host}:${boundPort}/mcp`);
       if (app.dashboard?.running) {
@@ -1214,6 +1289,7 @@ export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
     // SIGKILL) so none outlive the daemon. Every later cleanup still runs if a
     // component reports an error.
     await cleanup(() => app.taskExecution.shutdown());
+    await cleanup(() => app.mcpCredentialCleanup?.());
 
     // Close HTTP transport sessions. In-flight requests receive cancellation
     // through the SDK signal, which the process runner combines with its

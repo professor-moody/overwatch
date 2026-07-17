@@ -229,10 +229,23 @@ export function OperatorCommandBar() {
     setPhase({ kind: 'executing' });
     try {
       const res = await api.confirmCommand(planId);
-      const ok = res.results.every(r => r.ok);
-      const text = ok
-        ? `Executed ${res.results.length} op(s).`
-        : res.results.filter(r => !r.ok).map(r => r.error || 'failed').join('; ');
+      const successes = res.results.filter(result => result.ok);
+      const failures = res.results.filter(result => !result.ok);
+      const ok = failures.length === 0;
+      const dispatched = res.results.flatMap(result =>
+        result.task ? [result.task] : []);
+      const parts = [`Executed ${successes.length}/${res.results.length} op(s)`];
+      if (dispatched.length > 0) {
+        parts.push(`deployed ${dispatched.map(task => `${task.agent_label} (${task.task_id})`).join(', ')}`);
+      }
+      const details = successes
+        .filter(result => !result.task && result.detail)
+        .map(result => result.detail as string);
+      if (details.length > 0) parts.push(details.join('; '));
+      if (failures.length > 0) {
+        parts.push(`failures: ${failures.map(result => result.error || 'failed').join('; ')}`);
+      }
+      const text = `${parts.join('; ')}.`;
       setPhase({ kind: 'result', ok, text });
       setCommand('');
     } catch (err) {
@@ -283,8 +296,15 @@ export function OperatorCommandBar() {
   useEffect(() => {
     if (phase.kind !== 'proposed') return;
     const planId = phase.plan.plan_id;
-    const timer = setInterval(() => {
-      api.getProposedPlans().then(({ plans }) => {
+    let disposed = false;
+    let requestController: AbortController | null = null;
+    let requestTimeout: ReturnType<typeof setTimeout> | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const reconcile = () => {
+      requestController = new AbortController();
+      requestTimeout = setTimeout(() => requestController?.abort(), 10_000);
+      void api.getProposedPlans(requestController.signal).then(({ plans }) => {
+        if (disposed) return;
         if (plans.some(p => p.plan_id === planId)) return;
         // Functional update: only drop the card if we're STILL showing this exact
         // proposed plan — so a confirm()/deny() that already moved phase off
@@ -292,9 +312,20 @@ export function OperatorCommandBar() {
         setPhase(prev => (prev.kind === 'proposed' && prev.plan.plan_id === planId)
           ? { kind: 'result', ok: false, text: 'This proposed plan is no longer available — it was resolved elsewhere or expired.' }
           : prev);
-      }).catch(() => { /* transient — keep the card */ });
-    }, POLL.AGENTS_MS); // gentle reconcile cadence — no need for the fast planner-detection poll
-    return () => clearInterval(timer);
+      }).catch(() => { /* transient/timeout — keep the card and retry */ }).finally(() => {
+        if (requestTimeout) clearTimeout(requestTimeout);
+        requestTimeout = null;
+        requestController = null;
+        if (!disposed) timer = setTimeout(reconcile, POLL.AGENTS_MS);
+      });
+    };
+    timer = setTimeout(reconcile, POLL.AGENTS_MS);
+    return () => {
+      disposed = true;
+      requestController?.abort();
+      if (requestTimeout) clearTimeout(requestTimeout);
+      if (timer) clearTimeout(timer);
+    };
   }, [phase]);
 
   const reset = useCallback(() => {
@@ -344,7 +375,7 @@ export function OperatorCommandBar() {
         <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
           <span>
             {phase.phase === 'planning_queued'
-              ? 'Planner is queued and will start when an agent slot is available…'
+              ? 'Planner is queued and will start when the planner lane is available…'
               : 'Planner is reasoning over the graph… a proposed plan will appear here.'}
           </span>
           <ActionButton

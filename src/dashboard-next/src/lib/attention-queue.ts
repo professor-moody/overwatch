@@ -73,7 +73,7 @@ function approvalItem(action: PendingAction, now: number): AttentionItem {
     priority,
     title: a.technique,
     detail: a.description,
-    agentLabel: action.agent_id,
+    agentLabel: action.agent_label ?? action.agent_id,
     actionId: a.action_id,
     risk: a.risk,
   };
@@ -207,7 +207,11 @@ export function buildAttentionQueue(input: AttentionInput = {}): AttentionQueueV
     // Stuck is mutually exclusive with blocked (isStuck excludes agents waiting
     // on an approval/question), so this never double-counts a blocked agent that
     // already has its approval/question item in the queue.
-    else if (isStuck(agent, now, { pendingActions: input.pendingActions, agentQueries: input.agentQueries })) {
+    else if (isStuck(agent, now, {
+      agents: input.agents,
+      pendingActions: input.pendingActions,
+      agentQueries: input.agentQueries,
+    })) {
       items.push(stuckItem(agent, now));
     }
   }

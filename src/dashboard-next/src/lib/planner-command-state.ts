@@ -71,6 +71,21 @@ export function projectPlannerCommand(
     ) {
       return { kind: 'proposed', plan: plan as ProposedPlan };
     }
+    const phase = typeof result?.phase === 'string' ? result.phase : undefined;
+    if (phase === 'plan_expired') {
+      return {
+        kind: 'error',
+        text: 'The proposed plan expired before confirmation. Send the command again.',
+      };
+    }
+    if (phase === 'plan_confirmed' || phase === 'plan_denied') {
+      return {
+        kind: 'error',
+        text: phase === 'plan_confirmed'
+          ? 'This plan was already confirmed.'
+          : 'This plan was dismissed.',
+      };
+    }
     return {
       kind: 'error',
       text: 'Planner completed, but its proposed plan is unavailable.',

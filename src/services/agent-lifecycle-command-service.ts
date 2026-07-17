@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { AgentDirective, AgentTask } from '../types.js';
 import {
   ApplicationCommandService,
+  getApplicationCommandInvocation,
   type ApplicationCommandExecution,
   type ApplicationCommandMetadata,
 } from './application-command-service.js';
@@ -206,9 +207,32 @@ function withActor(
   metadata: ApplicationCommandMetadata,
   taskId: string,
 ): ApplicationCommandMetadata {
-  return Object.prototype.hasOwnProperty.call(metadata, 'actor_task_id')
-    ? metadata
-    : { ...metadata, actor_task_id: taskId };
+  const invocation = getApplicationCommandInvocation();
+  const explicit = Object.prototype.hasOwnProperty.call(metadata, 'actor_task_id');
+  const actorTaskId = explicit
+    ? metadata.actor_task_id ?? null
+    : invocation
+      ? invocation.actor_task_id
+      : undefined;
+  if (actorTaskId === null && (metadata.transport === 'mcp' || invocation?.transport === 'mcp')) {
+    throw new AgentLifecycleCommandError(
+      'An authenticated agent task is required for this MCP coordination operation.',
+      'AGENT_ACTOR_REQUIRED',
+      403,
+      { task_id: taskId },
+    );
+  }
+  if (typeof actorTaskId === 'string' && actorTaskId !== taskId) {
+    throw new AgentLifecycleCommandError(
+      `Authenticated task ${actorTaskId} cannot act as task ${taskId}.`,
+      'AGENT_ACTOR_MISMATCH',
+      409,
+      { task_id: taskId, actor_task_id: actorTaskId },
+    );
+  }
+  return actorTaskId === undefined
+    ? { ...metadata, actor_task_id: taskId }
+    : { ...metadata, actor_task_id: actorTaskId };
 }
 
 export class AgentLifecycleCommandService {
@@ -243,6 +267,53 @@ export class AgentLifecycleCommandService {
       ],
       execute: parsed => {
         const task = this.requireTask(parsed.task_id);
+        if (task.role === 'planner' && task.application_command_id) {
+          const owningCommand = this.engine.getApplicationCommandById(
+            task.application_command_id,
+          );
+          const plan = this.engine.getProposedPlanStore()
+            .getByCommandId(task.application_command_id);
+          if (
+            owningCommand
+            && (owningCommand.status === 'accepted' || owningCommand.status === 'running')
+            && !plan
+          ) {
+            if (parsed.status === 'completed') {
+              throw new AgentLifecycleCommandError(
+                'Planner cannot complete before proposing a plan or submitting a transcript with planner_outcome="unexpressible".',
+                'PLANNER_CONCLUSION_REQUIRED',
+                409,
+                {
+                  task_id: parsed.task_id,
+                  command_id: task.application_command_id,
+                },
+              );
+            }
+            // A genuine runtime/tool failure is itself a terminal conclusion.
+            // Settle the owning operator command in the same durable transaction
+            // instead of forcing the process-exit fallback to misclassify it as
+            // PLANNER_NO_PLAN.
+            const interrupted = parsed.status === 'interrupted';
+            const reason = parsed.summary
+              ?? (interrupted
+                ? 'Planner was interrupted before returning a plan.'
+                : 'Planner failed before returning a plan.');
+            this.commands.transition(task.application_command_id, {
+              status: interrupted ? 'interrupted' : 'failed',
+              error: {
+                code: interrupted ? 'PLANNER_INTERRUPTED' : 'PLANNER_FAILED',
+                message: reason,
+              },
+              entity_refs: { planner_task_id: parsed.task_id },
+              result: {
+                phase: interrupted ? 'interrupted' : 'failed',
+                command_id: task.application_command_id,
+                planner_task_id: parsed.task_id,
+                reason,
+              },
+            });
+          }
+        }
         let transcriptWarning: string | undefined;
         if (!this.hasSubmittedTranscript(task)) {
           this.engine.logActionEvent({
@@ -260,11 +331,18 @@ export class AgentLifecycleCommandService {
           transcriptWarning = 'Call submit_agent_transcript before update_agent on terminal status to keep the primary session in the loop.';
         }
         if (!this.engine.updateAgentStatus(parsed.task_id, parsed.status, parsed.summary)) {
+          const currentStatus = this.engine.getTask(parsed.task_id)?.status;
           throw new AgentLifecycleCommandError(
-            `Task not updated: ${parsed.task_id}`,
+            currentStatus
+              ? `Task ${parsed.task_id} is already ${currentStatus}; it cannot transition to ${parsed.status}.`
+              : `Task not updated: ${parsed.task_id}`,
             'AGENT_STATUS_NOT_UPDATED',
             409,
-            { task_id: parsed.task_id, status: parsed.status },
+            {
+              task_id: parsed.task_id,
+              status: parsed.status,
+              ...(currentStatus ? { current_status: currentStatus } : {}),
+            },
           );
         }
         return {

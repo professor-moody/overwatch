@@ -85,6 +85,8 @@ export interface DispatchBatchCommandResponse {
   dispatched: Array<{
     node_ids: string[];
     task_id: string;
+    agent_label: string;
+    id: string;
     agent_id: string;
     archetype?: string;
   }>;
@@ -843,6 +845,8 @@ export class DispatchCommandService {
       dispatched.push({
         node_ids: group,
         task_id: task.task_id ?? task.id,
+        agent_label: task.agent_label ?? task.agent_id,
+        id: task.task_id ?? task.id,
         agent_id: task.agent_label ?? task.agent_id,
         archetype: task.archetype,
       });

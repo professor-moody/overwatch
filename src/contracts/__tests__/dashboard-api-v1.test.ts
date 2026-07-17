@@ -13,6 +13,9 @@ import {
   buildDashboardWebSocketPath,
   matchDashboardWebSocketPath,
   normalizeLegacyAgentDispatchDescription,
+  DispatchAgentResponseSchema,
+  DispatchBatchResponseSchema,
+  CampaignDispatchResponseSchema,
 } from '../dashboard-v1.js';
 
 interface DashboardManifest {
@@ -166,7 +169,77 @@ describe('dashboard compatibility-v1 registry', () => {
       description: 'Agent dispatched: planner-old for undefined',
     })).toBe('Agent dispatched: planner-old as operator planner');
     expect(normalizeLegacyAgentDispatchDescription({
+      event_type: 'agent_registered',
+      description: 'Agent dispatched: planner-new as undefined',
+      details: { role: 'planner' },
+    })).toBe('Agent dispatched: planner-new as operator planner');
+    expect(normalizeLegacyAgentDispatchDescription({
+      event_type: 'agent_registered',
+      description: 'Agent dispatched: undefined for undefined',
+      details: { agent_label: 'recon-recovered' },
+    })).toBe('Agent dispatched: recon-recovered');
+    expect(normalizeLegacyAgentDispatchDescription({
+      event_type: 'agent_registered',
+      description: 'Agent dispatched: undefined as undefined',
+    })).toBe('Agent dispatched: agent');
+    expect(normalizeLegacyAgentDispatchDescription({
+      event_type: 'agent_registered',
+      description: 'Agent dispatched: undefined as undefined',
+      details: { agent_label: 'undefined', task_id: 'recovered-task' },
+    })).toBe('Agent dispatched: recovered-task');
+    expect(normalizeLegacyAgentDispatchDescription({
       description: 'Unrelated action for undefined',
     })).toBe('Unrelated action for undefined');
+    expect(normalizeLegacyAgentDispatchDescription({
+      event_type: 'agent_registered',
+      description: 'Agent dispatched: undefined specialist at 2 node(s)',
+    })).toBe('Agent dispatched: undefined specialist at 2 node(s)');
+    expect(normalizeLegacyAgentDispatchDescription({
+      event_type: 'agent_registered',
+      description: 'Agent dispatched: planner-new as operator planner',
+    })).toBe('Agent dispatched: planner-new as operator planner');
+  });
+
+  it('keeps canonical dispatch identity additive for rolling compatibility', () => {
+    expect(DispatchAgentResponseSchema.safeParse({
+      dispatched: true,
+      task: {
+        id: 'legacy-task',
+        agent_id: 'legacy-label',
+        assigned_at: '2026-07-17T00:00:00.000Z',
+        status: 'running',
+        subgraph_node_ids: [],
+      },
+      command_id: 'command-1',
+      idempotency_key: 'key-1',
+      replayed: false,
+    }).success).toBe(true);
+    expect(DispatchBatchResponseSchema.safeParse({
+      dispatched: [{ node_ids: ['node-1'], task_id: 'legacy-task', agent_id: 'legacy-label' }],
+      skipped: [],
+      deferred: [],
+      summary: { dispatched: 1, skipped: 0, deferred: 0, groups: 1 },
+      command_id: 'command-2',
+      idempotency_key: 'key-2',
+      replayed: false,
+    }).success).toBe(true);
+    expect(DashboardHttpRegistry.getAgentContext.responses[200].safeParse({
+      task: { id: 'legacy-task', agent_id: 'legacy-label' },
+      subgraph: { nodes: [], edges: [] },
+    }).success).toBe(true);
+    expect(CampaignDispatchResponseSchema.safeParse({
+      campaign_id: 'campaign-legacy',
+      strategy: 'enumeration',
+      requested: 1,
+      total_items: 1,
+      dispatched: [{
+        task_id: 'legacy-task',
+        agent_id: 'legacy-label',
+        frontier_item_id: 'frontier-1',
+        scope_nodes: 1,
+        archetype: 'recon_scanner',
+      }],
+      skipped: [],
+    }).success).toBe(true);
   });
 });

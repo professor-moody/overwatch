@@ -14,7 +14,7 @@
 // ============================================================
 
 import type { Request, Response, NextFunction } from 'express';
-import { timingSafeEqual, createHash } from 'crypto';
+import { timingSafeEqual, createHash, randomBytes } from 'crypto';
 import { isIPv6 } from 'net';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '0:0:0:0:0:0:0:1']);
@@ -60,6 +60,63 @@ function tokensMatch(provided: string | null, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
+function tokenDigest(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * Ephemeral, daemon-owned credentials for managed MCP workers. The operator's
+ * long-lived daemon token authenticates a human/terminal connection but carries
+ * no task identity. Each headless worker receives a distinct random credential
+ * whose actor task is resolved server-side; request body aliases can then be
+ * consistency checks instead of authority.
+ */
+export class McpTaskCredentialAuthority {
+  private readonly tokenByTask = new Map<string, string>();
+  private readonly taskByDigest = new Map<string, string>();
+
+  issue(taskId: string): string {
+    const existing = this.tokenByTask.get(taskId);
+    if (existing) return existing;
+    const token = randomBytes(32).toString('base64url');
+    this.tokenByTask.set(taskId, token);
+    this.taskByDigest.set(tokenDigest(token), taskId);
+    return token;
+  }
+
+  resolve(token: string | null): string | null {
+    if (!token) return null;
+    return this.taskByDigest.get(tokenDigest(token)) ?? null;
+  }
+
+  revoke(taskId: string): void {
+    const token = this.tokenByTask.get(taskId);
+    if (!token) return;
+    this.tokenByTask.delete(taskId);
+    this.taskByDigest.delete(tokenDigest(token));
+  }
+
+  taskIds(): string[] {
+    return [...this.tokenByTask.keys()];
+  }
+
+  clear(): void {
+    this.tokenByTask.clear();
+    this.taskByDigest.clear();
+  }
+}
+
+const MCP_ACTOR_TASK_ID = Symbol('overwatch.mcp.actor_task_id');
+type AuthenticatedMcpRequest = Request & { [MCP_ACTOR_TASK_ID]?: string | null };
+
+export function getAuthenticatedMcpActorTaskId(req: Request): string | null {
+  return (req as AuthenticatedMcpRequest)[MCP_ACTOR_TASK_ID] ?? null;
+}
+
+function setAuthenticatedMcpActorTaskId(req: Request, taskId: string | null): void {
+  (req as AuthenticatedMcpRequest)[MCP_ACTOR_TASK_ID] = taskId;
+}
+
 export interface McpAuthOptions {
   /** The host the MCP server is bound to. */
   host: string;
@@ -70,6 +127,8 @@ export interface McpAuthOptions {
    * tests can inject a value without mutating process.env.
    */
   getToken?: () => string | undefined;
+  /** Resolve a managed-worker bearer credential to its server-owned task id. */
+  resolveTaskToken?: (token: string | null) => string | null;
 }
 
 function extractBearer(req: Request): string | null {
@@ -87,10 +146,21 @@ export function createMcpAuthMiddleware(opts: McpAuthOptions) {
   const loopback = isLoopbackHost(opts.host);
   return (req: Request, res: Response, next: NextFunction): void => {
     const expected = getToken();
+    const provided = extractBearer(req);
+    // Managed workers remain identity-bound even in the documented open
+    // loopback development mode. A valid per-task credential is meaningful
+    // independently of whether a global operator token is required.
+    const actorTaskId = opts.resolveTaskToken?.(provided) ?? null;
+    if (actorTaskId) {
+      setAuthenticatedMcpActorTaskId(req, actorTaskId);
+      next();
+      return;
+    }
     // Enforce when: a token is configured at all, OR explicitly required, OR a
     // non-loopback bind. Loopback + no token + not required => open (dev).
     const enforce = !!expected || opts.requireToken === true || !loopback;
     if (!enforce) {
+      setAuthenticatedMcpActorTaskId(req, null);
       next();
       return;
     }
@@ -98,10 +168,11 @@ export function createMcpAuthMiddleware(opts: McpAuthOptions) {
       res.status(403).json({ error: 'OVERWATCH_MCP_TOKEN is required but not configured' });
       return;
     }
-    if (!tokensMatch(extractBearer(req), expected)) {
-      res.status(401).json({ error: 'Unauthorized' });
+    if (tokensMatch(provided, expected)) {
+      setAuthenticatedMcpActorTaskId(req, null);
+      next();
       return;
     }
-    next();
+    res.status(401).json({ error: 'Unauthorized' });
   };
 }

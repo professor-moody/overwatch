@@ -7,16 +7,11 @@
 // unambiguous verbs instantly; anything it can't resolve is returned in
 // `unresolved` for the headless planner fallback (3A.2) to handle.
 //
-// Safety: this module never mutates. `executeOps` is the single execution path,
-// and it only calls existing engine methods — so OPSEC/scope/lease/approval
-// guards still apply. Nothing executes without an explicit operator confirm
-// (enforced by the /api/commands endpoint).
+// Safety: this module never mutates. Confirmed operations execute through
+// OperatorCommandService and the application-command boundary.
 // ============================================================
 
-import { v4 as uuidv4 } from 'uuid';
-import type { GraphEngine } from './graph-engine.js';
 import type { AgentDirectiveKind } from '../types.js';
-import { getArchetype, recommendExploreArchetype } from './agent-archetypes.js';
 
 export type OperatorOp =
   | { op: 'directive'; task_id: string; agent_label: string; kind: AgentDirectiveKind; node_ids?: string[]; frontier_types?: string[]; note?: string }
@@ -249,62 +244,17 @@ function finalize(ops: OperatorOp[], unresolved: InterpretResult['unresolved']):
   return { ops, summary, unresolved };
 }
 
-export interface OpResult { op: OperatorOp; ok: boolean; detail?: string; error?: string }
+export interface DispatchedTaskRef {
+  task_id: string;
+  agent_label: string;
+  id: string;
+  agent_id: string;
+}
 
-/**
- * The single dashboard-side execution path. Each op routes through an existing
- * validated engine method — no new mutation surface.
- */
-export function executeOps(engine: GraphEngine, ops: OperatorOp[], issuedBy = 'operator'): OpResult[] {
-  const results: OpResult[] = [];
-  for (const op of ops) {
-    try {
-      if (op.op === 'directive') {
-        engine.issueAgentDirective({ task_id: op.task_id, kind: op.kind, node_ids: op.node_ids, frontier_types: op.frontier_types, note: op.note, issued_by: issuedBy });
-        // A directive is only actioned by a LIVE headless agent (which polls it via
-        // acknowledge_agent_directive). For any other backend (manual/scripted) or a
-        // missing task, it's advisory — recorded, not auto-applied — so say so.
-        const target = engine.getTask(op.task_id);
-        const advisory = !target || target.backend !== 'headless_mcp';
-        results.push({ op, ok: true, detail: advisory ? `directive ${op.kind} recorded for ${op.agent_label} (advisory — no live agent)` : `directive ${op.kind} issued to ${op.agent_label}` });
-      } else if (op.op === 'scope') {
-        const r = engine.updateScope({ add_cidrs: op.add_cidrs, add_domains: op.add_domains, add_exclusions: op.add_exclusions, reason: `operator command (${issuedBy})` });
-        if (r.applied) results.push({ op, ok: true, detail: `scope updated (${r.affected_node_count} nodes affected)` });
-        else results.push({ op, ok: false, error: r.errors.join('; ') });
-      } else if (op.op === 'approve' || op.op === 'deny') {
-        const queue = engine.getPendingActionQueue();
-        const r = op.op === 'approve' ? queue.approve(op.action_id, op.notes) : queue.deny(op.action_id, op.reason);
-        if (!r) results.push({ op, ok: false, error: 'action not found or already resolved' });
-        else { engine.resolveApprovalRequest(r); results.push({ op, ok: true, detail: `${op.op}d ${op.action_id}` }); }
-      } else if (op.op === 'dispatch') {
-        // Deploy at the node(s). Resolve a CONCRETE archetype (recommendExploreArchetype
-        // never yields the hidden full-surface 'default' — an unmapped node type falls
-        // back to recon_scanner), expand its role+backend, and register status:'running'
-        // so a drain loop launches it. No model → CLI default (the planner doesn't pick
-        // models). A node-scoped dispatch carries no frontier_item_id, so it can't take a
-        // frontier lease; registerAgent instead node-dedups it against a running/pending
-        // agent of the same archetype+role already at the node (see AgentManager.register).
-        const taskId = uuidv4();
-        const seedType = op.target_node_ids[0] ? engine.getNode(op.target_node_ids[0])?.type : undefined;
-        const arch = getArchetype(recommendExploreArchetype(op.archetype, seedType));
-        const reg = engine.registerAgent({
-          id: taskId,
-          agent_id: `planner-dispatch-${taskId.slice(0, 8)}`,
-          assigned_at: new Date().toISOString(),
-          status: 'running',
-          subgraph_node_ids: op.target_node_ids,
-          skill: op.skill ?? arch.defaultSkill,
-          archetype: arch.id, role: arch.role, backend: arch.backend,
-          ...(op.objective ? { objective: op.objective } : {}),
-        });
-        if (reg.cap_exceeded) results.push({ op, ok: false, error: `dispatch cap exceeded (${reg.cap_exceeded.current}/${reg.cap_exceeded.limit}) — retry when a slot frees` });
-        else if (reg.node_conflict) results.push({ op, ok: false, error: `already being worked at ${reg.node_conflict.node_id} by ${reg.node_conflict.existing_agent_id} — not dispatching a duplicate` });
-        else if (!reg.ok) results.push({ op, ok: false, error: reg.lease_conflict ? `already being worked by ${reg.lease_conflict.existing_agent_id}` : 'dispatch refused' });
-        else results.push({ op, ok: true, detail: describeOp({ ...op, archetype: arch.id }) });
-      }
-    } catch (err) {
-      results.push({ op, ok: false, error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-  return results;
+export interface OpResult {
+  op: OperatorOp;
+  ok: boolean;
+  detail?: string;
+  error?: string;
+  task?: DispatchedTaskRef;
 }

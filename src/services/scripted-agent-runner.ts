@@ -48,6 +48,7 @@ export function scriptedCanHandle(engine: GraphEngine, task: AgentTask): boolean
 
 export class ScriptedAgentRunner {
   private running = false;
+  private updateUnsubscribe: (() => void) | null = null;
   /** task IDs currently being processed to avoid double-pickup */
   private processing = new Set<string>();
   private heartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
@@ -72,7 +73,7 @@ export class ScriptedAgentRunner {
     this.running = true;
     // Subscribe to engine updates to detect newly registered tasks.
     // onUpdate fires after every graph/state mutation, including registerAgent.
-    this.engine.onUpdate(() => {
+    this.updateUnsubscribe = this.engine.onUpdate(() => {
       if (!this.running) return;
       this.drainQueue();
     });
@@ -82,6 +83,8 @@ export class ScriptedAgentRunner {
 
   stop(): void {
     this.running = false;
+    this.updateUnsubscribe?.();
+    this.updateUnsubscribe = null;
     for (const timer of this.heartbeatTimers.values()) clearInterval(timer);
     this.heartbeatTimers.clear();
     for (const controller of this.abortControllers.values()) controller.abort();

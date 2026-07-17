@@ -3,7 +3,7 @@
 //
 // The headless 'planner' role translates a free-form operator command into a
 // list of OperatorOps and submits it with this tool. The planner PROPOSES; the
-// operator CONFIRMS; the dashboard EXECUTES (via the same executeOps path the
+// operator CONFIRMS; the dashboard EXECUTES (via the same application-command path the
 // deterministic grammar uses). This tool never mutates engagement state — it
 // only records a plan for the operator to confirm, and it REJECTS any plan whose
 // ops don't resolve against live state (so a confirmed plan can never silently

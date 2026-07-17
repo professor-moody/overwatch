@@ -121,7 +121,7 @@ export function AgentsPanel() {
 
   // Mission Cards: the operator-shaped per-agent view-model, grouped by campaign.
   const missionGroups = useMemo(
-    () => groupMissionCards(agents.map(a => buildMissionCard(a, { sessions, pendingActions, agentQueries }))),
+    () => groupMissionCards(agents.map(a => buildMissionCard(a, { agents, sessions, pendingActions, agentQueries }))),
     [agents, sessions, pendingActions, agentQueries],
   );
   const elapsedById = useMemo(() => {
@@ -822,7 +822,7 @@ function AgentOutputConsole({
 }
 
 // Per-agent lifecycle steering (Phase 3B). One-click directives routed through
-// the validated /api/agents/:id/directive → executeOps path. Targeted kinds
+// the validated /api/agents/:id/directive application-command path. Targeted kinds
 // (narrow_scope/skip_types/prioritize) + free-text instruction come via the
 // per-agent NL box in Stage 2.
 // One-click lifecycle steering for the focused agent. Free-text instruction
