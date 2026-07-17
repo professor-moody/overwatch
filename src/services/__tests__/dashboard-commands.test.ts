@@ -50,6 +50,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await dashboard?.stop().catch(() => {});
+  engine?.dispose();
   try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
@@ -600,6 +601,7 @@ describe('/api/commands — planner-proposed plan confirm + deny + GET /api/plan
       expect(eng.getAgentTasks().some(t => t.role === 'planner')).toBe(false);
     } finally {
       await dash.stop().catch(() => {});
+      eng.dispose();
     }
   });
 
