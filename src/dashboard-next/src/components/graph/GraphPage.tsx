@@ -47,7 +47,13 @@ const SPAN_PER_NODE = 30;
 
 export function GraphPage() {
   // ---- Graph data layer ----
-  const { graph, loadGraphData, mergeGraphDelta, reachableOnlyCacheRef } = useGraph();
+  const {
+    graph,
+    loadGraphData,
+    mergeGraphDelta,
+    patchGraphCommunities,
+    reachableOnlyCacheRef,
+  } = useGraph();
 
   // ---- Reducers ----
   const { stateRef, nodeReducer, edgeReducer, isNodeVisible } = useGraphReducers(graph, reachableOnlyCacheRef);
@@ -317,8 +323,11 @@ export function GraphPage() {
   const storeGraph = useEngagementStore(s => s.graph);
   const graphVersion = useEngagementStore(s => s.graphVersion);
   const lastDelta = useEngagementStore(s => s.lastDelta);
+  const communityVersion = useEngagementStore(s => s.communityVersion);
+  const lastCommunityDelta = useEngagementStore(s => s.lastCommunityDelta);
   const loadedVersionRef = useRef(-1);
   const loadedEngagementRef = useRef<string | null>(null);
+  const loadedCommunityVersionRef = useRef(-1);
 
   useEffect(() => {
     if (graphVersion === loadedVersionRef.current && engagementId === loadedEngagementRef.current) return;
@@ -599,6 +608,22 @@ export function GraphPage() {
     recolorNodes();
     forceGraphUi();
   }, [stateRef, recolorNodes, forceGraphUi]);
+
+  useEffect(() => {
+    if (communityVersion === loadedCommunityVersionRef.current) return;
+    loadedCommunityVersionRef.current = communityVersion;
+    if (!lastCommunityDelta?.length || graph.order === 0) return;
+    patchGraphCommunities(lastCommunityDelta);
+    for (const node of lastCommunityDelta) {
+      if (!graph.hasNode(node.id)) continue;
+      const attributes = graph.getNodeAttributes(node.id);
+      graph.setNodeAttribute(node.id, 'color', colorForNode(
+        attributes as { nodeType?: string; community?: number; _props?: unknown },
+        stateRef.current.colorMode,
+      ));
+    }
+    refresh();
+  }, [communityVersion, lastCommunityDelta, graph, patchGraphCommunities, refresh, stateRef]);
 
   const handleTogglePathMode = useCallback(() => {
     const s = stateRef.current;

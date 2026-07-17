@@ -40,7 +40,9 @@ export interface EngagementStore {
   graph: ExportedGraph;
   graphSummary: EngagementState['graph_summary'] | null;
   graphVersion: number;
+  communityVersion: number;
   lastDelta: { nodes: ExportedNode[]; edges: ExportedEdge[]; removed_nodes: string[]; removed_edges: string[] } | null;
+  lastCommunityDelta: ExportedNode[] | null;
 
   // Frontier
   frontier: FrontierItem[];
@@ -114,7 +116,9 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   graph: { nodes: [], edges: [], coldInventory: [] },
   graphSummary: null,
   graphVersion: 0,
+  communityVersion: 0,
   lastDelta: null,
+  lastCommunityDelta: null,
 
   // Frontier
   frontier: [],
@@ -176,6 +180,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       graphSummary: s.graph_summary || null,
       graphVersion: get().graphVersion + 1,
       lastDelta: null,
+      lastCommunityDelta: null,
       frontier: s.frontier || [],
       frontierHidden: s.frontier_hidden || null,
       objectives: s.objectives || [],
@@ -231,14 +236,18 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
 
   applyStateRefresh: ({ state: s, history_count, community_ids }) => {
     const graph = get().graph;
-    const communitiesChanged = community_ids
+    const communityDelta = community_ids
       ? graphDeltaIndex.applyCommunityIds(graph, community_ids)
-      : false;
+      : [];
     set({
       engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : get().engagement,
       accessLevel: s.access_summary?.current_access_level || get().accessLevel,
       historyCount: history_count ?? get().historyCount,
-      ...(communitiesChanged ? { graph, graphVersion: get().graphVersion + 1 } : {}),
+      ...(communityDelta.length > 0 ? {
+        graph,
+        communityVersion: get().communityVersion + 1,
+        lastCommunityDelta: communityDelta,
+      } : {}),
       graphSummary: s.graph_summary || get().graphSummary,
       frontier: s.frontier || get().frontier,
       frontierHidden: s.frontier_hidden ?? get().frontierHidden,

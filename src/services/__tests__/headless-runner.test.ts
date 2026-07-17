@@ -1469,6 +1469,11 @@ describe('Headless runner mechanics (injected spawn)', () => {
         message: expect.stringContaining('terminal appearance'),
       },
     });
+    expect(engine.getTask('h-unexpressible')?.status).toBe('completed');
+    expect(engine.getFullHistory().some(event =>
+      event.linked_agent_task_id === 'h-unexpressible'
+      && (event.details as { reason?: string } | undefined)?.reason === 'headless_exited'
+    )).toBe(false);
   });
 
   it('CVE auto-dispatch budget counts non-CVE headless agents (cap honored, no over-registration)', async () => {

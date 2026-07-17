@@ -84,4 +84,22 @@ describe('GraphDeltaIndex', () => {
     samples.sort((left, right) => left - right);
     expect(samples[Math.floor(samples.length / 2)]).toBeLessThan(100);
   });
+
+  it('patches changed community assignments without scanning or replacing graph arrays', () => {
+    const graph = graphFixture(50_000);
+    const nodes = graph.nodes;
+    const index = new GraphDeltaIndex();
+    index.reset(graph);
+    const changedIds = Object.fromEntries(
+      Array.from({ length: 10 }, (_, offset) => [`node-${offset * 2}`, offset + 1]),
+    );
+    const started = performance.now();
+    const changed = index.applyCommunityIds(graph, changedIds);
+
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(graph.nodes).toBe(nodes);
+    expect(changed).toHaveLength(10);
+    expect(graph.nodes[0].community_id).toBe(1);
+    expect(graph.nodes[1].community_id).toBeUndefined();
+  });
 });

@@ -28,6 +28,7 @@ export class DashboardMainWebSocketHub {
   private readonly accumulator = new DeltaAccumulator();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private stateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private stateRefreshDirty = false;
   private seenConsoleEventIds: Set<string>;
   private readonly disposers: Array<() => void> = [];
   private readonly debounceMs: number;
@@ -81,11 +82,18 @@ export class DashboardMainWebSocketHub {
   }
 
   attachConnection(ws: WebSocket): void {
+    const firstConnection = this.clients.size === 0;
     this.clients.add(ws);
     const state = this.options.buildState();
     this.cachedState = state;
     const graph = this.options.buildGraph?.()
       ?? this.engine.exportGraph({ includeDerivedCommunities: true });
+    // The first full-state graph is the client's authoritative baseline, so
+    // assignments accumulated before any browser was connected are already
+    // represented and need not be replayed as a follow-up patch.
+    const baselineCommunityChanges = firstConnection
+      ? this.engine.peekCommunityChanges()
+      : undefined;
     this.send(ws, {
       type: 'full_state',
       timestamp: new Date().toISOString(),
@@ -96,6 +104,9 @@ export class DashboardMainWebSocketHub {
         this.options.runtimeBuild,
       ),
     });
+    if (baselineCommunityChanges) {
+      this.engine.acknowledgeCommunityChanges(baselineCommunityChanges);
+    }
     const cleanup = () => this.clients.delete(ws);
     ws.on('close', cleanup);
     ws.on('error', cleanup);
@@ -137,6 +148,7 @@ export class DashboardMainWebSocketHub {
     this.debounceTimer = null;
     if (this.stateRefreshTimer) clearTimeout(this.stateRefreshTimer);
     this.stateRefreshTimer = null;
+    this.stateRefreshDirty = false;
     this.accumulator.drain();
     for (const ws of this.clients) ws.close();
     this.clients.clear();
@@ -205,12 +217,25 @@ export class DashboardMainWebSocketHub {
   }
 
   private scheduleStateRefresh(): void {
-    if (this.stateRefreshTimer) clearTimeout(this.stateRefreshTimer);
+    this.stateRefreshDirty = true;
+    // Throttle from the first dirty update instead of debouncing from the
+    // newest one. Sustained findings therefore cannot starve authoritative
+    // frontier/agent/campaign/objective state indefinitely.
+    if (this.stateRefreshTimer) return;
     this.stateRefreshTimer = setTimeout(() => {
       this.stateRefreshTimer = null;
-      if (this.clients.size === 0 || this.disposed) return;
+      if (this.clients.size === 0 || this.disposed || !this.stateRefreshDirty) {
+        this.stateRefreshDirty = false;
+        return;
+      }
+      this.stateRefreshDirty = false;
       const state = this.options.buildState();
       this.cachedState = state;
+      // buildState() above has populated the community cache. Taking the
+      // detector-produced patch is proportional only to assignments that
+      // changed since the previous publication.
+      const communityChanges = this.engine.peekCommunityChanges();
+      const communityIds = Object.fromEntries(communityChanges);
       this.broadcast({
         type: 'state_refresh',
         timestamp: new Date().toISOString(),
@@ -218,11 +243,12 @@ export class DashboardMainWebSocketHub {
           state,
           history_count: this.engine.getHistoryCount(),
           // buildState() has already populated the topology-derived cache. Send
-          // its compact projection here so the latency-sensitive graph delta
-          // never needs to run community detection itself.
-          community_ids: Object.fromEntries(this.engine.getCommunities()),
+          // only changed assignments so browser work remains proportional to
+          // the derived patch rather than the complete engagement graph.
+          community_ids: communityIds,
         },
       });
+      this.engine.acknowledgeCommunityChanges(communityChanges);
     }, 750);
     if (typeof this.stateRefreshTimer.unref === 'function') this.stateRefreshTimer.unref();
   }

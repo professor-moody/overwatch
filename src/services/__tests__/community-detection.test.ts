@@ -63,6 +63,28 @@ describe('Community Detection', () => {
     expect(communities.size).toBeGreaterThanOrEqual(0);
   });
 
+  it('accumulates changed assignments while constructing the community cache', () => {
+    engine.getCommunities();
+    const initial = engine.peekCommunityChanges();
+    engine.acknowledgeCommunityChanges(initial);
+    engine.addNode({
+      id: 'host-new',
+      type: 'host',
+      label: 'New host',
+      ip: '10.10.10.10',
+      confidence: 1,
+      discovered_at: new Date().toISOString(),
+      discovered_by: 'test',
+    });
+
+    const communities = engine.getCommunities();
+    const changed = engine.peekCommunityChanges();
+
+    expect(changed.get('host-new')).toBe(communities.get('host-new'));
+    engine.acknowledgeCommunityChanges(changed);
+    expect(engine.peekCommunityChanges().size).toBe(0);
+  });
+
   it('assigns community_id to nodes in a triangle', () => {
     // Create three connected hosts — should form one community
     engine.addNode({ id: 'host-a', type: 'host', label: 'A', ip: '10.10.10.1', confidence: 1.0, discovered_at: new Date().toISOString(), discovered_by: 'test' });

@@ -12,6 +12,8 @@ describe('engagement store hydration', () => {
       initialized: false,
       graph: { nodes: [], edges: [], coldInventory: [] },
       graphVersion: 0,
+      communityVersion: 0,
+      lastCommunityDelta: null,
       graphSummary: null,
       frontier: [],
       objectives: [],
@@ -168,6 +170,7 @@ describe('engagement store hydration', () => {
     } as FullStateData);
     const graph = useEngagementStore.getState().graph;
     const graphVersion = useEngagementStore.getState().graphVersion;
+    const communityVersion = useEngagementStore.getState().communityVersion;
 
     useEngagementStore.getState().applyStateRefresh({
       state: {
@@ -182,7 +185,11 @@ describe('engagement store hydration', () => {
 
     expect(useEngagementStore.getState().graph).toBe(graph);
     expect(useEngagementStore.getState().graph.nodes[0].community_id).toBe(7);
-    expect(useEngagementStore.getState().graphVersion).toBe(graphVersion + 1);
+    expect(useEngagementStore.getState().graphVersion).toBe(graphVersion);
+    expect(useEngagementStore.getState().communityVersion).toBe(communityVersion + 1);
+    expect(useEngagementStore.getState().lastCommunityDelta).toEqual([
+      expect.objectContaining({ id: 'host-1', community_id: 7 }),
+    ]);
     expect(useEngagementStore.getState().historyCount).toBe(2);
     expect(useEngagementStore.getState().graphSummary?.total_nodes).toBe(1);
   });

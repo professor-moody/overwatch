@@ -411,7 +411,8 @@ execute target commands or mutate engagement state directly.
    If the command genuinely cannot be represented by any allowed op, call
    \`submit_agent_transcript\` with \`planner_outcome: "unexpressible"\` and the
    exact reason in \`summary\`, then close. Do not use that outcome merely
-   because an ID or proposed operation was rejected; correct it and retry.
+   because an ID or proposed operation was rejected; correct it and retry. The
+   structured conclusion completes your planner task automatically.
 
 Call \`agent_heartbeat({ task_id: "${taskId}" })\` if planning runs longer than
 about a minute, and honor any directive or operator answer it returns.`);

@@ -257,6 +257,11 @@ export class GraphEngine {
   private campaignPlanner: CampaignPlanner;
   private healthReportCache: HealthReport | null = null;
   private frontierCache: { passed: FrontierItem[]; all: FrontierItem[]; campaigns: import('../types.js').Campaign[]; hidden: import('../types.js').FrontierHiddenSummary } | null = null;
+  /** Last committed community projection plus changes not yet published by the
+   * dashboard hub. The detector records changes while building its result, so
+   * taking a WebSocket patch is O(changed IDs), not O(all graph nodes). */
+  private communityAssignments = new Map<string, number>();
+  private pendingCommunityChanges = new Map<string, number>();
   private evidenceStore!: EvidenceStore;
   private actionOutputBuffer = new ActionOutputBuffer();
   /** Shared skill methodology index (attached at app construction); null in bare/test contexts. */
@@ -2214,11 +2219,36 @@ export class GraphEngine {
 
   getCommunities(): Map<string, number> {
     if (this.ctx.communityCache) return this.ctx.communityCache;
+    const previous = this.communityAssignments;
+    const trackChanges = !this.ctx.isDraftingTransaction();
     const communities = detectCommunities(this.ctx.graph, {
       resolution: this.ctx.config.community_resolution,
+      onAssignment: trackChanges
+        ? (nodeId, communityId) => {
+            if (previous.get(nodeId) !== communityId) {
+              this.pendingCommunityChanges.set(nodeId, communityId);
+            }
+          }
+        : undefined,
     });
     this.ctx.communityCache = communities;
+    if (trackChanges) this.communityAssignments = communities;
     return communities;
+  }
+
+  /** Snapshot community assignments waiting for dashboard publication. */
+  peekCommunityChanges(): Map<string, number> {
+    return new Map(this.pendingCommunityChanges);
+  }
+
+  /** Acknowledge only the exact assignments that were successfully published.
+   * A newer value for the same node remains queued for the next refresh. */
+  acknowledgeCommunityChanges(changes: ReadonlyMap<string, number>): void {
+    for (const [nodeId, communityId] of changes) {
+      if (this.pendingCommunityChanges.get(nodeId) === communityId) {
+        this.pendingCommunityChanges.delete(nodeId);
+      }
+    }
   }
 
   private getCommunityStats(): { community_count: number; largest_community_size: number; unexplored_community_count: number } {

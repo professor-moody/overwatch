@@ -265,8 +265,23 @@ export interface UseGraphReturn {
     removed_nodes: string[];
     removed_edges: string[];
   }) => void;
+  patchGraphCommunities: (nodes: ExportedNode[]) => void;
   invalidateReachableOnlyCache: () => void;
   reachableOnlyCacheRef: React.MutableRefObject<Set<string> | null>;
+}
+
+export function applyGraphCommunityPatch(graph: Graph, nodes: ExportedNode[]): void {
+  for (const node of nodes) {
+    if (!graph.hasNode(node.id)) continue;
+    const attributes = graph.getNodeAttributes(node.id);
+    const previous = attributes._props && typeof attributes._props === 'object'
+      ? attributes._props as ExportedNode
+      : { id: node.id } as ExportedNode;
+    graph.mergeNodeAttributes(node.id, {
+      community: node.community_id,
+      _props: { ...previous, community_id: node.community_id },
+    });
+  }
 }
 
 export function useGraph(): UseGraphReturn {
@@ -437,5 +452,16 @@ export function useGraph(): UseGraphReturn {
     }
   }, [graph]);
 
-  return { graph, loadGraphData, mergeGraphDelta, invalidateReachableOnlyCache, reachableOnlyCacheRef };
+  const patchGraphCommunities = useCallback((nodes: ExportedNode[]) => {
+    applyGraphCommunityPatch(graph, nodes);
+  }, [graph]);
+
+  return {
+    graph,
+    loadGraphData,
+    mergeGraphDelta,
+    patchGraphCommunities,
+    invalidateReachableOnlyCache,
+    reachableOnlyCacheRef,
+  };
 }

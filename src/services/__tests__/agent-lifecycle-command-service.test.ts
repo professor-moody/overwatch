@@ -135,6 +135,10 @@ describe('AgentLifecycleCommandService', () => {
         reason: expect.stringContaining('change the local editor theme'),
       },
     });
+    expect(engine.getTask('planner-task')).toMatchObject({
+      status: 'completed',
+      result_summary: expect.stringContaining('change the local editor theme'),
+    });
   });
 
   it('replays a canonical transcript after the task has been dismissed', () => {

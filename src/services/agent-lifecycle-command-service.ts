@@ -344,7 +344,14 @@ export class AgentLifecycleCommandService {
       input: canonicalInput,
       schema: AgentTranscriptCommandInputSchema,
       metadata: effectiveMetadata,
-      state_keys: ['activity'],
+      state_keys: [
+        'agents',
+        'campaigns',
+        'plans_questions',
+        'approvals',
+        'activity',
+        'frontier',
+      ],
       execute: parsed => {
         const details: Record<string, unknown> = {
           summary: parsed.summary,
@@ -399,6 +406,14 @@ export class AgentLifecycleCommandService {
                 planner_task_id: taskId,
               },
             });
+            if (!this.engine.updateAgentStatus(taskId, 'completed', parsed.summary)) {
+              throw new AgentLifecycleCommandError(
+                `Planner task not completed after unexpressible conclusion: ${taskId}`,
+                'PLANNER_CONCLUSION_NOT_APPLIED',
+                409,
+                { task_id: taskId, command_id: owningCommand.command_id },
+              );
+            }
           }
         }
         return {

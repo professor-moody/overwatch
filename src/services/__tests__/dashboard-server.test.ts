@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { DashboardServer } from '../dashboard-server.js';
+import { DashboardMainWebSocketHub } from '../dashboard-main-ws-hub.js';
 import { GraphEngine } from '../graph-engine.js';
 import { InProcessTapeController } from '../in-process-tape.js';
 import type { EngagementConfig } from '../../types.js';
@@ -296,6 +297,94 @@ describe('DashboardServer', () => {
       expect(stateSpy).toHaveBeenCalledTimes(1);
       expect(mockClient.send.mock.calls.map(call => JSON.parse(String(call[0])).type)).toContain('state_refresh');
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not postpone authoritative state refresh under sustained graph updates', () => {
+    vi.useFakeTimers();
+    try {
+      const mockClient = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+        on: vi.fn(),
+      };
+      (dashboard as any).mainHub.attachConnection(mockClient);
+      mockClient.send.mockClear();
+
+      dashboard.onGraphUpdate({ updated_nodes: ['sustained-1'] });
+      dashboard.flush();
+      vi.advanceTimersByTime(600);
+      dashboard.onGraphUpdate({ updated_nodes: ['sustained-2'] });
+      dashboard.flush();
+      vi.advanceTimersByTime(149);
+      expect(mockClient.send.mock.calls
+        .map(call => JSON.parse(String(call[0])).type))
+        .not.toContain('state_refresh');
+
+      vi.advanceTimersByTime(1);
+      expect(mockClient.send.mock.calls
+        .map(call => JSON.parse(String(call[0])).type))
+        .toContain('state_refresh');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('publishes ten changed communities without scanning a 50k assignment cache', () => {
+    vi.useFakeTimers();
+    const baselineState = (dashboard as any).buildFrontendState();
+    const baselineGraph = engine.exportGraph({ includeDerivedCommunities: true });
+    const hub = new DashboardMainWebSocketHub(engine, null, {
+      buildState: () => baselineState,
+      buildGraph: () => baselineGraph,
+      debounceMs: 0,
+    });
+    try {
+      const mockClient = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+        on: vi.fn(),
+      };
+      hub.attachConnection(mockClient as any);
+      mockClient.send.mockClear();
+
+      const allAssignments = new Map(
+        Array.from({ length: 50_000 }, (_, index) => [`node-${index}`, index % 50] as const),
+      );
+      const scan = vi.spyOn(allAssignments, Symbol.iterator).mockImplementation(() => {
+        throw new Error('full community cache scan attempted');
+      });
+      const changedAssignments = new Map(
+        Array.from({ length: 10 }, (_, index) => [`node-${index * 2}`, index + 100] as const),
+      );
+      (engine as any).ctx.communityCache = allAssignments;
+      (engine as any).communityAssignments = allAssignments;
+      (engine as any).pendingCommunityChanges = changedAssignments;
+
+      hub.onGraphUpdate({ updated_nodes: [baselineGraph.nodes[0].id] });
+      hub.flush();
+      const failedBroadcast = vi.spyOn(hub, 'broadcast').mockImplementationOnce(() => {
+        throw new Error('synthetic socket failure');
+      });
+      expect(() => vi.advanceTimersByTime(750)).toThrow('synthetic socket failure');
+      expect((engine as any).pendingCommunityChanges.size).toBe(10);
+      failedBroadcast.mockRestore();
+
+      hub.onGraphUpdate({ updated_nodes: [baselineGraph.nodes[0].id] });
+      hub.flush();
+      vi.advanceTimersByTime(750);
+
+      const refresh = sentMessages(mockClient)
+        .find(message => message.type === 'state_refresh');
+      expect(scan).not.toHaveBeenCalled();
+      expect(Object.keys(refresh.data.community_ids)).toHaveLength(10);
+      expect(refresh.data.community_ids['node-18']).toBe(109);
+      expect((engine as any).pendingCommunityChanges.size).toBe(0);
+    } finally {
+      hub.dispose();
       vi.useRealTimers();
     }
   });

@@ -60,23 +60,22 @@ export class GraphDeltaIndex {
     graph.edges.forEach((edge, index) => this.edgePositions.set(edgeKey(edge), index));
   }
 
-  /** Replace topology-derived community labels after the coalesced state
-   * projection completes. The graph arrays remain stable for fast consumers;
-   * callers use graphVersion to invalidate memoized derived views. */
-  applyCommunityIds(graph: ExportedGraph, communityIds: Record<string, number>): boolean {
+  /** Apply only community assignments changed by the server. The graph arrays
+   * remain stable; the returned node patch drives the rendered Graphology view. */
+  applyCommunityIds(
+    graph: ExportedGraph,
+    communityIds: Record<string, number>,
+  ): ExportedNode[] {
     this.ensure(graph);
-    let changed = false;
-    for (let index = 0; index < graph.nodes.length; index++) {
+    const changed: ExportedNode[] = [];
+    for (const [id, communityId] of Object.entries(communityIds)) {
+      const index = this.nodePositions.get(id);
+      if (index === undefined) continue;
       const previous = graph.nodes[index];
-      const communityId = communityIds[previous.id];
       if (previous.community_id === communityId) continue;
-      if (communityId === undefined) {
-        const { community_id: _communityId, ...withoutCommunity } = previous;
-        graph.nodes[index] = withoutCommunity as ExportedNode;
-      } else {
-        graph.nodes[index] = { ...previous, community_id: communityId };
-      }
-      changed = true;
+      const next = { ...previous, community_id: communityId };
+      graph.nodes[index] = next;
+      changed.push(next);
     }
     return changed;
   }
