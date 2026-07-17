@@ -70,8 +70,18 @@ import type {
   EngineTransactionApplyResult,
   EngineTransactionDraft,
 } from './engine-transaction.js';
-import type { DurableStatePatchV1 } from './durable-state-patch.js';
+import {
+  DURABLE_STATE_SLICE_KEYS,
+  type DurableStatePatchV1,
+  type DurableStateSliceKey,
+} from './durable-state-patch.js';
 import type { ActivityAppendPayloadV1 } from './activity-append.js';
+import {
+  TransactionFootprintAccumulator,
+  type GraphColdInverse,
+  type GraphEdgeSnapshot,
+  type GraphNodeSnapshot,
+} from './transaction-footprint.js';
 import {
   agentLabelOf,
   coordinationRecoveryWarning,
@@ -1108,6 +1118,7 @@ export class StatePersistence {
         }
       }
     }
+    if (detail.cold_nodes_changed) this.pendingDetail.cold_nodes_changed = true;
   }
 
   // --- Shutdown safety ---
@@ -4349,18 +4360,262 @@ export class StatePersistence {
 
   private makeTransactionApplier(mutators?: ReplayMutators): EngineTransactionApplier {
     const operationApplier = this.makeMutationApplier(mutators);
+    const durableSliceKeys = new Set<string>(DURABLE_STATE_SLICE_KEYS);
+
+    const nodeSnapshot = (nodeId: string): GraphNodeSnapshot | null =>
+      this.ctx.graph.hasNode(nodeId)
+        ? {
+            node_id: nodeId,
+            props: structuredClone(this.ctx.graph.getNodeAttributes(nodeId) as NodeProperties),
+          }
+        : null;
+
+    const edgeSnapshot = (edgeId: string): GraphEdgeSnapshot | null =>
+      this.ctx.graph.hasEdge(edgeId)
+        ? {
+            edge_id: edgeId,
+            source: this.ctx.graph.source(edgeId),
+            target: this.ctx.graph.target(edgeId),
+            props: structuredClone(this.ctx.graph.getEdgeAttributes(edgeId) as EdgeProperties),
+          }
+        : null;
+
+    const matchingEdgeIds = (
+      source: unknown,
+      target: unknown,
+      props: unknown,
+    ): string[] => {
+      if (
+        typeof source !== 'string'
+        || typeof target !== 'string'
+        || typeof props !== 'object'
+        || props === null
+        || !this.ctx.graph.hasNode(source)
+        || !this.ctx.graph.hasNode(target)
+      ) return [];
+      return this.ctx.graph.edges(source, target)
+        .filter(edgeId => edgeIdentityMatches(
+          this.ctx.graph.getEdgeAttributes(edgeId),
+          props as EdgeProperties,
+        ));
+    };
+
+    const classifyBounded = (
+      transaction: Parameters<EngineTransactionApplier['applyTransaction']>[0],
+    ): { stateKeys: DurableStateSliceKey[] } | undefined => {
+      const stateKeys = new Set<DurableStateSliceKey>();
+      const plannedNodeTypes = new Map<string, unknown>();
+      const plannedInferredEdges = new Set<string>();
+      for (const operation of transaction.operations) {
+        const payload = operation.payload as Record<string, unknown>;
+        switch (operation.type) {
+          case 'add_node':
+          case 'merge_node_attrs':
+          case 'replace_node_attrs': {
+            const props = payload.props as Partial<NodeProperties> | undefined;
+            if (!props || typeof props.id !== 'string') return undefined;
+            const existingType = plannedNodeTypes.get(props.id)
+              ?? (this.ctx.graph.hasNode(props.id)
+                ? this.ctx.graph.getNodeAttribute(props.id, 'type')
+                : undefined);
+            if (existingType && props.type && existingType !== props.type) return undefined;
+            if (props.type) plannedNodeTypes.set(props.id, props.type);
+            break;
+          }
+          case 'add_edge': {
+            const { source, target, props, edge_id: edgeId } = payload;
+            if (
+              typeof source !== 'string'
+              || typeof target !== 'string'
+              || typeof edgeId !== 'string'
+              || typeof props !== 'object'
+              || props === null
+            ) return undefined;
+            const matching = matchingEdgeIds(source, target, props);
+            if (matching.length > 1) return undefined;
+            const current = matching[0];
+            if (current && current !== edgeId) return undefined;
+            if (current) {
+              const attrs = this.ctx.graph.getEdgeAttributes(current) as EdgeProperties;
+              const incoming = props as Partial<EdgeProperties>;
+              if (attrs.inferred_by_rule && !attrs.confirmed_at && (incoming.confidence ?? 0) >= 1) {
+                return undefined;
+              }
+            }
+            if (
+              plannedInferredEdges.has(edgeId)
+              && ((props as Partial<EdgeProperties>).confidence ?? 0) >= 1
+            ) return undefined;
+            if ((props as Partial<EdgeProperties>).inferred_by_rule) {
+              plannedInferredEdges.add(edgeId);
+            }
+            break;
+          }
+          case 'merge_edge_attrs':
+            if (typeof payload.edge_id !== 'string' || typeof payload.props !== 'object' || payload.props === null) {
+              return undefined;
+            }
+            break;
+          case 'drop_edge': {
+            if (typeof payload.edge_id !== 'string') return undefined;
+            const hasExact = this.ctx.graph.hasEdge(payload.edge_id);
+            const hasLegacyIdentity = typeof payload.source === 'string'
+              && typeof payload.target === 'string'
+              && typeof payload.edge_type === 'string';
+            if (hasExact && hasLegacyIdentity) {
+              if (
+                this.ctx.graph.source(payload.edge_id) !== payload.source
+                || this.ctx.graph.target(payload.edge_id) !== payload.target
+                || this.ctx.graph.getEdgeAttributes(payload.edge_id).type !== payload.edge_type
+              ) return undefined;
+            }
+            if (!hasExact && hasLegacyIdentity) {
+              const matches = this.ctx.graph.hasNode(payload.source as string)
+                && this.ctx.graph.hasNode(payload.target as string)
+                ? this.ctx.graph.edges(payload.source as string, payload.target as string)
+                    .filter(edgeId => this.ctx.graph.getEdgeAttributes(edgeId).type === payload.edge_type)
+                : [];
+              if (matches.length > 0) return undefined;
+            }
+            break;
+          }
+          case 'cold_add':
+            if (
+              typeof payload.record !== 'object'
+              || payload.record === null
+              || typeof (payload.record as { id?: unknown }).id !== 'string'
+            ) return undefined;
+            break;
+          case 'cold_promote':
+            if (typeof payload.id !== 'string') return undefined;
+            break;
+          case 'state_patch': {
+            if (!mutators) return undefined;
+            const patch = payload as unknown as DurableStatePatchV1;
+            if (patch.payload_version !== 1 || typeof patch.slices !== 'object' || patch.slices === null) {
+              return undefined;
+            }
+            for (const key of Object.keys(patch.slices)) {
+              if (!durableSliceKeys.has(key)) return undefined;
+              stateKeys.add(key as DurableStateSliceKey);
+            }
+            break;
+          }
+          default:
+            return undefined;
+        }
+      }
+      return { stateKeys: [...stateKeys] };
+    };
+
+    const restoreBounded = (
+      inverses: GraphColdInverse[],
+      stateBaseline: ReturnType<EngineContext['captureDurableStateSlices']>,
+    ): void => {
+      for (let index = inverses.length - 1; index >= 0; index--) {
+        const inverse = inverses[index]!;
+        if (inverse.kind === 'node') {
+          if (inverse.snapshot === null) {
+            if (this.ctx.graph.hasNode(inverse.node_id)) this.ctx.graph.dropNode(inverse.node_id);
+          } else if (this.ctx.graph.hasNode(inverse.node_id)) {
+            this.ctx.graph.replaceNodeAttributes(inverse.node_id, structuredClone(inverse.snapshot.props));
+          } else {
+            this.ctx.graph.addNode(inverse.node_id, structuredClone(inverse.snapshot.props));
+          }
+          continue;
+        }
+        if (inverse.kind === 'edge') {
+          if (this.ctx.graph.hasEdge(inverse.edge_id)) this.ctx.graph.dropEdge(inverse.edge_id);
+          if (inverse.snapshot !== null) {
+            this.ctx.graph.addEdgeWithKey(
+              inverse.edge_id,
+              inverse.snapshot.source,
+              inverse.snapshot.target,
+              structuredClone(inverse.snapshot.props),
+            );
+          }
+          continue;
+        }
+        this.ctx.coldStore.restoreEntrySnapshot(inverse.snapshot);
+      }
+      if (Object.keys(stateBaseline).length > 0) {
+        const restored = mutators!.applyStatePatchMutation({
+          payload_version: 1,
+          operation_id: 'bounded-transaction-rollback',
+          occurred_at: this.ctx.nowIso(),
+          reason: 'bounded transaction rollback',
+          slices: stateBaseline,
+        }, true);
+        if (restored.status === 'skipped') {
+          throw new Error(`Bounded state rollback was rejected: ${restored.reason}`);
+        }
+      }
+    };
+
     return {
       applyTransaction: transaction => {
         // A standalone activity append has its own O(delta) continuity checks
         // and rollback. Avoid cloning the entire growing engagement for every
         // replayed event; all other transaction shapes retain the full atomic
         // fallback baseline.
+        const bounded = classifyBounded(transaction);
         const baseline = transaction.operations.length === 1
           && transaction.operations[0]?.type === 'activity_append'
           ? undefined
-          : this.captureRestoreBaseline();
+          : bounded
+            ? undefined
+            : this.captureRestoreBaseline();
+        const stateBaseline = bounded
+          ? this.ctx.captureDurableStateSlices(bounded.stateKeys)
+          : {};
+        const inverses: GraphColdInverse[] = [];
+        const footprint = new TransactionFootprintAccumulator();
+        let rollbackStarted = false;
+        const rollback = () => {
+          if (rollbackStarted) return;
+          rollbackStarted = true;
+          if (bounded) {
+            restoreBounded(inverses, stateBaseline);
+          } else if (baseline !== undefined) {
+            this.restoreRejectedCandidateBaseline(baseline, this.builtinRules);
+          }
+        };
         try {
           for (const operation of transaction.operations) {
+            const payload = operation.payload as Record<string, unknown>;
+            let nodeBefore: GraphNodeSnapshot | null | undefined;
+            let edgeBefore = new Map<string, GraphEdgeSnapshot | null>();
+            let coldBefore: ReturnType<EngineContext['coldStore']['captureEntrySnapshot']> | undefined;
+            if (bounded) {
+              if (
+                operation.type === 'add_node'
+                || operation.type === 'merge_node_attrs'
+                || operation.type === 'replace_node_attrs'
+              ) {
+                const nodeId = (payload.props as NodeProperties).id;
+                nodeBefore = nodeSnapshot(nodeId);
+                inverses.push({ kind: 'node', node_id: nodeId, snapshot: nodeBefore });
+              } else if (operation.type === 'add_edge') {
+                const edgeIds = new Set([
+                  payload.edge_id as string,
+                  ...matchingEdgeIds(payload.source, payload.target, payload.props),
+                ]);
+                edgeBefore = new Map([...edgeIds].map(edgeId => [edgeId, edgeSnapshot(edgeId)]));
+                for (const [edgeId, snapshot] of edgeBefore) {
+                  inverses.push({ kind: 'edge', edge_id: edgeId, snapshot });
+                }
+              } else if (operation.type === 'merge_edge_attrs' || operation.type === 'drop_edge') {
+                const edgeId = payload.edge_id as string;
+                edgeBefore.set(edgeId, edgeSnapshot(edgeId));
+                inverses.push({ kind: 'edge', edge_id: edgeId, snapshot: edgeBefore.get(edgeId)! });
+              } else if (operation.type === 'cold_add' || operation.type === 'cold_promote') {
+                const id = operation.type === 'cold_add'
+                  ? (payload.record as { id: string }).id
+                  : payload.id as string;
+                coldBefore = this.ctx.coldStore.captureEntrySnapshot(id);
+                inverses.push({ kind: 'cold', snapshot: coldBefore });
+              }
+            }
             const result = operationApplier.apply({
               seq: transaction.seq,
               ts: transaction.ts,
@@ -4371,17 +4626,53 @@ export class StatePersistence {
                 : {}),
             });
             if (result.status === 'skipped') {
-              if (baseline !== undefined) {
-                this.restoreRejectedCandidateBaseline(baseline, this.builtinRules);
-              }
+              rollback();
               return result;
             }
+            if (bounded) {
+              if (nodeBefore !== undefined) {
+                const nodeId = (payload.props as NodeProperties).id;
+                footprint.recordNode(nodeId, nodeBefore, nodeSnapshot(nodeId));
+              }
+              if (operation.type === 'add_edge') {
+                const edgeIds = new Set([
+                  ...edgeBefore.keys(),
+                  payload.edge_id as string,
+                  ...matchingEdgeIds(payload.source, payload.target, payload.props),
+                ]);
+                for (const edgeId of edgeIds) {
+                  footprint.recordEdge(
+                    edgeId,
+                    edgeBefore.get(edgeId) ?? null,
+                    edgeSnapshot(edgeId),
+                  );
+                  if ((payload.props as Partial<EdgeProperties>).inferred_by_rule) {
+                    footprint.markInferredEdge(edgeId);
+                  }
+                }
+              } else if (operation.type === 'merge_edge_attrs' || operation.type === 'drop_edge') {
+                const edgeId = payload.edge_id as string;
+                footprint.recordEdge(edgeId, edgeBefore.get(edgeId) ?? null, edgeSnapshot(edgeId));
+              } else if (coldBefore) {
+                const current = this.ctx.coldStore.get(coldBefore.id);
+                footprint.recordCold(
+                  coldBefore.id,
+                  coldBefore.record,
+                  current ? structuredClone(current) : null,
+                );
+              }
+            }
+          }
+          if (bounded) {
+            return {
+              status: 'applied',
+              bounded: true,
+              update_detail: footprint.finalize().update_detail,
+            };
           }
           return { status: 'applied' };
         } catch (error) {
-          if (baseline !== undefined) {
-            this.restoreRejectedCandidateBaseline(baseline, this.builtinRules);
-          }
+          rollback();
           throw error;
         }
       },

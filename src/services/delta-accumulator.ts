@@ -6,6 +6,7 @@ export class DeltaAccumulator {
   /** A callback with no graph IDs still means the authoritative state changed
    * (for example config/recovery health or activity-only persistence). */
   private refreshPending = false;
+  private coldNodesChanged = false;
   private pending: Record<(typeof DETAIL_KEYS)[number], Set<string>> = {
     new_nodes: new Set<string>(),
     new_edges: new Set<string>(),
@@ -18,6 +19,7 @@ export class DeltaAccumulator {
 
   push(detail: GraphUpdateDetail): void {
     this.refreshPending = true;
+    if (detail.cold_nodes_changed) this.coldNodesChanged = true;
     for (const key of DETAIL_KEYS) {
       for (const value of detail[key] || []) {
         this.pending[key].add(value);
@@ -29,6 +31,11 @@ export class DeltaAccumulator {
     const result: GraphUpdateDetail = {};
     let hasValues = this.refreshPending;
     this.refreshPending = false;
+    if (this.coldNodesChanged) {
+      result.cold_nodes_changed = true;
+      this.coldNodesChanged = false;
+      hasValues = true;
+    }
 
     for (const key of DETAIL_KEYS) {
       const values = [...this.pending[key]];

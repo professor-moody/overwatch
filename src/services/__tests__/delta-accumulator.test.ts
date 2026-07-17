@@ -55,4 +55,16 @@ describe('DeltaAccumulator', () => {
     expect(accumulator.drain()).toEqual({});
     expect(accumulator.drain()).toBeNull();
   });
+
+  it('preserves a cold-inventory replacement signal across coalesced updates', () => {
+    const accumulator = new DeltaAccumulator();
+
+    accumulator.push({ cold_nodes_changed: true });
+    accumulator.push({ updated_nodes: ['hot-node'] });
+    expect(accumulator.drain()).toEqual({
+      updated_nodes: ['hot-node'],
+      cold_nodes_changed: true,
+    });
+    expect(accumulator.drain()).toBeNull();
+  });
 });
