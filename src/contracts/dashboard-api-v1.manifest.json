@@ -255,7 +255,8 @@
         200,
         400,
         404,
-        409
+        409,
+        503
       ],
       "summary": "Claim one ready playbook step"
     },
@@ -268,7 +269,8 @@
         200,
         400,
         404,
-        409
+        409,
+        503
       ],
       "summary": "Resume an interrupted playbook run"
     },
@@ -281,7 +283,8 @@
         200,
         400,
         404,
-        409
+        409,
+        503
       ],
       "summary": "Append a retry attempt for a playbook step"
     },
@@ -294,7 +297,8 @@
         200,
         400,
         404,
-        409
+        409,
+        503
       ],
       "summary": "Skip a playbook step"
     },
@@ -307,7 +311,8 @@
         200,
         400,
         404,
-        409
+        409,
+        503
       ],
       "summary": "Release an active playbook attempt as interrupted"
     },
@@ -1250,7 +1255,8 @@
         "200": "be8146d814e026a9031d0a8f6c909693f4247bf9b727adacc5be066af77bae1b",
         "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
         "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
-        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "503": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
       }
     },
     "resumePlaybookRun": {
@@ -1261,7 +1267,8 @@
         "200": "288f5962258c65f4c3d3202db86155d6659d34ca5847b6d7c29a879880d0b421",
         "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
         "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
-        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "503": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
       }
     },
     "retryPlaybookStep": {
@@ -1272,7 +1279,8 @@
         "200": "be8146d814e026a9031d0a8f6c909693f4247bf9b727adacc5be066af77bae1b",
         "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
         "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
-        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "503": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
       }
     },
     "skipPlaybookStep": {
@@ -1283,7 +1291,8 @@
         "200": "288f5962258c65f4c3d3202db86155d6659d34ca5847b6d7c29a879880d0b421",
         "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
         "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
-        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "503": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
       }
     },
     "interruptPlaybookAttempt": {
@@ -1294,7 +1303,8 @@
         "200": "288f5962258c65f4c3d3202db86155d6659d34ca5847b6d7c29a879880d0b421",
         "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
         "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
-        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "503": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
       }
     },
     "answerAgentQueriesBatch": {
@@ -1902,5 +1912,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "931618609f4c9af3f1898a4eec20a832d608d907e5a6417da613a5d9c4d8e7a3"
+  "schema_hash": "ffcb86dad6b3557f3c4744891e66236297a4d6297ba49ea84e422e440d86ca37"
 }
