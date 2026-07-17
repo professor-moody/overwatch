@@ -100,6 +100,52 @@ const major = Number(process.versions.node.split('.')[0]);
 if (major >= 20) add('pass', 'Node version', process.version);
 else add('fail', 'Node version', `${process.version} is unsupported`, 'Install Node 20 or newer.');
 
+const claudePath = which('claude');
+if (!claudePath) {
+  add(
+    'fail',
+    'Claude Code CLI',
+    'claude is not available on PATH',
+    'Install or repair Claude Code before deploying planner or reasoning agents.',
+  );
+} else {
+  try {
+    const version = execFileSync(claudePath, ['--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    }).trim();
+    const help = execFileSync(claudePath, ['--help'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    });
+    const requiredFlags = [
+      '--strict-mcp-config',
+      '--setting-sources',
+      '--no-session-persistence',
+    ];
+    const missingFlags = requiredFlags.filter(flag => !help.includes(flag));
+    if (missingFlags.length > 0) {
+      add(
+        'fail',
+        'Claude Code CLI',
+        `${version || claudePath} lacks ${missingFlags.join(', ')}`,
+        'Update Claude Code before deploying planner or reasoning agents.',
+      );
+    } else {
+      add('pass', 'Claude Code CLI', `${version || 'installed'} (${claudePath})`);
+    }
+  } catch (error) {
+    add(
+      'fail',
+      'Claude Code CLI',
+      `claude could not be inspected: ${error instanceof Error ? error.message : String(error)}`,
+      'Run claude --version and claude --help, then update or repair Claude Code.',
+    );
+  }
+}
+
 const distIndex = join(root, 'dist', 'index.js');
 if (existsSync(distIndex)) add('pass', 'Runtime build', distIndex);
 else add('fail', 'Runtime build', 'dist/index.js is missing', 'Run: npm run build');

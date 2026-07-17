@@ -36,6 +36,13 @@ All three hold a reference to **one** `GraphEngine`, persist to **one** state fi
 
 When the primary dispatches a sub-agent (`register_agent` / `dispatch_agents`, or the dashboard's quick-deploy), the daemon resolves an execution backend and — for reasoning work — spawns a headless `claude -p` that connects **back** to the daemon's own `/mcp` endpoint as an MCP client. It then drives itself through the real Overwatch tools (scoped to its archetype's `--allowedTools`), so its findings land in the same graph the operator is watching.
 
+Headless Claude processes are deliberately isolated from the operator
+terminal's project-local Claude settings and MCP files. They use only the
+daemon endpoint supplied for their task, do not load the primary-session hooks,
+and do not add resumable sessions to the operator's Claude history. Your normal
+terminal `claude` process keeps using `.claude/settings.json` and `.mcp.json`;
+the two surfaces share Overwatch state without sharing Claude session identity.
+
 ![Agent dispatch backends](assets/agent-dispatch-backends-light.svg#only-light)
 ![Agent dispatch backends](assets/agent-dispatch-backends-dark.svg#only-dark)
 

@@ -72,6 +72,49 @@ export interface HeadlessMcpRunnerOptions {
   ) => void;
 }
 
+const CLAUDE_PARENT_CONTROL_ENV = new Set([
+  'CLAUDECODE',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_PARENT_SESSION_ID',
+  'CLAUDE_CODE_SUBAGENT',
+  'CLAUDE_CODE_AGENT_NAME',
+  'CLAUDE_CODE_AGENT',
+  'CLAUDE_CODE_BACKGROUND_TASK',
+  'CLAUDE_CODE_REMOTE',
+  'CLAUDE_CODE_RESUME_FROM_SESSION',
+  'CLAUDE_CODE_RESUME_INTERRUPTED_TURN',
+  'CLAUDE_CODE_RESUME_PROMPT',
+  'CLAUDE_CODE_WORKER_EPOCH',
+  'CLAUDE_RUNNER_ACTIVITY_FD',
+]);
+
+function isClaudeParentControlEnv(name: string): boolean {
+  return CLAUDE_PARENT_CONTROL_ENV.has(name)
+    || /^CLAUDE_CODE_SESSION_/i.test(name)
+    || /^CLAUDE_CODE_(?:RESUME|IPC|BRIDGE|RUNNER|REMOTE|WORKER|AGENT)_/i.test(name)
+    || /^CLAUDE_CODE_.*_FD$/i.test(name);
+}
+
+/**
+ * A managed Claude worker is a sibling client of the operator's terminal
+ * session, never a nested child session. Preserve ordinary environment and
+ * authentication/provider configuration, but remove the terminal session's
+ * control/IPC identity before assigning the durable Overwatch task identity.
+ */
+export function buildHeadlessClaudeEnv(
+  taskId: string,
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined || isClaudeParentControlEnv(name)) continue;
+    env[name] = value;
+  }
+  env.OVERWATCH_TASK_ID = taskId;
+  return env;
+}
+
 /**
  * Tool profile per agent role:
  *  - default : full Overwatch MCP surface + ToolSearch. No native shell/editor
@@ -147,6 +190,7 @@ export class HeadlessMcpRunner {
     const binary = task.claudeBinary ?? this.opts.claudeBinary;
     const processId = `headless-${task.id}`;
     const useManagedSupervisor = this.opts.spawnFn === undefined;
+    const childEnv = buildHeadlessClaudeEnv(task.id);
     const commandFingerprint = createHash('sha256')
       .update(binary)
       .update('\0')
@@ -206,7 +250,7 @@ export class HeadlessMcpRunner {
           {
             binary,
             args,
-            env: { ...process.env, OVERWATCH_TASK_ID: task.id },
+            env: childEnv,
           },
           {
             onSupervisorReady: identity => onManagedSupervisorReady(identity),
@@ -225,7 +269,7 @@ export class HeadlessMcpRunner {
           // Test-only compatibility path. Production uses a detached managed
           // supervisor whose process group owns the target and descendants.
           detached: process.platform !== 'win32',
-          env: { ...process.env, OVERWATCH_TASK_ID: task.id },
+          env: childEnv,
         });
       }
     } catch (err) {
@@ -590,6 +634,22 @@ export class HeadlessMcpRunner {
     const args = [
       '-p', this.bootstrapPrompt(task),
       '--mcp-config', configPath,
+      // A dashboard-spawned agent is a client of the already-running daemon.
+      // Do not merge the operator checkout's .mcp.json: it may point at a
+      // stdio Overwatch process (or an older checkout), which would give the
+      // child a second engine with no matching task/command ownership.
+      '--strict-mcp-config',
+      // Project/local Claude settings are for the human-operated terminal
+      // session. In particular, Overwatch's SessionStart hook deliberately
+      // tells that session to bootstrap as the PRIMARY operator. Loading it in
+      // a planner/sub-agent overrides this scoped bootstrap and can make the
+      // child finish without propose_plan/reporting its result. User settings
+      // remain enabled so the operator's normal Claude authentication works.
+      '--setting-sources', 'user',
+      // Headless runs are durably represented by Overwatch. Keeping another
+      // resumable Claude session for each dispatch only pollutes the human
+      // terminal's resume list and creates an unnecessary ownership surface.
+      '--no-session-persistence',
       '--allowedTools', allowedTools,
       '--output-format', 'stream-json',
       '--verbose',
@@ -623,10 +683,21 @@ export class HeadlessMcpRunner {
     // specialized type gets a brief that matches its real tools + job. The
     // objective is appended for EVERY type (raw quick-deploys carry the target
     // only in the objective), and a uniform close handles the lifecycle.
+    const archetype = getArchetype(task.archetype ?? task.role);
+    const discoveryTools = archetype.tools.full
+      ? [
+          'get_system_prompt',
+          'get_agent_context',
+          'agent_heartbeat',
+          'report_finding',
+          'submit_agent_transcript',
+          'update_agent',
+        ]
+      : archetype.tools.overwatch;
     const common = [
       `You are an Overwatch headless sub-agent. Your agent task_id is "${task.id}" (agent_id "${task.agent_id}").`,
       `The Overwatch tools load on demand: first use ToolSearch to find the "overwatch" MCP tools`,
-      `(get_system_prompt, get_agent_context, agent_heartbeat, report_finding, submit_agent_transcript, update_agent).`,
+      `(available for this ${archetype.id} task: ${discoveryTools.join(', ')}).`,
       `Then call get_system_prompt(role="sub_agent", agent_id="${task.agent_id}") for your full operating instructions,`,
       `and get_agent_context(task_id="${task.id}") for your scoped subgraph and objective.`,
     ];
@@ -634,7 +705,7 @@ export class HeadlessMcpRunner {
     // Point the agent at its methodology skill. The default ('lean') sub-agent
     // prompt references the skill by name (not inlined), so the full text is
     // fetched on demand via get_skill — a pointer here, not a duplicate snippet.
-    const skillId = getArchetype(task.archetype ?? task.role).defaultSkill ?? task.skill;
+    const skillId = archetype.defaultSkill ?? task.skill;
     const skill = skillId
       ? `Your methodology skill is "${skillId}" — call get_skill(skill_id="${skillId}") for the full text.`
       : '';
