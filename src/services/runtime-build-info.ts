@@ -1,5 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { fileURLToPath } from 'node:url';
+import { join, relative, resolve } from 'node:path';
 
 export interface RuntimeBuildInfo {
   schema_version: number;
@@ -12,16 +15,61 @@ export interface RuntimeBuildInfo {
 }
 
 const runtimeStartedAt = new Date().toISOString();
+const FALLBACK_INPUT_PATHS = [
+  'src',
+  'scripts',
+  'package.json',
+  'package-lock.json',
+  'tsconfig.json',
+  'tsconfig.build.json',
+] as const;
+let cachedFallback: { root: string; sha256: string; fileCount: number } | undefined;
 
 function isSha256(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
 }
 
+function collectFingerprintFiles(root: string, input: string, files: string[]): void {
+  const absolute = join(root, input);
+  if (!existsSync(absolute)) return;
+  const stat = statSync(absolute);
+  if (stat.isFile()) {
+    files.push(absolute);
+    return;
+  }
+  if (!stat.isDirectory()) return;
+  for (const entry of readdirSync(absolute, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+    collectFingerprintFiles(root, join(input, entry.name), files);
+  }
+}
+
+function fingerprintRuntimeInputs(root: string): { sha256: string; fileCount: number } {
+  const files: string[] = [];
+  for (const input of FALLBACK_INPUT_PATHS) collectFingerprintFiles(root, input, files);
+  files.sort((left, right) => left.localeCompare(right));
+  const hash = createHash('sha256');
+  for (const file of files) {
+    hash.update(relative(root, file));
+    hash.update('\0');
+    hash.update(readFileSync(file));
+    hash.update('\0');
+  }
+  return { sha256: hash.digest('hex'), fileCount: files.length };
+}
+
+export interface ReadRuntimeBuildInfoOptions {
+  metadataCandidates?: readonly URL[];
+  fallbackRoot?: string;
+}
+
 /** Read the metadata written by `npm run build`. The first path is correct in
  * packaged/compiled execution; the second keeps source-mode tests and local
- * development pointed at the same dist metadata. */
-export function readRuntimeBuildInfo(): RuntimeBuildInfo | undefined {
-  const candidates = [
+ * development pointed at the same dist metadata. A clean source checkout has
+ * no dist artifact, so derive the same input fingerprint directly rather than
+ * omitting runtime identity or depending on residue from a previous build. */
+export function readRuntimeBuildInfo(options: ReadRuntimeBuildInfoOptions = {}): RuntimeBuildInfo {
+  const candidates = options.metadataCandidates ?? [
     new URL('../build-info.json', import.meta.url),
     new URL('../../dist/build-info.json', import.meta.url),
   ];
@@ -46,7 +94,18 @@ export function readRuntimeBuildInfo(): RuntimeBuildInfo | undefined {
       // Try the next package/source-layout candidate.
     }
   }
-  return undefined;
+  const root = resolve(options.fallbackRoot ?? fileURLToPath(new URL('../../', import.meta.url)));
+  const fingerprint = options.fallbackRoot === undefined && cachedFallback?.root === root
+    ? cachedFallback
+    : { root, ...fingerprintRuntimeInputs(root) };
+  if (options.fallbackRoot === undefined) cachedFallback = fingerprint;
+  return {
+    schema_version: 1,
+    input_sha256: fingerprint.sha256,
+    input_file_count: fingerprint.fileCount,
+    runtime_pid: process.pid,
+    runtime_started_at: runtimeStartedAt,
+  };
 }
 
 export interface RunningDashboardProbe {

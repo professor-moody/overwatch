@@ -1,8 +1,36 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:net';
-import { isDashboardPortOccupied, probeRunningDashboard } from '../runtime-build-info.js';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  isDashboardPortOccupied,
+  probeRunningDashboard,
+  readRuntimeBuildInfo,
+} from '../runtime-build-info.js';
 
 describe('runtime build identity', () => {
+  it('derives a stable identity when build metadata is absent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'overwatch-runtime-source-'));
+    try {
+      mkdirSync(join(root, 'src'));
+      writeFileSync(join(root, 'src', 'index.ts'), 'export const source = true;\n');
+      writeFileSync(join(root, 'package.json'), '{"name":"source-fixture"}\n');
+
+      const first = readRuntimeBuildInfo({ metadataCandidates: [], fallbackRoot: root });
+      const second = readRuntimeBuildInfo({ metadataCandidates: [], fallbackRoot: root });
+
+      expect(first).toMatchObject({
+        input_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        input_file_count: 2,
+        runtime_pid: process.pid,
+      });
+      expect(second.input_sha256).toBe(first.input_sha256);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reads build identity from a running dashboard', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       runtime_build: {
