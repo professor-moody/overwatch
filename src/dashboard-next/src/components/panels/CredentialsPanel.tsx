@@ -350,6 +350,7 @@ export function CredentialsPanel() {
 
                   {/* Expand toggle */}
                   <ActionButton
+                    aria-label={`${isExpanded ? 'Collapse' : 'Expand'} credential ${cred.label || cred.id}`}
                     onClick={() => setExpandedId(isExpanded ? null : cred.id)}
                     variant="ghost"
                   >

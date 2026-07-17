@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
@@ -35,6 +35,7 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
   const [findings, setFindings] = useState<FindingDto[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const requestGeneration = useRef(0);
   // Entry-point shortcuts spread across severities — /api/findings is risk-sorted, so a
   // plain top-N only surfaced critical/high (see severityDiverseEntryFindings).
   const entryFindings = useMemo(() => severityDiverseEntryFindings(findings), [findings]);
@@ -47,26 +48,39 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
   const runSearch = useCallback(async (raw?: string) => {
     const q = (raw ?? query).trim();
     if (!q) return;
+    const generation = ++requestGeneration.current;
     setLoading(true); setError(''); setData(null);
     try {
       const resolved = resolveEvidenceQuery(q, graph, findings) || q;
       const resp = await getEvidenceChains(resolved);
-      setData(resp);
+      if (requestGeneration.current === generation) setData(resp);
     } catch {
-      setError('No evidence found');
-    } finally { setLoading(false); }
+      if (requestGeneration.current === generation) setError('No evidence found');
+    } finally {
+      if (requestGeneration.current === generation) setLoading(false);
+    }
   }, [query, graph, findings]);
 
   // Auto-search if initialQuery provided. Set loading (like runSearch) so the
   // guided empty state doesn't flash on top of the in-flight deep-link fetch.
   useEffect(() => {
     if (!initialQuery) return;
+    const generation = ++requestGeneration.current;
     setQuery(initialQuery);
     setLoading(true); setError(''); setData(null);
     getEvidenceChains(initialQuery)
-      .then(setData)
-      .catch(() => setError('No evidence found'))
-      .finally(() => setLoading(false));
+      .then(resp => {
+        if (requestGeneration.current === generation) setData(resp);
+      })
+      .catch(() => {
+        if (requestGeneration.current === generation) setError('No evidence found');
+      })
+      .finally(() => {
+        if (requestGeneration.current === generation) setLoading(false);
+      });
+    return () => {
+      if (requestGeneration.current === generation) requestGeneration.current += 1;
+    };
   }, [initialQuery]);
 
   useEffect(() => {

@@ -361,5 +361,26 @@ describe('AgentManager', () => {
         completed_at: '2026-03-20T00:05:00.000Z',
       });
     });
+
+    it('startup interruption preserves an unexpired operator question', () => {
+      const { mgr, ctx } = setup();
+      const now = Date.now();
+      mgr.register(makeTask({ status: 'running' }));
+      const query = ctx.agentQueryStore.add({
+        owner_task_id: 'task-1',
+        owner_agent_label: 'agent-1',
+        question: 'Resume with the alternate route?',
+        now,
+      });
+
+      expect(mgr.reconcileOnStartup()).toBe(1);
+      expect(mgr.getTask('task-1')?.status).toBe('interrupted');
+      expect(ctx.agentQueryStore.get(query.query_id)).toMatchObject({
+        status: 'open',
+        expires_at: now + 30 * 60_000,
+      });
+      expect(ctx.agentQueryStore.getOpen(now + 1).map(item => item.query_id))
+        .toEqual([query.query_id]);
+    });
   });
 });
