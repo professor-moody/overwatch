@@ -162,5 +162,11 @@ describe('dashboard compatibility-v1 registry', () => {
       event_type: 'action_started',
       description,
     })).toBe(description);
+    expect(normalizeLegacyAgentDispatchDescription({
+      description: 'Agent dispatched: planner-old for undefined',
+    })).toBe('Agent dispatched: planner-old as operator planner');
+    expect(normalizeLegacyAgentDispatchDescription({
+      description: 'Unrelated action for undefined',
+    })).toBe('Unrelated action for undefined');
   });
 });

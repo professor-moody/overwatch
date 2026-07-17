@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentTask, Campaign, ExportedGraph } from '../../types.js';
 import {
   projectCampaignDtos,
+  projectDashboardState,
   projectDashboardSnapshot,
   projectGraphDelta,
 } from '../dashboard-projectors.js';
@@ -121,5 +122,25 @@ describe('dashboard pure projectors', () => {
     expect(inputState.nested.value).toBe(1);
     expect(inputGraph.nodes[0].properties.label).toBe('New host');
     expect(inputGraph.cold_nodes![0].label).toBe('Cold host');
+  });
+
+  it('repairs untyped legacy planner dispatches in full-state recent activity', () => {
+    const state = {
+      agents: [],
+      recent_activity: [{
+        timestamp: '2026-07-16T00:00:00.000Z',
+        description: 'Agent dispatched: planner-old for undefined',
+      }],
+    } as any;
+    const projected = projectDashboardState({
+      state,
+      sessions: [],
+      pending_actions: [],
+      campaigns: [],
+      history: [],
+    });
+
+    expect(projected.recent_activity[0].description)
+      .toBe('Agent dispatched: planner-old as operator planner');
   });
 });
