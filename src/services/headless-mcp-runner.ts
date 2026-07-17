@@ -18,10 +18,10 @@
 // ============================================================
 
 import { createHash } from 'crypto';
-import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
+import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { mkdirSync, writeFileSync, createWriteStream, unlinkSync, type WriteStream } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import type { GraphEngine } from './graph-engine.js';
 import { ApplicationCommandService } from './application-command-service.js';
 import type { ProcessTracker } from './process-tracker.js';
@@ -46,6 +46,42 @@ export interface HeadlessEndpoint {
 }
 
 type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+
+const REQUIRED_HEADLESS_CLAUDE_FLAGS = [
+  '--strict-mcp-config',
+  '--setting-sources',
+  '--no-session-persistence',
+] as const;
+
+export interface HeadlessClaudeCompatibility {
+  ok: boolean;
+  missing_flags: string[];
+  error?: string;
+}
+
+/** Inspect the real CLI once before launching a managed worker. The dashboard
+ * runner relies on these flags to remain isolated from the human terminal's
+ * Claude session and project MCP settings. */
+export function inspectHeadlessClaudeCompatibility(
+  binary: string,
+  inspect: (binary: string) => string = candidate => execFileSync(candidate, ['--help'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 5_000,
+  }),
+): HeadlessClaudeCompatibility {
+  try {
+    const help = inspect(binary);
+    const missing = REQUIRED_HEADLESS_CLAUDE_FLAGS.filter(flag => !help.includes(flag));
+    return { ok: missing.length === 0, missing_flags: [...missing] };
+  } catch (error) {
+    return {
+      ok: false,
+      missing_flags: [...REQUIRED_HEADLESS_CLAUDE_FLAGS],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
 export interface HeadlessMcpRunnerOptions {
   /** Path/name of the Claude Code CLI. Default 'claude'. Tests inject a fake. */
@@ -146,6 +182,7 @@ export class HeadlessMcpRunner {
   private spawnFn: SpawnFn;
   private now: () => string;
   private mutationAllowed: () => boolean;
+  private compatibility: HeadlessClaudeCompatibility | null = null;
 
   constructor(
     engine: GraphEngine,
@@ -182,12 +219,44 @@ export class HeadlessMcpRunner {
    * if spawning failed (task is marked failed in that case).
    */
   launch(task: AgentTask, endpoint: HeadlessEndpoint): ChildProcess | null {
-    const configPath = this.writeMcpConfig(task.id, endpoint);
-    const args = this.buildArgs(task, configPath);
-
     // Per-task binary override (eval-only) — lets a real primary dispatch children
     // that inherit the runner's (fake) default. Falls back to the runner default.
     const binary = task.claudeBinary ?? this.opts.claudeBinary;
+    // Production normally resolves the official binary as `claude` (possibly by
+    // absolute path). Test/evaluation shims intentionally have other names and
+    // implement only the stream protocol, not the CLI help surface.
+    if (
+      this.opts.spawnFn === undefined
+      && /^(?:claude|claude\.exe)$/i.test(basename(binary))
+    ) {
+      this.compatibility ??= inspectHeadlessClaudeCompatibility(binary);
+      if (!this.compatibility.ok) {
+        const detail = this.compatibility.error
+          ? `could not inspect ${binary}: ${this.compatibility.error}`
+          : `${binary} is missing ${this.compatibility.missing_flags.join(', ')}`;
+        const message = `Claude Code cannot run managed Overwatch agents: ${detail}. Update Claude Code and run npm run doctor.`;
+        this.failOwnedCommand(task, 'PLANNER_RUNTIME_INCOMPATIBLE', message);
+        if (this.mutationAllowed()) {
+          this.engine.updateAgentStatus(task.id, 'failed', message);
+          this.engine.logActionEvent({
+            description: message,
+            event_type: 'instrumentation_warning',
+            category: 'system',
+            result_classification: 'failure',
+            agent_id: task.agent_id,
+            linked_agent_task_id: task.id,
+            details: {
+              reason: 'headless_claude_incompatible',
+              missing_flags: this.compatibility.missing_flags,
+            },
+          });
+        }
+        return null;
+      }
+    }
+    const configPath = this.writeMcpConfig(task.id, endpoint);
+    const args = this.buildArgs(task, configPath);
+
     const processId = `headless-${task.id}`;
     const useManagedSupervisor = this.opts.spawnFn === undefined;
     const childEnv = buildHeadlessClaudeEnv(task.id);
@@ -813,11 +882,12 @@ export class HeadlessMcpRunner {
       return;
     }
     const interrupted = taskStatus === 'interrupted';
-    const message = interrupted
+    const baseMessage = interrupted
       ? 'Planner was interrupted before returning a plan.'
       : exitCode === 0 && signal == null
         ? 'Planner completed without returning a plan.'
         : `Planner exited before returning a plan (code=${exitCode ?? 'null'}, signal=${signal ?? 'null'}).`;
+    const message = `${baseMessage} Run \`npm run doctor\` and inspect ${join(this.opts.logDir, `${task.id}.ndjson`)} for the worker's final diagnostic.`;
     try {
       new ApplicationCommandService(this.engine).transition(task.application_command_id, {
         status: interrupted ? 'interrupted' : 'failed',
