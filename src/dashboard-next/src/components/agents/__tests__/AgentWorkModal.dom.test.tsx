@@ -229,7 +229,12 @@ describe('AgentWorkModal', () => {
       />,
     );
     await screen.findByText('Terminal merge candidates:');
-    fireEvent.click(screen.getByRole('button', { name: 'Merge duplicates' }));
+    const mergeButton = screen.getByRole('button', { name: 'Merge duplicates' });
+    // The eligible selection is derived in an effect after duplicate discovery.
+    // Wait for that state transition instead of racing a click against a disabled
+    // button on slower/supported Node runtimes.
+    await waitFor(() => expect(mergeButton).toBeEnabled());
+    fireEvent.click(mergeButton);
     await waitFor(() => expect(api.getAgentDuplicates).toHaveBeenCalledTimes(2));
     expect(api.mergeAgentWork).not.toHaveBeenCalled();
     expect(await screen.findByText('task-source')).toBeInTheDocument();
