@@ -20,12 +20,17 @@ import {
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(process.env.OVERWATCH_DOCTOR_ROOT || sourceRoot);
+// The installed checkout owns compiled assets and managed hook files. Tests and
+// advanced isolated profiles may keep machine-local runtime wiring elsewhere.
+// Preserve OVERWATCH_DOCTOR_ROOT as the legacy all-in-one override while
+// allowing runtime artifacts to be selected independently.
+const runtimeRoot = resolve(process.env.OVERWATCH_DOCTOR_RUNTIME_ROOT || root);
 const checks = [];
 let runtimeEnv = { ...process.env };
 let runtimeProfile = null;
 let runtimeProfileError;
 try {
-  ({ environment: runtimeEnv, profile: runtimeProfile } = runtimeEnvironment(root));
+  ({ environment: runtimeEnv, profile: runtimeProfile } = runtimeEnvironment(runtimeRoot));
 } catch (error) {
   runtimeProfileError = error instanceof Error ? error.message : String(error);
 }
@@ -239,8 +244,8 @@ if (buildFreshness.fresh) {
   }
 }
 
-const mcpPath = runtimeProfile?.mcp_config_path || join(root, '.mcp.json');
-const claudeSettingsPath = join(root, '.claude', 'settings.json');
+const mcpPath = runtimeProfile?.mcp_config_path || join(runtimeRoot, '.mcp.json');
+const claudeSettingsPath = join(runtimeRoot, '.claude', 'settings.json');
 let mcpMode = 'missing';
 let overwatchMcpConfig = null;
 if (existsSync(mcpPath)) add('pass', 'MCP config', mcpPath);
@@ -310,7 +315,7 @@ if (runtimeProfile) {
   add(
     'pass',
     'Runtime profile',
-    `${runtimeProfilePath(root)} → ${runtimeProfile.config_path}${
+    `${runtimeProfilePath(runtimeRoot)} → ${runtimeProfile.config_path}${
       runtimeProfile.state_file_path ? ` / ${runtimeProfile.state_file_path}` : ''
     }`,
   );
@@ -337,7 +342,7 @@ if (runtimeProfile) {
       overwatchMcpConfig?.command !== 'node'
       || !Array.isArray(args)
       || args.at(-1) !== 'run-stdio'
-      || overwatchMcpConfig?.env?.OVERWATCH_RUNTIME_PROFILE !== runtimeProfilePath(root)
+      || overwatchMcpConfig?.env?.OVERWATCH_RUNTIME_PROFILE !== runtimeProfilePath(runtimeRoot)
     ) {
       convergenceProblem = 'stdio MCP wiring bypasses the lifecycle runner or selects another runtime profile';
     }
@@ -356,7 +361,7 @@ if (runtimeProfile) {
   add('warn', 'Runtime profile', 'not configured', 'Run: npm run setup');
 }
 
-let configPath = runtimeEnv.OVERWATCH_CONFIG || join(root, 'engagement.json');
+let configPath = runtimeEnv.OVERWATCH_CONFIG || join(runtimeRoot, 'engagement.json');
 let config = null;
 let artifactInventory;
 let configProblem;
@@ -369,7 +374,7 @@ try {
 } catch (err) {
   configProblem = `.mcp.json could not be read: ${err instanceof Error ? err.message : String(err)}`;
 }
-configPath = resolve(root, configPath);
+configPath = resolve(runtimeRoot, configPath);
 if (!configProblem) {
   if (!existsSync(configPath)) {
     configProblem = 'file is missing';
@@ -386,7 +391,7 @@ if (!configProblem) {
 }
 
 try {
-  artifactInventory = inventoryEngagementArtifacts(root, {
+  artifactInventory = inventoryEngagementArtifacts(runtimeRoot, {
     configPath,
     explicitStateFile: runtimeEnv.OVERWATCH_STATE_FILE,
   });

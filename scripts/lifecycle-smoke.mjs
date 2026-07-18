@@ -167,6 +167,11 @@ try {
   environment = {
     ...sanitizedProcessEnvironment,
     OVERWATCH_SETUP_ROOT: fixture,
+    // Doctor must inspect the same isolated runtime wiring that setup populated
+    // while continuing to verify this checkout's compiled assets and hook files.
+    // Otherwise a developer's ignored .claude/settings.json can change this
+    // smoke test's result while clean CI silently passes.
+    OVERWATCH_DOCTOR_RUNTIME_ROOT: fixture,
     OVERWATCH_RUNTIME_PROFILE: join(fixture, '.overwatch-runtime', 'profile.json'),
     OVERWATCH_DAEMON_RECORD: join(fixture, 'daemon.json'),
     OVERWATCH_DAEMON_LOG: join(fixture, 'daemon.log'),
