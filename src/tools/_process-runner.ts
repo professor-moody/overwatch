@@ -835,13 +835,20 @@ export function runProcess(binary: string, args: string[], opts: {
       else opts.signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    // Run once when the process settles: clear all timers/listeners so nothing fires
-    // against a dead (or recycled) pid, then resolve exactly once.
+    // Run once when the process settles. A TERM-ignoring descendant can outlive
+    // the direct target and therefore cause targetExit to resolve before the
+    // delayed escalation fires. Drain the still-owned group synchronously before
+    // clearing that timer; otherwise resolving the caller would falsely imply
+    // cancellation completed while an instrumented descendant kept running.
     const finish = (result: ProcessResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (killTimer) { clearTimeout(killTimer); killTimer = null; }
+      if (killTimer) {
+        killTree('SIGKILL');
+        clearTimeout(killTimer);
+        killTimer = null;
+      }
       opts.signal?.removeEventListener('abort', onAbort);
       resolve(result);
     };
