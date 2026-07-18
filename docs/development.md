@@ -208,8 +208,9 @@ npm run prompt-eval                                     # usage (no spend)
 npm run prompt-eval -- --real --variant lean --yes      # A/B lean vs control
 ```
 
-It's cost-bounded (cheap model by default, token `--budget`, per-run turn +
-`--timeout-ms` caps) and never runs in CI. See [Prompt Behavior-Eval](prompt-eval.md)
+It's cost-bounded (cheap model by default, hard per-run `--max-budget-usd`,
+command-wide `--max-total-usd`, plus turn/time and token-accounting gates) and
+never runs in CI. See [Prompt Behavior-Eval](prompt-eval.md)
 for the full flag set, cost controls, and scenarios.
 
 ### Lab smoke harness (multi-profile)

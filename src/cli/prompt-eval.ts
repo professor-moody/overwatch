@@ -8,10 +8,9 @@
 // same machinery A/Bs candidate-vs-control and flags regressions (compareGrades).
 //
 // NEVER runs in CI. Spends nothing until invoked with --real, and even then is
-// bounded by: a cheap default model, a per-run turn cap, a global token budget
-// enforced as an adaptive pre-run gate PLUS a hard post-run stop (so overshoot is
-// bounded by one run's --max-turns cost), tiny defaults, a pre-run estimate +
-// confirmation, and a baseline cache so iterating doesn't repay for control.
+// bounded by: a cheap default model, Claude's in-flight --max-budget-usd cap, a
+// command-wide dollar ceiling, a per-run turn cap, a token-accounting batch gate,
+// tiny defaults, a pre-run estimate + confirmation, and a baseline cache.
 //
 //   npm run prompt-eval                       # usage (no spend)
 //   npm run prompt-eval -- --real --yes       # establish/refresh control baselines
@@ -21,12 +20,15 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
 import { runEvalScenario } from '../test-support/eval-run.js';
+import type { EvalUsage } from '../test-support/eval-run.js';
 import { gradeRun, compareGrades, RUBRIC_CRITERIA, type RubricResult } from '../services/eval-rubric.js';
 import { SUBAGENT_PROMPT_VARIANTS } from '../services/prompt-generator.js';
 import { EVAL_SCENARIOS } from '../test-support/eval-scenarios.js';
 import {
   parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath, percentile,
-  BASELINE_DIR, EST_TOKENS_PER_RUN, DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS, DEFAULT_TIMEOUT_MS,
+  allocateRunBudgetUsd, chargeRunBudgetUsd, inspectClaudeBudgetCompatibility,
+  BASELINE_DIR, EST_TOKENS_PER_RUN, DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET,
+  DEFAULT_MAX_BUDGET_USD, DEFAULT_MAX_TOTAL_USD, DEFAULT_MAX_TURNS, DEFAULT_TIMEOUT_MS,
 } from './prompt-eval-lib.js';
 
 function confirm(question: string): Promise<boolean> {
@@ -38,6 +40,12 @@ function confirm(question: string): Promise<boolean> {
 function printGrade(label: string, g: RubricResult): void {
   console.log(`  ${label}: overall ${g.overall.toFixed(3)}`);
   for (const c of g.criteria) console.log(`      ${c.criterion.padEnd(26)} ${c.score.toFixed(2)}`);
+}
+
+function formatUsage(usage: EvalUsage): string {
+  return `${usage.accountingTokens} accounting tok`
+    + ` (input ${usage.inputTokens}, output ${usage.outputTokens},`
+    + ` cache-read ${usage.cacheReadInputTokens}, cache-create ${usage.cacheCreationInputTokens})`;
 }
 
 function printUsage(): void {
@@ -56,14 +64,16 @@ function printUsage(): void {
     --scenarios a,b        subset of: ${EVAL_SCENARIOS.map(s => s.id).join(', ')} (default: all)
     --model <id>           agent model (default: ${DEFAULT_MODEL} — cheap)
     --trials N             trials per cell (default: ${DEFAULT_TRIALS})
-    --budget <tokens>      hard token ceiling; aborts before exceeding (default: ${DEFAULT_BUDGET})
+    --budget <tokens>      token-accounting batch gate; not an in-flight spend cap (default: ${DEFAULT_BUDGET})
+    --max-budget-usd N     hard in-flight Claude spend cap per run (default: $${DEFAULT_MAX_BUDGET_USD.toFixed(2)})
+    --max-total-usd N      maximum charged/reserved spend for this command (default: $${DEFAULT_MAX_TOTAL_USD.toFixed(2)})
     --max-turns N          per-run turn cap (default: ${DEFAULT_MAX_TURNS})
     --timeout-ms N         per-run wall-clock cap (default: ${DEFAULT_TIMEOUT_MS}; real runs take minutes)
     --refresh-baseline     re-run + overwrite cached control baselines
     --variant <name>       candidate prompt to A/B vs control, e.g. ${SUBAGENT_PROMPT_VARIANTS.filter(v => v !== 'control').join(', ')}
 
-  Cost controls: cheap default model, per-run turn cap, global token budget that
-  aborts BEFORE an over-budget run, baseline cache (don't repay for control).`);
+  Cost controls: cheap default model, Claude in-flight dollar cap, command-wide
+  dollar ceiling, turn/time caps, accounting-token batch gate, and baseline cache.`);
 }
 
 async function main(): Promise<void> {
@@ -95,21 +105,32 @@ async function main(): Promise<void> {
   const estTokens = totalRuns * EST_TOKENS_PER_RUN;
 
   const mode = variant ? `A/B "${variant}" vs control` : 'control baseline';
+  const maximumPossibleUsd = Math.min(totalRuns * args.maxBudgetUsd, args.maxTotalUsd);
   console.log(`Plan: ${mode} — ${totalRuns} real-model run(s) on "${args.model}" (${controlRuns} control + ${candidateRuns} candidate).`);
-  console.log(`Cost guard: budget ${args.budget} tok · rough est ~${estTokens} tok · per-run cap ${args.maxTurns} turns.`);
+  console.log(`Cost guard: $${args.maxBudgetUsd.toFixed(2)}/run · $${args.maxTotalUsd.toFixed(2)} command ceiling · maximum possible $${maximumPossibleUsd.toFixed(2)}.`);
+  console.log(`Accounting gate: ${args.budget} tok · rough est ~${estTokens} tok · ${args.maxTurns} turns/run · ${args.timeoutMs}ms/run.`);
   if (totalRuns === 0) { console.log('All requested baselines are cached and no candidate to run (use --refresh-baseline or --variant).'); return; }
 
+  const compatibility = inspectClaudeBudgetCompatibility('claude');
+  if (!compatibility.ok) {
+    console.error(`Real evaluation refused: ${compatibility.error}. Update Claude Code before using --real.`);
+    process.exit(1);
+  }
+  if (maximumPossibleUsd <= 0) {
+    console.error('Real evaluation refused: the configured dollar ceiling permits no run.');
+    process.exit(2);
+  }
+
   if (!args.yes) {
-    const ok = await confirm(`Proceed with up to ${totalRuns} real-model runs (rough est ~${estTokens} tokens) on "${args.model}"? [y/N] `);
+    const ok = await confirm(`Proceed with up to ${totalRuns} real-model runs (maximum $${maximumPossibleUsd.toFixed(2)}) on "${args.model}"? [y/N] `);
     if (!ok) { console.log('Aborted (pass --yes to skip this prompt).'); process.exit(0); }
   }
 
-  // Budget enforced two ways: a pre-run gate whose per-run estimate adapts up to
-  // the heaviest run seen (so after one heavy run it stops launching more), and a
-  // hard post-run stop the moment ACTUAL cumulative spend reaches the budget. A
-  // run in flight is bounded only by --max-turns, so total spend can exceed
-  // --budget by at most one run.
-  const budget = { used: 0, cost: 0, runs: [] as number[] };
+  // Accounting tokens remain a batch-sizing signal: the adaptive pre-run gate
+  // avoids starting an obviously oversized next run, and the post-run gate stops
+  // the batch after a large result. In-flight and command spend are bounded by
+  // the dollar allocator above, not by token accounting.
+  const budget = { used: 0, chargedUsd: 0, reportedUsd: 0, runs: [] as number[] };
   // Per-run estimate adapts to the p75 of observed runs (not the max) so a single
   // runaway run can't spike the estimate and strand the rest of the batch.
   const estPerRun = () => Math.max(EST_TOKENS_PER_RUN, percentile(budget.runs, 0.75));
@@ -124,14 +145,32 @@ async function main(): Promise<void> {
         console.error(`\nBUDGET STOP before [${scenario.id}] ${arm} trial ${t + 1}: ${budget.used}/${args.budget} tokens used; next run would exceed the budget.`);
         process.exit(2);
       }
-      const run = await runEvalScenario(scenario, { claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns, variant: arm, timeoutMs: args.timeoutMs });
+      const assignedUsd = allocateRunBudgetUsd(args.maxBudgetUsd, args.maxTotalUsd, budget.chargedUsd);
+      if (assignedUsd <= 0) {
+        console.error(`\nDOLLAR STOP before [${scenario.id}] ${arm} trial ${t + 1}: $${budget.chargedUsd.toFixed(4)}/$${args.maxTotalUsd.toFixed(2)} charged or reserved.`);
+        process.exit(2);
+      }
+      const run = await runEvalScenario(scenario, {
+        claudeBinary: 'claude',
+        model: args.model,
+        maxTurns: args.maxTurns,
+        maxBudgetUsd: assignedUsd,
+        variant: arm,
+        timeoutMs: args.timeoutMs,
+      });
       budget.used += run.usageTokens;
       budget.runs.push(run.usageTokens);
-      if (run.costUsd) budget.cost += run.costUsd;
+      const charge = chargeRunBudgetUsd(assignedUsd, run.costUsd);
+      budget.chargedUsd += charge.chargedUsd;
+      if (run.costUsd !== undefined) budget.reportedUsd += run.costUsd;
       const grade = gradeRun(run.record, scenario.rubric);
       grades.push(grade);
       await run.cleanup();
-      console.log(`[${scenario.id}] ${arm} trial ${t + 1}/${args.trials}: overall ${grade.overall.toFixed(3)} · ${run.usageTokens} tok · status ${run.record.taskStatus}`);
+      console.log(`[${scenario.id}] ${arm} trial ${t + 1}/${args.trials}: overall ${grade.overall.toFixed(3)} · ${formatUsage(run.usage)} · $${charge.chargedUsd.toFixed(4)} ${charge.source} · status ${run.record.taskStatus}`);
+      if (charge.chargedUsd > assignedUsd + 0.000001) {
+        console.error(`Provider cost $${charge.chargedUsd.toFixed(6)} exceeded the assigned $${assignedUsd.toFixed(6)} in-flight cap; stopping.`);
+        process.exit(2);
+      }
       if (budget.used >= args.budget) {
         console.error(`\nBUDGET REACHED after [${scenario.id}] ${arm} trial ${t + 1}: ${budget.used}/${args.budget} tokens used; stopping.`);
         process.exit(2);
@@ -171,7 +210,7 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log(`\nDone. ${budget.used} tokens used (budget ${args.budget})${budget.cost ? ` · ~$${budget.cost.toFixed(4)}` : ''}.`);
+  console.log(`\nDone. ${budget.used} accounting tokens (batch gate ${args.budget}) · $${budget.chargedUsd.toFixed(4)} charged/reserved${budget.reportedUsd ? ` ($${budget.reportedUsd.toFixed(4)} provider-reported)` : ''}.`);
 }
 
 // Only run when invoked directly (not when imported by a test).

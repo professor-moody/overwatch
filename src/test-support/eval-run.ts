@@ -27,6 +27,8 @@ export interface EvalRunOptions {
   model?: string;
   /** Hard turn cap (cost bound for real runs). Default 10. */
   maxTurns?: number;
+  /** In-flight Claude Code spend ceiling for this run. */
+  maxBudgetUsd?: number;
   /** Sub_agent prompt variant ('control' | 'lean') — the A/B arm. Default 'control'. */
   variant?: string;
   timeoutMs?: number;
@@ -34,11 +36,30 @@ export interface EvalRunOptions {
 
 export interface EvalRunResult {
   record: RunRecord;
-  /** Total tokens (input+output) parsed from the agent stream-json, 0 if absent. */
+  usage: EvalUsage;
+  /** Accounting total, including cache reads/creation. Retained for compatibility. */
   usageTokens: number;
   /** total_cost_usd from the result event, if the binary reports it. */
   costUsd?: number;
   cleanup: () => Promise<void>;
+}
+
+export interface EvalUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  accountingTokens: number;
+}
+
+/** Build the bounded set of Claude CLI arguments shared by prompt and
+ * orchestration evaluation. Keeping this pure makes the actual runner boundary
+ * testable without launching a model process. */
+export function buildEvalClaudeArgs(model?: string, maxBudgetUsd?: number): string[] {
+  return [
+    ...(model ? ['--model', model] : []),
+    ...(maxBudgetUsd !== undefined ? ['--max-budget-usd', String(maxBudgetUsd)] : []),
+  ];
 }
 
 function waitFor(pred: () => boolean, timeoutMs: number): Promise<void> {
@@ -87,14 +108,41 @@ export function extractToolCalls(ndjson: string): ToolCall[] {
  *  `result` event carries cumulative usage, while each assistant message carries
  *  its own per-turn usage — so prefer the result total and only SUM per-turn
  *  usages as a fallback (summing both would double-count). */
-function parseUsage(ndjson: string): { tokens: number; costUsd?: number } {
-  const tokensOf = (u: Record<string, unknown>) => {
-    const inT = Number(u.input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0);
-    const outT = Number(u.output_tokens ?? 0);
-    return (Number.isFinite(inT) ? inT : 0) + (Number.isFinite(outT) ? outT : 0);
+export function parseEvalUsage(ndjson: string): { usage: EvalUsage; costUsd?: number } {
+  const empty = (): EvalUsage => ({
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    accountingTokens: 0,
+  });
+  const finite = (value: unknown): number => {
+    const n = Number(value ?? 0);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
   };
-  let resultTokens = 0;
-  let summedTokens = 0;
+  const usageOf = (u: Record<string, unknown>): EvalUsage => {
+    const usage = {
+      inputTokens: finite(u.input_tokens),
+      outputTokens: finite(u.output_tokens),
+      cacheReadInputTokens: finite(u.cache_read_input_tokens),
+      cacheCreationInputTokens: finite(u.cache_creation_input_tokens),
+      accountingTokens: 0,
+    };
+    usage.accountingTokens = usage.inputTokens
+      + usage.outputTokens
+      + usage.cacheReadInputTokens
+      + usage.cacheCreationInputTokens;
+    return usage;
+  };
+  const add = (target: EvalUsage, value: EvalUsage): void => {
+    target.inputTokens += value.inputTokens;
+    target.outputTokens += value.outputTokens;
+    target.cacheReadInputTokens += value.cacheReadInputTokens;
+    target.cacheCreationInputTokens += value.cacheCreationInputTokens;
+    target.accountingTokens += value.accountingTokens;
+  };
+  let resultUsage: EvalUsage | undefined;
+  const summedUsage = empty();
   let costUsd: number | undefined;
   for (const line of ndjson.split('\n')) {
     const t = line.trim();
@@ -103,12 +151,12 @@ function parseUsage(ndjson: string): { tokens: number; costUsd?: number } {
     try { rec = JSON.parse(t); } catch { continue; }
     const usage = (rec.usage ?? (rec.message as Record<string, unknown> | undefined)?.usage) as Record<string, unknown> | undefined;
     if (usage) {
-      if (rec.type === 'result') resultTokens = tokensOf(usage); // cumulative
-      else summedTokens += tokensOf(usage);                      // per-turn fallback
+      if (rec.type === 'result') resultUsage = usageOf(usage); // cumulative
+      else add(summedUsage, usageOf(usage));                    // per-turn fallback
     }
     if (typeof rec.total_cost_usd === 'number') costUsd = rec.total_cost_usd;
   }
-  return { tokens: resultTokens || summedTokens, costUsd };
+  return { usage: resultUsage ?? summedUsage, costUsd };
 }
 
 export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptions = {}): Promise<EvalRunResult> {
@@ -179,7 +227,7 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
           // claude's own gate (Overwatch's approval queue still applies); fake-claude
           // ignores claude flags, so leave it unset there.
           permissionMode: usingFake ? undefined : 'bypassPermissions',
-          extraArgs: opts.model ? ['--model', opts.model] : undefined,
+          extraArgs: buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd),
         },
       },
     });
@@ -208,7 +256,7 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
 
     const logPath = join(logDir, `${taskId}.ndjson`);
     const ndjson = existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
-    const { tokens, costUsd } = parseUsage(ndjson);
+    const { usage, costUsd } = parseEvalUsage(ndjson);
 
     // One agent + one seed per run, so "everything except the seed" is the agent's
     // work — robust regardless of how the headless path attributes the agent_id.
@@ -231,7 +279,7 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       await shutdownOverwatchApp(runningApp).catch(() => { /* ignore */ });
       try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
     };
-    return { record, usageTokens: tokens, costUsd, cleanup };
+    return { record, usage, usageTokens: usage.accountingTokens, costUsd, cleanup };
   } catch (err) {
     restoreEnv();
     if (app) await shutdownOverwatchApp(app).catch(() => { /* ignore */ });
@@ -262,12 +310,14 @@ export interface OrchEvalOptions {
   claudeBinary?: string;
   model?: string;
   maxTurns?: number;
+  maxBudgetUsd?: number;
   variant?: string;
   timeoutMs?: number;
 }
 
 export interface OrchEvalResult {
   record: OrchRunRecord;
+  usage: EvalUsage;
   usageTokens: number;
   costUsd?: number;
   cleanup: () => Promise<void>;
@@ -333,7 +383,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
           configDir: join(tempDir, 'mcp-configs'),
           maxTurns: opts.maxTurns ?? 14,
           permissionMode: usingFakePrimary ? undefined : 'bypassPermissions',
-          extraArgs: opts.model ? ['--model', opts.model] : undefined,
+          extraArgs: buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd),
         },
       },
     });
@@ -366,7 +416,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
 
     const logPath = join(logDir, `${taskId}.ndjson`);
     const ndjson = existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
-    const { tokens, costUsd } = parseUsage(ndjson);
+    const { usage, costUsd } = parseEvalUsage(ndjson);
     const toolCalls = extractToolCalls(ndjson).map(c => ({ tool: c.tool }));
 
     // Dispatched children = every agent task other than the primary. (Children
@@ -404,7 +454,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
       await shutdownOverwatchApp(captured.app).catch(() => { /* ignore */ });
       try { rmSync(captured.tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
     };
-    return { record, usageTokens: tokens, costUsd, cleanup };
+    return { record, usage, usageTokens: usage.accountingTokens, costUsd, cleanup };
   } catch (err) {
     restoreEnv();
     if (app) await shutdownOverwatchApp(app).catch(() => { /* ignore */ });

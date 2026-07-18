@@ -12,8 +12,8 @@
 // adds a primary prompt variant + the candidate-vs-control A/B here.
 //
 // NEVER runs in CI. Spends nothing until invoked with --real, and even then is bounded
-// by a cheap default model, a per-run turn cap, a global token budget (adaptive pre-run
-// gate + hard post-run stop), a small trial count, and a pre-run estimate + confirm.
+// by a cheap default model, Claude's in-flight dollar cap, a command-wide dollar
+// ceiling, a per-run turn cap, a token-accounting batch gate, and confirmation.
 //
 //   npm run orch-eval                              # usage (no spend)
 //   npm run orch-eval -- --real --yes              # one real primary run, children fake
@@ -22,9 +22,19 @@
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
 import { runOrchestrationScenario } from '../test-support/eval-run.js';
+import type { EvalUsage } from '../test-support/eval-run.js';
 import { gradeOrchestration, compareOrchGrades, type OrchRubricResult } from '../services/eval-orchestration-rubric.js';
 import { PRIMARY_PROMPT_VARIANTS } from '../services/prompt-generator.js';
-import { percentile, EST_TOKENS_PER_RUN, DEFAULT_MODEL } from './prompt-eval-lib.js';
+import {
+  allocateRunBudgetUsd,
+  chargeRunBudgetUsd,
+  inspectClaudeBudgetCompatibility,
+  percentile,
+  EST_TOKENS_PER_RUN,
+  DEFAULT_MAX_BUDGET_USD,
+  DEFAULT_MAX_TOTAL_USD,
+  DEFAULT_MODEL,
+} from './prompt-eval-lib.js';
 
 // An orchestrator's loop (orient → dispatch several children → synthesize) is heavier
 // than a single sub-agent task, so the defaults are larger than prompt-eval's.
@@ -38,6 +48,8 @@ export interface OrchArgs {
   model: string;
   trials: number;
   budget: number;
+  maxBudgetUsd: number;
+  maxTotalUsd: number;
   maxTurns: number;
   timeoutMs: number;
   /** Candidate primary variant to A/B vs control (e.g. 'contextfirst'); undefined = single-arm calibration. */
@@ -48,16 +60,29 @@ export interface OrchArgs {
 export function parseOrchArgs(argv: string[]): OrchArgs {
   const get = (flag: string): string | undefined => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : undefined; };
   const num = (v: string | undefined, d: number): number => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; };
+  const money = (v: string | undefined, d: number): number => {
+    if (v === undefined) return d;
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : d;
+  };
   return {
     real: argv.includes('--real'),
     yes: argv.includes('--yes'),
     model: get('--model') ?? DEFAULT_MODEL,
     trials: num(get('--trials'), 1),
     budget: num(get('--budget'), DEFAULT_ORCH_BUDGET),
+    maxBudgetUsd: money(get('--max-budget-usd'), DEFAULT_MAX_BUDGET_USD),
+    maxTotalUsd: money(get('--max-total-usd'), DEFAULT_MAX_TOTAL_USD),
     maxTurns: num(get('--max-turns'), DEFAULT_ORCH_MAX_TURNS),
     timeoutMs: num(get('--timeout-ms'), DEFAULT_ORCH_TIMEOUT_MS),
     variant: get('--variant'),
   };
+}
+
+function formatUsage(usage: EvalUsage): string {
+  return `${usage.accountingTokens} accounting tok`
+    + ` (input ${usage.inputTokens}, output ${usage.outputTokens},`
+    + ` cache-read ${usage.cacheReadInputTokens}, cache-create ${usage.cacheCreationInputTokens})`;
 }
 
 function confirm(question: string): Promise<boolean> {
@@ -101,7 +126,9 @@ function printUsage(): void {
     --yes               skip the interactive cost confirmation
     --model <id>        primary model (default: ${DEFAULT_MODEL} — cheap)
     --trials N          primary runs per arm (default: 1; A/B wants ~5 — high variance)
-    --budget <tokens>   hard token ceiling; aborts before exceeding (default: ${DEFAULT_ORCH_BUDGET})
+    --budget <tokens>   token-accounting batch gate; not an in-flight spend cap (default: ${DEFAULT_ORCH_BUDGET})
+    --max-budget-usd N  hard in-flight Claude spend cap per run (default: $${DEFAULT_MAX_BUDGET_USD.toFixed(2)})
+    --max-total-usd N   maximum charged/reserved spend for this command (default: $${DEFAULT_MAX_TOTAL_USD.toFixed(2)})
     --max-turns N       per-run turn cap (default: ${DEFAULT_ORCH_MAX_TURNS})
     --timeout-ms N      per-run wall-clock cap (default: ${DEFAULT_ORCH_TIMEOUT_MS})
     --variant <name>    candidate primary prompt to A/B vs control: ${PRIMARY_PROMPT_VARIANTS.filter(v => v !== 'control').join(', ')}
@@ -123,44 +150,78 @@ async function main(): Promise<void> {
 
   const arms = args.variant ? ['control', args.variant] : ['control'];
   const totalRuns = arms.length * args.trials;
+  const maximumPossibleUsd = Math.min(totalRuns * args.maxBudgetUsd, args.maxTotalUsd);
   const mode = args.variant ? `A/B "${args.variant}" vs control` : 'control calibration';
   console.log(`Plan: orchestration ${mode} — up to ${totalRuns} real PRIMARY run(s) on "${args.model}" (children fake; ${args.trials}/arm).`);
-  console.log(`Cost guard: budget ${args.budget} tok · per-run cap ${args.maxTurns} turns · timeout ${args.timeoutMs}ms.`);
+  console.log(`Cost guard: $${args.maxBudgetUsd.toFixed(2)}/run · $${args.maxTotalUsd.toFixed(2)} command ceiling · maximum possible $${maximumPossibleUsd.toFixed(2)}.`);
+  console.log(`Accounting gate: ${args.budget} tok · ${args.maxTurns} turns/run · ${args.timeoutMs}ms/run.`);
+  const compatibility = inspectClaudeBudgetCompatibility('claude');
+  if (!compatibility.ok) {
+    console.error(`Real evaluation refused: ${compatibility.error}. Update Claude Code before using --real.`);
+    process.exit(1);
+  }
+  if (maximumPossibleUsd <= 0) {
+    console.error('Real evaluation refused: the configured dollar ceiling permits no run.');
+    process.exit(2);
+  }
   if (!args.yes) {
-    const ok = await confirm(`Proceed with up to ${totalRuns} real primary run(s) on "${args.model}"? [y/N] `);
+    const ok = await confirm(`Proceed with up to ${totalRuns} real primary run(s) (maximum $${maximumPossibleUsd.toFixed(2)}) on "${args.model}"? [y/N] `);
     if (!ok) { console.log('Aborted (pass --yes to skip this prompt).'); process.exit(0); }
   }
 
-  // Budget: adaptive pre-run gate (p75 of observed runs, so one runaway can't strand
-  // the rest) + a hard post-run stop. A run in flight is bounded only by --max-turns.
-  // The budget is split EQUALLY per arm so the first arm (control) can't starve the
+  // Token accounting uses an adaptive pre-run gate and is split equally per arm.
+  // Dollar allowance is also split so the first arm (control) can't starve the
   // candidate — an A/B with control n=5 / candidate n=2 would be unfair. An arm that
   // exhausts its share BREAKS (keeps its trials) rather than process.exit, so the A/B
   // comparison still prints for whatever each arm completed.
-  const budget = { used: 0, cost: 0, runs: [] as number[] };
+  const budget = { used: 0, chargedUsd: 0, reportedUsd: 0, runs: [] as number[] };
   const perArmBudget = Math.floor(args.budget / arms.length);
+  const perArmDollarBudget = args.maxTotalUsd / arms.length;
   const estPerRun = (): number => Math.max(EST_TOKENS_PER_RUN, percentile(budget.runs, 0.75));
 
   // Run one arm `args.trials` times → mean grade, bounded by its own per-arm budget share.
   const runArm = async (arm: string): Promise<OrchRubricResult> => {
     const grades: OrchRubricResult[] = [];
     let armUsed = 0;
+    let armChargedUsd = 0;
     for (let t = 0; t < args.trials; t++) {
       if (armUsed + estPerRun() > perArmBudget) {
         console.error(`\nBUDGET STOP for [${arm}] before trial ${t + 1}: arm used ${armUsed}/${perArmBudget} (of ${args.budget} total); stopping this arm with ${grades.length} trial(s).`);
         break;
       }
-      const res = await runOrchestrationScenario({ claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns, timeoutMs: args.timeoutMs, variant: arm });
+      const assignedUsd = Math.min(
+        allocateRunBudgetUsd(args.maxBudgetUsd, args.maxTotalUsd, budget.chargedUsd),
+        allocateRunBudgetUsd(args.maxBudgetUsd, perArmDollarBudget, armChargedUsd),
+      );
+      if (assignedUsd <= 0) {
+        console.error(`\nDOLLAR STOP for [${arm}] before trial ${t + 1}: arm charged/reserved $${armChargedUsd.toFixed(4)}/$${perArmDollarBudget.toFixed(2)}.`);
+        break;
+      }
+      const res = await runOrchestrationScenario({
+        claudeBinary: 'claude',
+        model: args.model,
+        maxTurns: args.maxTurns,
+        maxBudgetUsd: assignedUsd,
+        timeoutMs: args.timeoutMs,
+        variant: arm,
+      });
       armUsed += res.usageTokens;
       budget.used += res.usageTokens;
       budget.runs.push(res.usageTokens);
-      if (res.costUsd) budget.cost += res.costUsd;
+      const charge = chargeRunBudgetUsd(assignedUsd, res.costUsd);
+      armChargedUsd += charge.chargedUsd;
+      budget.chargedUsd += charge.chargedUsd;
+      if (res.costUsd !== undefined) budget.reportedUsd += res.costUsd;
       const g = gradeOrchestration(res.record);
       grades.push(g);
       const r = res.record;
-      console.log(`\n[${arm}] trial ${t + 1}/${args.trials}: ${res.usageTokens} tok · ${r.toolCalls.length} primary tool-calls · ${r.dispatches.length} dispatch(es) [${r.dispatches.map(d => `${d.archetype}${d.matchedFrontier ? '✓' : '✗'}`).join(', ')}] · +${r.newNodeCount} nodes`);
+      console.log(`\n[${arm}] trial ${t + 1}/${args.trials}: ${formatUsage(res.usage)} · $${charge.chargedUsd.toFixed(4)} ${charge.source} · ${r.toolCalls.length} primary tool-calls · ${r.dispatches.length} dispatch(es) [${r.dispatches.map(d => `${d.archetype}${d.matchedFrontier ? '✓' : '✗'}`).join(', ')}] · +${r.newNodeCount} nodes`);
       printGrade(g);
       await res.cleanup();
+      if (charge.chargedUsd > assignedUsd + 0.000001) {
+        console.error(`Provider cost $${charge.chargedUsd.toFixed(6)} exceeded the assigned $${assignedUsd.toFixed(6)} in-flight cap; stopping.`);
+        process.exit(2);
+      }
     }
     if (grades.length < args.trials) console.error(`[${arm}] completed ${grades.length}/${args.trials} trials (budget-limited) — interpret the A/B with that asymmetry in mind.`);
     return meanOrchGrade(grades);
@@ -181,7 +242,7 @@ async function main(): Promise<void> {
     console.log(`\nA/B ${args.variant} vs control: overall ${control.overall.toFixed(3)} → ${candidate.overall.toFixed(3)} (Δ ${cmp.delta >= 0 ? '+' : ''}${cmp.delta.toFixed(3)}) · ${flag}`);
   }
 
-  console.log(`\nDone. ${budget.used} tokens used (budget ${args.budget})${budget.cost ? ` · ~$${budget.cost.toFixed(4)}` : ''}.`);
+  console.log(`\nDone. ${budget.used} accounting tokens (batch gate ${args.budget}) · $${budget.chargedUsd.toFixed(4)} charged/reserved${budget.reportedUsd ? ` ($${budget.reportedUsd.toFixed(4)} provider-reported)` : ''}.`);
 }
 
 // Only run when invoked directly (not when imported by a test).
