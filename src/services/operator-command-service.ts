@@ -4,8 +4,11 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { ActionResolution } from './pending-action-queue.js';
-import type { GraphEngine } from './graph-engine.js';
+import type {
+  ActionResolution,
+  DurableApprovalRecord,
+  PendingActionQueue,
+} from './pending-action-queue.js';
 import {
   ApplicationCommandConflictError,
   ApplicationCommandService,
@@ -16,6 +19,7 @@ import {
 import {
   DispatchCommandService,
   type AgentDispatchInput,
+  type DispatchCommandPort,
 } from './dispatch-command-service.js';
 import {
   buildPlannerObjective,
@@ -23,8 +27,15 @@ import {
   type OperatorOp,
   type OpResult,
 } from './command-interpreter.js';
-import type { PersistedApplicationCommandV1 } from './persisted-state.js';
-import type { ProposedPlan } from './proposed-plan-store.js';
+import type {
+  PersistedApplicationCommandV1,
+  PersistedCommandOutcomeV1,
+  PersistedCommandPlanV1,
+} from './persisted-state.js';
+import type {
+  ProposedPlan,
+  ProposedPlanStore,
+} from './proposed-plan-store.js';
 import { OperatorOpsSchema } from './operator-op-schema.js';
 import {
   getArchetype,
@@ -36,7 +47,72 @@ import {
   previewScopeChange,
   type ScopePreview,
 } from './scope-preview.js';
-import type { AgentDirectiveKind } from '../types.js';
+import type {
+  AgentDirective,
+  AgentDirectiveKind,
+  AgentTask,
+} from '../types.js';
+import type { AgentIdentityResolution } from './agent-identity.js';
+import type {
+  ActivityLogEntry,
+  ActivityLogInput,
+} from './engine-context.js';
+
+/** Operator-plan capabilities beyond the shared dispatch command port. */
+export interface OperatorCommandPort extends DispatchCommandPort {
+  getTask(taskId: string): AgentTask | null;
+  createCommandPlan(input: {
+    ops: OperatorOp[];
+    command: string;
+    now?: number;
+    ttlMs?: number;
+  }): string;
+  getCommandPlan(
+    planId: string,
+    now?: number,
+  ): Omit<PersistedCommandPlanV1, 'plan_id'> | undefined;
+  deleteCommandPlan(planId: string): boolean;
+  recordCommandOutcome(
+    planId: string,
+    results: unknown[],
+    now?: number,
+    ttlMs?: number,
+  ): void;
+  getCommandOutcome(
+    planId: string,
+    now?: number,
+  ): Omit<PersistedCommandOutcomeV1, 'plan_id'> | undefined;
+  getProposedPlanStore(): ProposedPlanStore;
+  getPendingActionQueue(): PendingActionQueue;
+  resolveAgentTaskReference(reference: string): AgentIdentityResolution;
+  issueAgentDirective(params: {
+    task_id: string;
+    kind: AgentDirectiveKind;
+    node_ids?: string[];
+    frontier_types?: string[];
+    note?: string;
+    issued_by?: string;
+  }): AgentDirective;
+  resolveApprovalRequest(
+    resolution: ActionResolution,
+  ): DurableApprovalRecord | null;
+  updateScope(changes: {
+    add_cidrs?: string[];
+    remove_cidrs?: string[];
+    add_domains?: string[];
+    remove_domains?: string[];
+    add_exclusions?: string[];
+    remove_exclusions?: string[];
+    reason: string;
+  }): {
+    applied: boolean;
+    errors: string[];
+    before: ReturnType<DispatchCommandPort['getConfig']>['scope'];
+    after: ReturnType<DispatchCommandPort['getConfig']>['scope'];
+    affected_node_count: number;
+  };
+  logActionEvent(event: ActivityLogInput): ActivityLogEntry;
+}
 
 const ConfirmPlanInputSchema = z.object({
   plan_id: z.string().trim().min(1),
@@ -176,7 +252,7 @@ export class OperatorCommandService {
   private readonly dispatch: DispatchCommandService;
 
   constructor(
-    private readonly engine: GraphEngine,
+    private readonly engine: OperatorCommandPort,
     private readonly commands: ApplicationCommandService = new ApplicationCommandService(engine),
   ) {
     this.dispatch = new DispatchCommandService(engine, commands);
@@ -1065,7 +1141,10 @@ export class OperatorCommandService {
 
 }
 
-function metadataActorTaskId(engine: GraphEngine, planId: string): string | null {
+function metadataActorTaskId(
+  engine: OperatorCommandPort,
+  planId: string,
+): string | null {
   const proposed = engine.getProposedPlanStore().get(planId);
   return proposed?.owner_task_id ?? proposed?.source_task_id ?? null;
 }
@@ -1083,7 +1162,7 @@ function proposalResult(
 }
 
 export function computeScopePreview(
-  engine: GraphEngine,
+  engine: OperatorCommandPort,
   ops: OperatorOp[],
 ): ScopePreview | undefined {
   const adds = mergeScopeAdds(ops);
@@ -1110,7 +1189,7 @@ export function computeScopePreview(
 }
 
 export function validateProposedOps(
-  engine: GraphEngine,
+  engine: OperatorCommandPort,
   ops: OperatorOp[],
 ): { op: OperatorOp; reason: string }[] {
   const rejected: { op: OperatorOp; reason: string }[] = [];

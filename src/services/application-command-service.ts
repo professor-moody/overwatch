@@ -5,7 +5,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import { z, type ZodType } from 'zod';
-import type { GraphEngine } from './graph-engine.js';
+import type { AgentTask } from '../types.js';
 import { canonicalJson } from './engagement-config-service.js';
 import type { DurableStateSliceKey } from './durable-state-patch.js';
 import {
@@ -21,6 +21,49 @@ export const MAX_APPLICATION_COMMAND_RESULT_BYTES = MAX_PERSISTED_APPLICATION_CO
 export const MAX_APPLICATION_COMMAND_ERROR_DETAILS_BYTES =
   MAX_PERSISTED_APPLICATION_COMMAND_ERROR_DETAILS_BYTES;
 
+/**
+ * Minimal durable-engine surface required by the transport-neutral command
+ * boundary. Keeping this port independent of the concrete engine prevents command
+ * services from acquiring unrelated graph/config/runtime mutation authority.
+ */
+export interface ApplicationCommandHost {
+  getApplicationCommand(
+    idempotencyKey: string,
+  ): PersistedApplicationCommandV1 | undefined;
+  getApplicationCommandById(
+    commandId: string,
+  ): PersistedApplicationCommandV1 | undefined;
+  listApplicationCommands(): PersistedApplicationCommandV1[];
+  recordApplicationCommand(
+    command: PersistedApplicationCommandV1,
+  ): PersistedApplicationCommandV1;
+  runApplicationCommandTransaction<T>(
+    reason: string,
+    sourceActionId: string | undefined,
+    mutation: () => T,
+    additionalStateKeys?: readonly DurableStateSliceKey[],
+  ): T;
+  now(): string;
+  isPersistenceWritable(): boolean;
+}
+
+export interface ApplicationCommandRecoveryHost extends ApplicationCommandHost {
+  getTask(taskId: string): AgentTask | null;
+  updateAgentStatus(
+    taskId: string,
+    status: AgentTask['status'],
+    summary?: string,
+  ): boolean;
+}
+
+function isApplicationCommandRecoveryHost(
+  host: ApplicationCommandHost,
+): host is ApplicationCommandRecoveryHost {
+  const candidate = host as Partial<ApplicationCommandRecoveryHost>;
+  return typeof candidate.getTask === 'function'
+    && typeof candidate.updateAgentStatus === 'function';
+}
+
 export interface ApplicationCommandInvocationContext {
   transport: ApplicationCommandTransport;
   actor_task_id?: string | null;
@@ -35,7 +78,7 @@ export interface ApplicationCommandInvocationContext {
 
 const invocationStorage = new AsyncLocalStorage<ApplicationCommandInvocationContext>();
 const inFlightByEngine = new WeakMap<
-  GraphEngine,
+  ApplicationCommandHost,
   Map<string, Promise<ApplicationCommandExecution<unknown>>>
 >();
 
@@ -489,7 +532,7 @@ function executionFromRecord<T>(
 export class ApplicationCommandService {
   private readonly inFlight: Map<string, Promise<ApplicationCommandExecution<unknown>>>;
 
-  constructor(private readonly engine: GraphEngine) {
+  constructor(private readonly engine: ApplicationCommandHost) {
     const shared = inFlightByEngine.get(engine)
       ?? new Map<string, Promise<ApplicationCommandExecution<unknown>>>();
     inFlightByEngine.set(engine, shared);
@@ -1059,6 +1102,19 @@ export class ApplicationCommandService {
     const unfinished = this.engine.listApplicationCommands()
       .filter(command => command.status === 'accepted' || command.status === 'running');
     if (unfinished.length === 0) return 0;
+    const recoveryHost = isApplicationCommandRecoveryHost(this.engine)
+      ? this.engine
+      : undefined;
+    if (
+      !recoveryHost
+      && unfinished.some(command =>
+        command.command_kind === 'operator.plan'
+        && typeof command.entity_refs?.planner_task_id === 'string')
+    ) {
+      throw new Error(
+        'Application-command recovery requires agent lifecycle capabilities for unfinished planner work.',
+      );
+    }
     return this.engine.runApplicationCommandTransaction(
       'interrupt unfinished application commands during recovery',
       undefined,
@@ -1074,9 +1130,9 @@ export class ApplicationCommandService {
           if (command.command_kind === 'operator.plan') {
             const plannerTaskId = command.entity_refs?.planner_task_id;
             if (typeof plannerTaskId === 'string') {
-              const task = this.engine.getTask(plannerTaskId);
+              const task = recoveryHost!.getTask(plannerTaskId);
               if (task?.status === 'running' || task?.status === 'pending') {
-                this.engine.updateAgentStatus(plannerTaskId, 'interrupted', reason);
+                recoveryHost!.updateAgentStatus(plannerTaskId, 'interrupted', reason);
               }
             }
           }

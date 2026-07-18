@@ -17,11 +17,11 @@ import { MissionCard } from './MissionCard';
 import { AgentThread } from './AgentThread';
 import { AddTargetsModal } from './AddTargetsModal';
 import { DeployModal } from './DeployModal';
-import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
+import { AgentDetailPanel, type AgentContext } from '../agents/AgentDetailPanel';
+import { cn, formatTimestamp } from '../../lib/utils';
 import { ActionButton, FilterBar, MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
 type ConsoleFilter = 'all' | 'primary' | 'subagents' | AgentConsoleKind | 'errors';
-type AgentContext = { subgraph?: { nodes?: { id: string; properties?: Record<string, unknown> }[]; edges?: unknown[] } };
 
 const CONSOLE_FILTERS: Array<{ value: ConsoleFilter; label: string }> = [
   { value: 'all', label: 'All' },
@@ -65,7 +65,7 @@ export function AgentsPanel() {
   const [batchMode, setBatchMode] = useState(false);
   const [agentQueries, setAgentQueries] = useState<api.AgentQuery[]>([]);
   const [proposedPlans, setProposedPlans] = useState<api.ProposedPlan[]>([]);
-  const { navigateToGraph, navigateToCampaign, navigateToPanel } = useNavigation();
+  const { navigateToGraph, navigateToCampaign, navigateToPanel, navigateToSession } = useNavigation();
   const setStoreAgents = useEngagementStore((s) => s.setAgents);
 
   // Agent→operator questions feed both the Attention Queue and Mission Card
@@ -102,7 +102,7 @@ export function AgentsPanel() {
       const data = await api.getAgents();
       setStoreAgents(data.agents || []);
       setSelectedIds(prev => {
-        const validIds = new Set((data.agents || []).map((a: AgentInfo) => a.id));
+        const validIds = new Set((data.agents || []).map((a: AgentInfo) => api.canonicalAgentTaskId(a)));
         const next = new Set([...prev].filter(id => validIds.has(id)));
         return next.size !== prev.size ? next : prev;
       });
@@ -126,26 +126,21 @@ export function AgentsPanel() {
   );
   const elapsedById = useMemo(() => {
     const m = new Map<string, number | undefined>();
-    for (const a of agents) m.set(a.id, a.elapsed_ms);
+    for (const a of agents) m.set(api.canonicalAgentTaskId(a), a.elapsed_ms);
     return m;
   }, [agents]);
-  // Exact task IDs win; a legacy label resolves only when it names one task.
   const activeAgent = activeAgentId === 'all'
     ? null
-    : agents.find(agent => (agent.task_id ?? agent.id) === activeAgentId)
-      ?? (() => {
-        const labelMatches = agents.filter(agent =>
-          (agent.agent_label ?? agent.agent_id) === activeAgentId);
-        return labelMatches.length === 1 ? labelMatches[0] : null;
-      })();
+    : api.resolveAgentReference(agents, activeAgentId);
+  const activeTaskId = activeAgent ? api.canonicalAgentTaskId(activeAgent) : null;
 
   // The focused agent's conversation: its (already agent-scoped) console events
   // interleaved with its open questions. Empty when no agent is focused.
   const agentThreadEntries = useMemo(
     () => activeAgent
       ? buildAgentThread(consoleEvents, agentQueries, {
-          agentId: activeAgent.task_id ?? activeAgent.id,
-          agentLabel: activeAgent.agent_label ?? activeAgent.agent_id,
+          agentId: api.canonicalAgentTaskId(activeAgent),
+          agentLabel: api.agentDisplayLabel(activeAgent),
           limit: 200,
         })
       : [],
@@ -162,12 +157,8 @@ export function AgentsPanel() {
   useEffect(() => {
     const item = searchParams.get('item');
     if (item) {
-      const exact = agents.find(agent => (agent.task_id ?? agent.id) === item);
-      const labelMatches = exact
-        ? []
-        : agents.filter(agent => (agent.agent_label ?? agent.agent_id) === item);
-      const resolved = exact ?? (labelMatches.length === 1 ? labelMatches[0] : undefined);
-      if (resolved) setActiveAgentId(resolved.task_id ?? resolved.id);
+      const resolved = api.resolveAgentReference(agents, item);
+      if (resolved) setActiveAgentId(api.canonicalAgentTaskId(resolved));
     }
   }, [searchParams, agents]);
 
@@ -181,9 +172,33 @@ export function AgentsPanel() {
 
   const fleetAddToast = useToastStore(s => s.addToast);
 
+  const issueAgentDirective = async (taskId: string, kind: api.DirectiveKind) => {
+    try {
+      const res = await api.issueDirective(taskId, kind);
+      fleetAddToast({
+        type: res.ok ? 'success' : 'warning',
+        title: `Directive: ${kind}`,
+        message: res.ok
+          ? 'issued — a live agent applies it on its next heartbeat (if it looks wedged, use Cancel / Force remove above)'
+          : 'not applied',
+      });
+    } catch (err) {
+      fleetAddToast({
+        type: 'error',
+        title: `Directive failed: ${kind}`,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const resolveTaskId = (reference: string) => {
+    const resolved = api.resolveAgentReference(agents, reference);
+    return resolved ? api.canonicalAgentTaskId(resolved) : reference;
+  };
+
   const cancelAgent = async (id: string) => {
     try {
-      await api.cancelAgent(id);
+      await api.cancelAgent(resolveTaskId(id));
       await refreshAgents();
     } catch (err) {
       // Surface the failure instead of swallowing it — a 409 ("Agent is
@@ -194,7 +209,7 @@ export function AgentsPanel() {
 
   const dismissAgent = async (id: string) => {
     try {
-      await api.dismissAgent(id);
+      await api.dismissAgent(resolveTaskId(id));
       await refreshAgents();
     } catch (err) {
       fleetAddToast({ type: 'error', title: 'Dismiss failed', message: err instanceof Error ? err.message : String(err) });
@@ -205,7 +220,7 @@ export function AgentsPanel() {
   // remove in one call, then refresh.
   const forceRemoveAgent = async (id: string) => {
     try {
-      await api.dismissAgent(id, { force: true });
+      await api.dismissAgent(resolveTaskId(id), { force: true });
       await refreshAgents();
     } catch (err) {
       fleetAddToast({ type: 'error', title: 'Force remove failed', message: err instanceof Error ? err.message : String(err) });
@@ -244,8 +259,10 @@ export function AgentsPanel() {
   };
 
   const batchCancel = async () => {
-    const cancellable = agents.filter(a => selectedIds.has(a.id) && (a.status === 'running' || a.status === 'pending'));
-    await Promise.allSettled(cancellable.map(a => api.cancelAgent(a.id)));
+    const cancellable = agents.filter(a =>
+      selectedIds.has(api.canonicalAgentTaskId(a))
+      && (a.status === 'running' || a.status === 'pending'));
+    await Promise.allSettled(cancellable.map(a => api.cancelAgent(api.canonicalAgentTaskId(a))));
     setSelectedIds(new Set());
     await refreshAgents();
   };
@@ -253,20 +270,20 @@ export function AgentsPanel() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!activeAgent) {
+    if (!activeTaskId) {
       setActiveContext(null);
       return () => { cancelled = true; };
     }
-    api.getAgentContext(activeAgent.id)
+    api.getAgentContext(activeTaskId)
       .then(ctx => { if (!cancelled) setActiveContext(ctx as AgentContext); })
       .catch(() => { if (!cancelled) setActiveContext(null); });
     return () => { cancelled = true; };
-  }, [activeAgent?.id]);
+  }, [activeTaskId]);
 
   const loadConsole = useCallback(async () => {
     try {
-      if (activeAgent) {
-        const data = await api.getAgentConsole(activeAgent.id, { limit: 140 });
+      if (activeTaskId) {
+        const data = await api.getAgentConsole(activeTaskId, { limit: 140 });
         setConsoleEvents(data.events || []);
       } else {
         const data = await api.getOperatorConsole({ limit: 180 });
@@ -275,7 +292,7 @@ export function AgentsPanel() {
     } catch {
       setConsoleEvents([]);
     }
-  }, [activeAgent?.id]);
+  }, [activeTaskId]);
 
   useEffect(() => { loadConsole(); }, [loadConsole]);
 
@@ -304,7 +321,6 @@ export function AgentsPanel() {
       }
       // Per-agent drawer: both the poll (getAgentConsole) and the WS push use the
       // SERVER builder, so merging is consistent — no flip.
-      const activeTaskId = activeAgent.task_id ?? activeAgent.id;
       const incoming = all.filter(item => item.agent_id === activeTaskId);
       if (incoming.length === 0) return;
       setConsoleEvents(prev => mergeConsoleEvents(prev, incoming));
@@ -313,7 +329,7 @@ export function AgentsPanel() {
     return () => {
       window.removeEventListener('overwatch-agent-console-update', handleUpdate);
     };
-  }, [activeAgent, consolePaused, loadConsole]);
+  }, [activeAgent, activeTaskId, consolePaused, loadConsole]);
 
   const scrollConsoleToNewest = useCallback(() => {
     requestAnimationFrame(() => {
@@ -367,7 +383,7 @@ export function AgentsPanel() {
       <div className="sticky top-12 z-20 flex max-h-[60vh] flex-col gap-3 overflow-y-auto bg-background pb-2">
       <PageHeader
         title="Operator Console"
-        meta={activeAgent ? `focused on ${activeAgent.agent_id || activeAgent.id}` : 'fleet overview'}
+        meta={activeAgent ? `focused on ${api.agentDisplayLabel(activeAgent)}` : 'fleet overview'}
         actions={(
           <FilterBar>
           <div className="flex gap-2 text-xs">
@@ -470,24 +486,31 @@ export function AgentsPanel() {
               the bottom is the full operator stream. Flows in the page scroll;
               only the Activity stream below is a bounded live-tail region. */}
           <div className="flex min-w-0 flex-col gap-4">
-            <AgentContextPanel
-              agent={activeAgent}
-              context={activeContext}
-              onCancel={activeAgent && (activeAgent.status === 'running' || activeAgent.status === 'pending')
-                ? () => cancelAgent(activeAgent.id)
-                : undefined}
-              onForceRemove={activeAgent && (activeAgent.status === 'running' || activeAgent.status === 'pending')
-                ? () => forceRemoveAgent(activeAgent.id)
-                : undefined}
-              onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
-              onNavigateCampaign={navigateToCampaign}
-            />
+            {activeAgent ? (
+              <AgentDetailPanel
+                agent={activeAgent}
+                context={activeContext}
+                ownedSessions={sessionsForAgent(sessions, activeAgent)}
+                onCancel={activeAgent.status === 'running' || activeAgent.status === 'pending'
+                  ? () => cancelAgent(api.canonicalAgentTaskId(activeAgent))
+                  : undefined}
+                onForceRemove={activeAgent.status === 'running' || activeAgent.status === 'pending'
+                  ? () => forceRemoveAgent(api.canonicalAgentTaskId(activeAgent))
+                  : undefined}
+                onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
+                onNavigateCampaign={navigateToCampaign}
+                onNavigateSession={navigateToSession}
+                onIssueDirective={issueAgentDirective}
+              />
+            ) : (
+              <PrimaryOperatorPanel />
+            )}
 
             {activeAgent ? (
               /* Focused agent → its CONVERSATION: commands, actions+results,
                  findings, and inline-answerable questions, top to bottom. */
               <AgentThread
-                agentLabel={activeAgent.agent_id || activeAgent.id}
+                agentLabel={api.agentDisplayLabel(activeAgent)}
                 entries={agentThreadEntries}
                 totalEntries={consoleEvents.length}
                 paused={consolePaused}
@@ -751,7 +774,7 @@ function AgentOutputConsole({
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
               {activeAgent
-                ? `Filtered to ${activeAgent.agent_id || activeAgent.id}.`
+                ? `Filtered to ${api.agentDisplayLabel(activeAgent)}.`
                 : 'Primary model output plus subagent events, derived from Activity without duplicating raw output.'}
             </p>
           </div>
@@ -821,47 +844,6 @@ function AgentOutputConsole({
   );
 }
 
-// Per-agent lifecycle steering (Phase 3B). One-click directives routed through
-// the validated /api/agents/:id/directive application-command path. Targeted kinds
-// (narrow_scope/skip_types/prioritize) + free-text instruction come via the
-// per-agent NL box in Stage 2.
-// One-click lifecycle steering for the focused agent. Free-text instruction
-// ("Tell …") now lives in the ContextualCommandBar (Agent scope), so this is
-// just the quick verbs.
-function AgentSteeringControls({ taskId }: { taskId: string }) {
-  const addToast = useToastStore(s => s.addToast);
-  const [busy, setBusy] = useState<string | null>(null);
-  // Pause/Resume are COOPERATIVE — the agent applies them on its next heartbeat.
-  // They intentionally do NOT force the process; a wedged agent (no next beat) won't
-  // honor them, so the toast points the operator at Cancel / Force remove above, which
-  // terminate the process regardless. (A cooperative "Stop" used to live here too and
-  // was the "I clicked Stop and nothing happened" trap — Cancel is the real stop.)
-  const issue = async (kind: api.DirectiveKind) => {
-    setBusy(kind);
-    try {
-      const res = await api.issueDirective(taskId, kind);
-      addToast({
-        type: res.ok ? 'success' : 'warning',
-        title: `Directive: ${kind}`,
-        message: res.ok
-          ? 'issued — a live agent applies it on its next heartbeat (if it looks wedged, use Cancel / Force remove above)'
-          : 'not applied',
-      });
-    } catch (err) {
-      addToast({ type: 'error', title: `Directive failed: ${kind}`, message: err instanceof Error ? err.message : String(err) });
-    } finally { setBusy(null); }
-  };
-  return (
-    <div className="mt-3">
-      <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">Steer (cooperative)</div>
-      <div className="flex flex-wrap gap-1.5">
-        <ActionButton size="xs" variant="warning" disabled={!!busy} onClick={() => issue('pause')}>Pause</ActionButton>
-        <ActionButton size="xs" variant="success" disabled={!!busy} onClick={() => issue('resume')}>Resume</ActionButton>
-      </div>
-    </div>
-  );
-}
-
 // Live summary of the engagement's agent fleet shown when no sub-agent is
 // selected (replaces the old static stub). Reads the store directly.
 function PrimaryOperatorPanel() {
@@ -910,103 +892,6 @@ function PrimaryOperatorPanel() {
         <div className="mt-3">
           <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">Latest primary activity</div>
           <div className="rounded border border-border bg-background/40 p-2 text-xs text-foreground/90">{latestPrimary.description}</div>
-        </div>
-      )}
-    </PanelSection>
-  );
-}
-
-function AgentContextPanel({
-  agent,
-  context,
-  onCancel,
-  onForceRemove,
-  onNavigateGraph,
-  onNavigateCampaign,
-}: {
-  agent: AgentInfo | null;
-  context: AgentContext | null;
-  onCancel?: () => void;
-  onForceRemove?: () => void;
-  onNavigateGraph: (nodeId: string) => void;
-  onNavigateCampaign: (campaignId: string) => void;
-}) {
-  const sessions = useEngagementStore(s => s.sessions);
-  const { navigateToSession } = useNavigation();
-
-  if (!agent) {
-    return <PrimaryOperatorPanel />;
-  }
-
-  const elapsed = agent.elapsed_ms
-    ? formatElapsed(agent.elapsed_ms)
-    : agent.completed_at && agent.assigned_at
-      ? formatElapsed(new Date(agent.completed_at).getTime() - new Date(agent.assigned_at).getTime())
-      : '—';
-  const subgraphNodes = context?.subgraph?.nodes || [];
-  const ownedSessions = sessionsForAgent(sessions, agent);
-
-  return (
-    <PanelSection dense>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="truncate text-sm font-semibold text-foreground">{agent.agent_id || agent.id}</h3>
-          <p className="mt-0.5 font-mono text-[10px] text-muted-foreground break-all">{agent.id}</p>
-        </div>
-        <StatusPill tone={agent.status === 'running' ? 'success' : agent.status === 'failed' ? 'danger' : agent.status === 'completed' ? 'accent' : 'muted'}>
-          {agent.status}
-        </StatusPill>
-      </div>
-
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        {onCancel && <ActionButton onClick={onCancel} size="xs" variant="danger">Cancel</ActionButton>}
-        {/* Escape hatch for a wedged agent Cancel can't clear: force-kill + remove. */}
-        {onForceRemove && (
-          <ActionButton onClick={onForceRemove} size="xs" variant="danger" title="Force stop & remove — kills the process and clears the agent even if Cancel won't">
-            Force remove
-          </ActionButton>
-        )}
-        {ownedSessions.length > 0 && (
-          <ActionButton onClick={() => navigateToSession(ownedSessions[0].id)} size="xs" variant="secondary">
-            Open session →{ownedSessions.length > 1 ? ` (${ownedSessions.length})` : ''}
-          </ActionButton>
-        )}
-        {agent.campaign_id && (
-          <ActionButton onClick={() => onNavigateCampaign(agent.campaign_id!)} size="xs" variant="ghost">
-            Campaign
-          </ActionButton>
-        )}
-      </div>
-
-      {agent.status === 'running' && <AgentSteeringControls taskId={agent.id} />}
-
-      <div className="mt-4 space-y-2">
-        {agent.status === 'running' && agent.current_action && <DetailRow label="Doing" value={agent.current_action} />}
-        <DetailRow label="Elapsed" value={elapsed} />
-        {agent.skill && <DetailRow label="Skill" value={agent.skill} />}
-        {agent.frontier_item_id && <DetailRow label="Frontier" value={agent.frontier_item_id} mono />}
-        {agent.result_summary && <DetailRow label="Result" value={agent.result_summary} />}
-        <DetailRow label="Scope" value={`${(agent.subgraph_node_ids || agent.scope_node_ids || []).length} nodes`} />
-      </div>
-
-      {subgraphNodes.length > 0 && (
-        <div className="mt-4">
-          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">Scoped Nodes</div>
-          <div className="space-y-1">
-            {subgraphNodes.slice(0, 12).map(node => (
-              <button
-                key={node.id}
-                onClick={() => onNavigateGraph(node.id)}
-                className="block w-full truncate rounded bg-elevated/60 px-2 py-1 text-left text-xs text-accent hover:bg-hover"
-                title={node.id}
-              >
-                {String(node.properties?.label || node.id)}
-              </button>
-            ))}
-            {subgraphNodes.length > 12 && (
-              <div className="text-[10px] text-muted-foreground">and {subgraphNodes.length - 12} more</div>
-            )}
-          </div>
         </div>
       )}
     </PanelSection>
@@ -1160,15 +1045,6 @@ function sourceKindClass(sourceKind: AgentConsoleEvent['source_kind']): string {
 
 function shortId(value: string): string {
   return value.length > 10 ? value.slice(0, 10) : value;
-}
-
-function DetailRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex items-start gap-2 text-xs">
-      <span className="text-muted-foreground w-24 flex-shrink-0">{label}</span>
-      <span className={cn('text-foreground break-all', mono && 'font-mono text-[10px]')}>{value}</span>
-    </div>
-  );
 }
 
 // ---- Bulk Frontier Dispatch Modal ----

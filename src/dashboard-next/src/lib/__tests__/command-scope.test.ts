@@ -23,6 +23,19 @@ describe('command-scope', () => {
     expect(defaultScopeFor(agent({ status: 'completed' }))).toBe(ENGAGEMENT_SCOPE);
   });
 
+  it('routes a rolling-release DTO by canonical task ID and label', () => {
+    expect(defaultScopeFor(agent({
+      task_id: 'task-canonical',
+      agent_label: 'planner-canonical',
+      id: 'legacy-task',
+      agent_id: 'legacy-planner',
+    }))).toEqual({
+      kind: 'agent',
+      taskId: 'task-canonical',
+      label: 'planner-canonical',
+    });
+  });
+
   it('canScopeToAgent for a running OR pending agent (not terminal)', () => {
     expect(canScopeToAgent(agent())).toBe(true);
     expect(canScopeToAgent(agent({ status: 'pending' }))).toBe(true);

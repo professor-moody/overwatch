@@ -52,6 +52,12 @@ export interface AgentConsoleQuery {
   limit?: number;
   after?: string;
   allowLegacyLabel?: boolean;
+  /**
+   * The caller has already resolved every entry to this exact task, including
+   * action-chain rows that carry only an action_id. Kept opt-in so existing
+   * callers retain the normal task/legacy-label attribution filter.
+   */
+  preAttributed?: boolean;
 }
 
 export interface OperatorConsoleQuery {
@@ -74,7 +80,13 @@ export function buildOperatorConsoleEvents(
     tasksByLabel.set(label, [...(tasksByLabel.get(label) ?? []), task]);
   }
 
-  let projected = entriesAfterCursor(entries, query.after)
+  // Activity storage does not promise chronological insertion order after
+  // replay/import. Resolve positional cursors against the same chronological
+  // stream the caller sees, otherwise an ID cursor can omit newer rows that
+  // happened to precede it in the backing array.
+  const orderedEntries = [...entries]
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  let projected = entriesAfterCursor(orderedEntries, query.after)
     .map(entry => {
       const detailTaskId = stringDetail(entry.details?.task_id) || stringDetail(entry.details?.linked_agent_task_id);
       const exactTaskId = entry.linked_agent_task_id
@@ -86,8 +98,7 @@ export function buildOperatorConsoleEvents(
         : legacyMatches?.length === 1 ? legacyMatches[0] : undefined;
       return activityToAgentConsoleEvent(entry, task);
     })
-    .filter((event): event is AgentConsoleEvent => event !== null)
-    .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+    .filter((event): event is AgentConsoleEvent => event !== null);
 
   if (query.limit && query.limit > 0) projected = projected.slice(-query.limit);
   return projected;
@@ -115,8 +126,13 @@ export function buildAgentConsoleEvents(
   task: AgentTask,
   query: AgentConsoleQuery = {},
 ): AgentConsoleEvent[] {
-  let matched = entries
-    .filter(entry => activityMatchesAgent(entry, task, query.allowLegacyLabel ?? true))
+  let matched = (query.preAttributed
+    ? [...entries]
+    : entries.filter(entry => activityMatchesAgent(
+      entry,
+      task,
+      query.allowLegacyLabel ?? true,
+    )))
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
   matched = entriesAfterCursor(matched, query.after);

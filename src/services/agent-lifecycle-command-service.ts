@@ -9,10 +9,58 @@ import {
   ApplicationCommandService,
   getApplicationCommandInvocation,
   type ApplicationCommandExecution,
+  type ApplicationCommandHost,
   type ApplicationCommandMetadata,
 } from './application-command-service.js';
-import type { AgentQuery } from './agent-query-store.js';
-import type { GraphEngine } from './graph-engine.js';
+import type { AgentIdentityResolution } from './agent-identity.js';
+import type { AgentQuery, AgentQueryStore } from './agent-query-store.js';
+import type {
+  ActivityLogEntry,
+  ActivityLogInput,
+} from './engine-context.js';
+import type { EvidenceStore } from './evidence-store.js';
+import type { ProposedPlanStore } from './proposed-plan-store.js';
+
+/** Durable coordination capabilities used by agent lifecycle commands. */
+export interface AgentLifecycleCommandPort extends ApplicationCommandHost {
+  getTask(taskId: string): AgentTask | null;
+  updateAgentStatus(
+    taskId: string,
+    status: AgentTask['status'],
+    summary?: string,
+  ): boolean;
+  getProposedPlanStore(): ProposedPlanStore;
+  getAgentQueryStore(): AgentQueryStore;
+  getEvidenceStore(): EvidenceStore;
+  getFullHistory(): ActivityLogEntry[];
+  logActionEvent(event: ActivityLogInput): ActivityLogEntry;
+  resolveAgentTaskReference(reference: string): AgentIdentityResolution;
+  getAgentTasks(): AgentTask[];
+  agentHeartbeat(
+    taskId: string,
+    now?: string,
+    opts?: { silent?: boolean },
+  ): boolean;
+  getPendingAgentDirective(taskId: string): AgentDirective | null;
+  issueAgentDirective(params: {
+    task_id: string;
+    kind: AgentDirective['kind'];
+    node_ids?: string[];
+    frontier_types?: string[];
+    note?: string;
+    issued_by?: string;
+  }): AgentDirective;
+  acknowledgeAgentDirective(
+    taskId: string,
+    directiveId: string,
+  ): AgentDirective | null;
+  updateAgentSchedulerFlags(
+    taskId: string,
+    patch: { no_retry?: boolean; reoffered?: boolean },
+  ): boolean;
+  abortApprovalsForTask(taskId: string, reason?: string): number;
+  dismissAgent(taskId: string): boolean;
+}
 
 const AgentStatusUpdateInputSchema = z.object({
   task_id: z.string().trim().min(1),
@@ -239,7 +287,7 @@ export class AgentLifecycleCommandService {
   private runtimeController: AgentRuntimeController | null = null;
 
   constructor(
-    private readonly engine: GraphEngine,
+    private readonly engine: AgentLifecycleCommandPort,
     private readonly commands: ApplicationCommandService = new ApplicationCommandService(engine),
   ) {}
 
