@@ -41,7 +41,7 @@ describe.skipIf(!supportsLocalListen)('HTTP session limit', () => {
       port: 0,
       host: '127.0.0.1',
       maxSessions: 2,
-      sessionIdleMs: 50,
+      sessionIdleMs: 1_000,
     });
 
     const addr = app.httpServer?.address();
@@ -80,13 +80,6 @@ describe.skipIf(!supportsLocalListen)('HTTP session limit', () => {
     });
     expect(res1.status).toBe(200);
 
-    const res2 = await fetch(`${baseUrl}/mcp`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(initBody),
-    });
-    expect(res2.status).toBe(200);
-
     const sessionId = res1.headers.get('mcp-session-id');
     expect(sessionId).toBeTruthy();
     const sseAbort = new AbortController();
@@ -98,6 +91,16 @@ describe.skipIf(!supportsLocalListen)('HTTP session limit', () => {
       signal: sseAbort.signal,
     });
     expect(sse.status).toBe(200);
+
+    // Pin the first session before opening the deliberately abandoned second
+    // session. With a very short idle window, a loaded CI runner can otherwise
+    // reap session one between initialize and this SSE request.
+    const res2 = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(initBody),
+    });
+    expect(res2.status).toBe(200);
 
     // Third session should be rejected
     const res3 = await fetch(`${baseUrl}/mcp`, {
@@ -112,19 +115,37 @@ describe.skipIf(!supportsLocalListen)('HTTP session limit', () => {
 
     // Abandoned clients no longer consume the daemon's hard session capacity
     // forever. The reaper only closes records with no active response/SSE.
-    await new Promise(resolveWait => setTimeout(resolveWait, 150));
-    const res4 = await fetch(`${baseUrl}/mcp`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(initBody),
-    });
+    const reaperDeadline = Date.now() + 5_000;
+    let res4: globalThis.Response;
+    do {
+      await new Promise(resolveWait => setTimeout(resolveWait, 100));
+      res4 = await fetch(`${baseUrl}/mcp`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(initBody),
+      });
+    } while (res4.status === 503 && Date.now() < reaperDeadline);
     expect(res4.status).toBe(200);
+
+    const replacementSessionId = res4.headers.get('mcp-session-id');
+    expect(replacementSessionId).toBeTruthy();
+    const replacementSseAbort = new AbortController();
+    const replacementSse = await fetch(`${baseUrl}/mcp`, {
+      headers: {
+        Accept: 'text/event-stream',
+        'mcp-session-id': replacementSessionId!,
+      },
+      signal: replacementSseAbort.signal,
+    });
+    expect(replacementSse.status).toBe(200);
+
     const res5 = await fetch(`${baseUrl}/mcp`, {
       method: 'POST',
       headers,
       body: JSON.stringify(initBody),
     });
     expect(res5.status).toBe(503);
+    replacementSseAbort.abort();
     sseAbort.abort();
   });
 });
