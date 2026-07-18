@@ -88,7 +88,12 @@ function runNodeAsync(script, args, environment, onSpawn) {
 
 async function fetchChecked(label, input, init) {
   try {
-    return await fetch(input, init);
+    const headers = new Headers(init?.headers);
+    // Lifecycle assertions deliberately replace the server process while
+    // retaining the same URLs. Do not let Node's global Undici pool reuse a
+    // keep-alive socket that belongs to the stopped daemon.
+    headers.set('Connection', 'close');
+    return await fetch(input, { ...init, headers });
   } catch (error) {
     throw new Error(`${label} request failed`, { cause: error });
   }

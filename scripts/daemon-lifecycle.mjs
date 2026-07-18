@@ -468,8 +468,21 @@ async function withLifecycleLock(operation) {
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
       let current;
-      try { current = JSON.parse(readFileSync(path, 'utf8')); } catch {
-        throw new Error(`Lifecycle lock ${path} is unreadable; refusing concurrent changes.`);
+      let readFailure;
+      // open(..., "wx") publishes the directory entry before the owner bytes
+      // are written and fsynced. A simultaneous starter may therefore observe
+      // an empty/partial lock for a few milliseconds. Retry only that narrow
+      // publication window; a persistently malformed lock still fails closed.
+      for (let readAttempt = 0; readAttempt < 5 && !current; readAttempt += 1) {
+        try {
+          current = JSON.parse(readFileSync(path, 'utf8'));
+        } catch (lockReadError) {
+          readFailure = lockReadError;
+          if (readAttempt < 4) await new Promise(resolveWait => setTimeout(resolveWait, 10));
+        }
+      }
+      if (!current) {
+        throw new Error(`Lifecycle lock ${path} is unreadable; refusing concurrent changes.`, { cause: readFailure });
       }
       if (processAlive(current.pid)) {
         const matches = typeof current.process_start_identity === 'string'
