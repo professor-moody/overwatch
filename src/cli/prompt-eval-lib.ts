@@ -21,6 +21,16 @@ export const DEFAULT_MAX_TOTAL_USD = 2.00;
 export const DEFAULT_MAX_TURNS = 10;
 export const DEFAULT_TIMEOUT_MS = 600_000;  // 10 min per run — a real claude sub-agent takes minutes (fake-claude finishes in <1s)
 
+/** The legacy token gate controls whether another run may start. It is not an
+ * in-flight limit and must never invalidate a completed, dollar-capped run. */
+export function accountingBatchBlocksNextRun(
+  usedTokens: number,
+  estimatedNextRunTokens: number,
+  budgetTokens: number,
+): boolean {
+  return usedTokens + estimatedNextRunTokens > budgetTokens;
+}
+
 export interface Args {
   real: boolean;
   yes: boolean;

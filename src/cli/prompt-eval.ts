@@ -27,6 +27,7 @@ import { EVAL_SCENARIOS } from '../test-support/eval-scenarios.js';
 import {
   parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath, percentile,
   allocateRunBudgetUsd, chargeRunBudgetUsd, inspectClaudeBudgetCompatibility,
+  accountingBatchBlocksNextRun,
   BASELINE_DIR, EST_TOKENS_PER_RUN, DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET,
   DEFAULT_MAX_BUDGET_USD, DEFAULT_MAX_TOTAL_USD, DEFAULT_MAX_TURNS, DEFAULT_TIMEOUT_MS,
 } from './prompt-eval-lib.js';
@@ -135,7 +136,7 @@ async function main(): Promise<void> {
   // Per-run estimate adapts to the p75 of observed runs (not the max) so a single
   // runaway run can't spike the estimate and strand the rest of the batch.
   const estPerRun = () => Math.max(EST_TOKENS_PER_RUN, percentile(budget.runs, 0.75));
-  const wouldExceed = () => budget.used + estPerRun() > args.budget;
+  const wouldExceed = () => accountingBatchBlocksNextRun(budget.used, estPerRun(), args.budget);
 
   // Run `args.trials` runs of one arm (variant) → mean grade. Honors the budget
   // (exits the process on breach, like the baseline-only path).
@@ -192,8 +193,7 @@ async function main(): Promise<void> {
         process.exit(2);
       }
       if (budget.used >= args.budget) {
-        console.error(`\nBUDGET REACHED after [${scenario.id}] ${arm} trial ${t + 1}: ${budget.used}/${args.budget} tokens used; stopping.`);
-        process.exit(2);
+        console.warn(`\nACCOUNTING GATE REACHED after [${scenario.id}] ${arm} trial ${t + 1}: ${budget.used}/${args.budget} accounting tokens. The completed result remains valid; the pre-run gate will block any later run.`);
       }
     }
     return meanGrade(grades);
