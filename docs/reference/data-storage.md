@@ -174,7 +174,8 @@ content-addressed `.quarantine-<sha256>.jsonl` copy may be written for repair.
 
 ## Engagements directory
 
-When you create additional engagements (via `create_engagement`), their state files are stored alongside the active one:
+`create_engagement` writes additional **inactive configuration files** beneath
+the active config directory:
 
 ```
 <config-dir>/
@@ -183,6 +184,11 @@ When you create additional engagements (via `create_engagement`), their state fi
     ├── <engagement-id-B>.json
     └── ...
 ```
+
+Creation does not open a durable state/WAL family and does not switch the
+running daemon. State is created only if that configuration is later selected
+by a stopped, explicitly managed runtime workflow; dashboard switching is not
+currently supported.
 
 ---
 
@@ -224,7 +230,7 @@ Reports rendered via `generate_report` or the dashboard "Generate Report" button
     └── <report-id>.json              # structured JSON format
 ```
 
-List reports: `GET /api/reports`. Download: `GET /api/reports/:id`.
+List reports: `GET /api/reports`. Download: `GET /api/reports/{report_id}`.
 
 Report publication is payload → immutable descriptor → aggregate manifest. The descriptor is the per-report commit authority; `manifest.json` is repaired from valid descriptors after a crash. The format marker prevents a descriptorless payload from being mistaken for a committed new-format report. A valid legacy manifest remains authoritative during upgrade, so orphan payloads are preserved but not silently resurrected. Deletion publishes a tombstone before unlinking the descriptor/payload. Invalid or unreadable tombstones hide the affected report and make report mutations read-only while preserving all bytes for reconciliation.
 

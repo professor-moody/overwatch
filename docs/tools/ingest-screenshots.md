@@ -4,7 +4,7 @@ Read a visual-recon report's PNG files off disk and ingest them as **viewable** 
 
 ## Description
 
-`parse_output(gowitness)` records the graph nodes plus a `screenshot_path` string on each webapp — but the PNG bytes never enter Overwatch, so nothing can display them. `ingest_screenshots` closes that gap: it reads each PNG, stores it in the evidence store as a binary `screenshot` blob, and stamps the resulting `screenshot_evidence_id` onto the webapp node. The dashboard then renders it via [`/api/evidence/<id>/image`](#serving).
+`parse_output(gowitness)` records the graph nodes plus a `screenshot_path` string on each webapp — but the PNG bytes never enter Overwatch, so nothing can display them. `ingest_screenshots` closes that gap: it reads each PNG, stores it in the evidence store as a binary `screenshot` blob, and stamps the resulting `screenshot_evidence_id` onto the webapp node. The dashboard then renders it via [`/api/evidence/{evidence_id}/image`](#serving).
 
 The image bytes are read straight from disk and **never pass through the model context**. File resolution is path-traversal guarded to stay inside `report_dir`.
 
@@ -37,7 +37,7 @@ Returns `{ screenshots_stored, skipped, skipped_detail, webapps, new_nodes, upda
 
 ## Serving
 
-Stored screenshots are served as raw image bytes at `GET /api/evidence/<evidence_id>/image` (raster types only — PNG/JPEG/GIF/WebP; SVG is deliberately excluded). The dashboard renders the image in the webapp node's detail drawer.
+Stored screenshots are served as raw image bytes at `GET /api/evidence/{evidence_id}/image` (raster types only — PNG/JPEG/GIF/WebP; SVG is deliberately excluded). The dashboard renders the image in the webapp node's detail drawer.
 
 ## Example
 

@@ -26,8 +26,7 @@ New to the dashboard? The [Cockpit Walkthrough](cockpit-walkthrough.md) tours th
 These pages aren't tutorials — they're answers to specific questions:
 
 - **[parse_output vs report_finding](parse-vs-report.md)** — which tool to use to get data into the graph
-- **[Session Instructions](session-instructions.md)** — the core loop (`AGENTS.md` content) for the AI to follow
-- **[CLI Adapter](cli-adapter.md)** — operate Overwatch via shell when MCP is unavailable
+- **[Session Instructions](session-instructions.md)** — runtime prompt authority and the current instrumented operator loop
 
 ---
 

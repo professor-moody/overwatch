@@ -255,12 +255,17 @@ You can:
 
 ### How do I open a remote authenticated dashboard?
 
-Set `OVERWATCH_DASHBOARD_TOKEN` on a non-loopback deployment and enter through
+Stop the daemon and rerun setup with a non-loopback
+`OVERWATCH_DASHBOARD_HOST`. Setup generates a token when one is not supplied,
+writes it to the private `0600` `.overwatch-dashboard-token` file, and records
+that path in the runtime profile. Use a client-reachable DNS name or IP in the
+browser—never the `0.0.0.0` bind address—and enter through
 `https://host/?token=<token>`. The dashboard stores the token for the tab under
 `overwatch.dashboard.token`, scrubs it from browser history, sends Bearer auth
 on API/media/download requests, and adds an encoded token to its main, session,
 and action-output WebSocket URLs. If session storage is blocked, the token lasts
-only for that page lifetime. Use TLS for remote access.
+only for that page lifetime. Use TLS or a trusted reverse proxy for remote
+access.
 
 ## OPSEC
 

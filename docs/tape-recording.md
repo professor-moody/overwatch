@@ -2,12 +2,12 @@
 
 Overwatch can capture every JSON-RPC frame exchanged between the MCP client (your IDE / Claude / Codex CLI) and the Overwatch server, writing them to a JSONL **tape**. Tapes are the source of truth for retrospective analysis: they let you replay decisions, audit tool calls, and drive `run_retrospective` with full wire fidelity.
 
-There are two ways to capture, and they coexist:
+There are two ways to capture:
 
 | Mode | Lives | When to use |
 |------|-------|-------------|
 | **In-process recorder** (default-off) | Inside the MCP server | Day-to-day operations; toggleable from the dashboard; auto-registers tape sessions with the engagement |
-| **Standalone proxy** (`overwatch-mcp-tape`) | Wraps the server externally | Belt-and-suspenders capture; safe even if the server crashes; works against any build |
+| **Standalone stdio proxy** (`overwatch-mcp-tape`) | Wraps one intentionally isolated stdio owner | Compatibility capture when the shared daemon/dashboard are not running |
 
 Both modes write the same JSONL format and are interchangeable for retrospective tooling.
 
@@ -15,19 +15,27 @@ Both modes write the same JSONL format and are interchangeable for retrospective
 
 The in-process recorder is **off by default**. Three independent switches can turn it on; the order of precedence is **env > config > dashboard**. Startup auto-enable applies to both stdio MCP and HTTP MCP transports.
 
-### Enabling at startup
+### Enabling for daemon startup
+
+The dashboard toggle is the simplest day-to-day control. To make recording
+part of engagement configuration, update the active config through the
+revisioned `PATCH /api/config` surface with
+`{"tape":{"enabled":true}}`, then restart the managed daemon. Do not hand-edit
+the active file around durable state. Environment variables can override that
+configuration for one deliberate launch. The examples assume `npm run setup`
+has already created the managed profile:
 
 Environment variables:
 
 ```bash
 # Force on (any truthy value: 1, true, on)
-OVERWATCH_TAPE=1 npx overwatch-mcp
+OVERWATCH_TAPE=1 npm run daemon:start
 
 # Optional: override default tape directory (defaults to ./tapes)
-OVERWATCH_TAPE_DIR=/var/log/overwatch/tapes OVERWATCH_TAPE=1 npx overwatch-mcp
+OVERWATCH_TAPE_DIR=/var/log/overwatch/tapes OVERWATCH_TAPE=1 npm run daemon:start
 
 # Optional: pin a single explicit file (overrides directory auto-naming)
-OVERWATCH_TAPE_FILE=/var/log/overwatch/tapes/today.jsonl OVERWATCH_TAPE=1 npx overwatch-mcp
+OVERWATCH_TAPE_FILE=/var/log/overwatch/tapes/today.jsonl OVERWATCH_TAPE=1 npm run daemon:start
 ```
 
 Engagement config (`engagement.json`):
@@ -77,14 +85,32 @@ POST /api/tape/toggle    → flip state, returns updated status
 
 Every enable/disable pair emits a matched `tape_session_started` / `tape_session_stopped` event under `provenance: system`. Both events include `started_by`; the stop event records committed, accepted, and dropped frame counts and links back to the start event id. Durable close fsyncs the tape and its directory. An asynchronous write failure detaches the recorder immediately, then records a terminal failure only after pending callbacks and close settle so its counts are final. Reopening a tape with a torn final line preserves that fragment and inserts an explicit recovery marker before appending new frames.
 
-## Standalone Proxy
+## Standalone stdio proxy (isolated compatibility mode)
 
-The `overwatch-mcp-tape` binary is the original capture path and lives outside the server process. Use it when you need recording even if the server crashes mid-engagement, or when you want to capture against a build that predates the in-process recorder.
+The package ships `overwatch-mcp-tape`, a stdio passthrough that spawns exactly
+one upstream server and records the JSON-RPC frames on both sides. It cannot
+wrap the already-running HTTP daemon. Use this only when you intentionally want
+one Claude-only stdio owner with no dashboard, CLI workers, planners, or
+dashboard agents.
+
+First stop the shared daemon and switch the persisted profile to stdio:
 
 ```bash
-# Wrap any MCP server invocation. --tape and --out are aliases.
-npx overwatch-mcp-tape --tape ./tapes/run.jsonl -- node ./dist/index.js
+npm run daemon:stop
+npm run setup:stdio
 ```
+
+Then replace the setup-generated MCP command with the proxy command below. The
+proxy wraps the lifecycle entrypoint; it must not invoke `dist/index.js`
+directly:
+
+```bash
+npx overwatch-mcp-tape --tape ./tapes/run.jsonl -- \
+  node ./scripts/daemon-lifecycle.mjs run-stdio
+```
+
+Do not start this proxy or any direct `node dist/index.js` writer beside the
+managed daemon. Both would compete for the same durable engagement authority.
 
 After the run, register the tape with the engagement so `run_retrospective` can find it:
 
@@ -98,9 +124,11 @@ register_tape_session({
 
 The in-process recorder calls this automatically.
 
-### Wiring through your MCP client
+### Wiring one stdio MCP client
 
-To run an entire Claude Code / Codex / IDE session through the proxy, point the client at `overwatch-mcp-tape` instead of `node dist/index.js` and pass the real server as the upstream argv. Example `.mcp.json` (project-scoped):
+After `npm run setup:stdio`, use absolute paths when inserting the proxy between
+one MCP client and the lifecycle-backed stdio owner. Example `.mcp.json`
+(project-scoped):
 
 ```json
 {
@@ -111,11 +139,10 @@ To run an entire Claude Code / Codex / IDE session through the proxy, point the 
         "overwatch-mcp-tape",
         "--tape", "/abs/path/overwatch/tapes/session.jsonl",
         "--",
-        "node", "/abs/path/overwatch/dist/index.js"
+        "node", "/abs/path/overwatch/scripts/daemon-lifecycle.mjs", "run-stdio"
       ],
       "env": {
-        "OVERWATCH_CONFIG": "/abs/path/overwatch/engagement.json",
-        "OVERWATCH_SKILLS": "/abs/path/overwatch/skills"
+        "OVERWATCH_RUNTIME_PROFILE": "/abs/path/overwatch/.overwatch-runtime/profile.json"
       }
     }
   }
@@ -126,13 +153,18 @@ The proxy is a pure passthrough — every JSON-RPC frame the client sends still 
 
 ### Mode selection
 
-Use the in-process recorder unless you have a specific reason not to. It's lower-friction (toggleable from the dashboard, no extra process), free when disabled, and auto-registers tape sessions with the engagement. Reach for the standalone proxy when:
+Use the in-process recorder with the shared daemon unless you specifically need
+an isolated stdio capture. It is lower-friction, toggleable from the dashboard,
+free when disabled, and auto-registers tape sessions with the engagement. Reach
+for the standalone proxy only when:
 
 - The server might crash and you still want the tape (proxy keeps writing as long as the proxy itself stays up).
-- You're capturing against a build that predates the in-process recorder.
-- You want belt-and-suspenders capture during a sensitive engagement and are willing to pay the ~5–10ms per-frame latency cost of routing through a second process.
+- You intentionally selected solo stdio compatibility mode.
+- You need to retain malformed frames that fail before reaching the server.
 
-Both modes can run simultaneously. The retrospective tooling de-duplicates frames by JSON-RPC `id` so you won't see double counts.
+Return to the normal shared workflow by exiting the stdio client, running
+`npm run setup`, and starting the daemon. Setup preserves the engagement while
+changing only machine-local runtime/client wiring.
 
 ## Tape Format
 

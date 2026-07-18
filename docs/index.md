@@ -26,7 +26,7 @@ After compaction or restart, [`get_state()`](tools/get-state.md) returns an oper
 - **[Recoverable session intent](tools/sessions.md)** — Interactive shells and listeners with cursor-based I/O and TTY quality tracking. Durable descriptors survive restart; live connections and buffers do not masquerade as resumed sessions.
 - **[Claude Code hooks](claude-hooks.md)** — Local hooks that re-anchor Claude to Overwatch, block raw target-facing Bash, and nudge discovery output back into the graph.
 - **[Live dashboard](dashboard.md)** — Real-time graph visualization, approval queue, frontier view, agent status, credential tracker, findings panel with report generation.
-- **[Tamper-evident audit trail](concepts.md#audit-trail)** — Optional hash-chained activity log and JSON-RPC tape proxy. Retrospectives can verify the integrity and order of recorded actions and wire frames.
+- **[Tamper-evident audit trail](concepts.md#audit-trail)** — New engagements hash-chain the activity log by default. JSON-RPC tape capture and checkpoint signing are opt-in additions for wire-level audit and signer attribution.
 
 ### By the Numbers
 
