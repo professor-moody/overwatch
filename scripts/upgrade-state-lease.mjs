@@ -21,7 +21,6 @@ const finish = (exitCode = 0) => {
   process.exit(exitCode);
 };
 
-process.stdout.write(`${JSON.stringify({ ready: true, token: releaseLease.token })}\n`);
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => {
   if (chunk.includes('release')) finish(0);
@@ -30,3 +29,6 @@ process.stdin.on('end', () => finish(0));
 process.on('SIGINT', () => finish(130));
 process.on('SIGTERM', () => finish(143));
 process.stdin.resume();
+// Readiness is a protocol boundary: the supervisor may signal immediately
+// after this line, so every cleanup handler must already be installed.
+process.stdout.write(`${JSON.stringify({ ready: true, token: releaseLease.token })}\n`);

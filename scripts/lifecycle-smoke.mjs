@@ -65,7 +65,7 @@ function runNode(script, args, environment, expectSuccess = true, timeoutMs = 60
   return result;
 }
 
-function runNodeAsync(script, args, environment, onSpawn) {
+function runNodeAsync(script, args, environment, onSpawn, onStdout) {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(process.execPath, [script, ...args], {
       cwd: root,
@@ -76,7 +76,10 @@ function runNodeAsync(script, args, environment, onSpawn) {
     let stderr = '';
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      onStdout?.(stdout);
+    });
     child.stderr.on('data', chunk => { stderr += chunk; });
     child.once('spawn', () => onSpawn?.(child));
     const timeout = setTimeout(() => {
@@ -181,15 +184,18 @@ try {
   const configPath = join(fixture, 'engagement.json');
   const statePath = join(fixture, 'state-lifecycle-smoke.json');
   const helperSignalStatePath = join(fixture, 'state-upgrade-helper-signal.json');
+  let helperSignalReady = false;
   const helperSignalPromise = runNodeAsync(
     join(root, 'scripts', 'upgrade-state-lease.mjs'),
     [helperSignalStatePath],
     sanitizedProcessEnvironment,
     child => { activeUpgradeWrapper = child; },
+    stdout => { helperSignalReady = stdout.includes('"ready":true'); },
   );
   await waitFor(
-    'upgrade state lease helper acquisition',
-    () => existsSync(`${helperSignalStatePath}.migration-lock/owner.json`),
+    'upgrade state lease helper signal readiness',
+    () => helperSignalReady
+      && existsSync(`${helperSignalStatePath}.migration-lock/owner.json`),
   );
   activeUpgradeWrapper.kill('SIGTERM');
   const helperSignalResult = await helperSignalPromise;
