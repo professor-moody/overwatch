@@ -21,6 +21,8 @@ export interface EvalScenario {
   scopeSeededNodes?: boolean;
   /** Objective text for real-model runs (Phase 2). */
   objective: string;
+  /** Synthetic tool fixture installed into the isolated evaluation runtime. */
+  hermeticTooling?: 'nmap-recon';
   rubric: ScenarioRubric;
 }
 
@@ -28,10 +30,16 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
   {
     id: 'recon',
     archetype: 'recon_scanner',
-    fakeMode: 'recon',
+    fakeMode: 'hermetic-recon',
     seedNodes: [{ id: 'seed-recon-host', type: 'host', label: '10.10.10.10', ip: '10.10.10.10', alive: true }],
     scopeSeededNodes: true,
-    objective: 'Enumerate services on the in-scope host 10.10.10.10 and record what is exposed.',
+    hermeticTooling: 'nmap-recon',
+    objective: `Qualification mission for the in-scope synthetic host 10.10.10.10. Complete these steps in order:
+1. Call get_agent_context first and use its frontier_item_id.
+2. Call validate_action for nmap service enumeration with that frontier_item_id and a stable action_id you will reuse.
+3. Call run_tool with binary "nmap", args ["-sV", "-oX", "-", "10.10.10.10"], target_ip "10.10.10.10", the same action_id/frontier_item_id, and parse_with "nmap". Do not use raw shell or an absolute scanner path.
+4. Ensure the SSH and HTTP results are parsed into the graph; if inline parsing did not land them, use parse_output or report_finding with the same action/frontier attribution.
+5. Submit your transcript, then mark the task completed.`,
     rubric: { id: 'recon', expectedNodeTypes: ['service'] },
   },
   {

@@ -39,12 +39,66 @@ async function main() {
   // this child's archetype, so it can land type-appropriate findings.
   let agentId = 'fake-agent';
   let childArchetype = '';
+  let frontierItemId = '';
   try {
-    const ctx = await client.callTool({ name: 'get_agent_context', arguments: { task_id: taskId } });
+    const contextRequest = { name: 'get_agent_context', arguments: { task_id: taskId } };
+    if (mode === 'hermetic-recon') {
+      emit({ type: 'tool_use', name: 'mcp__overwatch__get_agent_context', input: contextRequest.arguments });
+    }
+    const ctx = await client.callTool(contextRequest);
     const parsed = JSON.parse(ctx.content[0].text);
     if (parsed.agent_id) agentId = parsed.agent_id;
     if (parsed.archetype) childArchetype = parsed.archetype;
+    if (parsed.frontier_item_id) frontierItemId = parsed.frontier_item_id;
   } catch { /* context optional for the fake */ }
+
+  if (mode === 'hermetic-recon') {
+    if (!frontierItemId) throw new Error('hermetic recon context did not include frontier_item_id');
+    const actionId = `eval-recon-nmap-${taskId}`;
+    const validationInput = {
+      action_id: actionId,
+      frontier_item_id: frontierItemId,
+      target_ip: '10.10.10.10',
+      technique: 'service_enumeration',
+      tool_name: 'nmap',
+      description: 'Hermetic nmap service enumeration of 10.10.10.10',
+    };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__validate_action', input: validationInput });
+    const validation = await client.callTool({ name: 'validate_action', arguments: validationInput });
+    const validationPayload = JSON.parse(validation.content[0].text);
+    if (validationPayload.validation_result === 'invalid') {
+      throw new Error(`hermetic recon validation failed: ${validation.content[0].text}`);
+    }
+
+    const runInput = {
+      binary: 'nmap',
+      args: ['-sV', '-oX', '-', '10.10.10.10'],
+      action_id: actionId,
+      frontier_item_id: frontierItemId,
+      agent_id: agentId,
+      target_ip: '10.10.10.10',
+      technique: 'service_enumeration',
+      parse_with: 'nmap',
+      parse_stream: 'stdout',
+      validate: false,
+    };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__run_tool', input: runInput });
+    const scan = await client.callTool({ name: 'run_tool', arguments: runInput });
+    const scanPayload = JSON.parse(scan.content[0].text);
+    if (scan.isError || scanPayload.executed !== true || scanPayload.parse_summary?.parse_outcome !== 'ok') {
+      throw new Error(`hermetic recon execution or parsing failed: ${scan.content[0].text}`);
+    }
+
+    const transcriptInput = { task_id: taskId, summary: 'Hermetic recon landed SSH/22 and HTTP/80 from the isolated nmap fixture.' };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__submit_agent_transcript', input: transcriptInput });
+    await client.callTool({ name: 'submit_agent_transcript', arguments: transcriptInput });
+    const completionInput = { task_id: taskId, status: 'completed', summary: 'hermetic recon complete' };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__update_agent', input: completionInput });
+    await client.callTool({ name: 'update_agent', arguments: completionInput });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
 
   if (mode === 'auto' && !childArchetype) {
     // PRIMARY orchestrator (orchestrator task → no archetype): scripted loop for the
