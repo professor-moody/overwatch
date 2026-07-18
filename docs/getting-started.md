@@ -38,7 +38,9 @@ npm run doctor
 OVERWATCH_ENGAGEMENT_ACTIVE=1 claude
 ```
 
-Requires **Node.js 20+** and the **Claude Code CLI** (`claude`).
+Requires **Node.js 20, 22, or 24** and the **Claude Code CLI** (`claude`). Node
+24 is recommended. Other Node majors are not release-qualified and fail the
+support check in `npm run doctor`.
 
 You will also need the offensive tools you plan to use (nmap, nxc, certipy,
 sqlmap, etc.) installed on PATH. See [Prerequisites](prerequisites.md) for

@@ -17,6 +17,9 @@ npm run doctor
 OVERWATCH_ENGAGEMENT_ACTIVE=1 claude
 ```
 
+Use Node.js **20, 22, or 24**; Node 24 is recommended. Other majors are not
+release-qualified, and `npm run doctor` reports them as unsupported.
+
 > **Note:** `node-pty` is an optional native dependency used for local PTY sessions. It requires native build tools (Python 3, C++ compiler). If it fails to install, the rest of Overwatch works normally — only `local_pty` sessions will be unavailable.
 
 `npm run setup` defaults to the shared daemon and creates local-only `.mcp.json`,
