@@ -22,6 +22,12 @@ import {
   type EvalArtifactManifest,
   type EvalOutcome,
 } from './eval-artifacts.js';
+import {
+  installHermeticReconTooling,
+  readHermeticNmapInvocations,
+  type HermeticNmapInvocation,
+  type HermeticReconTooling,
+} from './eval-hermetic-tools.js';
 
 const FAKE_CLAUDE = resolve('./src/test-support/fake-claude.mjs');
 const rawConfig = readFileSync(resolve('./engagement.example.json'), 'utf-8');
@@ -62,6 +68,16 @@ export interface EvalRunResult {
   usageTokens: number;
   /** total_cost_usd from the result event, if the binary reports it. */
   costUsd?: number;
+  /** Qualification-only evidence that the isolated nmap fixture was used. */
+  hermeticRecon?: {
+    runtimeRoot: string;
+    shimPath: string;
+    fixturePath: string;
+    invocationLogPath: string;
+    invocations: HermeticNmapInvocation[];
+    frontierItemId: string;
+    servicePorts: number[];
+  };
   artifactDirectory?: string;
   finalizeArtifacts: (details?: EvalArtifactCompletion) => EvalArtifactManifest | undefined;
   cleanup: () => Promise<void>;
@@ -257,6 +273,9 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     actionTimeout: process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS,
     tokenFile: process.env.OVERWATCH_MCP_TOKEN_FILE,
     token: process.env.OVERWATCH_MCP_TOKEN,
+    path: process.env.PATH,
+    nmapInvocationLog: process.env.OVERWATCH_EVAL_NMAP_INVOCATION_LOG,
+    nmapFixtureFile: process.env.OVERWATCH_EVAL_NMAP_FIXTURE_FILE,
   };
   // Restore the env the guarded run mutates — called from cleanup on success AND
   // from the catch below if anything between setup and return throws (e.g. an HTTP
@@ -273,10 +292,14 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     set('OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS', prev.actionTimeout);
     set('OVERWATCH_MCP_TOKEN_FILE', prev.tokenFile);
     set('OVERWATCH_MCP_TOKEN', prev.token);
+    set('PATH', prev.path);
+    set('OVERWATCH_EVAL_NMAP_INVOCATION_LOG', prev.nmapInvocationLog);
+    set('OVERWATCH_EVAL_NMAP_FIXTURE_FILE', prev.nmapFixtureFile);
   };
 
   let tempDir: string | undefined;
   let logPath: string | undefined;
+  let hermeticTooling: HermeticReconTooling | undefined;
   let app: ReturnType<typeof createOverwatchApp> | undefined;
   try {
     if (usingFake) {
@@ -287,12 +310,18 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     // Selects the sub_agent prompt variant the in-process app's get_system_prompt
     // renders for this run (the A/B arm). The harness is single-process + serial.
     process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
-    // Real eval tools must fail inside the bounded action window too. Step 4
-    // replaces the unreachable scanner path with a hermetic shim.
+    // Real eval tools must fail inside the bounded action window too. Recon
+    // evaluation replaces the unreachable scanner path with a hermetic shim.
     if (!usingFake) process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = '20000';
 
     tempDir = mkdtempSync(join(tmpdir(), 'ow-prompt-eval-'));
     const runningTempDir = tempDir;
+    if (scenario.hermeticTooling === 'nmap-recon') {
+      hermeticTooling = installHermeticReconTooling(runningTempDir, process.env.PATH ?? '');
+      process.env.PATH = hermeticTooling.path;
+      process.env.OVERWATCH_EVAL_NMAP_INVOCATION_LOG = hermeticTooling.env.OVERWATCH_EVAL_NMAP_INVOCATION_LOG;
+      process.env.OVERWATCH_EVAL_NMAP_FIXTURE_FILE = hermeticTooling.env.OVERWATCH_EVAL_NMAP_FIXTURE_FILE;
+    }
     process.env.OVERWATCH_MCP_TOKEN_FILE = join(runningTempDir, '.overwatch-mcp-token');
     const logDir = join(runningTempDir, 'agents');
     logPath = join(logDir, `${taskId}.ndjson`);
@@ -300,6 +329,10 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     // Unattended eval: shrink the operator-approval window so a gated run_bash/
     // run_tool auto-resolves in seconds instead of stalling on the 5-min default.
     config.opsec = { ...config.opsec, approval_timeout_ms: 3000 } as typeof config.opsec;
+    // This harness qualifies exactly one bounded sub-agent. Versioned services
+    // normally auto-dispatch CVE researchers; leaving that enabled would spawn
+    // unaccounted model workers after the recon fixture lands SSH/HTTP.
+    config.cve_research = { enabled: false };
     app = createOverwatchApp({
       config,
       skillDir: resolve('./skills'),
@@ -336,9 +369,18 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
 
     const agentId = `agent-${scenario.id}`;
     const scopedIds = scenario.scopeSeededNodes ? [...seededIds] : [];
+    const assignedFrontierItemId = scenario.hermeticTooling === 'nmap-recon'
+      ? app.engine.computeFrontier().find(item =>
+        (item.node_id !== undefined && seededIds.has(item.node_id))
+        || (item.type === 'network_discovery' && item.target_cidr === config.scope.cidrs[0]))?.id
+      : undefined;
+    if (scenario.hermeticTooling === 'nmap-recon' && !assignedFrontierItemId) {
+      throw new Error('Hermetic recon fixture did not produce an actionable frontier item for its seeded host.');
+    }
     app.engine.registerAgent({
       id: taskId, agent_id: agentId, assigned_at: new Date().toISOString(), status: 'running',
       subgraph_node_ids: scopedIds, backend: 'headless_mcp', archetype: scenario.archetype,
+      frontier_item_id: assignedFrontierItemId,
       objective: scenario.objective,
     } as AgentTask);
 
@@ -374,7 +416,11 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       .filter(e => (e as { agent_id?: string }).agent_id !== 'seed')
       .map(e => ({ event_type: (e as { event_type?: string }).event_type, action_id: (e as { action_id?: string }).action_id, frontier_item_id: (e as { frontier_item_id?: string }).frontier_item_id }));
 
-    const newNodeTypes = [...new Set(app.engine.exportGraph().nodes.filter(n => !seededIds.has(n.id)).map(n => n.properties.type as string))];
+    const graph = app.engine.exportGraph();
+    const newNodes = graph.nodes.filter(n => !seededIds.has(n.id));
+    const newNodeIds = new Set(newNodes.map(node => node.id));
+    const newEdges = graph.edges.filter(edge => newNodeIds.has(edge.source) || newNodeIds.has(edge.target));
+    const newNodeTypes = [...new Set(newNodes.map(n => n.properties.type as string))];
 
     const record: RunRecord = {
       toolCalls: extractToolCalls(ndjson),
@@ -391,10 +437,25 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       usage: toArtifactUsage(usage),
       reportedCostUsd: details.reportedCostUsd ?? costUsd,
       reservedCostUsd: details.reservedCostUsd,
-      graphDelta: { new_node_types: newNodeTypes },
+      graphDelta: { new_node_types: newNodeTypes, nodes: newNodes, edges: newEdges },
       toolCalls: record.toolCalls,
       error: details.error,
     });
+    const hermeticRecon = hermeticTooling && assignedFrontierItemId
+      ? {
+        runtimeRoot: runningTempDir,
+        shimPath: hermeticTooling.shimPath,
+        fixturePath: hermeticTooling.fixturePath,
+        invocationLogPath: hermeticTooling.invocationLogPath,
+        invocations: readHermeticNmapInvocations(hermeticTooling.invocationLogPath),
+        frontierItemId: assignedFrontierItemId,
+        servicePorts: newNodes
+          .filter(node => node.properties.type === 'service')
+          .map(node => Number(node.properties.port))
+          .filter(Number.isFinite)
+          .sort((left, right) => left - right),
+      }
+      : undefined;
 
     const runningApp = app;
     const cleanup = async () => {
@@ -415,6 +476,7 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       usage,
       usageTokens: usage.accountingTokens,
       costUsd,
+      hermeticRecon,
       artifactDirectory: artifactSession?.directory,
       finalizeArtifacts,
       cleanup,

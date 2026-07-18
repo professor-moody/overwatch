@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sV -oX - 10.10.10.10" start="1784412000" startstr="Sat Jul 18 17:00:00 2026" version="7.94" xmloutputversion="1.05">
+  <scaninfo type="syn" protocol="tcp" numservices="2" services="22,80"/>
+  <host starttime="1784412000" endtime="1784412001">
+    <status state="up" reason="syn-ack" reason_ttl="64"/>
+    <address addr="10.10.10.10" addrtype="ipv4"/>
+    <hostnames>
+      <hostname name="recon-fixture.internal" type="PTR"/>
+    </hostnames>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open" reason="syn-ack" reason_ttl="64"/>
+        <service name="ssh" product="OpenSSH" version="9.6p1 Ubuntu 3ubuntu13" method="probed" conf="10"/>
+      </port>
+      <port protocol="tcp" portid="80">
+        <state state="open" reason="syn-ack" reason_ttl="64"/>
+        <service name="http" product="nginx" version="1.24.0" method="probed" conf="10"/>
+      </port>
+    </ports>
+    <times srtt="1000" rttvar="5000" to="100000"/>
+  </host>
+  <runstats>
+    <finished time="1784412001" timestr="Sat Jul 18 17:00:01 2026" elapsed="1.00" summary="Nmap done at Sat Jul 18 17:00:01 2026; 1 IP address (1 host up) scanned in 1.00 seconds" exit="success"/>
+    <hosts up="1" down="0" total="1"/>
+  </runstats>
+</nmaprun>

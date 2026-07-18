@@ -94,6 +94,30 @@ The library ([`src/test-support/eval-scenarios.ts`](https://github.com/professor
 is intentionally tiny (recon / web / cloud), each a seeded engagement state +
 archetype + objective + rubric, kept small so a real run stays cheap.
 
+The recon scenario is hermetic. Its temporary runtime places a local `nmap`
+shim first on `PATH`; the shim accepts only `10.10.10.10`, records its invocation,
+and emits the checked-in SSH/22 + HTTP/80 XML fixture without opening a socket or
+starting another process. The mission requires context, explicit validation,
+instrumented `run_tool`, parsing/landing, transcript submission, and completion
+in that order. Automatic CVE-research dispatch is disabled inside this
+single-agent evaluator so newly versioned services cannot start unaccounted model
+workers. The runtime, shim, fixture, and invocation log are removed after the
+redacted qualification artifacts have been captured.
+
+Use this fixed diagnosis table for a guarded recon failure:
+
+| Preserved evidence | Classification and next repair |
+| --- | --- |
+| No initial `get_agent_context` | Bootstrap-instruction failure; repair evaluation bootstrap guidance. |
+| Wrong tool or runner bypass | Mission/tool-constraint failure; repair the scenario constraint. |
+| Shim invoked, but SSH/HTTP absent from graph delta | Parser-guidance or parser-integration failure. |
+| Findings landed, but task never terminal | Closeout or terminal-transition failure. |
+| Infrastructure timeout before any tool execution | Runner-lifecycle failure, not a prompt failure. |
+
+Do not change a production prompt merely to improve a score. A prompt change
+requires a preserved artifact that identifies prompt-level behavior as the
+failure.
+
 ## What it does *not* do
 
 - It does not judge offensive **quality** (an LLM judge — parked; rubric-only
