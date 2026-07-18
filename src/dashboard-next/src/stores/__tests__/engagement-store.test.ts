@@ -194,6 +194,52 @@ describe('engagement store hydration', () => {
     expect(useEngagementStore.getState().graphSummary?.total_nodes).toBe(1);
   });
 
+  it('rejects a keyed patch whose base revision is not the loaded full-state revision', () => {
+    useEngagementStore.getState().loadFullState({
+      state: { agents: [], frontier: [] },
+      graph: { nodes: [], edges: [] },
+      history_count: 1,
+      state_revision: 4,
+    } as FullStateData);
+
+    expect(() => useEngagementStore.getState().applyStateRefresh({
+      patch: {
+        agents: { upsert: [], remove: [], moves: [], total: 0 },
+      },
+      base_revision: 3,
+      state_revision: 4,
+      history_count: 2,
+    })).toThrow(/expected revision 3; current revision is 4/);
+    expect(useEngagementStore.getState().stateRevision).toBe(4);
+    expect(useEngagementStore.getState().historyCount).toBe(1);
+  });
+
+  it('clears normalized optional state only through explicit v2 unset keys', () => {
+    useEngagementStore.getState().loadFullState({
+      state: {
+        agents: [], frontier: [],
+        frontier_hidden: { total: 1, by_reason: { lease: 1, opsec: 0, dead_host: 0, scope: 0 } },
+        lab_readiness: { status: 'blocked', top_issues: ['recovery'] },
+        persistence_recovery: { complete: false, writable: false } as any,
+      },
+      graph: { nodes: [], edges: [] },
+      history_count: 1,
+      state_revision: 3,
+    } as FullStateData);
+
+    useEngagementStore.getState().applyStateRefresh({
+      patch: { unset: ['frontier_hidden', 'lab_readiness', 'persistence_recovery'] },
+      base_revision: 3,
+      state_revision: 4,
+      history_count: 2,
+    });
+
+    const state = useEngagementStore.getState();
+    expect(state.frontierHidden).toBeNull();
+    expect(state.readiness).toBeNull();
+    expect(state.persistenceRecovery).toBeNull();
+  });
+
   it('projects cold-to-hot promotion and later hot removal without folding inventories together', () => {
     const cold = {
       id: 'host-1', type: 'host', label: 'candidate', discovered_at: '2026-07-15T00:00:00Z',

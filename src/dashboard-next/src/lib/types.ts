@@ -7,6 +7,7 @@ import type {
   FrontierItemDto,
   FrontierWeightsDto,
   GraphUpdateDataDto,
+  DashboardStatePatchDto,
   HealthDto,
   MainWebSocketEvent,
   ObjectiveDto,
@@ -334,6 +335,7 @@ export interface FullStateData {
   state: EngagementState;
   graph: RawGraphDto;
   history_count: number;
+  state_revision?: number;
   runtime_build?: {
     git_sha?: string | null;
     input_sha256: string;
@@ -342,13 +344,16 @@ export interface FullStateData {
   };
 }
 export interface GraphUpdateData {
-  state: EngagementState;
+  state?: EngagementState;
   history_count: number;
   detail: GraphUpdateDataDto['detail'];
   delta: GraphUpdateDataDto['delta'];
 }
 export interface StateRefreshData {
-  state: EngagementState;
+  state?: EngagementState;
+  patch?: DashboardStatePatchDto;
+  base_revision?: number;
+  state_revision?: number;
   history_count: number;
   community_ids?: Record<string, number>;
 }

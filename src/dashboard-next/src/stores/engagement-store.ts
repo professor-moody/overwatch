@@ -23,6 +23,9 @@ import type {
   PlaybookRun,
   StateRefreshData,
 } from '../lib/types';
+import { applyIndexedCollectionPatch } from '../../../contracts/indexed-collection-patch';
+
+export { applyIndexedCollectionPatch } from '../../../contracts/indexed-collection-patch';
 
 export interface EngagementStore {
   // Connection
@@ -35,6 +38,7 @@ export interface EngagementStore {
   engagement: EngagementState['engagement'] | null;
   accessLevel: string;
   historyCount: number;
+  stateRevision: number | null;
 
   // Graph
   graph: ExportedGraph;
@@ -111,6 +115,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   engagement: null,
   accessLevel: 'none',
   historyCount: 0,
+  stateRevision: null,
 
   // Graph
   graph: { nodes: [], edges: [], coldInventory: [] },
@@ -176,6 +181,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : null,
       accessLevel: s.access_summary?.current_access_level || 'none',
       historyCount: data.history_count ?? 0,
+      stateRevision: data.state_revision ?? null,
       graph: flatGraph,
       graphSummary: s.graph_summary || null,
       graphVersion: get().graphVersion + 1,
@@ -199,7 +205,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   },
 
   applyGraphUpdate: (data: GraphUpdateData) => {
-    const s = data.state;
+    const s = data.state ?? {} as Partial<EngagementState>;
     const prev = get().graph;
     const graph = graphDeltaIndex.apply(prev, data);
 
@@ -234,36 +240,90 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
     });
   },
 
-  applyStateRefresh: ({ state: s, history_count, community_ids }) => {
+  applyStateRefresh: ({ state, patch, base_revision, state_revision, history_count, community_ids }) => {
+    const current = get();
+    if (patch) {
+      if (base_revision === undefined || state_revision === undefined) {
+        throw new Error('Dashboard state patch is missing its base or resulting revision.');
+      }
+      if (current.stateRevision !== base_revision) {
+        throw new Error(`Dashboard state patch expected revision ${base_revision}; current revision is ${current.stateRevision ?? 'unknown'}.`);
+      }
+      if (state_revision !== base_revision + 1) {
+        throw new Error(`Dashboard state patch revision ${state_revision} does not follow base revision ${base_revision}.`);
+      }
+    }
+    const s = {
+      ...(state ?? {}),
+      ...(patch?.state ?? {}),
+    } as Partial<EngagementState>;
+    const unset = new Set(patch?.unset ?? []);
+    const hasStateKey = (key: string) =>
+      Object.prototype.hasOwnProperty.call(s, key);
+    const agents = patch?.agents
+      ? applyIndexedCollectionPatch<AgentInfo>(
+          current.agents,
+          patch.agents,
+          agent => agent.task_id ?? agent.id,
+        )
+      : s.agents;
+    const frontier = patch?.frontier
+      ? applyIndexedCollectionPatch<FrontierItem>(
+          current.frontier,
+          patch.frontier,
+          item => item.id,
+        )
+      : s.frontier;
     const graph = get().graph;
     const communityDelta = community_ids
       ? graphDeltaIndex.applyCommunityIds(graph, community_ids)
       : [];
     set({
-      engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : get().engagement,
-      accessLevel: s.access_summary?.current_access_level || get().accessLevel,
+      engagement: unset.has('config')
+        ? null
+        : s.config
+          ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at }
+          : get().engagement,
+      accessLevel: unset.has('access_summary')
+        ? 'none'
+        : s.access_summary?.current_access_level ?? get().accessLevel,
       historyCount: history_count ?? get().historyCount,
+      stateRevision: patch ? state_revision! : get().stateRevision,
       ...(communityDelta.length > 0 ? {
         graph,
         communityVersion: get().communityVersion + 1,
         lastCommunityDelta: communityDelta,
       } : {}),
-      graphSummary: s.graph_summary || get().graphSummary,
-      frontier: s.frontier || get().frontier,
-      frontierHidden: s.frontier_hidden ?? get().frontierHidden,
-      objectives: s.objectives || get().objectives,
-      agents: s.agents || get().agents,
-      campaigns: s.campaigns || get().campaigns,
-      sessions: s.sessions || get().sessions,
-      pendingActions: s.pending_actions || get().pendingActions,
-      playbookRuns: s.playbook_runs
+      graphSummary: unset.has('graph_summary') ? null : s.graph_summary ?? get().graphSummary,
+      frontier: frontier ?? get().frontier,
+      frontierHidden: unset.has('frontier_hidden') ? null : s.frontier_hidden ?? get().frontierHidden,
+      objectives: unset.has('objectives') ? [] : s.objectives ?? get().objectives,
+      agents: agents ?? get().agents,
+      campaigns: unset.has('campaigns') ? [] : s.campaigns ?? get().campaigns,
+      sessions: unset.has('sessions') ? [] : s.sessions ?? get().sessions,
+      pendingActions: unset.has('pending_actions') ? [] : s.pending_actions ?? get().pendingActions,
+      playbookRuns: unset.has('playbook_runs')
+        ? []
+        : s.playbook_runs
         ? s.playbook_runs.filter((run): run is PlaybookRun => run.schema_version === 1)
         : get().playbookRuns,
-      phases: s.phases || get().phases,
-      readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : get().readiness,
-      persistenceRecovery: s.persistence_recovery ?? get().persistenceRecovery,
-      accessSummary: s.access_summary || get().accessSummary,
-      recentActivity: (s as any).recent_activity || get().recentActivity,
+      phases: unset.has('phases') ? [] : s.phases ?? get().phases,
+      readiness: unset.has('lab_readiness')
+        ? null
+        : s.lab_readiness
+          ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues }
+          : get().readiness,
+      persistenceRecovery: unset.has('persistence_recovery')
+        ? null
+        : s.persistence_recovery ?? get().persistenceRecovery,
+      accessSummary: unset.has('access_summary')
+        ? { compromised_hosts: [], valid_credentials: [], current_access_level: 'none' }
+        : s.access_summary ?? get().accessSummary,
+      recentActivity: unset.has('recent_activity')
+        ? []
+        : hasStateKey('recent_activity')
+          ? (s as unknown as { recent_activity: ActivityEntry[] }).recent_activity
+          : get().recentActivity,
     });
   },
 

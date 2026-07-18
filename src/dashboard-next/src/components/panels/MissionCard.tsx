@@ -49,6 +49,7 @@ export function MissionCard({
   const cancellable = card.status === 'running' || card.status === 'pending';
   return (
     <div
+      data-testid="mission-card"
       onClick={onClick}
       className={cn(
         'cursor-pointer border-b border-border px-3 py-2 transition-colors last:border-b-0 hover:bg-hover/40',

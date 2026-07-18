@@ -78,6 +78,26 @@ jobs:
       - run: npm ci
       - run: npm run test:journeys
 
+  scale-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Run bounded scale and restart soak
+        timeout-minutes: 4
+        run: npm run test:scale-soak -- --reporter=default --reporter=junit --outputFile.junit=scale-soak.junit.xml
+      - name: Upload scale and soak report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-soak-results
+          path: scale-soak.junit.xml
+          if-no-files-found: ignore
+
   browser-journeys:
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -23,6 +23,24 @@ public inventory and schema manifest, CI rejects drift, and the documentation
 matches the shipped recovery, runtime, dashboard, session, and playbook
 behavior.
 
+## Post-refactor hardening delivery
+
+The follow-on `ow-next` train keeps the shipped architecture but closes the
+amplification and operating gaps found while dogfooding it:
+
+| Slice | Delivery state |
+|---|---|
+| Operator recovery and planner reliability | Landed; dashboard reads remain available during config reconciliation and managed planners use durable, isolated ownership. |
+| Bounded mutation transactions and hermetic runtime tests | Landed; high-frequency graph/coordination writes are delta-shaped and the supported Node matrix runs without shared artifact assumptions. |
+| Crash-safe artifacts and authoritative application commands | Landed; external outputs commit through generation pointers and external mutations replay by idempotency identity. |
+| One-daemon lifecycle and narrow agent/dashboard boundaries | Landed; setup, doctor, start, stop, restart, upgrade, and workspace ownership have explicit state-preserving contracts. |
+| Durable agent handoff/work shaping | Landed; terminal tasks can hand off, split, and merge duplicate work without losing lineage or proof references. |
+| Scale/soak gates | Current release; 50,000-task/collection budgets, mixed restart soak, WebSocket v2 keyed patches, and resource cleanup are required in CI. |
+| Compatibility retirement | Final release slice; remove only documented one-release aliases after upgrade/rollback evidence proves existing engagements remain recoverable. |
+
+The original PR1–PR15 train remains the architectural baseline; this follow-on
+does not reopen its product decisions or weaken its recovery invariants.
+
 ## Operating model now
 
 - Run one Overwatch daemon for an engagement. MCP, the dashboard, the terminal
@@ -45,7 +63,6 @@ Further work should start from measured operator needs rather than reopening the
 superseded reliability plan. Candidate tracks are:
 
 - graph-delta plan previews for natural-language commands;
-- agent handoff, task split, and duplicate-agent merge workflows;
 - richer per-task productivity and campaign OPSEC projections;
 - deterministic runners for more reasoning-heavy archetypes;
 - technique-preference policies and campaign-scoped dispatch limits;

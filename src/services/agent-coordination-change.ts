@@ -161,11 +161,10 @@ export function validateAgentCoordinationChangePayload(
     };
   }
   if (!Array.isArray(value.task_changes)
-    || value.task_changes.length < 1
     || value.task_changes.length > MAX_AGENT_COORDINATION_TASK_CHANGES) {
     return {
       ok: false,
-      reason: `agent_coordination_change task_changes must contain 1 through ${MAX_AGENT_COORDINATION_TASK_CHANGES} entries`,
+      reason: `agent_coordination_change task_changes may contain at most ${MAX_AGENT_COORDINATION_TASK_CHANGES} entries`,
     };
   }
   if (!Array.isArray(value.lease_changes)
@@ -173,6 +172,12 @@ export function validateAgentCoordinationChangePayload(
     return {
       ok: false,
       reason: `agent_coordination_change lease_changes may contain at most ${MAX_AGENT_COORDINATION_LEASE_CHANGES} entries`,
+    };
+  }
+  if (value.task_changes.length === 0 && value.lease_changes.length === 0) {
+    return {
+      ok: false,
+      reason: 'agent_coordination_change must change at least one task or lease',
     };
   }
   const taskIds = new Set<string>();

@@ -6,7 +6,9 @@ import { DeltaAccumulator } from './delta-accumulator.js';
 import { buildOperatorConsoleEvents } from './agent-console.js';
 import {
   projectDashboardSnapshot,
+  projectDashboardStatePatch,
   projectGraphDelta,
+  projectGraphDeltaData,
   type DashboardState,
 } from './dashboard-projectors.js';
 import { MainWebSocketEventSchema } from '../contracts/dashboard-v1.js';
@@ -25,6 +27,8 @@ export interface DashboardMainWebSocketHubOptions {
 export class DashboardMainWebSocketHub {
   readonly server = new WebSocketServer({ noServer: true });
   clients = new Set<WebSocket>();
+  private readonly clientContracts = new WeakMap<WebSocket, 1 | 2>();
+  private contractFilter: 1 | 2 | undefined;
   private readonly accumulator = new DeltaAccumulator();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private stateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -37,6 +41,7 @@ export class DashboardMainWebSocketHub {
   private readonly pendingVisibilityChanges = new Set<string>();
   private disposed = false;
   private cachedState: DashboardState<unknown, unknown> | undefined;
+  private stateRevision = 0;
 
   constructor(
     private readonly engine: GraphEngine,
@@ -48,7 +53,14 @@ export class DashboardMainWebSocketHub {
     this.hiddenNodeIds = new Set(engine.getSupersededNodeIds());
     this.seenConsoleEventIds = new Set(engine.getFullHistory().map(entry => entry.event_id));
     this.server.on('error', () => { /* individual socket errors remove their client */ });
-    this.server.on('connection', ws => this.attachConnection(ws));
+    this.server.on('connection', (ws, request) => {
+      let contract: 1 | 2 = 1;
+      try {
+        const url = new URL(request.url ?? '/', 'ws://localhost');
+        if (url.searchParams.get('contract') === '2') contract = 2;
+      } catch { /* malformed upgrade URLs are rejected by DashboardServer */ }
+      this.attachConnection(ws, contract);
+    });
 
     this.disposers.push(engine.onUpdate(detail => this.onGraphUpdate(detail)));
     this.disposers.push(engine.getAgentQueryStore().onChange(() => {
@@ -81,11 +93,12 @@ export class DashboardMainWebSocketHub {
     }
   }
 
-  attachConnection(ws: WebSocket): void {
+  attachConnection(ws: WebSocket, contract: 1 | 2 = 1): void {
     const firstConnection = this.clients.size === 0;
+    const hadContractV2Client = this.hasContract(2);
     this.clients.add(ws);
+    this.clientContracts.set(ws, contract);
     const state = this.options.buildState();
-    this.cachedState = state;
     const graph = this.options.buildGraph?.()
       ?? this.engine.exportGraph({ includeDerivedCommunities: true });
     // The first full-state graph is the client's authoritative baseline, so
@@ -94,16 +107,43 @@ export class DashboardMainWebSocketHub {
     const baselineCommunityChanges = firstConnection
       ? this.engine.peekCommunityChanges()
       : undefined;
-    this.send(ws, {
+    const snapshot = projectDashboardSnapshot(
+      state,
+      graph,
+      this.engine.getHistoryCount(),
+      this.options.runtimeBuild,
+    );
+    const nextStateRevision = contract === 2 ? this.stateRevision + 1 : this.stateRevision;
+    const fullState = {
       type: 'full_state',
+      ...(contract === 2 ? { contract_version: 2 as const } : {}),
       timestamp: new Date().toISOString(),
-      data: projectDashboardSnapshot(
-        state,
-        graph,
-        this.engine.getHistoryCount(),
-        this.options.runtimeBuild,
-      ),
-    });
+      data: contract === 2
+        ? { ...snapshot, state_revision: nextStateRevision }
+        : snapshot,
+    };
+    if (contract === 2 && hadContractV2Client) {
+      // Contract-v2 patches share one authoritative baseline. A joining client
+      // can observe state newer than an existing client's last publication, so
+      // advance every v2 client together before replacing the shared baseline.
+      // Reconnects are rare and already require a full graph snapshot; this
+      // keeps subsequent keyed patches exact without per-client state copies.
+      this.send(ws, fullState);
+      for (const client of this.clients) {
+        if (client === ws || (this.clientContracts.get(client) ?? 1) !== 2) continue;
+        try {
+          this.send(client, fullState);
+        } catch {
+          client.close();
+        }
+      }
+    } else {
+      this.send(ws, fullState);
+    }
+    if (contract === 2 || (firstConnection && this.cachedState === undefined)) {
+      this.cachedState = state;
+    }
+    if (contract === 2) this.stateRevision = nextStateRevision;
     if (baselineCommunityChanges) {
       this.engine.acknowledgeCommunityChanges(baselineCommunityChanges);
     }
@@ -116,8 +156,32 @@ export class DashboardMainWebSocketHub {
     const validated = MainWebSocketEventSchema.parse(event);
     const message = JSON.stringify(validated);
     for (const ws of this.clients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(message);
+      if (this.contractFilter !== undefined
+        && (this.clientContracts.get(ws) ?? 1) !== this.contractFilter) continue;
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      try {
+        ws.send(message);
+      } catch {
+        ws.close();
+      }
     }
+  }
+
+  private broadcastContract(event: unknown, contract: 1 | 2): void {
+    if (!this.hasContract(contract)) return;
+    this.contractFilter = contract;
+    try {
+      this.broadcast(event);
+    } finally {
+      this.contractFilter = undefined;
+    }
+  }
+
+  private hasContract(contract: 1 | 2): boolean {
+    for (const ws of this.clients) {
+      if ((this.clientContracts.get(ws) ?? 1) === contract) return true;
+    }
+    return false;
   }
 
   onGraphUpdate(detail: GraphUpdateDetail): void {
@@ -183,7 +247,12 @@ export class DashboardMainWebSocketHub {
     // A graph delta must remain proportional to changed IDs. Global summaries,
     // frontier/community projections, and health are coalesced into the
     // state_refresh that follows instead of blocking this live graph update.
-    const state = this.cachedState ?? this.options.buildState();
+    // Compatibility-v1 state construction can itself populate derived caches
+    // and emit a nested detail. Build it before the nested drain so one flush
+    // still coalesces those changes; v2-only hubs skip this roster-sized work.
+    const v1State = this.hasContract(1)
+      ? (this.cachedState ?? this.options.buildState())
+      : undefined;
     const historyCount = this.engine.getHistoryCount();
     const nestedDetail = this.accumulator.drain();
     if (nestedDetail) {
@@ -207,11 +276,20 @@ export class DashboardMainWebSocketHub {
       includeDerivedCommunities: false,
     });
     this.pendingVisibilityChanges.clear();
-    this.broadcast({
+    const bounded = projectGraphDeltaData(graph, detail, historyCount);
+    if (v1State) {
+      this.broadcastContract({
+        type: 'graph_update',
+        timestamp: new Date().toISOString(),
+        data: projectGraphDelta(v1State, graph, detail, historyCount),
+      }, 1);
+    }
+    this.broadcastContract({
       type: 'graph_update',
+      contract_version: 2,
       timestamp: new Date().toISOString(),
-      data: projectGraphDelta(state, graph, detail, historyCount),
-    });
+      data: bounded,
+    }, 2);
     this.coldInventoryRevision = coldRevision;
     this.scheduleStateRefresh();
   }
@@ -230,24 +308,44 @@ export class DashboardMainWebSocketHub {
       }
       this.stateRefreshDirty = false;
       const state = this.options.buildState();
-      this.cachedState = state;
+      const previousState = this.cachedState;
       // buildState() above has populated the community cache. Taking the
       // detector-produced patch is proportional only to assignments that
       // changed since the previous publication.
       const communityChanges = this.engine.peekCommunityChanges();
       const communityIds = Object.fromEntries(communityChanges);
-      this.broadcast({
-        type: 'state_refresh',
-        timestamp: new Date().toISOString(),
-        data: {
-          state,
-          history_count: this.engine.getHistoryCount(),
-          // buildState() has already populated the topology-derived cache. Send
-          // only changed assignments so browser work remains proportional to
-          // the derived patch rather than the complete engagement graph.
-          community_ids: communityIds,
-        },
-      });
+      if (this.hasContract(1)) {
+        this.broadcastContract({
+          type: 'state_refresh',
+          timestamp: new Date().toISOString(),
+          data: {
+            state,
+            history_count: this.engine.getHistoryCount(),
+            // buildState() has already populated the topology-derived cache. Send
+            // only changed assignments so browser work remains proportional to
+            // the derived patch rather than the complete engagement graph.
+            community_ids: communityIds,
+          },
+        }, 1);
+      }
+      if (this.hasContract(2)) {
+        const baseRevision = this.stateRevision;
+        const stateRevision = baseRevision + 1;
+        this.broadcastContract({
+          type: 'state_refresh',
+          contract_version: 2,
+          timestamp: new Date().toISOString(),
+          data: {
+            patch: projectDashboardStatePatch(previousState, state),
+            base_revision: baseRevision,
+            state_revision: stateRevision,
+            history_count: this.engine.getHistoryCount(),
+            community_ids: communityIds,
+          },
+        }, 2);
+        this.stateRevision = stateRevision;
+      }
+      this.cachedState = state;
       this.engine.acknowledgeCommunityChanges(communityChanges);
     }, 750);
     if (typeof this.stateRefreshTimer.unref === 'function') this.stateRefreshTimer.unref();
@@ -272,6 +370,7 @@ export class DashboardMainWebSocketHub {
   }
 
   private send(ws: WebSocket, event: unknown): void {
+    if (ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify(MainWebSocketEventSchema.parse(event)));
   }
 }

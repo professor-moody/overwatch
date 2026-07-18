@@ -116,6 +116,27 @@ export class GenerationSocketController {
     return this.synchronized;
   }
 
+  /** Discard the current generation after an authoritative-state mismatch.
+   * The next socket must earn synchronization with a fresh full_state. */
+  reconnect(): void {
+    if (!this.running) return;
+    this.generation++;
+    this.clearRetry();
+    this.clearFullStateDeadline();
+    const socket = this.socket;
+    this.socket = null;
+    if (socket) {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.close();
+    }
+    this.setSynchronized(false);
+    this.options.onDisconnected?.();
+    this.scheduleRetry();
+  }
+
   currentGeneration(): number {
     return this.generation;
   }

@@ -342,6 +342,21 @@ export class AgentManager {
     return reaped;
   }
 
+  /** Read-only watchdog preflight. It deliberately returns only IDs so a no-op
+   * tick never clones the historical roster or drafts a durable state slice. */
+  getStaleHeartbeatTaskIds(now?: string): string[] {
+    const cutoffNow = now ? Date.parse(now) : Date.now();
+    const stale: string[] = [];
+    for (const task of this.ctx.agents.values()) {
+      if (task.status !== 'running' || !task.heartbeat_at) continue;
+      const last = Date.parse(task.heartbeat_at);
+      if (!Number.isFinite(last)) continue;
+      const ttl = (task.heartbeat_ttl_seconds ?? DEFAULT_HEARTBEAT_TTL_SECONDS) * 1_000;
+      if (cutoffNow - last > ttl) stale.push(taskIdOf(task));
+    }
+    return stale;
+  }
+
   /**
    * On startup, mark any persisted 'running' agents as 'interrupted'
    * since the runtime that spawned them no longer exists.

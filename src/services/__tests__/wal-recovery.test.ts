@@ -470,6 +470,40 @@ describe('WAL recovery integration', () => {
     closeEngine(r3);
   });
 
+  it('keeps merge and full-replace provenance identical across crash-before-flush recovery', () => {
+    const rawNode = (engine: GraphEngine) => JSON.parse(JSON.stringify(
+      (engine as any).ctx.graph.getNodeAttributes('provenance-node'),
+    ));
+    const r1 = openEngine();
+    r1.addNode({
+      id: 'provenance-node', type: 'host', label: 'provenance',
+      discovered_at: '2026-01-01T00:00:00Z', discovered_by: 'observer-a', confidence: 1,
+    });
+    r1.flushNow();
+    r1.addNode({
+      id: 'provenance-node', type: 'host', label: 'provenance',
+      discovered_at: '2026-01-01T00:01:00Z', discovered_by: 'observer-b', confidence: 1,
+    });
+    const merged = rawNode(r1);
+    expect(merged.sources).toEqual(['observer-a', 'observer-b']);
+    closeEngine(r1);
+
+    const r2 = openEngine();
+    expect(rawNode(r2)).toEqual(merged);
+    r2.patchNodeProperties(
+      'provenance-node',
+      { discovered_by: 'observer-c', temporary_marker: true },
+    );
+    r2.patchNodeProperties('provenance-node', {}, ['temporary_marker']);
+    const replaced = rawNode(r2);
+    expect(replaced.sources).toEqual(['observer-a', 'observer-b', 'observer-c']);
+    closeEngine(r2);
+
+    const r3 = openEngine();
+    expect(rawNode(r3)).toEqual(replaced);
+    closeEngine(r3);
+  });
+
   it('quarantines a fully framed uncommitted v2 tail and resumes from the committed prefix', () => {
     const r1 = openEngine();
     const baseCheckpoint = checkpoint(statePath);

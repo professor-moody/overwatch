@@ -19,7 +19,7 @@ import {
   type AgentQuery,
 } from '../../lib/api';
 import type { Campaign, FrontierItem } from '../../lib/types';
-import { buildMissionCard } from '../../lib/agent-mission';
+import { buildMissionCards } from '../../lib/agent-mission';
 import { POLL } from '../../lib/polling';
 import { CampaignBoard } from './CampaignBoard';
 import {
@@ -85,7 +85,7 @@ export function CampaignsPanel() {
   }, [view, loadAgentQueries]);
 
   const missionCards = useMemo(
-    () => agents.map(a => buildMissionCard(a, { agents, sessions, pendingActions, agentQueries })),
+    () => buildMissionCards(agents, { sessions, pendingActions, agentQueries }),
     [agents, sessions, pendingActions, agentQueries],
   );
 

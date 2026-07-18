@@ -54,7 +54,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function dashboardState() {
+function dashboardState(overrides: Record<string, unknown> = {}) {
   return {
     config: { id: 'dom-engagement', name: 'DOM engagement' },
     access_summary: {
@@ -85,20 +85,38 @@ function dashboardState() {
     scope_suggestions: [],
     phases: [],
     lab_readiness: { status: 'ready', top_issues: [] },
+    ...overrides,
   };
 }
 
-function fullState(historyCount: number) {
+function fullState(historyCount: number, state = dashboardState()) {
   return {
-    state: dashboardState(),
+    state,
     graph: { nodes: [], edges: [] },
     history_count: historyCount,
+    state_revision: 1,
     runtime_build: {
       schema_version: 1,
       input_sha256: 'd'.repeat(64),
       runtime_pid: 123,
       runtime_started_at: '2026-07-17T00:00:00.000Z',
     },
+  };
+}
+
+function agent(taskId: string, status: 'pending' | 'running' | 'completed' = 'running') {
+  return {
+    task_id: taskId,
+    agent_label: `agent-${taskId}`,
+    id: taskId,
+    agent_id: `agent-${taskId}`,
+    status,
+    assigned_at: '2026-07-18T00:00:00.000Z',
+    queued: status === 'pending',
+    lifecycle: status === 'completed' ? 'completed' : status === 'pending' ? 'queued' : 'live',
+    live: status === 'running',
+    subgraph_node_ids: [],
+    findings_count: 0,
   };
 }
 
@@ -213,5 +231,227 @@ describe('WsProvider effect ownership', () => {
     await waitFor(() => expect(screen.getByText(/legacy\/unknown/)).toBeInTheDocument());
     expect(screen.getByText('provider disconnected')).toBeInTheDocument();
     expect(socket.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('negotiates contract v2 and converges keyed agent patches exactly', async () => {
+    vi.mocked(api.getState).mockImplementation(() => new Promise(() => {}));
+    const socket = fakeSocket();
+    vi.mocked(createDashboardWebSocket).mockReturnValue(socket as unknown as WebSocket);
+
+    render(
+      <WsProvider>
+        <Probe />
+      </WsProvider>,
+    );
+    await waitFor(() => expect(createDashboardWebSocket).toHaveBeenCalledWith('/ws?contract=2'));
+
+    act(() => {
+      socket.readyState = 1;
+      socket.onopen?.(new Event('open'));
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'full_state',
+          contract_version: 2,
+          timestamp: '2026-07-18T00:00:01.000Z',
+          data: fullState(1, dashboardState({
+            agents: [agent('task-a'), agent('task-b')],
+          })),
+        }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText('provider connected')).toBeInTheDocument());
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'graph_update',
+          contract_version: 2,
+          timestamp: '2026-07-18T00:00:01.500Z',
+          data: {
+            history_count: 1,
+            detail: { updated_nodes: ['node-1'] },
+            delta: { nodes: [], edges: [], removed_nodes: [], removed_edges: [] },
+          },
+        }),
+      } as MessageEvent);
+    });
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'state_refresh',
+          contract_version: 2,
+          timestamp: '2026-07-18T00:00:02.000Z',
+          data: {
+            history_count: 2,
+            base_revision: 1,
+            state_revision: 2,
+            patch: {
+              agents: {
+                upsert: [agent('task-b', 'completed'), agent('task-c')],
+                remove: ['task-a'],
+                moves: [
+                  { id: 'task-c', index: 0 },
+                  { id: 'task-b', index: 1 },
+                ],
+                total: 2,
+              },
+            },
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(useEngagementStore.getState().agents.map(candidate => ({
+      task_id: candidate.task_id,
+      status: candidate.status,
+    }))).toEqual([
+      { task_id: 'task-c', status: 'running' },
+      { task_id: 'task-b', status: 'completed' },
+    ]);
+    expect(useEngagementStore.getState().historyCount).toBe(2);
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({ title: 'Agent completed', linkItem: 'task-b' }),
+    ]);
+  });
+
+  it('drops synchronization when a v2 patch targets the wrong full-state revision', async () => {
+    vi.mocked(api.getState).mockImplementation(() => new Promise(() => {}));
+    const socket = fakeSocket();
+    vi.mocked(createDashboardWebSocket).mockReturnValue(socket as unknown as WebSocket);
+
+    const rendered = render(
+      <WsProvider>
+        <Probe />
+      </WsProvider>,
+    );
+    await waitFor(() => expect(createDashboardWebSocket).toHaveBeenCalledTimes(1));
+    act(() => {
+      socket.readyState = 1;
+      socket.onopen?.(new Event('open'));
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'full_state',
+          contract_version: 2,
+          timestamp: '2026-07-18T00:00:01.000Z',
+          data: fullState(1),
+        }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText('provider connected')).toBeInTheDocument());
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'state_refresh',
+          contract_version: 2,
+          timestamp: '2026-07-18T00:00:02.000Z',
+          data: {
+            history_count: 2,
+            base_revision: 0,
+            state_revision: 1,
+            patch: { agents: { upsert: [], remove: [], moves: [], total: 0 } },
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => expect(screen.getByText('provider disconnected')).toBeInTheDocument());
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    expect(useEngagementStore.getState().historyCount).toBe(1);
+    expect(useEngagementStore.getState().stateRevision).toBe(1);
+    rendered.unmount();
+  });
+
+  it('drops synchronization when a synchronized state-channel event is malformed', async () => {
+    vi.mocked(api.getState).mockImplementation(() => new Promise(() => {}));
+    const socket = fakeSocket();
+    vi.mocked(createDashboardWebSocket).mockReturnValue(socket as unknown as WebSocket);
+
+    render(
+      <WsProvider>
+        <Probe />
+      </WsProvider>,
+    );
+    await waitFor(() => expect(createDashboardWebSocket).toHaveBeenCalledTimes(1));
+    act(() => {
+      socket.readyState = 1;
+      socket.onopen?.(new Event('open'));
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'full_state',
+          contract_version: 2,
+          timestamp: '2026-07-18T00:00:01.000Z',
+          data: fullState(7),
+        }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText('provider connected')).toBeInTheDocument());
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'graph_update',
+          contract_version: 2,
+          timestamp: '2026-07-18T00:00:02.000Z',
+          data: { history_count: 8, detail: {} },
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => expect(screen.getByText('provider disconnected')).toBeInTheDocument());
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    expect(useEngagementStore.getState().historyCount).toBe(7);
+  });
+
+  it('drops synchronization when a valid graph delta cannot be applied', async () => {
+    vi.mocked(api.getState).mockImplementation(() => new Promise(() => {}));
+    const socket = fakeSocket();
+    vi.mocked(createDashboardWebSocket).mockReturnValue(socket as unknown as WebSocket);
+
+    render(
+      <WsProvider>
+        <Probe />
+      </WsProvider>,
+    );
+    await waitFor(() => expect(createDashboardWebSocket).toHaveBeenCalledTimes(1));
+    act(() => {
+      socket.readyState = 1;
+      socket.onopen?.(new Event('open'));
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'full_state',
+          contract_version: 2,
+          timestamp: '2026-07-18T00:00:01.000Z',
+          data: fullState(11),
+        }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getByText('provider connected')).toBeInTheDocument());
+    const apply = vi.spyOn(useEngagementStore.getState(), 'applyGraphUpdate')
+      .mockImplementationOnce(() => {
+        throw new Error('synthetic graph projection failure');
+      });
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'graph_update',
+          contract_version: 2,
+          timestamp: '2026-07-18T00:00:02.000Z',
+          data: {
+            history_count: 12,
+            detail: {},
+            delta: { nodes: [], edges: [], removed_nodes: [], removed_edges: [] },
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => expect(screen.getByText('provider disconnected')).toBeInTheDocument());
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    expect(useEngagementStore.getState().historyCount).toBe(11);
+    apply.mockRestore();
   });
 });

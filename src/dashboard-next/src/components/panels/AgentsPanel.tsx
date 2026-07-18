@@ -6,7 +6,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 import * as api from '../../lib/api';
 import type { AgentInfo, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
 import { sessionsForAgent } from '../../lib/session-workspace';
-import { buildMissionCard, groupMissionCards } from '../../lib/agent-mission';
+import { buildMissionCards, groupMissionCards } from '../../lib/agent-mission';
 import { buildAgentThread } from '../../lib/agent-thread';
 import { threadConsoleEvents, type ActivityThread } from '../../lib/activity-threads';
 import { formatFrontierScore, getFrontierKey } from '../../lib/frontier-workspace';
@@ -121,7 +121,7 @@ export function AgentsPanel() {
 
   // Mission Cards: the operator-shaped per-agent view-model, grouped by campaign.
   const missionGroups = useMemo(
-    () => groupMissionCards(agents.map(a => buildMissionCard(a, { agents, sessions, pendingActions, agentQueries }))),
+    () => groupMissionCards(buildMissionCards(agents, { sessions, pendingActions, agentQueries })),
     [agents, sessions, pendingActions, agentQueries],
   );
   const elapsedById = useMemo(() => {
@@ -593,7 +593,7 @@ export function AgentsPanel() {
 
 // ---- Fleet roster (Mission Cards) ----
 
-function MissionRoster({
+export function MissionRoster({
   groups,
   agentCount,
   activeAgentId,
@@ -628,9 +628,31 @@ function MissionRoster({
   onForceRemoveAgent: (id: string) => void;
   onClearFinished: () => void;
 }) {
+  const FLEET_INITIAL_ROWS = 200;
+  const FLEET_ROW_STEP = 200;
+  const [renderLimit, setRenderLimit] = useState(FLEET_INITIAL_ROWS);
   const liveCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'running' || c.tone === 'blocked' || c.tone === 'stuck').length, 0);
   const failedCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'failed').length, 0);
   const finishedCount = groups.reduce((n, g) => n + g.cards.filter(c => c.status === 'completed' || c.status === 'failed' || c.status === 'interrupted').length, 0);
+  let remainingRows = renderLimit;
+  const visibleGroups = groups.map(group => {
+    if (collapsedGroups.has(group.key)) return { group, cards: [] };
+    const cards = group.cards.slice(0, Math.max(0, remainingRows));
+    remainingRows -= cards.length;
+    if (activeAgentId !== 'all'
+      && !cards.some(card => card.id === activeAgentId)) {
+      const active = group.cards.find(card => card.id === activeAgentId);
+      if (active) {
+        if (cards.length > 0) cards[cards.length - 1] = active;
+        else cards.push(active);
+      }
+    }
+    return { group, cards };
+  });
+  const visibleCount = visibleGroups.reduce((count, entry) => count + entry.cards.length, 0);
+  const renderableCount = groups.reduce((count, group) =>
+    count + (collapsedGroups.has(group.key) ? 0 : group.cards.length), 0);
+  const hiddenCount = Math.max(0, renderableCount - visibleCount);
 
   return (
     // Bounded so a long fleet scrolls within the card instead of bloating the
@@ -683,7 +705,7 @@ function MissionRoster({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {groups.map(group => {
+        {visibleGroups.map(({ group, cards }) => {
           const isCollapsed = collapsedGroups.has(group.key);
           const groupLive = group.cards.filter(c => c.tone === 'running' || c.tone === 'blocked' || c.tone === 'stuck').length;
           return (
@@ -696,7 +718,7 @@ function MissionRoster({
                 <span className="flex-1 truncate text-left font-medium text-foreground">{group.name}</span>
                 <span className="text-muted-foreground">{groupLive}/{group.cards.length}</span>
               </button>
-              {!isCollapsed && group.cards.map(card => (
+              {!isCollapsed && cards.map(card => (
                 <MissionCard
                   key={card.id}
                   card={card}
@@ -714,6 +736,15 @@ function MissionRoster({
             </div>
           );
         })}
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            className="w-full border-t border-border px-3 py-2 text-xs text-accent hover:bg-hover"
+            onClick={() => setRenderLimit(limit => Math.min(renderableCount, limit + FLEET_ROW_STEP))}
+          >
+            Show {Math.min(FLEET_ROW_STEP, hiddenCount)} more ({hiddenCount} hidden)
+          </button>
+        )}
         {agentCount === 0 && (
           <div className="mx-2 my-2 rounded border border-dashed border-border bg-background/40 p-3 text-xs text-muted-foreground">
             No subagents active. The primary operator stream remains available above.

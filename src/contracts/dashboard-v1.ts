@@ -1582,6 +1582,7 @@ export interface DashboardStateResponse {
   state: DashboardStateDto;
   graph: RawGraphDto;
   history_count: number;
+  state_revision?: number;
   runtime_build?: RuntimeBuildInfoDto;
   [key: string]: unknown;
 }
@@ -1589,6 +1590,7 @@ export const DashboardStateResponseSchema: z.ZodType<DashboardStateResponse> = z
   state: DashboardStateDtoSchema,
   graph: RawGraphDtoSchema,
   history_count: z.number().int().nonnegative(),
+  state_revision: z.number().int().nonnegative().optional(),
   runtime_build: RuntimeBuildInfoDtoSchema.optional(),
 }).passthrough();
 
@@ -1611,31 +1613,185 @@ export const GraphDeltaDtoSchema = z.object({
   cold_nodes: z.array(ColdNodeDtoSchema).optional(),
 }).passthrough();
 
-export interface GraphUpdateDataDto {
-  state: DashboardStateDto;
+interface GraphUpdateDataBaseDto {
   history_count: number;
   detail: z.infer<typeof GraphUpdateDetailDtoSchema>;
   delta: z.infer<typeof GraphDeltaDtoSchema>;
   [key: string]: unknown;
 }
-export const GraphUpdateDataDtoSchema: z.ZodType<GraphUpdateDataDto> = z.object({
+
+export interface GraphUpdateDataV1Dto extends GraphUpdateDataBaseDto {
+  state: DashboardStateDto;
+}
+
+export interface GraphUpdateDataV2Dto extends GraphUpdateDataBaseDto {
+  state?: never;
+}
+
+export type GraphUpdateDataDto = GraphUpdateDataV1Dto | GraphUpdateDataV2Dto;
+
+/** Compatibility-v1 graph updates always carry the complete projected state. */
+export const GraphUpdateDataDtoSchema: z.ZodType<GraphUpdateDataV1Dto> = z.object({
   state: DashboardStateDtoSchema,
   history_count: z.number().int().nonnegative(),
   detail: GraphUpdateDetailDtoSchema,
   delta: GraphDeltaDtoSchema,
 }).passthrough();
 
-export interface StateRefreshDataDto {
-  state: DashboardStateDto;
+export const GraphUpdateDataV2DtoSchema: z.ZodType<GraphUpdateDataV2Dto> = z.object({
+  history_count: z.number().int().nonnegative(),
+  detail: GraphUpdateDetailDtoSchema,
+  delta: GraphDeltaDtoSchema,
+}).passthrough().refine(value => value.state === undefined, {
+  message: 'contract-v2 graph_update must not contain full state',
+});
+
+const indexedCollectionPatchSchema = <T extends z.ZodTypeAny>(
+  value: T,
+  idOf: (record: z.infer<T>) => string,
+) => z.object({
+  upsert: z.array(value),
+  remove: z.array(z.string()),
+  moves: z.array(z.object({ id: z.string(), index: z.number().int().nonnegative() }).strict()),
+  total: z.number().int().nonnegative(),
+  replace: z.array(value).optional(),
+}).passthrough().superRefine((patch, ctx) => {
+  const duplicate = (values: string[]) => {
+    const seen = new Set<string>();
+    return values.find(id => id.length === 0 || seen.has(id) || (seen.add(id), false));
+  };
+  const upsertIds = patch.upsert.map(idOf);
+  const removeIds = patch.remove;
+  const moveIds = patch.moves.map(move => move.id);
+  const moveIndices = patch.moves.map(move => move.index);
+  const replaceIds = patch.replace?.map(idOf) ?? [];
+  for (const [label, ids] of [
+    ['upsert', upsertIds],
+    ['remove', removeIds],
+    ['moves', moveIds],
+    ['replace', replaceIds],
+  ] as const) {
+    const invalid = duplicate(ids);
+    if (invalid !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${label} contains an empty or duplicate canonical id` });
+    }
+  }
+  const removed = new Set(removeIds);
+  if (upsertIds.some(id => removed.has(id)) || moveIds.some(id => removed.has(id))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'removed ids cannot also be upserted or moved' });
+  }
+  if (
+    new Set(moveIndices).size !== moveIndices.length
+    || moveIndices.some(index => index >= patch.total)
+  ) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'move indices must be unique and below total' });
+  }
+  if (patch.replace !== undefined) {
+    if (patch.replace.length !== patch.total) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'replace length must equal total' });
+    }
+    if (patch.upsert.length > 0 || patch.remove.length > 0 || patch.moves.length > 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'replace cannot coexist with upsert, remove, or moves' });
+    }
+  }
+});
+
+export interface IndexedCollectionPatchDto<T> {
+  upsert: T[];
+  remove: string[];
+  moves: Array<{ id: string; index: number }>;
+  total: number;
+  replace?: T[];
+  [key: string]: unknown;
+}
+
+export interface DashboardStatePatchDto {
+  state?: Partial<Omit<DashboardStateDto, 'agents' | 'active_agents' | 'frontier'>>;
+  unset?: string[];
+  agents?: IndexedCollectionPatchDto<AgentDto>;
+  active_agents?: IndexedCollectionPatchDto<DashboardStateDto['active_agents'][number]>;
+  frontier?: IndexedCollectionPatchDto<FrontierItemDto>;
+  [key: string]: unknown;
+}
+
+export const DashboardStatePatchDtoSchema: z.ZodType<DashboardStatePatchDto> = z.object({
+  state: DashboardStateDtoSchema
+    .omit({ agents: true, active_agents: true, frontier: true })
+    .partial()
+    .optional(),
+  unset: z.array(z.string().trim().min(1))
+    .min(1)
+    .refine(keys => new Set(keys).size === keys.length, 'unset keys must be unique')
+    .refine(
+      keys => keys.every(key => key !== 'agents' && key !== 'active_agents' && key !== 'frontier'),
+      'indexed dashboard collections cannot be unset',
+    )
+    .optional(),
+  agents: indexedCollectionPatchSchema(AgentDtoSchema, record => record.task_id).optional(),
+  active_agents: indexedCollectionPatchSchema(
+    z.object({}).passthrough(),
+    record => {
+      const id = record.task_id ?? record.id ?? record.agent_id;
+      return typeof id === 'string' ? id : '';
+    },
+  ).optional(),
+  frontier: indexedCollectionPatchSchema(FrontierItemDtoSchema, record => record.id).optional(),
+}).passthrough().superRefine((patch, ctx) => {
+  if (!patch.state || !patch.unset) return;
+  for (const key of patch.unset) {
+    if (Object.prototype.hasOwnProperty.call(patch.state, key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['unset'],
+        message: `state key ${key} cannot be both set and unset`,
+      });
+    }
+  }
+});
+
+interface StateRefreshDataBaseDto {
   history_count: number;
   community_ids?: Record<string, number>;
   [key: string]: unknown;
 }
-export const StateRefreshDataDtoSchema: z.ZodType<StateRefreshDataDto> = z.object({
+
+export interface StateRefreshDataV1Dto extends StateRefreshDataBaseDto {
+  state: DashboardStateDto;
+  patch?: never;
+}
+
+export interface StateRefreshDataV2Dto extends StateRefreshDataBaseDto {
+  state?: never;
+  patch: DashboardStatePatchDto;
+  base_revision: number;
+  state_revision: number;
+}
+
+export type StateRefreshDataDto = StateRefreshDataV1Dto | StateRefreshDataV2Dto;
+
+/** Compatibility-v1 refreshes retain the original complete-state envelope. */
+export const StateRefreshDataDtoSchema: z.ZodType<StateRefreshDataV1Dto> = z.object({
   state: DashboardStateDtoSchema,
   history_count: z.number().int().nonnegative(),
   community_ids: z.record(z.string(), z.number()).optional(),
-}).passthrough();
+}).passthrough().refine(value => value.patch === undefined, {
+  message: 'contract-v1 state_refresh must not contain a patch',
+});
+
+export const StateRefreshDataV2DtoSchema: z.ZodType<StateRefreshDataV2Dto> = z.object({
+  patch: DashboardStatePatchDtoSchema,
+  base_revision: z.number().int().nonnegative(),
+  state_revision: z.number().int().positive(),
+  history_count: z.number().int().nonnegative(),
+  community_ids: z.record(z.string(), z.number()).optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (value.state !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'contract-v2 state_refresh must not contain full state' });
+  }
+  if (value.state_revision !== value.base_revision + 1) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'state_revision must immediately follow base_revision' });
+  }
+});
 
 const timestampedMainEvent = <T extends string, S extends z.ZodTypeAny>(type: T, data: S) => z.object({
   type: z.literal(type),
@@ -1643,10 +1799,17 @@ const timestampedMainEvent = <T extends string, S extends z.ZodTypeAny>(type: T,
   data,
 }).passthrough();
 
+const timestampedMainV2Event = <T extends string, S extends z.ZodTypeAny>(type: T, data: S) => z.object({
+  type: z.literal(type),
+  contract_version: z.literal(2),
+  timestamp: z.string(),
+  data,
+}).passthrough();
+
 export type MainWebSocketEvent =
-  | { type: 'full_state'; timestamp: string; data: DashboardStateResponse; [key: string]: unknown }
-  | { type: 'graph_update'; timestamp: string; data: GraphUpdateDataDto; [key: string]: unknown }
-  | { type: 'state_refresh'; timestamp: string; data: StateRefreshDataDto; [key: string]: unknown }
+  | { type: 'full_state'; contract_version?: 2; timestamp: string; data: DashboardStateResponse; [key: string]: unknown }
+  | { type: 'graph_update'; contract_version?: 2; timestamp: string; data: GraphUpdateDataDto; [key: string]: unknown }
+  | { type: 'state_refresh'; contract_version?: 2; timestamp: string; data: StateRefreshDataDto; [key: string]: unknown }
   | { type: 'agent_console_update'; timestamp: string; data: { events: AgentConsoleEventDto[]; [key: string]: unknown }; [key: string]: unknown }
   | { type: 'action_pending'; timestamp: string; data: PendingActionDto; [key: string]: unknown }
   | { type: 'action_resolved'; timestamp: string; data: { action_id: string; status: 'approved' | 'denied' | 'timeout' | 'aborted'; resolved_at: string; operator_notes?: string; reason?: string; auto_approved?: boolean; unattended_execute?: boolean; [key: string]: unknown }; [key: string]: unknown }
@@ -1654,7 +1817,7 @@ export type MainWebSocketEvent =
   | { type: 'agent_query'; timestamp: string; data: Record<string, unknown>; [key: string]: unknown }
   | { type: 'playbook_run_update'; timestamp: string; data: { run: PlaybookRunDto; [key: string]: unknown }; [key: string]: unknown };
 
-export const MainWebSocketEventSchema: z.ZodType<MainWebSocketEvent> = z.discriminatedUnion('type', [
+export const MainWebSocketV1EventSchema: z.ZodType<MainWebSocketEvent> = z.discriminatedUnion('type', [
   timestampedMainEvent('full_state', DashboardStateResponseSchema),
   timestampedMainEvent('graph_update', GraphUpdateDataDtoSchema),
   timestampedMainEvent('state_refresh', StateRefreshDataDtoSchema),
@@ -1678,6 +1841,29 @@ export const MainWebSocketEventSchema: z.ZodType<MainWebSocketEvent> = z.discrim
   }).passthrough()),
   timestampedMainEvent('agent_query', z.record(z.unknown())),
   timestampedMainEvent('playbook_run_update', z.object({ run: PlaybookRunSchema }).passthrough()),
+]).superRefine((event, ctx) => {
+  if (event.contract_version === 2) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'contract_version 2 requires a v2 state-channel envelope' });
+  }
+});
+
+const DashboardStateResponseV2Schema = z.object({
+  state: DashboardStateDtoSchema,
+  graph: RawGraphDtoSchema,
+  history_count: z.number().int().nonnegative(),
+  state_revision: z.number().int().nonnegative(),
+  runtime_build: RuntimeBuildInfoDtoSchema.optional(),
+}).passthrough();
+
+export const MainWebSocketV2StateEventSchema: z.ZodType<MainWebSocketEvent> = z.discriminatedUnion('type', [
+  timestampedMainV2Event('full_state', DashboardStateResponseV2Schema),
+  timestampedMainV2Event('graph_update', GraphUpdateDataV2DtoSchema),
+  timestampedMainV2Event('state_refresh', StateRefreshDataV2DtoSchema),
+]);
+
+export const MainWebSocketEventSchema: z.ZodType<MainWebSocketEvent> = z.union([
+  MainWebSocketV2StateEventSchema,
+  MainWebSocketV1EventSchema,
 ]);
 
 export const SessionWebSocketClientEventSchema = z.discriminatedUnion('type', [
