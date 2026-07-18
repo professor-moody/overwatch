@@ -43,6 +43,7 @@ import {
 import {
   CURRENT_JOURNAL_VERSION,
   LEGACY_JOURNAL_VERSION,
+  validatePersistedApplicationCommandV1,
 } from './persisted-state.js';
 import type {
   EngineOperation,
@@ -63,6 +64,11 @@ import {
   type DurableStatePatchV1,
 } from './durable-state-patch.js';
 import type { ActivityAppendPayloadV1 } from './activity-append.js';
+import type { ApplicationCommandChangePayloadV1 } from './application-command-change.js';
+import {
+  MAX_COMMAND_COORDINATION_VALUE_BYTES,
+  type CommandCoordinationChangePayloadV1,
+} from './command-coordination-change.js';
 
 type WriteSyncLike = (
   fd: number,
@@ -131,6 +137,8 @@ export type MutationType =
   | 'identity_rewrite'
   | 'graph_corrected'
   | 'activity_append'
+  | 'application_command_change'
+  | 'command_coordination_change'
   | 'state_patch';
 
 export const JOURNAL_V2_CHUNK_BYTES = 64 * 1024;
@@ -231,6 +239,8 @@ export interface DropNodeMutationPayloadV1 {
     edge_type: string;
     props: EdgeProperties;
   }>;
+  /** The enclosing v2 transaction carries the finalized graph-correction audit. */
+  audit_event_externalized?: boolean;
 }
 
 export interface IdentityRewriteNodeStateV1 {
@@ -262,6 +272,8 @@ export interface IdentityRewriteMutationPayloadV1 {
     before?: IdentityRewriteEdgeStateV1;
     after?: IdentityRewriteEdgeStateV1;
   }>;
+  /** The enclosing v2 transaction carries finalized activity_append records. */
+  audit_events_externalized?: boolean;
   audit_events: Array<{
     description: string;
     category?: 'system' | 'inference';
@@ -292,6 +304,10 @@ export interface GraphCorrectedMutationPayloadV1 {
   edge_changes: IdentityRewriteMutationPayloadV1['edge_changes'];
   before_summary: { total_nodes: number; total_edges: number };
   after_summary: { total_nodes: number; total_edges: number };
+  /** New writers externalize the audit entry as an immutable
+   * `activity_append` operation in the same transaction. Older payloads omit
+   * this flag and retain the legacy in-applier audit behavior. */
+  audit_event_externalized?: boolean;
   /** Optional command-state envelope committed with the destructive graph
    * correction so retries cannot repeat it after a lost response. */
   state_patch?: DurableStatePatchV1;
@@ -323,6 +339,8 @@ const REPLAYABLE_MUTATION_TYPES = new Set<string>([
   'identity_rewrite',
   'graph_corrected',
   'activity_append',
+  'application_command_change',
+  'command_coordination_change',
   'state_patch',
 ]);
 
@@ -392,6 +410,12 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
       }
       if (payload.action_id !== undefined && !nonEmptyString(payload.action_id)) {
         return { ok: false, reason: 'drop_node payload.action_id must be a non-empty string when present' };
+      }
+      if (
+        payload.audit_event_externalized !== undefined
+        && typeof payload.audit_event_externalized !== 'boolean'
+      ) {
+        return { ok: false, reason: 'drop_node payload.audit_event_externalized must be boolean' };
       }
       if (!Array.isArray(payload.incident_edges)) {
         return { ok: false, reason: 'drop_node payload.incident_edges must be an array' };
@@ -489,6 +513,12 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
       if (!Array.isArray(payload.audit_events)) {
         return { ok: false, reason: 'identity_rewrite payload.audit_events must be an array' };
       }
+      if (
+        payload.audit_events_externalized !== undefined
+        && typeof payload.audit_events_externalized !== 'boolean'
+      ) {
+        return { ok: false, reason: 'identity_rewrite payload.audit_events_externalized must be boolean' };
+      }
       for (const event of payload.audit_events) {
         if (
           !isRecord(event)
@@ -534,6 +564,12 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
       }
       if (payload.action_id !== undefined && !nonEmptyString(payload.action_id)) {
         return { ok: false, reason: 'graph_corrected payload.action_id must be a non-empty string when present' };
+      }
+      if (
+        payload.audit_event_externalized !== undefined
+        && typeof payload.audit_event_externalized !== 'boolean'
+      ) {
+        return { ok: false, reason: 'graph_corrected payload.audit_event_externalized must be boolean' };
       }
       if (!Array.isArray(payload.operations) || payload.operations.length === 0) {
         return { ok: false, reason: 'graph_corrected payload.operations must be a non-empty array' };
@@ -675,6 +711,110 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
       const unsupported = sliceKeys.find(key => !allowed.has(key));
       if (unsupported) {
         return { ok: false, reason: `state_patch contains unsupported slice: ${unsupported}` };
+      }
+      break;
+    }
+    case 'application_command_change': {
+      const change = payload as unknown as ApplicationCommandChangePayloadV1;
+      if (change.payload_version !== 1) {
+        return {
+          ok: false,
+          reason: 'application_command_change payload.payload_version must be 1',
+        };
+      }
+      if (
+        !nonEmptyString(change.operation_id)
+        || !nonEmptyString(change.occurred_at)
+        || !Number.isFinite(Date.parse(change.occurred_at))
+        || !nonEmptyString(change.idempotency_key)
+        || (change.before === null && change.after === null)
+      ) {
+        return {
+          ok: false,
+          reason: 'application_command_change requires operation_id, occurred_at, idempotency_key, and a before or after record',
+        };
+      }
+      try {
+        if (change.before !== null) {
+          validatePersistedApplicationCommandV1(
+            change.before,
+            'application_command_change.before',
+            {
+              expected_idempotency_key: change.idempotency_key,
+              enforce_limits: false,
+              enforce_lifecycle: false,
+            },
+          );
+        }
+        if (change.after !== null) {
+          validatePersistedApplicationCommandV1(
+            change.after,
+            'application_command_change.after',
+            { expected_idempotency_key: change.idempotency_key },
+          );
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+      break;
+    }
+    case 'command_coordination_change': {
+      const change = payload as unknown as CommandCoordinationChangePayloadV1;
+      if (change.payload_version !== 1) {
+        return {
+          ok: false,
+          reason: 'command_coordination_change payload.payload_version must be 1',
+        };
+      }
+      if (
+        !nonEmptyString(change.operation_id)
+        || !nonEmptyString(change.occurred_at)
+        || !Number.isFinite(Date.parse(change.occurred_at))
+        || !nonEmptyString(change.key)
+        || (change.record_kind !== 'plan' && change.record_kind !== 'outcome')
+        || (change.before === null && change.after === null)
+      ) {
+        return {
+          ok: false,
+          reason: 'command_coordination_change requires operation_id, occurred_at, record_kind, key, and a before or after record',
+        };
+      }
+      for (const [phase, value] of [
+        ['before', change.before],
+        ['after', change.after],
+      ] as const) {
+        if (value === null) continue;
+        if (!isRecord(value)) {
+          return { ok: false, reason: `command_coordination_change.${phase} must be an object or null` };
+        }
+        const record = value as Record<string, unknown>;
+        if (
+          phase === 'after'
+          && Buffer.byteLength(JSON.stringify(value)) > MAX_COMMAND_COORDINATION_VALUE_BYTES
+        ) {
+          return { ok: false, reason: 'command_coordination_change.after exceeds its size limit' };
+        }
+        if (change.record_kind === 'plan') {
+          if (
+            typeof record.command !== 'string'
+            || !Array.isArray(record.ops)
+            || !Number.isFinite(record.created_at)
+            || !Number.isFinite(record.expires_at)
+            || (record.expires_at as number) <= (record.created_at as number)
+          ) {
+            return { ok: false, reason: `command_coordination_change.${phase} plan is malformed` };
+          }
+        } else if (
+          !Array.isArray(record.results)
+          || !Number.isFinite(record.at)
+          || !Number.isFinite(record.expires_at)
+          || (record.expires_at as number) <= (record.at as number)
+        ) {
+          return { ok: false, reason: `command_coordination_change.${phase} outcome is malformed` };
+        }
       }
       break;
     }
@@ -990,6 +1130,40 @@ function validateEngineOperation(
   };
 }
 
+export function validateTransactionOperationRelationships(
+  operations: readonly EngineOperation[],
+): { ok: true } | { ok: false; reason: string } {
+  const externalizedAuditIds = new Set<string>();
+  for (const operation of operations) {
+    if (operation.type !== 'activity_append') continue;
+    const append = operation.payload as unknown as ActivityAppendPayloadV1;
+    for (const item of append.items ?? []) {
+      const operationId = item.entry.details?.operation_id;
+      if (
+        item.entry.event_type === 'graph_corrected'
+        && typeof operationId === 'string'
+      ) {
+        externalizedAuditIds.add(operationId);
+      }
+    }
+  }
+  for (const operation of operations) {
+    if (operation.type !== 'drop_node' && operation.type !== 'graph_corrected') continue;
+    const payload = operation.payload as Record<string, unknown>;
+    if (payload.audit_event_externalized !== true) continue;
+    if (
+      typeof payload.operation_id !== 'string'
+      || !externalizedAuditIds.has(payload.operation_id)
+    ) {
+      return {
+        ok: false,
+        reason: `${operation.type} externalized audit requires a matching activity_append in the same transaction`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 function transactionPayload(
   draft: EngineTransactionDraft,
 ): Buffer {
@@ -1057,6 +1231,14 @@ function encodeTransactionFrames(transaction: EngineTransaction): Buffer {
         `Refusing to append malformed engine transaction operation ${index}: ${validation.reason}`,
       );
     }
+  }
+  const relationshipValidation = validateTransactionOperationRelationships(
+    transaction.operations,
+  );
+  if (!relationshipValidation.ok) {
+    throw new Error(
+      `Refusing to append malformed engine transaction: ${relationshipValidation.reason}`,
+    );
   }
 
   const payload = transactionPayload(transaction);
@@ -2377,6 +2559,20 @@ export class MutationJournal {
         if (!REPLAYABLE_MUTATION_TYPES.has(validation.operation.type)) {
           unknownOperation ??= validation.operation;
         }
+      }
+      const relationshipValidation = validateTransactionOperationRelationships(operations);
+      if (!relationshipValidation.ok) {
+        return issue(
+          'malformed_entry',
+          firstLine,
+          firstOffset,
+          `transaction ${begin.tx_id} is invalid: ${relationshipValidation.reason}`,
+          {
+            actual_seq: begin.tx_seq,
+            frame_seq: commit.frame_seq as number,
+            tx_id: begin.tx_id,
+          },
+        );
       }
       const transaction: EngineTransaction = {
         version: CURRENT_JOURNAL_VERSION,

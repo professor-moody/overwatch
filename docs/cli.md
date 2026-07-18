@@ -141,6 +141,7 @@ binary; Overwatch deliberately refuses to downgrade or reseed it.
 | `--no-color` | Disable ANSI color |
 | `--url <url>` | API base URL (default: `$OVERWATCH_URL` or `http://127.0.0.1:8384`) |
 | `--token <tok>` | Bearer token for a remote, non-loopback server (`$OVERWATCH_DASHBOARD_TOKEN`) |
+| `--command-id <id>` | Explicit identity for an intentionally independent mutation (`$OVERWATCH_COMMAND_ID`) |
 | `--state-file <path>` | Local state path for `state migrate --check` (`$OVERWATCH_STATE_FILE`) |
 | `--config-file <path>` | Local config path for `state migrate --check` (`$OVERWATCH_CONFIG`) |
 | `--help` | Help, or `overwatch <command> --help` |

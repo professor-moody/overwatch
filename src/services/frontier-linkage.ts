@@ -154,6 +154,16 @@ export class FrontierLinkageTracker {
     return this.records.get(id);
   }
 
+  /**
+   * Restore one record captured by the transaction applier. This deliberately
+   * narrow seam keeps activity-append rollback proportional to the frontier
+   * items touched by that append instead of cloning the complete tracker.
+   */
+  restoreRecord(id: string, record: FrontierLinkageRecord | undefined): void {
+    if (record) this.records.set(id, { ...record });
+    else this.records.delete(id);
+  }
+
   /** All records as an array. Used by P3.1 decision-log derivation. */
   getAll(): FrontierLinkageRecord[] {
     return Array.from(this.records.values());

@@ -64,6 +64,25 @@ export const AgentRegisterInputSchema = z.object({
 
 export type AgentRegisterInput = z.infer<typeof AgentRegisterInputSchema>;
 
+const ExactAgentTaskSchema = z.object({
+  id: z.string().trim().min(1),
+  task_id: z.string().trim().min(1).optional(),
+  agent_id: z.string().trim().min(1),
+  agent_label: z.string().trim().min(1).optional(),
+  assigned_at: z.string().min(1),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'interrupted']),
+  subgraph_node_ids: z.array(z.string()),
+}).passthrough();
+
+const ExactAgentRegisterInputSchema = z.object({
+  task: ExactAgentTaskSchema,
+}).strict();
+
+export interface ExactAgentRegisterResponse {
+  task: AgentTask;
+  registration: ReturnType<GraphEngine['registerAgent']>;
+}
+
 export interface DispatchCommandResponse {
   http_status: 201 | 409 | 429;
   body: Record<string, unknown>;
@@ -240,6 +259,7 @@ function taskResult(
 ): ApplicationCommandExecution<QuickDeployCommandResponse> {
   return {
     command_id: command.command_id,
+    retry_token: command.idempotency_key,
     idempotency_key: command.idempotency_key,
     status: command.status,
     replayed,
@@ -327,6 +347,37 @@ export class DispatchCommandService {
             : {}),
         };
       },
+    });
+    if (execution.status === 'failed' || execution.status === 'interrupted') {
+      domainErrorFromExecution(execution);
+    }
+    return execution;
+  }
+
+  /** Internal scheduler registration with a preallocated task identity.
+   * Public adapters continue to use register()/dispatch(); this path exists so
+   * autonomous CVE/orchestrator scheduling is no longer a direct graph write. */
+  registerExact(
+    task: AgentTask,
+    metadata: ApplicationCommandMetadata = {},
+  ): ApplicationCommandExecution<ExactAgentRegisterResponse> {
+    const execution = this.commands.executeSync({
+      command_kind: 'agent.runtime.register',
+      input: { task },
+      schema: ExactAgentRegisterInputSchema,
+      metadata,
+      state_keys: ['agents', 'campaigns', 'activity', 'frontier'],
+      execute: parsed => {
+        const exactTask = structuredClone(parsed.task) as AgentTask;
+        return {
+          task: exactTask,
+          registration: this.engine.registerAgent(exactTask),
+        };
+      },
+      record: (_input, result) => ({
+        frontier_item_id: result.task.frontier_item_id,
+        entity_refs: { task_id: result.task.task_id ?? result.task.id },
+      }),
     });
     if (execution.status === 'failed' || execution.status === 'interrupted') {
       domainErrorFromExecution(execution);
@@ -545,9 +596,9 @@ export class DispatchCommandService {
             entity_refs: { task_id: task.task_id ?? task.id },
             result: body,
           };
-          this.engine.recordApplicationCommand(command);
           return taskResult(command, false);
         },
+        execution => execution.record,
       );
     } catch (error) {
       if (error instanceof ApplicationCommandConflictError) throw error;
@@ -563,8 +614,11 @@ export class DispatchCommandService {
       }
       throw error;
     }
-    const execution = scopeResult.result;
-    return execution;
+    const installed = this.engine.getApplicationCommand(identity.idempotency_key);
+    if (!installed) {
+      throw new Error('Quick deploy committed without its application-command receipt.');
+    }
+    return taskResult(installed, scopeResult.result.replayed);
   }
 
   private executeDispatch(input: AgentDispatchInput): DispatchCommandResponse {

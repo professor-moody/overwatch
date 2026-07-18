@@ -1420,10 +1420,14 @@ export class EvidenceStore {
   }
 
   /** Retrieve full evidence content by ID or content_hash. */
-  getContent(idOrHash: string): string | null {
+  getContent(idOrHash: string, opts?: { max_bytes?: number }): string | null {
     const path = this.resolveBlobPath(idOrHash, 'content');
     if (!path) return null;
     if (!existsSync(path)) return null;
+    if (typeof opts?.max_bytes === 'number') {
+      const bounded = readPinnedBlobBounded(path, opts.max_bytes);
+      return bounded?.toString('utf-8') ?? null;
+    }
     return readFileSync(path, 'utf-8');
   }
 

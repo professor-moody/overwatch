@@ -398,6 +398,10 @@ export type ApplicationCommandStatus =
   | 'failed'
   | 'interrupted';
 
+export const MAX_PERSISTED_APPLICATION_COMMAND_INPUT_BYTES = 4 * 1024 * 1024;
+export const MAX_PERSISTED_APPLICATION_COMMAND_RESULT_BYTES = 4 * 1024 * 1024;
+export const MAX_PERSISTED_APPLICATION_COMMAND_ERROR_DETAILS_BYTES = 256 * 1024;
+
 /**
  * Durable transport-neutral command record.
  *
@@ -428,6 +432,25 @@ export interface PersistedApplicationCommandV1 {
     details?: unknown;
   };
   entity_refs?: Record<string, string | string[]>;
+  /**
+   * The class supplies a full-response cap while the group scopes one adapter
+   * or connection generation. When a terminal response ages out, the record
+   * is compacted in place to the fail-closed identity fields below.
+   */
+  retention_class?: string;
+  retention_group?: string;
+  retention_max_group_records?: number;
+  retention_max_class_records?: number;
+  retention_max_class_bytes?: number;
+  retention_max_age_ms?: number;
+  /** Durable terminal-completion order; clocks are diagnostic only. */
+  completion_sequence?: number;
+  /** Compact fail-closed identity retained after the full response ages out. */
+  receipt_expired_at?: string;
+  receipt_terminal_status?: Extract<
+    ApplicationCommandStatus,
+    'succeeded' | 'failed' | 'interrupted'
+  >;
 }
 
 /**
@@ -530,6 +553,353 @@ function requireIsoDate(value: unknown, path: string): string {
     throw new PersistedStateVersionError(`${path} must be an ISO-compatible timestamp`, CURRENT_STATE_VERSION, 'invalid');
   }
   return stringValue;
+}
+
+function requireJsonWithinBytes(value: unknown, path: string, maxBytes: number): void {
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value, (_key, candidate: unknown) => {
+      if (typeof candidate === 'number' && !Number.isFinite(candidate)) {
+        throw new TypeError('non-finite number');
+      }
+      if (
+        typeof candidate === 'bigint'
+        || typeof candidate === 'function'
+        || typeof candidate === 'symbol'
+      ) {
+        throw new TypeError(`unsupported ${typeof candidate}`);
+      }
+      return candidate;
+    });
+  } catch (error) {
+    throw new PersistedStateVersionError(
+      `${path} must be JSON-compatible: ${error instanceof Error ? error.message : String(error)}`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  if (serialized === undefined) {
+    throw new PersistedStateVersionError(
+      `${path} must have a JSON representation`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  const bytes = Buffer.byteLength(serialized);
+  if (bytes > maxBytes) {
+    throw new PersistedStateVersionError(
+      `${path} exceeds the durable ${maxBytes}-byte limit`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+}
+
+export function validatePersistedApplicationCommandV1(
+  value: unknown,
+  path = 'persisted application command',
+  options: {
+    expected_idempotency_key?: string;
+    enforce_limits?: boolean;
+    enforce_lifecycle?: boolean;
+  } = {},
+): PersistedApplicationCommandV1 {
+  const command = requireRecord(value, path);
+  const commandId = requireString(command.command_id, `${path}.command_id`);
+  const idempotencyKey = requireString(command.idempotency_key, `${path}.idempotency_key`);
+  if (
+    options.expected_idempotency_key !== undefined
+    && idempotencyKey !== options.expected_idempotency_key
+  ) {
+    throw new PersistedStateVersionError(
+      `${path}.idempotency_key must match map key`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  if (commandId.length > 256 || idempotencyKey.length > 512) {
+    throw new PersistedStateVersionError(
+      `${path} command identifiers exceed their supported length`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  if (!/^[a-f0-9]{64}$/.test(requireString(command.input_sha256, `${path}.input_sha256`))) {
+    throw new PersistedStateVersionError(
+      `${path}.input_sha256 must be a lowercase SHA-256 digest`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  if (command.validated_input === undefined) {
+    throw new PersistedStateVersionError(
+      `${path}.validated_input is required`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  requireJsonWithinBytes(
+    command.validated_input,
+    `${path}.validated_input`,
+    options.enforce_limits === false
+      ? Number.MAX_SAFE_INTEGER
+      : MAX_PERSISTED_APPLICATION_COMMAND_INPUT_BYTES,
+  );
+  requireString(command.command_kind, `${path}.command_kind`);
+  if (![
+    'mcp',
+    'dashboard',
+    'cli',
+    'planner',
+    'scripted_runner',
+    'headless_runner',
+    'system',
+  ].includes(requireString(command.transport, `${path}.transport`))) {
+    throw new PersistedStateVersionError(
+      `${path}.transport is invalid`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  if (command.actor_task_id !== null) {
+    requireString(command.actor_task_id, `${path}.actor_task_id`);
+  }
+  const status = requireString(command.status, `${path}.status`);
+  if (!['accepted', 'running', 'succeeded', 'failed', 'interrupted'].includes(status)) {
+    throw new PersistedStateVersionError(
+      `${path}.status is invalid`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  requireIsoDate(command.created_at, `${path}.created_at`);
+  if (command.started_at !== undefined) requireIsoDate(command.started_at, `${path}.started_at`);
+  if (command.completed_at !== undefined) requireIsoDate(command.completed_at, `${path}.completed_at`);
+  if (command.completion_sequence !== undefined) {
+    if (
+      !Number.isSafeInteger(command.completion_sequence)
+      || (command.completion_sequence as number) <= 0
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}.completion_sequence must be a positive safe integer`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (!['succeeded', 'failed', 'interrupted'].includes(status)) {
+      throw new PersistedStateVersionError(
+        `${path}.completion_sequence is forbidden for non-terminal commands`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+  }
+  if (options.enforce_lifecycle !== false) {
+    if ((status === 'running' || status === 'succeeded') && command.started_at === undefined) {
+      throw new PersistedStateVersionError(
+        `${path}.started_at is required while running or succeeded`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (
+      (status === 'succeeded' || status === 'failed' || status === 'interrupted')
+      && command.completed_at === undefined
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}.completed_at is required for terminal commands`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (
+      (status === 'accepted' || status === 'running')
+      && command.completed_at !== undefined
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}.completed_at is forbidden for non-terminal commands`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+  }
+  for (const field of ['action_id', 'frontier_item_id', 'plan_id'] as const) {
+    if (command[field] !== undefined) requireString(command[field], `${path}.${field}`);
+  }
+  if (command.receipt_expired_at !== undefined) {
+    requireIsoDate(command.receipt_expired_at, `${path}.receipt_expired_at`);
+    if (
+      !['succeeded', 'failed', 'interrupted'].includes(
+        requireString(command.receipt_terminal_status, `${path}.receipt_terminal_status`),
+      )
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}.receipt_terminal_status is invalid`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (status !== 'failed') {
+      throw new PersistedStateVersionError(
+        `${path} expired receipt tombstones must use failed status`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    if (command.completion_sequence === undefined) {
+      throw new PersistedStateVersionError(
+        `${path} expired receipt tombstones require completion_sequence`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+  } else if (command.receipt_terminal_status !== undefined) {
+    throw new PersistedStateVersionError(
+      `${path}.receipt_terminal_status requires receipt_expired_at`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  for (const field of ['retention_class', 'retention_group'] as const) {
+    if (command[field] !== undefined) {
+      const candidate = requireString(command[field], `${path}.${field}`);
+      const maxLength = field === 'retention_class' ? 256 : 512;
+      if (candidate.length > maxLength) {
+        throw new PersistedStateVersionError(
+          `${path}.${field} exceeds its supported length`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+    }
+  }
+  for (const field of [
+    'retention_max_group_records',
+    'retention_max_class_records',
+  ] as const) {
+    if (command[field] !== undefined) {
+      const candidate = command[field];
+      const max = field === 'retention_max_group_records' ? 100_000 : 1_000_000;
+      if (
+        !Number.isSafeInteger(candidate)
+        || (candidate as number) < 1
+        || (candidate as number) > max
+      ) {
+        throw new PersistedStateVersionError(
+          `${path}.${field} must be an integer from 1 through ${max}`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+    }
+  }
+  for (const [field, max] of [
+    ['retention_max_class_bytes', 4 * 1024 * 1024 * 1024],
+    ['retention_max_age_ms', 10 * 365 * 24 * 60 * 60 * 1_000],
+  ] as const) {
+    const candidate = command[field];
+    if (
+      candidate !== undefined
+      && (
+        !Number.isSafeInteger(candidate)
+        || (candidate as number) < 1
+        || (candidate as number) > max
+      )
+    ) {
+      throw new PersistedStateVersionError(
+        `${path}.${field} must be an integer from 1 through ${max}`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+  }
+  const retentionFields = [
+    command.retention_class,
+    command.retention_group,
+    command.retention_max_group_records,
+    command.retention_max_class_records,
+  ];
+  if (
+    retentionFields.some(value => value !== undefined)
+    && retentionFields.some(value => value === undefined)
+  ) {
+    throw new PersistedStateVersionError(
+      `${path} retention metadata must be either complete or absent`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  if (
+    command.receipt_expired_at !== undefined
+    && retentionFields.some(value => value !== undefined)
+  ) {
+    throw new PersistedStateVersionError(
+      `${path} expired receipt tombstones cannot carry retention metadata`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  if (
+    typeof command.retention_max_group_records === 'number'
+    && typeof command.retention_max_class_records === 'number'
+    && command.retention_max_group_records > command.retention_max_class_records
+  ) {
+    throw new PersistedStateVersionError(
+      `${path}.retention_max_group_records cannot exceed retention_max_class_records`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  if (command.error !== undefined) {
+    const error = requireRecord(command.error, `${path}.error`);
+    requireString(error.message, `${path}.error.message`, true);
+    if (error.code !== undefined) requireString(error.code, `${path}.error.code`);
+    if (error.details !== undefined) {
+      requireJsonWithinBytes(
+        error.details,
+        `${path}.error.details`,
+        options.enforce_limits === false
+          ? Number.MAX_SAFE_INTEGER
+          : MAX_PERSISTED_APPLICATION_COMMAND_ERROR_DETAILS_BYTES,
+      );
+    }
+  }
+  if (
+    command.receipt_expired_at !== undefined
+    && (
+      command.error === undefined
+      || !isRecord(command.error)
+      || command.error.code !== 'COMMAND_RECEIPT_EXPIRED'
+    )
+  ) {
+    throw new PersistedStateVersionError(
+      `${path} expired receipt tombstones require COMMAND_RECEIPT_EXPIRED`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  if (command.result !== undefined) {
+    requireJsonWithinBytes(
+      command.result,
+      `${path}.result`,
+      options.enforce_limits === false
+        ? Number.MAX_SAFE_INTEGER
+        : MAX_PERSISTED_APPLICATION_COMMAND_RESULT_BYTES,
+    );
+  }
+  if (command.entity_refs !== undefined) {
+    const refs = requireRecord(command.entity_refs, `${path}.entity_refs`);
+    for (const [name, reference] of Object.entries(refs)) {
+      if (typeof reference === 'string') {
+        requireString(reference, `${path}.entity_refs.${name}`);
+      } else {
+        for (const [index, item] of requireArray(reference, `${path}.entity_refs.${name}`).entries()) {
+          requireString(item, `${path}.entity_refs.${name}[${index}]`);
+        }
+      }
+    }
+  }
+  return command as unknown as PersistedApplicationCommandV1;
 }
 
 function validateStringNumberRecord(value: unknown, path: string): void {
@@ -1869,9 +2239,17 @@ export function validatePersistedStateV1(value: unknown): PersistedStateV1 {
   });
   if (record.applicationCommands !== undefined) {
     const commandIds = new Set<string>();
+    const completionSequences = new Set<number>();
     validateMapTuples(record.applicationCommands, 'persisted applicationCommands', (candidate, path, key) => {
-      const command = requireRecord(candidate, path);
-      const commandId = requireString(command.command_id, `${path}.command_id`);
+      const command = validatePersistedApplicationCommandV1(candidate, path, {
+        expected_idempotency_key: key,
+        // Existing V1 states predate bounded command payloads and strict
+        // lifecycle timestamps. Continue reading them; every new command WAL
+        // delta is validated under the current strict contract.
+        enforce_limits: false,
+        enforce_lifecycle: false,
+      });
+      const commandId = command.command_id;
       if (commandIds.has(commandId)) {
         throw new PersistedStateVersionError(
           `persisted applicationCommands contains duplicate command_id ${commandId}`,
@@ -1880,94 +2258,15 @@ export function validatePersistedStateV1(value: unknown): PersistedStateV1 {
         );
       }
       commandIds.add(commandId);
-      const idempotencyKey = requireString(command.idempotency_key, `${path}.idempotency_key`);
-      if (idempotencyKey !== key) {
-        throw new PersistedStateVersionError(
-          `${path}.idempotency_key must match map key`,
-          CURRENT_STATE_VERSION,
-          'invalid',
-        );
-      }
-      if (commandId.length > 256 || idempotencyKey.length > 512) {
-        throw new PersistedStateVersionError(
-          `${path} command identifiers exceed their supported length`,
-          CURRENT_STATE_VERSION,
-          'invalid',
-        );
-      }
-      if (!/^[a-f0-9]{64}$/.test(requireString(command.input_sha256, `${path}.input_sha256`))) {
-        throw new PersistedStateVersionError(
-          `${path}.input_sha256 must be a lowercase SHA-256 digest`,
-          CURRENT_STATE_VERSION,
-          'invalid',
-        );
-      }
-      if (command.validated_input === undefined) {
-        throw new PersistedStateVersionError(
-          `${path}.validated_input is required`,
-          CURRENT_STATE_VERSION,
-          'invalid',
-        );
-      }
-      try {
-        JSON.stringify(command.validated_input);
-      } catch {
-        throw new PersistedStateVersionError(
-          `${path}.validated_input must be JSON-serializable`,
-          CURRENT_STATE_VERSION,
-          'invalid',
-        );
-      }
-      requireString(command.command_kind, `${path}.command_kind`);
-      if (![
-        'mcp',
-        'dashboard',
-        'cli',
-        'planner',
-        'scripted_runner',
-        'headless_runner',
-        'system',
-      ].includes(requireString(command.transport, `${path}.transport`))) {
-        throw new PersistedStateVersionError(
-          `${path}.transport is invalid`,
-          CURRENT_STATE_VERSION,
-          'invalid',
-        );
-      }
-      if (command.actor_task_id !== null) {
-        requireString(command.actor_task_id, `${path}.actor_task_id`);
-      }
-      if (!['accepted', 'running', 'succeeded', 'failed', 'interrupted'].includes(
-        requireString(command.status, `${path}.status`),
-      )) {
-        throw new PersistedStateVersionError(
-          `${path}.status is invalid`,
-          CURRENT_STATE_VERSION,
-          'invalid',
-        );
-      }
-      requireIsoDate(command.created_at, `${path}.created_at`);
-      if (command.started_at !== undefined) requireIsoDate(command.started_at, `${path}.started_at`);
-      if (command.completed_at !== undefined) requireIsoDate(command.completed_at, `${path}.completed_at`);
-      for (const field of ['action_id', 'frontier_item_id', 'plan_id'] as const) {
-        if (command[field] !== undefined) requireString(command[field], `${path}.${field}`);
-      }
-      if (command.error !== undefined) {
-        const error = requireRecord(command.error, `${path}.error`);
-        requireString(error.message, `${path}.error.message`, true);
-        if (error.code !== undefined) requireString(error.code, `${path}.error.code`);
-      }
-      if (command.entity_refs !== undefined) {
-        const refs = requireRecord(command.entity_refs, `${path}.entity_refs`);
-        for (const [name, value] of Object.entries(refs)) {
-          if (typeof value === 'string') {
-            requireString(value, `${path}.entity_refs.${name}`);
-          } else {
-            for (const [index, item] of requireArray(value, `${path}.entity_refs.${name}`).entries()) {
-              requireString(item, `${path}.entity_refs.${name}[${index}]`);
-            }
-          }
+      if (command.completion_sequence !== undefined) {
+        if (completionSequences.has(command.completion_sequence)) {
+          throw new PersistedStateVersionError(
+            `persisted applicationCommands contains duplicate completion_sequence ${command.completion_sequence}`,
+            CURRENT_STATE_VERSION,
+            'invalid',
+          );
         }
+        completionSequences.add(command.completion_sequence);
       }
     });
   }

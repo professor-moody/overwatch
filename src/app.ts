@@ -17,6 +17,7 @@ import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { Express, Request, Response } from 'express';
 import type { Server } from 'http';
+import { z } from 'zod';
 import { GraphEngine } from './services/graph-engine.js';
 import { SkillIndex } from './services/skill-index.js';
 import { ProcessTracker } from './services/process-tracker.js';
@@ -89,6 +90,8 @@ import type {
 } from './services/tool-descriptor-registry.js';
 import {
   buildToolDescriptor,
+  toolCanMutateDurableState,
+  toolInvocationMutatesDurableState,
   toolRequiresWritablePersistence,
 } from './services/tool-descriptor-registry.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
@@ -100,6 +103,10 @@ import {
   withApplicationCommandInvocation,
 } from './services/application-command-service.js';
 import { PlaybookRunService } from './services/playbook-run-service.js';
+import {
+  ExternalMutationCommandService,
+  buildExternalMutationFingerprint,
+} from './services/external-mutation-command-service.js';
 
 type DashboardStatusProvider = () => {
   enabled: boolean;
@@ -250,12 +257,101 @@ function persistenceReadOnlyToolResult(
   };
 }
 
+const APPLICATION_COMMAND_INPUT_SHAPE = {
+  command_id: z.string().trim().min(1).max(256).optional()
+    .describe('Stable client command identifier for correlation.'),
+  idempotency_key: z.string().trim().min(1).max(512).optional()
+    .describe('Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.'),
+  retry_token: z.string().regex(/^idem_[a-f0-9]{64}$/).optional()
+    .describe('Opaque retry token returned by a prior application-command response.'),
+} satisfies ZodRawShapeCompat;
+
+const APPLICATION_COMMAND_INPUT_KEYS = new Set([
+  'command_id',
+  'idempotency_key',
+  'retry_token',
+]);
+
+function rawInputShape(
+  inputSchema: ZodRawShapeCompat | AnySchema | undefined,
+): Record<string, unknown> | undefined {
+  if (!inputSchema || typeof inputSchema !== 'object') return undefined;
+  const record = inputSchema as unknown as Record<string, unknown>;
+  return record._def === undefined && record._zod === undefined ? record : undefined;
+}
+
+function semanticMutationInput(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(input).filter(([key]) => !APPLICATION_COMMAND_INPUT_KEYS.has(key)),
+  );
+}
+
+function applicationCommandBoundaryResult(
+  result: unknown,
+  command: Awaited<ReturnType<ExternalMutationCommandService['execute']>>,
+): unknown {
+  const metadata = {
+    boundary_command_id: command.command_id,
+    retry_token: command.retry_token,
+    status: command.status,
+    replayed: command.replayed,
+    ...(command.delivery_error ? { delivery_error: command.delivery_error } : {}),
+  };
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    const record = result as Record<string, unknown>;
+    const priorMeta = record._meta && typeof record._meta === 'object' && !Array.isArray(record._meta)
+      ? record._meta as Record<string, unknown>
+      : {};
+    return {
+      ...record,
+      _meta: {
+        ...priorMeta,
+        'overwatch/application-command': metadata,
+      },
+    };
+  }
+  return result;
+}
+
+function failedApplicationCommandBoundaryResult(
+  command: Awaited<ReturnType<ExternalMutationCommandService['execute']>>,
+) {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        error: command.error?.message
+          ?? command.delivery_error?.message
+          ?? `Application command is ${command.status}.`,
+        code: command.error?.code
+          ?? command.delivery_error?.code
+          ?? 'APPLICATION_COMMAND_NOT_SUCCEEDED',
+        command_id: command.command_id,
+        retry_token: command.retry_token,
+        status: command.status,
+        replayed: command.replayed,
+      }, null, 2),
+    }],
+    isError: true,
+    _meta: {
+      'overwatch/application-command': {
+        boundary_command_id: command.command_id,
+        retry_token: command.retry_token,
+        status: command.status,
+        replayed: command.replayed,
+        ...(command.delivery_error ? { delivery_error: command.delivery_error } : {}),
+      },
+    },
+  };
+}
+
 /**
  * Wrapper around McpServer that intercepts registerTool calls to collect
  * tool metadata (name + description) without monkey-patching the server.
  */
 export class ToolRegistrar implements OverwatchToolRegistrar {
   private entries: ToolDescriptor[] = [];
+  private readonly mutationBoundary?: ExternalMutationCommandService;
   /**
    * Stdio requests do not carry an MCP session id. Keep one opaque namespace
    * for this registrar lifetime so a retransmitted JSON-RPC request is
@@ -270,13 +366,36 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
       'isPersistenceWritable' | 'getPersistenceRecoveryStatus'
     > & Partial<Pick<GraphEngine, 'resolveAgentTaskReference'>>,
     private readonly authenticatedActorTaskId: string | null = null,
-  ) {}
+  ) {
+    if (persistenceGate instanceof GraphEngine) {
+      this.mutationBoundary = new ExternalMutationCommandService(persistenceGate);
+    }
+  }
   registerTool<OutputArgs extends ZodRawShapeCompat | AnySchema, InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined>(
     name: string,
     config: { title?: string; description?: string; inputSchema?: InputArgs; outputSchema?: OutputArgs; annotations?: ToolAnnotations; _meta?: Record<string, unknown> },
     cb: ToolCallback<InputArgs>,
   ): RegisteredTool {
-    const descriptor = buildToolDescriptor(name, config);
+    const preliminaryDescriptor = buildToolDescriptor(name, config);
+    const canMutate = toolCanMutateDurableState(preliminaryDescriptor);
+    const originalShape = config.inputSchema === undefined
+      ? {}
+      : rawInputShape(config.inputSchema);
+    if (canMutate && !originalShape) {
+      throw new Error(
+        `Mutation-capable tool ${name} must register a raw object input shape so common command metadata can be added.`,
+      );
+    }
+    const effectiveConfig = canMutate
+      ? {
+          ...config,
+          inputSchema: {
+            ...APPLICATION_COMMAND_INPUT_SHAPE,
+            ...originalShape,
+          },
+        }
+      : config;
+    const descriptor = buildToolDescriptor(name, effectiveConfig);
     this.entries.push(descriptor);
     const wrapped = (async (...args: unknown[]) => {
       const input = args[0];
@@ -287,8 +406,10 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
         descriptor,
         inputRecord,
       );
-      const mutatesDurableState = descriptor.persistence.mode === 'write'
-        || requiresWritablePersistence;
+      const mutatesDurableState = toolInvocationMutatesDurableState(
+        descriptor,
+        inputRecord,
+      );
       if (
         requiresWritablePersistence
         && this.persistenceGate
@@ -304,8 +425,7 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
               sessionId?: string;
             }
           : undefined;
-        const result = await withApplicationCommandInvocation(
-          {
+        const invocation = {
             transport: 'mcp',
             // HTTP workers are bound to a daemon-issued credential at session
             // initialization. The operator/stdio connection is deliberately
@@ -322,16 +442,87 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
             ...(typeof inputRecord.idempotency_key === 'string'
               ? { idempotency_key: inputRecord.idempotency_key }
               : {}),
+            ...(typeof inputRecord.retry_token === 'string'
+              ? { retry_token: inputRecord.retry_token }
+              : {}),
             ...(typeof inputRecord.action_id === 'string'
               ? { action_id: inputRecord.action_id }
               : {}),
             ...(typeof inputRecord.frontier_item_id === 'string'
               ? { frontier_item_id: inputRecord.frontier_item_id }
               : {}),
-          },
-          () => invoke(...args),
-        );
-        const failure = mutatesDurableState
+          } as const;
+        const callbackInput = { ...inputRecord };
+        delete callbackInput.retry_token;
+        if (!Object.prototype.hasOwnProperty.call(originalShape ?? {}, 'command_id')) {
+          delete callbackInput.command_id;
+        }
+        if (!Object.prototype.hasOwnProperty.call(originalShape ?? {}, 'idempotency_key')) {
+          delete callbackInput.idempotency_key;
+        }
+        const callbackArgs = [callbackInput, ...args.slice(1)];
+        const wrapMutation = mutatesDurableState
+          && this.mutationBoundary !== undefined
+          && name !== 'resolve_config_divergence'
+          && !(
+            name === 'bundle_engagement'
+            && this.persistenceGate
+            && !this.persistenceGate.isPersistenceWritable()
+          );
+        const result = await withApplicationCommandInvocation(invocation, async () => {
+          if (!wrapMutation) return invoke(...callbackArgs);
+          const requestFingerprint = buildExternalMutationFingerprint(
+            semanticMutationInput(inputRecord),
+          );
+          const publicIdentity = typeof inputRecord.command_id === 'string'
+            ? inputRecord.command_id
+            : typeof inputRecord.idempotency_key === 'string'
+              ? inputRecord.idempotency_key
+              : extra?.requestId !== undefined
+                // JSON-RPC request ids are only unique within one client
+                // session. Include that authority boundary so two terminal
+                // MCP clients using the same counter and input never replay
+                // one another. Cross-session/restart retries must use the
+                // additive idempotency_key or opaque retry_token.
+                ? `session:${invocation.session_id}:request:${String(extra.requestId)}:${requestFingerprint}`
+                : randomUUID();
+          const boundaryCommandId = `boundary_${createHash('sha256')
+            .update(`mcp\0${name}\0${publicIdentity}`)
+            .digest('hex')
+            .slice(0, 48)}`;
+          const boundary = await this.mutationBoundary!.execute({
+            descriptor: {
+              operation_id: `mcp.${name}`,
+              request_fingerprint: requestFingerprint,
+            },
+            metadata: {
+              command_id: boundaryCommandId,
+              idempotency_key: `mcp-boundary:${name}:${
+                typeof inputRecord.idempotency_key === 'string'
+                  ? inputRecord.idempotency_key
+                  : publicIdentity
+              }`,
+              ...(typeof inputRecord.retry_token === 'string'
+                ? { retry_token: inputRecord.retry_token }
+                : {}),
+            },
+            operation: () => withApplicationCommandInvocation(
+              {
+                ...invocation,
+                // The outer retry token belongs to external.mcp.*. Nested
+                // domain commands retain the public raw identity but must not
+                // interpret the boundary receipt as their own token.
+                retry_token: undefined,
+              },
+              () => invoke(...callbackArgs),
+            ),
+          });
+          if (boundary.response === undefined) {
+            return failedApplicationCommandBoundaryResult(boundary);
+          }
+          return applicationCommandBoundaryResult(boundary.response, boundary);
+        });
+        const failure = canMutate
           ? failureFromToolResult(result)
           : undefined;
         if (failure && this.persistenceGate) {
@@ -342,7 +533,7 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
         }
         return result;
       } catch (error) {
-        if (mutatesDurableState && this.persistenceGate) {
+        if (canMutate && this.persistenceGate) {
           const recovery = this.persistenceGate.getPersistenceRecoveryStatus();
           const failure = failureFromError(error);
           if (isDurabilityFailure(failure, recovery, requiresWritablePersistence)) {
@@ -352,7 +543,11 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
         throw error;
       }
     }) as unknown as ToolCallback<InputArgs>;
-    return this.server.registerTool(name, config, wrapped);
+    return this.server.registerTool(
+      name,
+      effectiveConfig as typeof config,
+      wrapped,
+    );
   }
   getEntries(): ToolDescriptor[] { return this.entries; }
 }

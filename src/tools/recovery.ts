@@ -44,6 +44,7 @@ export function registerRecoveryTools(server: McpServer, engine: GraphEngine): v
         ...execution.result,
         command_id: execution.command_id,
         idempotency_key: execution.idempotency_key,
+        retry_token: execution.retry_token,
         replayed: execution.replayed,
       });
     }),

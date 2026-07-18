@@ -4,7 +4,7 @@
 // ============================================================
 // A standalone terminal client over the Overwatch /api surface. Watch and steer
 // the same live engagement the model is driving, without going through Claude.
-// Usage: overwatch <command> [--json] [--no-color] [--url URL] [--token TOK]
+// Usage: overwatch <command> [--json] [--no-color] [--url URL] [--token TOK] [--command-id ID]
 
 import { resolveClientOptions, createClient, ApiError } from './operator/client.js';
 import { READ_COMMANDS, WRITE_COMMANDS, type Command } from './operator/commands.js';
@@ -32,6 +32,7 @@ ${bold('Options:')}
   --no-color         Disable ANSI color
   --url <url>        API base URL (default: $OVERWATCH_URL or http://127.0.0.1:8384)
   --token <token>    Bearer token for a remote, non-loopback server ($OVERWATCH_DASHBOARD_TOKEN)
+  --command-id <id>  Explicit identity for an independent mutation ($OVERWATCH_COMMAND_ID)
   --help             Show this help (or 'overwatch <command> --help')
 
 ${dim('Live commands require the engagement daemon; `state migrate --check` inspects local files offline.')}`);

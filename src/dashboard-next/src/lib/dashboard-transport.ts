@@ -1,11 +1,18 @@
 import { safeSessionStorage } from './browser-storage';
 
 const TOKEN_STORAGE_KEY = 'overwatch.dashboard.token';
+const PENDING_COMMAND_STORAGE_PREFIX = 'overwatch.dashboard.pending.';
 
 let memoryToken: string | null = null;
+const pendingCommandMemory = new Map<string, string>();
 
 export function resetDashboardAuthMemoryForTest(): void {
   memoryToken = null;
+}
+
+export function resetDashboardPendingCommandsForTest(): void {
+  for (const key of pendingCommandMemory.keys()) safeSessionStorage.removeItem(key);
+  pendingCommandMemory.clear();
 }
 
 export interface DashboardAuthEnvironment {
@@ -96,16 +103,220 @@ export function createDashboardCommandId(): string {
   return `dashboard-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+async function pendingMutationStorageKey(
+  input: RequestInfo | URL,
+  method: string,
+  body: BodyInit | null | undefined,
+): Promise<string | null> {
+  let bytes: Uint8Array;
+  if (body === undefined || body === null) {
+    bytes = new Uint8Array();
+  } else if (typeof body === 'string') {
+    bytes = new TextEncoder().encode(body);
+  } else if (body instanceof URLSearchParams) {
+    bytes = new TextEncoder().encode(body.toString());
+  } else if (body instanceof Blob) {
+    if (body.size > MAX_REPLAYABLE_MUTATION_REQUEST_BYTES) return null;
+    try {
+      bytes = new Uint8Array(await body.arrayBuffer());
+    } catch {
+      return null;
+    }
+  } else if (body instanceof ArrayBuffer) {
+    if (body.byteLength > MAX_REPLAYABLE_MUTATION_REQUEST_BYTES) return null;
+    bytes = new Uint8Array(body);
+  } else if (ArrayBuffer.isView(body)) {
+    if (body.byteLength > MAX_REPLAYABLE_MUTATION_REQUEST_BYTES) return null;
+    bytes = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+  } else {
+    return null;
+  }
+  if (bytes.byteLength > MAX_REPLAYABLE_MUTATION_REQUEST_BYTES) return null;
+  const target = input instanceof Request ? input.url : String(input);
+  return pendingMutationStorageKeyFromBytes(
+    target,
+    method,
+    bytes,
+  );
+}
+
+function pendingMutationStorageKeyFromBytes(
+  target: string,
+  method: string,
+  body: Uint8Array,
+): string {
+  const digest = new StreamingSha256();
+  digest.update(new TextEncoder().encode(`${method}\0${target}\0`));
+  digest.update(body);
+  const suffix = [...digest.digest()]
+    .map(value => value.toString(16).padStart(2, '0'))
+    .join('');
+  return `${PENDING_COMMAND_STORAGE_PREFIX}${suffix}`;
+}
+
+const MAX_REPLAYABLE_MUTATION_REQUEST_BYTES = 256 * 1024;
+
+async function boundedRequestBody(
+  request: Request,
+): Promise<Uint8Array | null> {
+  if (!request.body) return new Uint8Array();
+  const reader = request.clone().body!.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      bytes += next.value.byteLength;
+      if (bytes > MAX_REPLAYABLE_MUTATION_REQUEST_BYTES) {
+        await reader.cancel('dashboard mutation body exceeds replay limit');
+        return null;
+      }
+      chunks.push(next.value);
+    }
+  } catch {
+    return null;
+  }
+  const body = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
+function pendingDashboardCommandId(storageKey: string | null): string {
+  if (storageKey) {
+    const retained = pendingCommandMemory.get(storageKey) ?? safeSessionStorage.getItem(storageKey);
+    if (retained) {
+      pendingCommandMemory.set(storageKey, retained);
+      return retained;
+    }
+  }
+  const commandId = createDashboardCommandId();
+  if (storageKey) {
+    pendingCommandMemory.set(storageKey, commandId);
+    safeSessionStorage.setItem(storageKey, commandId);
+  }
+  return commandId;
+}
+
+function clearPendingDashboardCommand(storageKey: string | null): void {
+  if (!storageKey) return;
+  pendingCommandMemory.delete(storageKey);
+  safeSessionStorage.removeItem(storageKey);
+}
+
+function clearPendingWhenResponseCompletes(
+  response: Response,
+  storageKey: string | null,
+): Response {
+  if (!storageKey) return response;
+  const boundaryReserved = response.headers.has('X-Overwatch-Boundary-Command-Id');
+  const authoritative = boundaryReserved
+    ? response.headers.get('X-Overwatch-Command-Response-Available') === '1'
+    : response.headers.get('X-Overwatch-Server-Response') === '1';
+  // A reverse proxy may synthesize a complete 502/504 after the daemon
+  // committed but before it returned headers. A durable boundary marker is
+  // conclusive only when the original response is available for replay;
+  // accepted/running/delivery-error receipts remain pending.
+  if (!authoritative) return response;
+  if (!response.body) {
+    clearPendingDashboardCommand(storageKey);
+    return response;
+  }
+  const reader = response.body.getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          clearPendingDashboardCommand(storageKey);
+          controller.close();
+        } else {
+          controller.enqueue(next.value);
+        }
+      } catch (error) {
+        // A body-level transport failure is still an ambiguous delivery. Keep
+        // the receipt so a later identical mutation replays the durable result.
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 /** Fetch any protected dashboard resource with the shared Bearer credential. */
-export function dashboardFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+export async function dashboardFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  if (input instanceof Request) {
+    const effective = new Request(input, init);
+    const method = effective.method.toUpperCase();
+    const mutation = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+    const body = mutation ? await boundedRequestBody(effective) : new Uint8Array();
+    const headers = new Headers(effective.headers);
+    const token = getDashboardToken();
+    if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+    if (!headers.has('X-Overwatch-Client')) headers.set('X-Overwatch-Client', 'dashboard');
+    let pendingStorageKey: string | null = null;
+    if (mutation) {
+      if (!body && !headers.has('X-Overwatch-Command-Id')) {
+        throw new Error(
+          `Dashboard mutation Request bodies must be readable and no larger than ${MAX_REPLAYABLE_MUTATION_REQUEST_BYTES} bytes unless the caller supplies X-Overwatch-Command-Id.`,
+        );
+      }
+      if (!headers.has('X-Overwatch-Command-Id') && body) {
+        pendingStorageKey = pendingMutationStorageKeyFromBytes(
+          effective.url,
+          method,
+          body,
+        );
+      }
+      const commandId = headers.get('X-Overwatch-Command-Id')
+        ?? pendingDashboardCommandId(pendingStorageKey);
+      if (!headers.has('X-Overwatch-Command-Id')) {
+        headers.set('X-Overwatch-Command-Id', commandId);
+      }
+      if (!headers.has('Idempotency-Key')) {
+        headers.set('Idempotency-Key', `dashboard:${method}:${commandId}`);
+      }
+    }
+    const request = new Request(effective, { headers });
+    const retry = mutation && body ? request.clone() : null;
+    try {
+      const response = await globalThis.fetch(request);
+      return clearPendingWhenResponseCompletes(response, pendingStorageKey);
+    } catch (firstError) {
+      if (!retry) throw firstError;
+      const response = await globalThis.fetch(retry);
+      return clearPendingWhenResponseCompletes(response, pendingStorageKey);
+    }
+  }
   const headers = new Headers(input instanceof Request ? input.headers : undefined);
   new Headers(init.headers).forEach((value, key) => headers.set(key, value));
   const token = getDashboardToken();
   if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
   const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+  let pendingStorageKey: string | null = null;
   if (!headers.has('X-Overwatch-Client')) headers.set('X-Overwatch-Client', 'dashboard');
   if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-    const commandId = headers.get('X-Overwatch-Command-Id') ?? createDashboardCommandId();
+    if (!headers.has('X-Overwatch-Command-Id')) {
+      pendingStorageKey = await pendingMutationStorageKey(input, method, init.body);
+      if (!pendingStorageKey) {
+        throw new Error(
+          `Dashboard mutation bodies must be replayable and no larger than ${MAX_REPLAYABLE_MUTATION_REQUEST_BYTES} bytes unless the caller supplies X-Overwatch-Command-Id.`,
+        );
+      }
+    }
+    const commandId = headers.get('X-Overwatch-Command-Id')
+      ?? pendingDashboardCommandId(pendingStorageKey);
     if (!headers.has('X-Overwatch-Command-Id')) {
       headers.set('X-Overwatch-Command-Id', commandId);
     }
@@ -113,7 +324,31 @@ export function dashboardFetch(input: RequestInfo | URL, init: RequestInit = {})
       headers.set('Idempotency-Key', `dashboard:${method}:${commandId}`);
     }
   }
-  return globalThis.fetch(input, { ...init, headers });
+  const request = { ...init, headers };
+  try {
+    const response = await globalThis.fetch(input, request);
+    return clearPendingWhenResponseCompletes(response, pendingStorageKey);
+  } catch (firstError) {
+    // A transport failure may happen after the daemon committed but before
+    // the browser received the response. Reuse the exact same command and
+    // idempotency headers once; the server will replay instead of mutating
+    // twice. Streaming request bodies cannot be safely replayed here.
+    const replayableBody = init.body === undefined
+      || init.body === null
+      || typeof init.body === 'string'
+      || init.body instanceof URLSearchParams
+      || init.body instanceof Blob
+      || init.body instanceof ArrayBuffer
+      || ArrayBuffer.isView(init.body);
+    if (
+      method === 'GET'
+      || method === 'HEAD'
+      || method === 'OPTIONS'
+      || !replayableBody
+    ) throw firstError;
+    const response = await globalThis.fetch(input, request);
+    return clearPendingWhenResponseCompletes(response, pendingStorageKey);
+  }
 }
 
 export function authenticatedWebSocketUrl(path: string, href?: string): string {

@@ -473,6 +473,7 @@ describe('/api/commands — headless planner fallback', () => {
       actor_task_id: null,
       status: 'succeeded',
       created_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
       completed_at: new Date().toISOString(),
       plan_id: plan.plan_id,
       entity_refs: {
@@ -517,6 +518,7 @@ describe('/api/commands — headless planner fallback', () => {
       actor_task_id: null,
       status: 'succeeded',
       created_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
       completed_at: new Date().toISOString(),
       plan_id: plan.plan_id,
       result: {

@@ -33,14 +33,14 @@ export function TapeToggle() {
   const onClick = useCallback(async () => {
     setBusy(true);
     try {
-      const s = await toggleTape();
+      const s = await toggleTape({ action: status?.enabled ? 'disable' : 'enable' });
       setStatus(s);
     } catch {
       // ignore — next poll will reconcile
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [status?.enabled]);
 
   if (!available) return null;
 

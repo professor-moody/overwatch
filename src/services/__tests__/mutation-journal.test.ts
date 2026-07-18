@@ -3,7 +3,12 @@ import { existsSync, mkdtempSync, rmSync, readFileSync, appendFileSync, readdirS
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
-import { MutationJournal, writeAllSync, type MutationType } from '../mutation-journal.js';
+import {
+  MutationJournal,
+  validateTransactionOperationRelationships,
+  writeAllSync,
+  type MutationType,
+} from '../mutation-journal.js';
 import { EngineContext } from '../engine-context.js';
 import { createOverwatchGraph } from '../graphology-types.js';
 import {
@@ -94,6 +99,36 @@ afterEach(() => {
 });
 
 describe('MutationJournal (P2.1)', () => {
+  it('rejects an externalized graph audit without its matching activity append', () => {
+    expect(validateTransactionOperationRelationships([{
+      type: 'graph_corrected',
+      payload: {
+        operation_id: 'graph-op-without-audit',
+        audit_event_externalized: true,
+      },
+    }])).toEqual({
+      ok: false,
+      reason: expect.stringContaining('matching activity_append'),
+    });
+
+    expect(validateTransactionOperationRelationships([{
+      type: 'graph_corrected',
+      payload: {
+        operation_id: 'graph-op-with-audit',
+        audit_event_externalized: true,
+      },
+    }, {
+      type: 'activity_append',
+      payload: {
+        items: [{
+          entry: {
+            event_type: 'graph_corrected',
+            details: { operation_id: 'graph-op-with-audit' },
+          },
+        }],
+      },
+    }])).toEqual({ ok: true });
+  });
   describe('unit', () => {
     it('appends entries with monotonic seq', () => {
       const j = new MutationJournal(TEST_STATE);

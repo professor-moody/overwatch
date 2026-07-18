@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import {
 } from '../application-command-service.js';
 import { GraphCorrectionCommandService } from '../graph-correction-command-service.js';
 import { GraphEngine } from '../graph-engine.js';
+import { MutationJournal } from '../mutation-journal.js';
 
 function config(): EngagementConfig {
   return {
@@ -74,6 +75,37 @@ describe('GraphCorrectionCommandService', () => {
     expect(engine.getFullHistory().filter(
       event => event.event_type === 'graph_corrected',
     )).toHaveLength(1);
+  });
+
+  it('commits the correction and command as bounded sibling operations', () => {
+    engine.flushNow();
+    const checkpoint = JSON.parse(
+      readFileSync(statePath, 'utf8'),
+    ) as { journalSnapshotSeq: number };
+    withApplicationCommandInvocation({
+      transport: 'dashboard',
+      command_id: 'graph-bounded-command',
+      idempotency_key: 'graph-bounded-retry',
+    }, () => new GraphCorrectionCommandService(engine).correct({
+      reason: 'Bounded correction',
+      operations: [{
+        kind: 'patch_node',
+        node_id: 'host-correct',
+        set_properties: { label: 'bounded label' },
+      }],
+    }));
+
+    const transaction = new MutationJournal(statePath)
+      .readTransactionsSince(checkpoint.journalSnapshotSeq)
+      .find(candidate => candidate.operations.some(operation =>
+        operation.type === 'graph_corrected'))!;
+    expect(transaction.operations.map(operation => operation.type)).toEqual([
+      'graph_corrected',
+      'activity_append',
+      'application_command_change',
+    ]);
+    expect(transaction.operations[0]?.payload).not.toHaveProperty('state_patch');
+    expect(JSON.stringify(transaction.operations)).not.toContain('applicationCommands');
   });
 
   it('replays a destructive node drop after restart without dropping again', () => {

@@ -18,9 +18,11 @@
 // ============================================================
 
 import type { GraphEngine } from './graph-engine.js';
+import { createHash } from 'node:crypto';
 import type { AgentTask, FrontierItem, NodeProperties } from '../types.js';
 import { runInstrumentedProcess } from '../tools/_process-runner.js';
 import { isTokenCredential, isCredentialUsableForAuth } from './credential-utils.js';
+import { AgentLifecycleCommandService } from './agent-lifecycle-command-service.js';
 
 const HEARTBEAT_INTERVAL_MS = 15_000;  // 15s
 
@@ -47,6 +49,7 @@ export function scriptedCanHandle(engine: GraphEngine, task: AgentTask): boolean
 }
 
 export class ScriptedAgentRunner {
+  private readonly lifecycleCommands: AgentLifecycleCommandService;
   private running = false;
   private updateUnsubscribe: (() => void) | null = null;
   /** task IDs currently being processed to avoid double-pickup */
@@ -62,7 +65,31 @@ export class ScriptedAgentRunner {
   // to the headless runtime instead of being auto-completed here.
   private shouldHandle: (task: AgentTask) => boolean = (task) => (task.backend ?? 'scripted') === 'scripted';
 
-  constructor(private engine: GraphEngine) {}
+  constructor(private engine: GraphEngine) {
+    this.lifecycleCommands = new AgentLifecycleCommandService(engine);
+  }
+
+  private transitionTask(
+    task: AgentTask,
+    status: AgentTask['status'],
+    summary?: string,
+  ): void {
+    const eventHash = createHash('sha256')
+      .update(`${status}\0${summary ?? ''}`)
+      .digest('hex')
+      .slice(0, 24);
+    this.lifecycleCommands.updateStatus({
+      task_id: task.task_id ?? task.id,
+      status,
+      summary,
+    }, {
+      transport: 'scripted_runner',
+      actor_task_id: task.task_id ?? task.id,
+      command_id: `scripted-lifecycle-${task.id}-${eventHash}`,
+      idempotency_key: `scripted-lifecycle:${task.id}:${eventHash}`,
+      frontier_item_id: task.frontier_item_id,
+    });
+  }
 
   setShouldHandle(fn: (task: AgentTask) => boolean): void {
     this.shouldHandle = fn;
@@ -164,7 +191,7 @@ export class ScriptedAgentRunner {
       : null;
 
     if (!frontierItem) {
-      this.engine.updateAgentStatus(task.id, 'completed', 'Frontier item not found; skipped');
+      this.transitionTask(task, 'completed', 'Frontier item not found; skipped');
       this.stopHeartbeat(task.id);
       this.processing.delete(task.id);
       return;
@@ -176,15 +203,15 @@ export class ScriptedAgentRunner {
       if (summary === null) {
         // Reached only when an operator forced backend:'scripted' on a task the
         // scripted runner can't handle. Fail loudly instead of a false success.
-        this.engine.updateAgentStatus(task.id, 'failed', 'no_scripted_handler: this task needs a reasoning (headless) agent or manual operator');
+        this.transitionTask(task, 'failed', 'no_scripted_handler: this task needs a reasoning (headless) agent or manual operator');
       } else {
-        this.engine.updateAgentStatus(task.id, 'completed', summary);
+        this.transitionTask(task, 'completed', summary);
       }
     } catch (err) {
       // A persistence freeze deliberately aborts the child while durable state is
       // unavailable.  Leave the task untouched for restart reconciliation.
       if (this.running && this.engine.isPersistenceWritable()) {
-        this.engine.updateAgentStatus(task.id, 'failed', `Scripted runner error: ${err}`);
+        this.transitionTask(task, 'failed', `Scripted runner error: ${err}`);
       }
     } finally {
       this.stopHeartbeat(task.id);

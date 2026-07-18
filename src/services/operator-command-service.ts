@@ -137,12 +137,14 @@ export type PlannerProposalResult =
 
 function executionFromRecord<T>(
   record: PersistedApplicationCommandV1,
+  replayed = true,
 ): ApplicationCommandExecution<T> {
   return {
     command_id: record.command_id,
+    retry_token: record.idempotency_key,
     idempotency_key: record.idempotency_key,
     status: record.status,
-    replayed: true,
+    replayed,
     ...(Object.prototype.hasOwnProperty.call(record, 'result')
       ? { result: structuredClone(record.result) as T }
       : {}),
@@ -592,6 +594,7 @@ export class OperatorCommandService {
           this.engine.recordApplicationCommand({
             ...owningCommand,
             status: 'succeeded',
+            started_at: owningCommand.started_at ?? this.engine.now(),
             completed_at: this.engine.now(),
             plan_id: plan.plan_id,
             entity_refs: {
@@ -873,9 +876,9 @@ export class OperatorCommandService {
           plan_id: input.plan_id,
           result,
         };
-        this.engine.recordApplicationCommand(record);
         return {
           command_id: record.command_id,
+          retry_token: record.idempotency_key,
           idempotency_key: record.idempotency_key,
           status: record.status,
           replayed: false,
@@ -883,8 +886,16 @@ export class OperatorCommandService {
           record,
         };
       },
+      execution => execution.record,
     );
-    return scopeExecution.result;
+    const installed = this.engine.getApplicationCommand(identity.idempotency_key);
+    if (!installed) {
+      throw new Error('Operator plan committed without its application-command receipt.');
+    }
+    return executionFromRecord<ConfirmPlanResult>(
+      installed,
+      scopeExecution.result.replayed,
+    );
   }
 
   private executeOperations(

@@ -128,6 +128,19 @@ import type {
   DurableStateSlices,
 } from './durable-state-patch.js';
 import type { EngineOperation } from './engine-transaction.js';
+import type { ActivityAppendPayloadV1 } from './activity-append.js';
+import {
+  APPLICATION_COMMAND_CHANGE_PAYLOAD_VERSION,
+  type ApplicationCommandChangePayloadV1,
+} from './application-command-change.js';
+import {
+  COMMAND_COORDINATION_CHANGE_PAYLOAD_VERSION,
+  MAX_COMMAND_COORDINATION_RECORDS,
+  MAX_COMMAND_COORDINATION_VALUE_BYTES,
+  type CommandCoordinationChangePayloadV1,
+  type CommandOutcomeValue,
+  type CommandPlanValue,
+} from './command-coordination-change.js';
 import {
   BoundedTransactionFootprintCapture,
   type FinalizedTransactionFootprint,
@@ -144,14 +157,15 @@ import type { ObjectiveManagerHost } from './objective-manager.js';
 import { queryGraphImpl } from './graph-query.js';
 import { CredentialCoverageTracker } from './credential-coverage.js';
 import type { OperatorOp } from './command-interpreter.js';
-import type {
-  PersistedApplicationCommandV1,
-  PersistedCommandOutcomeV1,
-  PersistedCommandPlanV1,
-  PersistedDurablePlaybookRunV1,
-  PersistedPlaybookRunV1,
-  PersistedRuntimeRunV1,
-  PersistedSessionDescriptorV1,
+import {
+  validatePersistedApplicationCommandV1,
+  type PersistedApplicationCommandV1,
+  type PersistedCommandOutcomeV1,
+  type PersistedCommandPlanV1,
+  type PersistedDurablePlaybookRunV1,
+  type PersistedPlaybookRunV1,
+  type PersistedRuntimeRunV1,
+  type PersistedSessionDescriptorV1,
 } from './persisted-state.js';
 import { engagementConfigSchema, inferProfile } from '../types.js';
 import type {
@@ -174,6 +188,19 @@ import type {
 function detached<T>(value: T): T {
   return structuredClone(value);
 }
+
+/** Exact idempotency for arbitrary client keys requires retaining a compact
+ * identity after the response body is retired. Stop admitting new identities
+ * before that ledger itself can grow without bound. */
+const MAX_APPLICATION_COMMAND_IDENTITIES = 1_000_000;
+/** Leave ample room below the 10,000-operation journal ceiling for the command
+ * being finalized and any domain sibling operations. Old receipts drain over
+ * successive commands instead of creating one oversized transaction. */
+const MAX_APPLICATION_COMMAND_RETIREMENTS_PER_TRANSACTION = 1_024;
+const MAX_APPLICATION_COMMAND_RETIREMENT_BYTES_PER_TRANSACTION = 12 * 1024 * 1024;
+const DEFAULT_APPLICATION_COMMAND_MAX_RECORDS = 10_000;
+const DEFAULT_APPLICATION_COMMAND_MAX_BYTES = 256 * 1024 * 1024;
+const DEFAULT_APPLICATION_COMMAND_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export interface RecentOutcome {
   target: string;
@@ -266,6 +293,14 @@ export class GraphEngine {
   private campaignPlanner: CampaignPlanner;
   private healthReportCache: HealthReport | null = null;
   private frontierCache: { passed: FrontierItem[]; all: FrontierItem[]; campaigns: import('../types.js').Campaign[]; hidden: import('../types.js').FrontierHiddenSummary } | null = null;
+  /** Changed command records captured by the current speculative transaction. */
+  private applicationCommandDraftPreimages:
+    | Map<string, PersistedApplicationCommandV1 | null>
+    | null = null;
+  /** Authorizes the private recursive call made by the dedicated frontier
+   * state transaction. Other transaction callbacks must not smuggle direct
+   * linkage mutations into an unrelated bounded command draft. */
+  private frontierEmissionDraftDepth = 0;
   /** Last committed community projection plus changes not yet published by the
    * dashboard hub. The detector records changes while building its result, so
    * taking a WebSocket patch is O(changed IDs), not O(all graph nodes). */
@@ -325,7 +360,10 @@ export class GraphEngine {
       },
       hasApplicationCommand: idempotencyKey =>
         this.ctx.applicationCommands.has(idempotencyKey),
-      persistRuntimeState: () => this.persistence.persistImmediate(),
+      // commitRuntimeConfigTransaction already fsyncs the immutable WAL
+      // transaction and marks the snapshot dirty. Rewriting a full base here
+      // was redundant and made every tiny config edit export the whole graph.
+      persistRuntimeState: () => this.persistence.noteJournaledDurableConfig(this.ctx.config),
       recordConfigEvent: ({ description, result, details }) => {
         this.ctx.logEvent({
           description,
@@ -815,6 +853,7 @@ export class GraphEngine {
     target: string,
     props: EdgeProperties,
     replayEdgeId?: string,
+    replayOptions: { suppress_derived_audit?: boolean } = {},
   ): { id: string; isNew: boolean } {
     // Validate the only condition Graphology can reject before the WAL append.
     // A durable record for an impossible edge would otherwise poison every
@@ -839,9 +878,17 @@ export class GraphEngine {
       }
       return this.ctx.applyJournaledMutation(
         'add_edge',
-        { source, target, props: effectiveProps, edge_id: edgeId },
+        {
+          source,
+          target,
+          props: effectiveProps,
+          edge_id: edgeId,
+          ...(confirmedRule && this.ctx.isCapturingEngineOperations()
+            ? { audit_externalized: true }
+            : {}),
+        },
         () => {
-          if (confirmedRule) {
+          if (confirmedRule && !replayOptions.suppress_derived_audit) {
             // This event is a deterministic derived effect of the journaled
             // confirmation. Replay normally suppresses incidental mutator
             // events, but suppressing this one would recover the graph while
@@ -947,6 +994,9 @@ export class GraphEngine {
       expected_type: node.type,
       expected_node: { node_id: nodeId, props: detached(node) },
       incident_edges: incidentEdges,
+      ...(this.ctx.isCapturingEngineOperations()
+        ? { audit_event_externalized: true }
+        : {}),
     };
     this.ensureCompositeJournal();
     const applied = this.ctx.applyJournaledMutation(
@@ -996,16 +1046,32 @@ export class GraphEngine {
       }
     }
 
-    const graphSnapshot = this.ctx.graph.export();
-    const activitySnapshot = detached(this.ctx.activityLog);
+    const nodeSnapshot = nodePresent
+      ? detached(this.ctx.graph.getNodeAttributes(payload.node_id) as NodeProperties)
+      : null;
+    const edgeSnapshots = payload.incident_edges.map(edge => ({
+      edge_id: edge.edge_id,
+      state: this.ctx.graph.hasEdge(edge.edge_id)
+        ? {
+            source: this.ctx.graph.source(edge.edge_id),
+            target: this.ctx.graph.target(edge.edge_id),
+            props: detached(this.ctx.graph.getEdgeAttributes(edge.edge_id) as EdgeProperties),
+          }
+        : null,
+    }));
+    const activityRef = this.ctx.activityLog;
+    const activityLength = activityRef.length;
+    const checkpointRef = this.ctx.chainCheckpoints;
+    const checkpointLength = checkpointRef.length;
     const chainHashSnapshot = this.ctx.lastChainHash;
-    const chainCheckpointsSnapshot = detached(this.ctx.chainCheckpoints);
     const chainEventsSnapshot = this.ctx.chainEventsSinceCheckpoint;
     const deterministicSeqSnapshot = this.ctx.deterministicSeq;
-    const actionFrontierSnapshot = new Map(
-      [...this.ctx.actionFrontierMap].map(([key, value]) => [key, detached(value)]),
-    );
-    const frontierLinkageSnapshot = detached(this.ctx.frontierLinkage.serialize());
+    const linkedFrontierId = payload.action_id
+      ? this.ctx.actionFrontierMap.get(payload.action_id)?.frontier_item_id
+      : undefined;
+    const frontierLinkageSnapshot = linkedFrontierId
+      ? this.ctx.frontierLinkage.get(linkedFrontierId)
+      : undefined;
     try {
       this.ctx.withClock(payload.occurred_at, () => {
         if (nodePresent) this.ctx.graph.dropNode(payload.node_id);
@@ -1019,7 +1085,7 @@ export class GraphEngine {
           entry.event_type === 'graph_corrected'
           && entry.details?.operation_id === payload.operation_id,
         );
-        if (!alreadyAudited) {
+        if (!alreadyAudited && !(payload.audit_event_externalized && _recovery)) {
           this.ctx.logEvent({
             description: 'Graph corrected: durable node drop applied',
             action_id: payload.action_id,
@@ -1040,15 +1106,32 @@ export class GraphEngine {
       this.invalidatePathGraph();
       return { status: 'applied' };
     } catch (error) {
-      this.ctx.graph.clear();
-      this.ctx.graph.import(graphSnapshot);
-      this.ctx.activityLog = activitySnapshot;
+      if (this.ctx.graph.hasNode(payload.node_id)) this.ctx.graph.dropNode(payload.node_id);
+      if (nodeSnapshot) this.ctx.graph.addNode(payload.node_id, detached(nodeSnapshot));
+      for (const edge of edgeSnapshots) {
+        if (this.ctx.graph.hasEdge(edge.edge_id)) this.ctx.graph.dropEdge(edge.edge_id);
+        if (edge.state) {
+          this.ctx.graph.addEdgeWithKey(
+            edge.edge_id,
+            edge.state.source,
+            edge.state.target,
+            detached(edge.state.props),
+          );
+        }
+      }
+      activityRef.length = activityLength;
+      this.ctx.activityLog = activityRef;
+      checkpointRef.length = checkpointLength;
+      this.ctx.chainCheckpoints = checkpointRef;
       this.ctx.lastChainHash = chainHashSnapshot;
-      this.ctx.chainCheckpoints = chainCheckpointsSnapshot;
       this.ctx.chainEventsSinceCheckpoint = chainEventsSnapshot;
       this.ctx.deterministicSeq = deterministicSeqSnapshot;
-      this.ctx.actionFrontierMap = actionFrontierSnapshot;
-      this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(frontierLinkageSnapshot);
+      if (linkedFrontierId) {
+        this.ctx.frontierLinkage.restoreRecord(
+          linkedFrontierId,
+          frontierLinkageSnapshot ? detached(frontierLinkageSnapshot) : undefined,
+        );
+      }
       this.invalidateAllCaches();
       this.invalidatePathGraph();
       if (!_recovery) throw error;
@@ -1068,15 +1151,18 @@ export class GraphEngine {
       ...(actionId ? { action_id: actionId } : {}),
     });
     if (!plan.payload) return plan.result;
+    const payload: IdentityRewriteMutationPayloadV1 = this.ctx.isCapturingEngineOperations()
+      ? { ...plan.payload, audit_events_externalized: true }
+      : plan.payload;
     this.ensureCompositeJournal();
     const applied = this.ctx.applyCompositeJournaledMutation(
       'identity_rewrite',
-      plan.payload as unknown as Record<string, unknown>,
-      () => this.applyIdentityRewriteMutation(plan.payload!, false),
+      payload as unknown as Record<string, unknown>,
+      () => this.applyIdentityRewriteMutation(payload, false),
       actionId,
     );
     if (applied.status !== 'applied') throw new Error(applied.reason);
-    return detached(plan.payload.result);
+    return detached(payload.result);
   }
 
   applyIdentityRewriteMutation(
@@ -1161,6 +1247,7 @@ export class GraphEngine {
         }
 
         for (const [index, event] of payload.audit_events.entries()) {
+          if (recovery && payload.audit_events_externalized) break;
           const alreadyAudited = this.ctx.activityLog.some(entry =>
             entry.details?.identity_operation_id === payload.operation_id
             && entry.details?.identity_event_index === index,
@@ -1458,14 +1545,19 @@ export class GraphEngine {
         completion?.complete(detached(duplicateResult));
         return campaignId;
       });
+      const duplicateSlices = detached(draft.slices);
+      if (draft.operations.some(operation => operation.type === 'activity_append')) {
+        delete duplicateSlices.activity;
+      }
       const statePatch: DurableStatePatchV1 = {
         payload_version: 1,
         operation_id: uuidv4(),
         occurred_at: this.ctx.nowIso(),
         reason: 'record duplicate finding',
-        slices: draft.slices,
+        slices: duplicateSlices,
       };
       const operations: EngineOperation[] = [
+        ...draft.operations,
         ...attributionUpdates.map(props => ({
           type: 'merge_node_attrs' as const,
           payload: { props },
@@ -1479,16 +1571,14 @@ export class GraphEngine {
         detached(this.ctx.graph.getNodeAttributes(props.id) as NodeProperties),
       );
       try {
+        const transactionDraft = {
+          operations,
+          source_action_id: finding.action_id,
+          update_detail: { updated_nodes: updatedNodes },
+        };
         this.ctx.applyEngineTransaction(
-          {
-            operations,
-            source_action_id: finding.action_id,
-            update_detail: { updated_nodes: updatedNodes },
-          },
-          () => {
-            for (const props of attributionUpdates) this.addNode(props);
-            return this.applyStatePatchMutation(statePatch, false);
-          },
+          transactionDraft,
+          () => this.persistence.applyTransactionDraft(transactionDraft, this),
           'duplicate finding ingest',
         );
       } catch (error) {
@@ -1535,6 +1625,7 @@ export class GraphEngine {
     const restoreBaseline = () => {
       footprintCapture.restore();
       this.ctx.applyDurableStatePatch(sliceBaseline);
+      this.restoreApplicationCommandDraftPreimages();
       this.applyRestoredRuntimeProjections();
       this.inference.invalidateCaches();
       this.ctx.pathGraphCache = cacheBaseline.pathGraphCache;
@@ -1548,6 +1639,7 @@ export class GraphEngine {
     let footprintAfter!: FinalizedTransactionFootprint;
     installScratchCaches();
     try {
+      this.beginApplicationCommandDraftCapture();
       captured = this.ctx.captureEngineOperations(() => {
         this.ctx.recentFindingHashes = new Map(activeFindingHashes);
         const result = ingestFindingImpl(
@@ -1603,12 +1695,19 @@ export class GraphEngine {
     }
 
     const detail = footprintAfter.update_detail;
+    const boundedFindingSlices = this.changedDurableStateSlices(
+      sliceBaseline,
+      slicesAfter,
+    );
+    if (captured.operations.some(operation => operation.type === 'activity_append')) {
+      delete boundedFindingSlices.activity;
+    }
     const statePatch: DurableStatePatchV1 = {
       payload_version: 1,
       operation_id: uuidv4(),
       occurred_at: this.ctx.nowIso(),
       reason: 'ingest finding',
-      slices: slicesAfter,
+      slices: boundedFindingSlices,
     };
     const operations: EngineOperation[] = [
       ...captured.operations,
@@ -1628,6 +1727,7 @@ export class GraphEngine {
     // replay/live semantic drift without publishing a partial transaction.
     installScratchCaches();
     try {
+      this.beginApplicationCommandDraftCapture();
       const replayed = this.persistence.applyTransactionDraft(transactionDraft, this);
       if (replayed.status === 'skipped') {
         throw new Error(`Finding operation draft could not replay: ${replayed.reason}`);
@@ -1645,6 +1745,7 @@ export class GraphEngine {
           + footprintAfter.cold_changes.filter(change => change.before === null && change.after !== null).length
           - footprintAfter.cold_changes.filter(change => change.before !== null && change.after === null).length
         || canonicalJson(replaySlices) !== canonicalJson(slicesAfter)
+        || !this.applicationCommandOperationsMatchAfter(operations)
       ) {
         throw new Error('Finding operation draft replay did not reproduce its captured after-state.');
       }
@@ -1654,6 +1755,7 @@ export class GraphEngine {
 
     installScratchCaches();
     try {
+      this.beginApplicationCommandDraftCapture();
       this.ctx.applyEngineTransaction(
         transactionDraft,
         () => {
@@ -1671,6 +1773,7 @@ export class GraphEngine {
       restoreBaseline();
       throw error;
     }
+    this.finishApplicationCommandDraftCapture();
     this.persist(detail);
 
     // Objective completion updates revisioned configuration and, for managed
@@ -3273,12 +3376,23 @@ export class GraphEngine {
       occurredAt,
       actionId,
     );
+    const auditOperation = this.graphCorrectionAuditOperation(payload);
+    payload.audit_event_externalized = true;
     this.ensureCompositeJournal();
-    const applied = this.ctx.applyCompositeJournaledMutation(
-      'graph_corrected',
-      payload as unknown as Record<string, unknown>,
-      () => this.applyGraphCorrectedMutation(payload, false),
-      actionId,
+    const transactionDraft = {
+      operations: [
+        {
+          type: 'graph_corrected' as const,
+          payload: payload as unknown as Record<string, unknown>,
+        },
+        auditOperation,
+      ],
+      ...(actionId ? { source_action_id: actionId } : {}),
+    };
+    const applied = this.ctx.applyEngineTransaction(
+      transactionDraft,
+      () => this.persistence.applyTransactionDraft(transactionDraft, this),
+      'graph correction',
     );
     if (applied.status !== 'applied') throw new Error(applied.reason);
     this.evaluateObjectives();
@@ -3312,52 +3426,37 @@ export class GraphEngine {
       this.ctx.nowIso(),
       actionId,
     );
+    const auditOperation = this.graphCorrectionAuditOperation(payload);
+    payload.audit_event_externalized = true;
     const command = detached(buildCommand(detached(payload.result)));
     if (command.status !== 'succeeded') {
       throw new Error(
         'A graph correction application command must be terminal before it is journaled.',
       );
     }
-    const stateKeys = ['command_state'] as const;
-    const stateBefore = this.ctx.captureDurableStateSlices(stateKeys);
-    let draft!: {
-      result: PersistedApplicationCommandV1;
-      slices: DurableStatePatchV1['slices'];
-    };
-    try {
-      draft = this.ctx.draftDurableStateSlices(
-        stateKeys,
-        () => this.installApplicationCommandDraft(command),
-      );
-    } finally {
-      this.applyRestoredRuntimeProjections();
-    }
-    const changedStateKeys = Object.keys(
-      draft.slices,
-    ) as DurableStateSliceKey[];
-    const stateBeforePatch = Object.fromEntries(
-      changedStateKeys.map(key => [key, stateBefore[key]]),
-    ) as DurableStateSlices;
-    payload.state_patch = {
-      payload_version: 1,
-      operation_id: uuidv4(),
-      occurred_at: payload.occurred_at,
-      reason,
-      slices: draft.slices,
-    };
-    payload.state_patch_before_sha256 = createHash('sha256')
-      .update(canonicalJson(stateBeforePatch))
-      .digest('hex');
-    payload.state_patch_after_sha256 = createHash('sha256')
-      .update(canonicalJson(draft.slices))
-      .digest('hex');
+    const commandOperation = this.applicationCommandChangeOperation(command);
 
     this.ensureCompositeJournal();
-    const applied = this.ctx.applyCompositeJournaledMutation(
-      'graph_corrected',
-      payload as unknown as Record<string, unknown>,
-      () => this.applyGraphCorrectedMutation(payload, false),
-      actionId,
+    const applied = this.ctx.applyEngineTransaction(
+      {
+        operations: [
+          {
+            type: 'graph_corrected',
+            payload: payload as unknown as Record<string, unknown>,
+          },
+          auditOperation,
+          commandOperation,
+        ],
+        ...(actionId ? { source_action_id: actionId } : {}),
+      },
+      () => {
+        const graphResult = this.applyGraphCorrectedMutation(payload, false);
+        if (graphResult.status === 'skipped') return graphResult;
+        const auditResult = this.applyApplicationCommandOperation(auditOperation);
+        if (auditResult.status === 'skipped') return auditResult;
+        return this.applyApplicationCommandOperation(commandOperation);
+      },
+      'graph correction application command',
     );
     if (applied.status !== 'applied') throw new Error(applied.reason);
     this.evaluateObjectives();
@@ -3367,9 +3466,42 @@ export class GraphEngine {
       new_edges: payload.result.replaced_edges.map(edge => edge.new_edge_id),
       updated_nodes: payload.result.patched_nodes,
     });
+    const installedCommand = this.getApplicationCommand(command.idempotency_key);
+    if (!installedCommand) {
+      throw new Error('Graph correction committed without its application-command receipt.');
+    }
+    this.pruneInstalledApplicationCommand(installedCommand);
     return {
       result: detached(payload.result),
-      command: detached(draft.result),
+      command: installedCommand,
+    };
+  }
+
+  private graphCorrectionAuditOperation(
+    payload: GraphCorrectedMutationPayloadV1,
+  ): EngineOperation {
+    const prepared = this.ctx.withClock(payload.occurred_at, () =>
+      this.ctx.prepareActivityAppend({
+        description: `Graph corrected: ${payload.operations.length} operation(s) applied`,
+        action_id: payload.action_id,
+        event_type: 'graph_corrected',
+        category: 'system',
+        result_classification: 'success',
+        details: {
+          operation_id: payload.operation_id,
+          reason: payload.reason,
+          operations: payload.operations,
+          before_summary: payload.before_summary,
+          after_summary: payload.after_summary,
+          dropped_nodes: payload.result.dropped_nodes,
+          dropped_edges: payload.result.dropped_edges,
+          replaced_edges: payload.result.replaced_edges,
+          patched_nodes: payload.result.patched_nodes,
+        },
+      }));
+    return {
+      type: 'activity_append',
+      payload: prepared.payload as unknown as Record<string, unknown>,
     };
   }
 
@@ -3671,7 +3803,7 @@ export class GraphEngine {
           entry.event_type === 'graph_corrected'
           && entry.details?.operation_id === payload.operation_id,
         );
-        if (!alreadyAudited) {
+        if (!payload.audit_event_externalized && !alreadyAudited) {
           this.ctx.logEvent({
             description: `Graph corrected: ${payload.operations.length} operation(s) applied`,
             action_id: payload.action_id,
@@ -4104,6 +4236,10 @@ export class GraphEngine {
     const now = Date.parse(this.ctx.nowIso());
     this.ctx.proposedPlanStore.prune(now);
     this.ctx.agentQueryStore.prune(now);
+    // Snapshot truth must survive unchanged until every newer WAL transaction
+    // has replayed. Expire legacy command plans/outcomes only at this writable
+    // post-replay boundary so compare-and-apply preimages remain valid.
+    this.pruneCommandCoordination(now);
   }
 
   /**
@@ -4667,6 +4803,9 @@ export class GraphEngine {
       after: EngagementConfig['scope'];
       affected_node_count: number;
     }) => T,
+    applicationCommandFromResult?: (
+      result: T,
+    ) => PersistedApplicationCommandV1 | undefined,
   ): {
     scope: {
       applied: boolean;
@@ -4689,11 +4828,16 @@ export class GraphEngine {
       const result = this.runApplicationCommandTransaction(
         changes.reason,
         sourceActionId,
-        () => mutation({
-          before: detached(plan.before),
-          after: detached(plan.after),
-          affected_node_count: 0,
-        }),
+        () => {
+          const value = mutation({
+            before: detached(plan.before),
+            after: detached(plan.after),
+            affected_node_count: 0,
+          });
+          const command = applicationCommandFromResult?.(value);
+          if (command) this.recordApplicationCommand(command);
+          return value;
+        },
         stateKeys,
       );
       return {
@@ -4715,7 +4859,11 @@ export class GraphEngine {
     const sourceFileHash = this.configService.getStatus().file_hash ?? computeConfigHash(sourceConfig);
     const uniqueStateKeys = [...new Set(stateKeys)];
     const stateBefore = this.ctx.captureDurableStateSlices(uniqueStateKeys);
-    let draft!: { result: T; slices: DurableStatePatchV1['slices'] };
+    let draft!: {
+      result: T;
+      slices: DurableStatePatchV1['slices'];
+      operations: EngineOperation[];
+    };
     try {
       draft = this.ctx.draftDurableStateSlices(
         uniqueStateKeys,
@@ -4728,17 +4876,29 @@ export class GraphEngine {
     } finally {
       this.applyRestoredRuntimeProjections();
     }
-    const changedStateKeys = Object.keys(draft.slices) as DurableStateSliceKey[];
+    const stateSlices = detached(draft.slices);
+    if (draft.operations.some(operation => operation.type === 'activity_append')) {
+      delete stateSlices.activity;
+    }
+    delete stateSlices.command_state;
+    const changedStateKeys = Object.keys(stateSlices) as DurableStateSliceKey[];
     const stateBeforePatch = Object.fromEntries(
       changedStateKeys.map(key => [key, stateBefore[key]]),
     ) as DurableStateSlices;
-    const statePatch = Object.keys(draft.slices).length > 0
+    const explicitCommand = applicationCommandFromResult?.(draft.result);
+    const commandOperations = [
+      ...draft.operations,
+      ...(explicitCommand
+        ? [this.applicationCommandChangeOperation(explicitCommand)]
+        : []),
+    ];
+    const statePatch = Object.keys(stateSlices).length > 0
       ? {
           payload_version: 1 as const,
           operation_id: uuidv4(),
           occurred_at: this.ctx.nowIso(),
           reason: changes.reason,
-          slices: draft.slices,
+          slices: stateSlices,
         }
       : undefined;
     const scope = this.commitScopePlan(
@@ -4750,8 +4910,19 @@ export class GraphEngine {
       undefined,
       statePatch,
       statePatch ? createHash('sha256').update(canonicalJson(stateBeforePatch)).digest('hex') : undefined,
-      statePatch ? createHash('sha256').update(canonicalJson(draft.slices)).digest('hex') : undefined,
+      statePatch ? createHash('sha256').update(canonicalJson(stateSlices)).digest('hex') : undefined,
+      commandOperations,
+      sourceActionId,
     );
+    if (explicitCommand) {
+      const installedCommand = this.getApplicationCommand(
+        explicitCommand.idempotency_key,
+      );
+      if (!installedCommand) {
+        throw new Error('Scope command committed without its application-command receipt.');
+      }
+      this.pruneInstalledApplicationCommand(installedCommand);
+    }
     return { scope, result: draft.result };
   }
 
@@ -4803,6 +4974,8 @@ export class GraphEngine {
     statePatch?: DurableStatePatchV1,
     statePatchBeforeSha256?: string,
     statePatchAfterSha256?: string,
+    applicationCommandOperations: readonly EngineOperation[] = [],
+    sourceActionId?: string,
   ): { applied: boolean; errors: string[]; before: EngagementConfig['scope']; after: EngagementConfig['scope']; affected_node_count: number } {
     const sourceConfig = this.ctx.config;
     const occurredAt = this.ctx.nowIso();
@@ -4836,10 +5009,21 @@ export class GraphEngine {
 
     try {
       this.ensureCompositeJournal();
-      const applied = this.ctx.applyCompositeJournaledMutation(
-        'scope_updated',
-        payload as unknown as Record<string, unknown>,
-        () => this.applyScopeUpdatedMutation(payload, false),
+      const scopeOperation: EngineOperation = {
+        type: 'scope_updated',
+        payload: payload as unknown as Record<string, unknown>,
+      };
+      const transactionDraft = {
+        // The application draft is built against the pre-scope activity
+        // chain. Preserve that semantic order in both live apply and replay;
+        // scope_updated may append its own deterministic audit events.
+        operations: [...applicationCommandOperations, scopeOperation],
+        ...(sourceActionId ? { source_action_id: sourceActionId } : {}),
+      };
+      const applied = this.ctx.applyEngineTransaction(
+        transactionDraft,
+        () => this.persistence.applyTransactionDraft(transactionDraft, this),
+        'scope application command',
       );
       if (applied.status !== 'applied') throw new Error(applied.reason);
       // The outer sequence is contiguous only after the composite helper
@@ -5288,7 +5472,11 @@ export class GraphEngine {
   ): T {
     if (this.ctx.isDraftingTransaction()) return mutate();
     const baseline = this.ctx.captureDurableStateSlices(keys);
-    let draft!: { result: T; slices: DurableStatePatchV1['slices'] };
+    let draft!: {
+      result: T;
+      slices: DurableStatePatchV1['slices'];
+      operations: EngineOperation[];
+    };
     try {
       draft = this.ctx.draftDurableStateSlices(keys, mutate);
     } finally {
@@ -5303,24 +5491,38 @@ export class GraphEngine {
         slices[key] = baseline[key];
       }
     }
-    if (Object.keys(slices).length === 0) return draft.result;
-    const payload: DurableStatePatchV1 = {
-      payload_version: 1,
-      operation_id: uuidv4(),
-      occurred_at: this.ctx.nowIso(),
-      reason,
-      slices,
-    };
+    if (draft.operations.some(operation => operation.type === 'activity_append')) {
+      delete slices.activity;
+    }
+    if (draft.operations.some(operation =>
+      operation.type === 'application_command_change'
+      || operation.type === 'command_coordination_change')) {
+      delete slices.command_state;
+    }
+    const payload: DurableStatePatchV1 | undefined = Object.keys(slices).length > 0
+      ? {
+          payload_version: 1,
+          operation_id: uuidv4(),
+          occurred_at: this.ctx.nowIso(),
+          reason,
+          slices,
+        }
+      : undefined;
+    const operations: EngineOperation[] = [
+      ...draft.operations,
+      ...(payload
+        ? [{
+            type: 'state_patch' as const,
+            payload: payload as unknown as Record<string, unknown>,
+          }]
+        : []),
+    ];
+    if (operations.length === 0) return draft.result;
+    const transactionDraft = { operations, update_detail: detail };
     try {
       this.ctx.applyEngineTransaction(
-        {
-          operations: [{
-            type: 'state_patch',
-            payload: payload as unknown as Record<string, unknown>,
-          }],
-          update_detail: detail,
-        },
-        () => this.applyStatePatchMutation(payload, false),
+        transactionDraft,
+        () => this.persistence.applyTransactionDraft(transactionDraft, this),
         'state patch',
       );
     } catch (error) {
@@ -5614,33 +5816,7 @@ export class GraphEngine {
         result = this.configService.applyPreparedResolution(
           prepared,
           target => {
-            const stateKeys = ['command_state'] as const;
-            const stateBefore = this.ctx.captureDurableStateSlices(stateKeys);
-            let draft!: {
-              result: PersistedApplicationCommandV1;
-              slices: DurableStatePatchV1['slices'];
-            };
-            try {
-              draft = this.ctx.draftDurableStateSlices(
-                stateKeys,
-                () => this.installApplicationCommandDraft(command),
-              );
-            } finally {
-              this.applyRestoredRuntimeProjections();
-            }
-            const changedStateKeys = Object.keys(
-              draft.slices,
-            ) as DurableStateSliceKey[];
-            const stateBeforePatch = Object.fromEntries(
-              changedStateKeys.map(key => [key, stateBefore[key]]),
-            ) as DurableStateSlices;
-            const statePatch: DurableStatePatchV1 = {
-              payload_version: 1,
-              operation_id: uuidv4(),
-              occurred_at: this.ctx.nowIso(),
-              reason: 'Configuration reconciliation applied file scope',
-              slices: draft.slices,
-            };
+            const commandOperation = this.applicationCommandChangeOperation(command);
             this.commitScopePlan(
               plan,
               target,
@@ -5648,13 +5824,11 @@ export class GraphEngine {
               prepared.expected_file_hash,
               'use_file',
               prepared.intent_conflict,
-              statePatch,
-              createHash('sha256')
-                .update(canonicalJson(stateBeforePatch))
-                .digest('hex'),
-              createHash('sha256')
-                .update(canonicalJson(draft.slices))
-                .digest('hex'),
+              undefined,
+              undefined,
+              undefined,
+              [commandOperation],
+              command.action_id,
             );
             return this.getConfig();
           },
@@ -5670,8 +5844,13 @@ export class GraphEngine {
           'Configuration reconciliation response differed from its command intent.',
         );
       }
+      const installedCommand = this.getApplicationCommand(command.idempotency_key);
+      if (!installedCommand) {
+        throw new Error('Configuration reconciliation committed without its application-command receipt.');
+      }
+      this.pruneInstalledApplicationCommand(installedCommand);
       this.resumeDeferredStartupReconciliation();
-      return { result, command };
+      return { result, command: installedCommand };
     } catch (error) {
       if (
         !this.configService.isBlocked()
@@ -5871,15 +6050,160 @@ export class GraphEngine {
     return this.ctx.agentQueryStore;
   }
 
-  private pruneCommandCoordination(now?: number): void {
-    if (!this.ctx.isDraftingTransaction()) {
-      this.transactDurableSlices(
-        'prune command coordination',
-        ['command_state'],
-        () => this.pruneCommandCoordination(now),
-      );
+  private validateCommandCoordinationValue(
+    kind: 'plan' | 'outcome',
+    value: CommandPlanValue | CommandOutcomeValue,
+    enforceLimit: boolean,
+  ): void {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`Command ${kind} value must be an object.`);
+    }
+    if (enforceLimit) {
+      const bytes = Buffer.byteLength(canonicalJson(value));
+      if (bytes > MAX_COMMAND_COORDINATION_VALUE_BYTES) {
+        const error = new Error(
+          `Command ${kind} value is ${bytes} bytes; maximum is ${MAX_COMMAND_COORDINATION_VALUE_BYTES}.`,
+        );
+        (error as Error & { code: string }).code = 'COMMAND_COORDINATION_TOO_LARGE';
+        throw error;
+      }
+    }
+    if (kind === 'plan') {
+      const plan = value as CommandPlanValue;
+      if (
+        typeof plan.command !== 'string'
+        || !Array.isArray(plan.ops)
+        || !Number.isFinite(plan.created_at)
+        || !Number.isFinite(plan.expires_at)
+        || plan.expires_at <= plan.created_at
+      ) {
+        throw new Error('Command plan value is malformed.');
+      }
       return;
     }
+    const outcome = value as CommandOutcomeValue;
+    if (
+      !Array.isArray(outcome.results)
+      || !Number.isFinite(outcome.at)
+      || !Number.isFinite(outcome.expires_at)
+      || outcome.expires_at <= outcome.at
+    ) {
+      throw new Error('Command outcome value is malformed.');
+    }
+  }
+
+  private commandCoordinationChangePayload(
+    kind: 'plan' | 'outcome',
+    key: string,
+    before: CommandPlanValue | CommandOutcomeValue | null,
+    after: CommandPlanValue | CommandOutcomeValue | null,
+  ): CommandCoordinationChangePayloadV1 {
+    if (!key.trim() || key.length > 512) {
+      throw new Error('Command coordination key must contain 1 through 512 characters.');
+    }
+    if (before) this.validateCommandCoordinationValue(kind, before, false);
+    if (after) this.validateCommandCoordinationValue(kind, after, true);
+    return {
+      payload_version: COMMAND_COORDINATION_CHANGE_PAYLOAD_VERSION,
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      record_kind: kind,
+      key,
+      before: before ? detached(before) : null,
+      after: after ? detached(after) : null,
+    } as CommandCoordinationChangePayloadV1;
+  }
+
+  applyCommandCoordinationChangeMutation(
+    payload: CommandCoordinationChangePayloadV1,
+    _recovery = true,
+  ): MutationApplyResult {
+    if (payload.payload_version !== COMMAND_COORDINATION_CHANGE_PAYLOAD_VERSION) {
+      return {
+        status: 'skipped',
+        reason: `unsupported command_coordination_change payload version: ${String(payload.payload_version)}`,
+      };
+    }
+    try {
+      if (!payload.key.trim() || payload.key.length > 512) {
+        throw new Error('Command coordination key must contain 1 through 512 characters.');
+      }
+      if (payload.before) {
+        this.validateCommandCoordinationValue(
+          payload.record_kind,
+          payload.before,
+          false,
+        );
+      }
+      if (payload.after) {
+        this.validateCommandCoordinationValue(
+          payload.record_kind,
+          payload.after,
+          true,
+        );
+      }
+    } catch (error) {
+      return {
+        status: 'skipped',
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const map = (payload.record_kind === 'plan'
+      ? this.ctx.commandPlans
+      : this.ctx.commandOutcomes) as Map<
+        string,
+        CommandPlanValue | CommandOutcomeValue
+      >;
+    const current = map.get(payload.key) ?? null;
+    if (canonicalJson(current) === canonicalJson(payload.after)) {
+      return { status: 'applied' };
+    }
+    if (canonicalJson(current) !== canonicalJson(payload.before)) {
+      return {
+        status: 'skipped',
+        reason: `command ${payload.record_kind} ${payload.key} no longer matches its expected preimage`,
+      };
+    }
+    if (payload.after) map.set(payload.key, detached(payload.after));
+    else map.delete(payload.key);
+    return { status: 'applied' };
+  }
+
+  private commitCommandCoordinationChanges(
+    reason: string,
+    payloads: readonly CommandCoordinationChangePayloadV1[],
+  ): void {
+    if (payloads.length === 0) return;
+    const operations: EngineOperation[] = payloads.map(payload => ({
+      type: 'command_coordination_change',
+      payload: payload as unknown as Record<string, unknown>,
+    }));
+    const transactionDraft = { operations };
+    const applied = this.ctx.applyEngineTransaction(
+      transactionDraft,
+      () => this.persistence.applyTransactionDraft(transactionDraft, this),
+      reason,
+    );
+    if (applied.status === 'skipped') {
+      throw new Error(`${reason} was rejected: ${applied.reason}`);
+    }
+    this.persist();
+  }
+
+  private applyCommandCoordinationDraftChanges(
+    reason: string,
+    payloads: readonly CommandCoordinationChangePayloadV1[],
+  ): void {
+    for (const payload of payloads) {
+      const result = this.applyCommandCoordinationChangeMutation(payload, false);
+      if (result.status === 'skipped') {
+        throw new Error(`${reason} was rejected: ${result.reason}`);
+      }
+    }
+    this.persist();
+  }
+
+  private pruneCommandCoordination(now?: number): void {
     const effectiveNow = now ?? Date.parse(this.ctx.nowIso());
     const expiredPlans = [...this.ctx.commandPlans.entries()]
       .filter(([, plan]) => plan.expires_at <= effectiveNow)
@@ -5889,9 +6213,31 @@ export class GraphEngine {
       .map(([id]) => id);
     if (expiredPlans.length === 0 && expiredOutcomes.length === 0) return;
     this.assertPersistenceWritable();
-    for (const id of expiredPlans) this.ctx.commandPlans.delete(id);
-    for (const id of expiredOutcomes) this.ctx.commandOutcomes.delete(id);
-    this.persist();
+    const payloads = [
+      ...expiredPlans.map(id => this.commandCoordinationChangePayload(
+        'plan',
+        id,
+        this.ctx.commandPlans.get(id) ?? null,
+        null,
+      )),
+      ...expiredOutcomes.map(id => this.commandCoordinationChangePayload(
+        'outcome',
+        id,
+        this.ctx.commandOutcomes.get(id) ?? null,
+        null,
+      )),
+    ];
+    if (!this.ctx.isDraftingTransaction() || this.ctx.isCapturingEngineOperations()) {
+      this.commitCommandCoordinationChanges(
+        'prune command coordination',
+        payloads,
+      );
+      return;
+    }
+    this.applyCommandCoordinationDraftChanges(
+      'prune command coordination',
+      payloads,
+    );
   }
 
   createCommandPlan(input: {
@@ -5900,24 +6246,30 @@ export class GraphEngine {
     now?: number;
     ttlMs?: number;
   }): string {
-    if (!this.ctx.isDraftingTransaction()) {
-      return this.transactDurableSlices(
-        'create command plan',
-        ['command_state'],
-        () => this.createCommandPlan(input),
-      );
-    }
     this.assertPersistenceWritable();
     const now = input.now ?? Date.parse(this.ctx.nowIso());
     this.pruneCommandCoordination(now);
     const planId = uuidv4();
-    this.ctx.commandPlans.set(planId, {
+    const plan: CommandPlanValue = {
       ops: detached(input.ops),
       command: input.command,
       created_at: now,
       expires_at: now + (input.ttlMs ?? 10 * 60_000),
-    });
-    this.persist();
+    };
+    const payload = this.commandCoordinationChangePayload('plan', planId, null, plan);
+    if (!this.ctx.isDraftingTransaction() || this.ctx.isCapturingEngineOperations()) {
+      if (this.ctx.commandPlans.size >= MAX_COMMAND_COORDINATION_RECORDS) {
+        throw new Error(
+          `Command plan capacity of ${MAX_COMMAND_COORDINATION_RECORDS} active records is exhausted.`,
+        );
+      }
+      this.commitCommandCoordinationChanges(
+        'create command plan',
+        [payload],
+      );
+      return planId;
+    }
+    this.applyCommandCoordinationDraftChanges('create command plan', [payload]);
     return planId;
   }
 
@@ -5932,17 +6284,19 @@ export class GraphEngine {
   }
 
   deleteCommandPlan(planId: string): boolean {
-    if (!this.ctx.isDraftingTransaction()) {
-      return this.transactDurableSlices(
-        'delete command plan',
-        ['command_state'],
-        () => this.deleteCommandPlan(planId),
-      );
-    }
     this.assertPersistenceWritable();
-    const deleted = this.ctx.commandPlans.delete(planId);
-    if (deleted) this.persist();
-    return deleted;
+    const before = this.ctx.commandPlans.get(planId);
+    if (!before) return false;
+    const payload = this.commandCoordinationChangePayload('plan', planId, before, null);
+    if (!this.ctx.isDraftingTransaction() || this.ctx.isCapturingEngineOperations()) {
+      this.commitCommandCoordinationChanges(
+        'delete command plan',
+        [payload],
+      );
+      return true;
+    }
+    this.applyCommandCoordinationDraftChanges('delete command plan', [payload]);
+    return true;
   }
 
   recordCommandOutcome(
@@ -5951,23 +6305,34 @@ export class GraphEngine {
     now?: number,
     ttlMs: number = 10 * 60_000,
   ): void {
-    if (!this.ctx.isDraftingTransaction()) {
-      this.transactDurableSlices(
-        'record command outcome',
-        ['command_state'],
-        () => this.recordCommandOutcome(planId, results, now, ttlMs),
-      );
-      return;
-    }
     this.assertPersistenceWritable();
     const effectiveNow = now ?? Date.parse(this.ctx.nowIso());
     this.pruneCommandCoordination(effectiveNow);
-    this.ctx.commandOutcomes.set(planId, {
+    const outcome: CommandOutcomeValue = {
       at: effectiveNow,
       expires_at: effectiveNow + ttlMs,
       results: detached(results),
-    });
-    this.persist();
+    };
+    const before = this.ctx.commandOutcomes.get(planId) ?? null;
+    const payload = this.commandCoordinationChangePayload(
+      'outcome',
+      planId,
+      before,
+      outcome,
+    );
+    if (!this.ctx.isDraftingTransaction() || this.ctx.isCapturingEngineOperations()) {
+      if (!before && this.ctx.commandOutcomes.size >= MAX_COMMAND_COORDINATION_RECORDS) {
+        throw new Error(
+          `Command outcome capacity of ${MAX_COMMAND_COORDINATION_RECORDS} active records is exhausted.`,
+        );
+      }
+      this.commitCommandCoordinationChanges(
+        'record command outcome',
+        [payload],
+      );
+      return;
+    }
+    this.applyCommandCoordinationDraftChanges('record command outcome', [payload]);
   }
 
   getCommandOutcome(
@@ -5986,99 +6351,568 @@ export class GraphEngine {
   }
 
   getApplicationCommandById(commandId: string): PersistedApplicationCommandV1 | undefined {
-    for (const command of this.ctx.applicationCommands.values()) {
-      if (command.command_id === commandId) return detached(command);
-    }
-    return undefined;
+    const idempotencyKey = this.ctx.applicationCommandIds.get(commandId);
+    if (!idempotencyKey) return undefined;
+    const command = this.ctx.applicationCommands.get(idempotencyKey);
+    return command ? detached(command) : undefined;
   }
 
   listApplicationCommands(): PersistedApplicationCommandV1[] {
-    return [...this.ctx.applicationCommands.values()].map(command => detached(command));
+    return [...this.ctx.applicationCommands.values()]
+      .filter(command => !command.receipt_expired_at)
+      .map(command => detached(command));
   }
 
   recordApplicationCommand(
     command: PersistedApplicationCommandV1,
   ): PersistedApplicationCommandV1 {
     if (!this.ctx.isDraftingTransaction()) {
-      return this.transactDurableSlices(
-        `record application command ${command.command_kind}`,
-        ['command_state'],
-        () => this.recordApplicationCommand(command),
+      const before = this.ctx.applicationCommands.get(command.idempotency_key);
+      const payload = this.applicationCommandChangePayload(
+        before ?? null,
+        command,
       );
+      const result = this.ctx.applyJournaledMutation(
+        'application_command_change',
+        payload as unknown as Record<string, unknown>,
+        () => this.applyApplicationCommandChangeMutation(payload, false),
+        command.action_id,
+      );
+      if (result.status === 'skipped') {
+        throw new Error(`Application command change was rejected: ${result.reason}`);
+      }
+      this.persist();
+      const installed = detached(payload.after!);
+      this.pruneInstalledApplicationCommand(installed);
+      return installed;
     }
     this.assertPersistenceWritable();
-    if (!command.idempotency_key.trim()) {
-      throw new Error('Application command idempotency_key must not be empty.');
-    }
-    if (!command.command_id.trim()) {
-      throw new Error('Application command command_id must not be empty.');
-    }
-    const duplicateCommandId = [...this.ctx.applicationCommands.entries()]
-      .find(([idempotencyKey, existing]) =>
-        idempotencyKey !== command.idempotency_key
-        && existing.command_id === command.command_id);
-    if (duplicateCommandId) {
-      const error = new Error(
-        `Application command command_id ${command.command_id} is already bound to ${duplicateCommandId[0]}.`,
+    if (
+      this.applicationCommandDraftPreimages !== null
+      || this.ctx.isCapturingEngineOperations()
+    ) {
+      const before = this.ctx.applicationCommands.get(command.idempotency_key);
+      const payload = this.applicationCommandChangePayload(
+        before ?? null,
+        command,
       );
-      (error as Error & { code: string }).code = 'COMMAND_ID_CONFLICT';
-      throw error;
+      const result = this.ctx.applyJournaledMutation(
+        'application_command_change',
+        payload as unknown as Record<string, unknown>,
+        () => this.applyApplicationCommandChangeMutation(payload, false),
+        command.action_id,
+      );
+      if (result.status === 'skipped') {
+        throw new Error(`Application command change was rejected: ${result.reason}`);
+      }
+      const installed = detached(payload.after!);
+      this.pruneInstalledApplicationCommand(installed);
+      return installed;
     }
-    this.ctx.applicationCommands.set(command.idempotency_key, detached(command));
+    // Compatibility path for older composite state-patch transactions. New
+    // application commands use `application_command_change` above.
+    const previous = this.ctx.applicationCommands.get(command.idempotency_key) ?? null;
+    const installed = this.normalizeApplicationCommandInstall(previous, command);
+    this.validateApplicationCommandInstall(installed);
+    this.ctx.updateApplicationCommandRetentionIndex(previous, installed);
+    this.ctx.applicationCommands.set(installed.idempotency_key, detached(installed));
+    this.ctx.applicationCommandIds.set(installed.command_id, installed.idempotency_key);
     this.persist();
-    return detached(command);
+    this.pruneInstalledApplicationCommand(installed);
+    return detached(installed);
   }
 
-  /** Install command state while an already-authorized composite/config
-   * transaction is drafting its absolute after-state. This deliberately skips
-   * the config-convergence half of the public write gate: recovery and scope
-   * transactions establish their own durable authority before applying the
-   * draft. */
-  private installApplicationCommandDraft(
-    command: PersistedApplicationCommandV1,
+  applyApplicationCommandChangeMutation(
+    payload: ApplicationCommandChangePayloadV1,
+    _recovery = true,
+  ): MutationApplyResult {
+    if (payload.payload_version !== APPLICATION_COMMAND_CHANGE_PAYLOAD_VERSION) {
+      return {
+        status: 'skipped',
+        reason: `unsupported application_command_change payload version: ${String(payload.payload_version)}`,
+      };
+    }
+    try {
+      if (payload.before) {
+        validatePersistedApplicationCommandV1(
+          payload.before,
+          'application_command_change.before',
+          {
+            expected_idempotency_key: payload.idempotency_key,
+            enforce_limits: false,
+            enforce_lifecycle: false,
+          },
+        );
+      }
+      if (payload.after) {
+        validatePersistedApplicationCommandV1(
+          payload.after,
+          'application_command_change.after',
+          { expected_idempotency_key: payload.idempotency_key },
+        );
+      }
+    } catch (error) {
+      return {
+        status: 'skipped',
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const current = this.ctx.applicationCommands.get(payload.idempotency_key) ?? null;
+    if (this.applicationCommandsEqual(current, payload.after)) {
+      return { status: 'applied' };
+    }
+    if (!this.applicationCommandsEqual(current, payload.before)) {
+      return {
+        status: 'skipped',
+        reason: `application command ${payload.idempotency_key} no longer matches its expected preimage`,
+      };
+    }
+    if (payload.after) {
+      const duplicateKey = this.ctx.applicationCommandIds.get(payload.after.command_id);
+      if (duplicateKey && duplicateKey !== payload.idempotency_key) {
+        return {
+          status: 'skipped',
+          reason: `application command command_id ${payload.after.command_id} is already bound to ${duplicateKey}`,
+        };
+      }
+    }
+    if (
+      this.applicationCommandDraftPreimages !== null
+      && !this.applicationCommandDraftPreimages.has(payload.idempotency_key)
+    ) {
+      this.applicationCommandDraftPreimages.set(
+        payload.idempotency_key,
+        current ? detached(current) : null,
+      );
+    }
+    const installedAfter = payload.after
+      ? this.normalizeApplicationCommandInstall(current, payload.after, false)
+      : null;
+    this.ctx.updateApplicationCommandRetentionIndex(current, installedAfter);
+    if (current) this.ctx.applicationCommandIds.delete(current.command_id);
+    if (installedAfter) {
+      this.ctx.applicationCommands.set(payload.idempotency_key, detached(installedAfter));
+      this.ctx.applicationCommandIds.set(installedAfter.command_id, payload.idempotency_key);
+    } else {
+      this.ctx.applicationCommands.delete(payload.idempotency_key);
+    }
+    return { status: 'applied' };
+  }
+
+  private applicationCommandChangePayload(
+    before: PersistedApplicationCommandV1 | null,
+    after: PersistedApplicationCommandV1 | null,
+  ): ApplicationCommandChangePayloadV1 {
+    const idempotencyKey = after?.idempotency_key ?? before?.idempotency_key;
+    if (!idempotencyKey) {
+      throw new Error('Application command change requires a before or after record.');
+    }
+    if (before && after && before.idempotency_key !== after.idempotency_key) {
+      throw new Error('Application command change cannot replace its idempotency identity.');
+    }
+    const normalizedAfter = after
+      ? this.normalizeApplicationCommandInstall(before, after)
+      : null;
+    if (normalizedAfter) this.validateApplicationCommandInstall(normalizedAfter);
+    return {
+      payload_version: APPLICATION_COMMAND_CHANGE_PAYLOAD_VERSION,
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      idempotency_key: idempotencyKey,
+      before: before ? detached(before) : null,
+      after: normalizedAfter ? detached(normalizedAfter) : null,
+    };
+  }
+
+  private normalizeApplicationCommandInstall(
+    before: PersistedApplicationCommandV1 | null,
+    after: PersistedApplicationCommandV1,
+    installDefaultRetention = true,
   ): PersistedApplicationCommandV1 {
-    if (!this.ctx.isDraftingTransaction()) {
-      throw new Error(
-        'Application command draft installation requires an active transaction draft.',
+    const normalized = detached(after);
+    const hasAnyRetention = [
+      normalized.retention_class,
+      normalized.retention_group,
+      normalized.retention_max_group_records,
+      normalized.retention_max_class_records,
+      normalized.retention_max_class_bytes,
+      normalized.retention_max_age_ms,
+    ].some(value => value !== undefined);
+    if (installDefaultRetention && !normalized.receipt_expired_at && !hasAnyRetention) {
+      normalized.retention_class = 'application.command';
+      normalized.retention_group = `${normalized.transport}:${normalized.command_kind}`;
+      normalized.retention_max_group_records = DEFAULT_APPLICATION_COMMAND_MAX_RECORDS;
+      normalized.retention_max_class_records = DEFAULT_APPLICATION_COMMAND_MAX_RECORDS;
+      normalized.retention_max_class_bytes = DEFAULT_APPLICATION_COMMAND_MAX_BYTES;
+      normalized.retention_max_age_ms = DEFAULT_APPLICATION_COMMAND_MAX_AGE_MS;
+    }
+    if (['succeeded', 'failed', 'interrupted'].includes(normalized.status)) {
+      normalized.completion_sequence = normalized.completion_sequence
+        ?? before?.completion_sequence
+        ?? this.ctx.nextApplicationCommandCompletionSequence();
+    }
+    return normalized;
+  }
+
+  private pruneInstalledApplicationCommand(command: PersistedApplicationCommandV1): void {
+    if (
+      command.receipt_expired_at
+      || !['succeeded', 'failed', 'interrupted'].includes(command.status)
+      || !command.retention_class
+      || !command.retention_group
+      || command.retention_max_group_records === undefined
+      || command.retention_max_class_records === undefined
+    ) return;
+    this.pruneApplicationCommandReceipts({
+      retention_class: command.retention_class,
+      retention_group: command.retention_group,
+      max_group_records: command.retention_max_group_records,
+      max_class_records: command.retention_max_class_records,
+      ...(command.retention_max_class_bytes === undefined
+        ? {}
+        : { max_class_bytes: command.retention_max_class_bytes }),
+      ...(command.retention_max_age_ms === undefined
+        ? {}
+        : { max_age_ms: command.retention_max_age_ms }),
+      preserve_idempotency_key: command.idempotency_key,
+    });
+  }
+
+  private applicationCommandChangeOperation(
+    after: PersistedApplicationCommandV1,
+  ): EngineOperation {
+    const before = this.ctx.applicationCommands.get(after.idempotency_key) ?? null;
+    return {
+      type: 'application_command_change',
+      payload: this.applicationCommandChangePayload(
+        before,
+        after,
+      ) as unknown as Record<string, unknown>,
+    };
+  }
+
+  private applyApplicationCommandOperation(
+    operation: EngineOperation,
+  ): MutationApplyResult {
+    if (operation.type === 'activity_append') {
+      return this.ctx.applyActivityAppend(
+        operation.payload as unknown as ActivityAppendPayloadV1,
       );
     }
-    if (!command.idempotency_key.trim()) {
-      throw new Error(
-        'Application command idempotency_key must not be empty.',
+    if (operation.type === 'application_command_change') {
+      return this.applyApplicationCommandChangeMutation(
+        operation.payload as unknown as ApplicationCommandChangePayloadV1,
+        false,
       );
     }
-    if (!command.command_id.trim()) {
-      throw new Error('Application command command_id must not be empty.');
+    if (operation.type === 'command_coordination_change') {
+      return this.applyCommandCoordinationChangeMutation(
+        operation.payload as unknown as CommandCoordinationChangePayloadV1,
+        false,
+      );
     }
-    const duplicateCommandId = [...this.ctx.applicationCommands.entries()]
-      .find(([idempotencyKey, existing]) =>
-        idempotencyKey !== command.idempotency_key
-        && existing.command_id === command.command_id);
-    if (duplicateCommandId) {
+    return {
+      status: 'skipped',
+      reason: `expected a captured command/activity delta, received ${operation.type}`,
+    };
+  }
+
+  private validateApplicationCommandInstall(command: PersistedApplicationCommandV1): void {
+    validatePersistedApplicationCommandV1(command, 'application command', {
+      expected_idempotency_key: command.idempotency_key,
+    });
+    const duplicateKey = this.ctx.applicationCommandIds.get(command.command_id);
+    if (duplicateKey && duplicateKey !== command.idempotency_key) {
       const error = new Error(
-        `Application command command_id ${command.command_id} is already bound to ${duplicateCommandId[0]}.`,
+        `Application command command_id ${command.command_id} is already bound to ${duplicateKey}.`,
       );
       (error as Error & { code: string }).code = 'COMMAND_ID_CONFLICT';
       throw error;
     }
-    this.ctx.applicationCommands.set(
-      command.idempotency_key,
-      detached(command),
-    );
-    return detached(command);
+    if (
+      !this.ctx.applicationCommands.has(command.idempotency_key)
+      && this.ctx.applicationCommands.size >= MAX_APPLICATION_COMMAND_IDENTITIES
+    ) {
+      const error = new Error(
+        `Application command identity capacity of ${MAX_APPLICATION_COMMAND_IDENTITIES} is exhausted; archive or rotate the engagement before accepting more mutations.`,
+      );
+      (error as Error & { code: string }).code = 'COMMAND_IDENTITY_CAPACITY';
+      throw error;
+    }
+  }
+
+  private applicationCommandsEqual(
+    left: PersistedApplicationCommandV1 | null,
+    right: PersistedApplicationCommandV1 | null,
+  ): boolean {
+    if (left === right) return true;
+    if (
+      left
+      && right
+      && (left.completion_sequence === undefined || right.completion_sequence === undefined)
+    ) {
+      const normalizedLeft = detached(left);
+      const normalizedRight = detached(right);
+      delete normalizedLeft.completion_sequence;
+      delete normalizedRight.completion_sequence;
+      return canonicalJson(normalizedLeft) === canonicalJson(normalizedRight);
+    }
+    return canonicalJson(left) === canonicalJson(right);
+  }
+
+  private beginApplicationCommandDraftCapture(): void {
+    if (
+      this.applicationCommandDraftPreimages !== null
+      || this.ctx.isCapturingEngineOperations()
+    ) {
+      throw new Error('Nested application-command draft capture is not supported.');
+    }
+    this.applicationCommandDraftPreimages = new Map();
+  }
+
+  private finishApplicationCommandDraftCapture(): void {
+    this.applicationCommandDraftPreimages = null;
+  }
+
+  private restoreApplicationCommandDraftPreimages(): void {
+    const preimages = this.applicationCommandDraftPreimages;
+    if (preimages === null) return;
+    for (const [idempotencyKey, before] of preimages) {
+      if (before) this.ctx.applicationCommands.set(idempotencyKey, detached(before));
+      else this.ctx.applicationCommands.delete(idempotencyKey);
+    }
+    this.ctx.rebuildApplicationCommandIndex();
+    this.applicationCommandDraftPreimages = null;
+  }
+
+  private applicationCommandOperationsMatchAfter(
+    operations: readonly EngineOperation[],
+  ): boolean {
+    const terminalByKey = new Map<string, ApplicationCommandChangePayloadV1>();
+    for (const operation of operations) {
+      if (operation.type !== 'application_command_change') continue;
+      const payload = operation.payload as unknown as ApplicationCommandChangePayloadV1;
+      terminalByKey.set(payload.idempotency_key, payload);
+    }
+    for (const payload of terminalByKey.values()) {
+      const current = this.ctx.applicationCommands.get(payload.idempotency_key) ?? null;
+      if (!this.applicationCommandsEqual(current, payload.after)) return false;
+    }
+    return true;
+  }
+
+  private withoutApplicationCommandMap(
+    slices: DurableStateSlices,
+  ): DurableStateSlices {
+    const stripped = detached(slices);
+    const commandState = stripped.command_state;
+    if (commandState && typeof commandState === 'object' && !Array.isArray(commandState)) {
+      delete (commandState as Record<string, unknown>).applicationCommands;
+    }
+    return stripped;
+  }
+
+  private changedDurableStateSlices(
+    before: DurableStateSlices,
+    after: DurableStateSlices,
+  ): DurableStateSlices {
+    const changed: DurableStateSlices = {};
+    for (const key of Object.keys(after) as DurableStateSliceKey[]) {
+      if (canonicalJson(before[key]) !== canonicalJson(after[key])) {
+        changed[key] = detached(after[key]) as never;
+      }
+    }
+    return changed;
   }
 
   deleteApplicationCommand(idempotencyKey: string): boolean {
     if (!this.ctx.isDraftingTransaction()) {
-      return this.transactDurableSlices(
-        'delete application command',
-        ['command_state'],
-        () => this.deleteApplicationCommand(idempotencyKey),
+      const before = this.ctx.applicationCommands.get(idempotencyKey);
+      if (!before) return false;
+      const payload = this.applicationCommandChangePayload(before, null);
+      const result = this.ctx.applyJournaledMutation(
+        'application_command_change',
+        payload as unknown as Record<string, unknown>,
+        () => this.applyApplicationCommandChangeMutation(payload, false),
       );
+      if (result.status === 'skipped') {
+        throw new Error(`Application command deletion was rejected: ${result.reason}`);
+      }
+      this.persist();
+      return true;
     }
     this.assertPersistenceWritable();
-    const deleted = this.ctx.applicationCommands.delete(idempotencyKey);
-    if (deleted) this.persist();
+    if (this.applicationCommandDraftPreimages !== null) {
+      const before = this.ctx.applicationCommands.get(idempotencyKey);
+      if (!before) return false;
+      const payload = this.applicationCommandChangePayload(before, null);
+      const result = this.ctx.applyJournaledMutation(
+        'application_command_change',
+        payload as unknown as Record<string, unknown>,
+        () => this.applyApplicationCommandChangeMutation(payload, false),
+      );
+      if (result.status === 'skipped') {
+        throw new Error(`Application command deletion was rejected: ${result.reason}`);
+      }
+      return true;
+    }
+    const existing = this.ctx.applicationCommands.get(idempotencyKey);
+    if (!existing) return false;
+    this.ctx.updateApplicationCommandRetentionIndex(existing, null);
+    this.ctx.applicationCommands.delete(idempotencyKey);
+    this.ctx.applicationCommandIds.delete(existing.command_id);
+    this.persist();
+    return true;
+  }
+
+  /** Retire the response payload while preserving exact idempotency identity.
+   * Tombstones are intentionally not subject to response-retention pruning:
+   * forgetting an arbitrary client key would make a later response-loss retry
+   * indistinguishable from a new mutation. */
+  private retireApplicationCommandReceipt(idempotencyKey: string): boolean {
+    const existing = this.ctx.applicationCommands.get(idempotencyKey);
+    if (!existing || existing.receipt_expired_at) return false;
+    if (!['succeeded', 'failed', 'interrupted'].includes(existing.status)) {
+      return false;
+    }
+    const terminalStatus = existing.status as Extract<
+      typeof existing.status,
+      'succeeded' | 'failed' | 'interrupted'
+    >;
+    const expiredAt = this.ctx.nowIso();
+    this.recordApplicationCommand({
+      command_id: existing.command_id,
+      idempotency_key: existing.idempotency_key,
+      input_sha256: existing.input_sha256,
+      validated_input: null,
+      command_kind: existing.command_kind,
+      transport: existing.transport,
+      actor_task_id: existing.actor_task_id,
+      status: 'failed',
+      created_at: existing.created_at,
+      completed_at: existing.completed_at ?? expiredAt,
+      receipt_expired_at: expiredAt,
+      receipt_terminal_status: terminalStatus,
+      error: {
+        code: 'COMMAND_RECEIPT_EXPIRED',
+        message: 'The application command already completed, but its full replay receipt has expired; it was not executed again.',
+        details: {
+          terminal_status: terminalStatus,
+          receipt_expired_at: expiredAt,
+          http_status: 409,
+        },
+      },
+    });
+    return true;
+  }
+
+  /**
+   * Keep replay receipts for high-frequency adapters bounded without changing
+   * the retention of ordinary application commands. Callers invoke this in
+   * the same transaction that records a terminal receipt, so the new receipt
+   * and any evictions have one crash-consistent WAL boundary.
+   */
+  pruneApplicationCommandReceipts(options: {
+    retention_class: string;
+    retention_group: string;
+    max_group_records: number;
+    max_class_records: number;
+    max_class_bytes?: number;
+    max_age_ms?: number;
+    preserve_idempotency_key?: string;
+  }): number {
+    if (!this.ctx.isDraftingTransaction()) {
+      return this.runApplicationCommandTransaction(
+        `prune ${options.retention_class} application command receipts`,
+        undefined,
+        () => this.pruneApplicationCommandReceipts(options),
+      );
+    }
+    let deleted = 0;
+    let remainingRetirements = MAX_APPLICATION_COMMAND_RETIREMENTS_PER_TRANSACTION;
+    let remainingRetirementBytes =
+      MAX_APPLICATION_COMMAND_RETIREMENT_BYTES_PER_TRANSACTION;
+    const preserved = options.preserve_idempotency_key;
+    const retentionOrder = (leftKey: string, rightKey: string): number => {
+      const left = this.ctx.applicationCommands.get(leftKey);
+      const right = this.ctx.applicationCommands.get(rightKey);
+      return (left?.completion_sequence ?? Number.MAX_SAFE_INTEGER)
+        - (right?.completion_sequence ?? Number.MAX_SAFE_INTEGER)
+        || (left?.command_id ?? '').localeCompare(right?.command_id ?? '')
+        || leftKey.localeCompare(rightKey);
+    };
+    const deleteOldest = (group?: string): boolean => {
+      if (remainingRetirements <= 0) return false;
+      const candidates = [...this.ctx.terminalApplicationCommandKeys(
+        options.retention_class,
+        group,
+      )]
+        .filter(idempotencyKey => idempotencyKey !== preserved)
+        .sort(retentionOrder);
+      let retirementBytes = 0;
+      const oldest = candidates.find(idempotencyKey => {
+        const command = this.ctx.applicationCommands.get(idempotencyKey);
+        const bytes = command ? Buffer.byteLength(JSON.stringify(command)) + 4_096 : 0;
+        if (bytes <= 0 || bytes > remainingRetirementBytes) return false;
+        retirementBytes = bytes;
+        return true;
+      });
+      if (!oldest || !this.retireApplicationCommandReceipt(oldest)) return false;
+      deleted++;
+      remainingRetirements--;
+      remainingRetirementBytes = Math.max(
+        0,
+        remainingRetirementBytes - retirementBytes,
+      );
+      return true;
+    };
+
+    // Age is a defined replay-window limit for ordinary commands. It is
+    // intentionally omitted by the high-frequency session class, whose count
+    // pruning therefore remains O(evictions), not O(the complete ledger).
+    if (options.max_age_ms !== undefined) {
+      const cutoff = Date.parse(this.ctx.nowIso()) - options.max_age_ms;
+      for (const idempotencyKey of [
+        ...this.ctx.terminalApplicationCommandKeys(options.retention_class),
+      ]) {
+        if (remainingRetirements <= 0) break;
+        if (idempotencyKey === preserved) continue;
+        const command = this.ctx.applicationCommands.get(idempotencyKey);
+        const completedAt = Date.parse(command?.completed_at ?? command?.created_at ?? '');
+        if (Number.isFinite(completedAt) && completedAt < cutoff) {
+          const retirementBytes = command
+            ? Buffer.byteLength(JSON.stringify(command)) + 4_096
+            : 0;
+          if (
+            retirementBytes > 0
+            && retirementBytes <= remainingRetirementBytes
+            && this.retireApplicationCommandReceipt(idempotencyKey)
+          ) {
+            deleted++;
+            remainingRetirements--;
+            remainingRetirementBytes -= retirementBytes;
+          }
+        }
+      }
+    }
+    while (
+      this.ctx.terminalApplicationCommandCount(
+        options.retention_class,
+        options.retention_group,
+      ) > Math.max(1, options.max_group_records)
+      && deleteOldest(options.retention_group)
+    ) { /* bounded by the configured group window */ }
+    while (
+      this.ctx.terminalApplicationCommandCount(options.retention_class)
+        > Math.max(1, options.max_class_records)
+      && deleteOldest()
+    ) { /* bounded by the configured class window */ }
+    while (
+      options.max_class_bytes !== undefined
+      && this.ctx.terminalApplicationCommandBytes(options.retention_class)
+        > options.max_class_bytes
+      && deleteOldest()
+    ) { /* bounded by the configured byte window */ }
     return deleted;
   }
 
@@ -6092,7 +6926,7 @@ export class GraphEngine {
       reason,
       sourceActionId,
       mutation,
-      [...new Set<DurableStateSliceKey>(['command_state', ...additionalStateKeys])],
+      [...new Set<DurableStateSliceKey>(additionalStateKeys)],
     );
   }
 
@@ -6927,10 +7761,20 @@ export class GraphEngine {
     dropped: import('./frontier-linkage.js').FrontierLinkageRecord[];
   } {
     if (!this.ctx.isDraftingTransaction()) {
-      return this.transactDurableSlices(
-        'record surfaced frontier items',
-        ['frontier', 'activity'],
-        () => this.recordFrontierEmission(frontierItemIds),
+      this.frontierEmissionDraftDepth++;
+      try {
+        return this.transactDurableSlices(
+          'record surfaced frontier items',
+          ['frontier', 'activity'],
+          () => this.recordFrontierEmission(frontierItemIds),
+        );
+      } finally {
+        this.frontierEmissionDraftDepth--;
+      }
+    }
+    if (this.frontierEmissionDraftDepth === 0) {
+      throw new Error(
+        'Frontier emission cannot be composed inside another transaction; use the dedicated frontier-emission boundary.',
       );
     }
     this.assertPersistenceWritable();
@@ -7013,64 +7857,94 @@ export class GraphEngine {
   ): T {
     if (this.ctx.isDraftingTransaction()) return mutation();
 
+    // Activity/linkage mutations are already exact `activity_append` records.
+    // Keep only the small weights portion of legacy `frontier` requests so a
+    // terminal keystroke or agent event never clones the complete history or
+    // linkage registry merely to prove its transaction draft.
     const stateKeys = [
       ...new Set<DurableStateSliceKey>([
-        'activity',
-        'frontier',
-        ...additionalStateKeys,
+        'frontier_weights',
+        ...additionalStateKeys
+          .filter(key => key !== 'activity' && key !== 'frontier'),
       ]),
     ];
-    const graphBaseline = detached(this.ctx.graph.export());
-    const coldBaseline = detached(this.ctx.coldStore.export());
     const sliceBaseline = this.ctx.captureDurableStateSlices(stateKeys);
+    const graphOrderBaseline = this.ctx.graph.order;
+    const graphSizeBaseline = this.ctx.graph.size;
+    const coldCountBaseline = this.ctx.coldStore.count();
+    const footprintCapture = new BoundedTransactionFootprintCapture(this.ctx);
     const cacheBaseline = {
-      pathGraphCache: new Map(this.ctx.pathGraphCache),
-      communityCache: this.ctx.communityCache ? new Map(this.ctx.communityCache) : null,
-      frontierCache: this.frontierCache ? detached(this.frontierCache) : null,
-      healthReportCache: this.healthReportCache ? detached(this.healthReportCache) : null,
+      pathGraphCache: this.ctx.pathGraphCache,
+      communityCache: this.ctx.communityCache,
+      frontierCache: this.frontierCache,
+      healthReportCache: this.healthReportCache,
+    };
+    const installScratchCaches = () => {
+      this.ctx.pathGraphCache = new Map();
+      this.ctx.communityCache = null;
+      this.frontierCache = null;
+      this.healthReportCache = null;
     };
     const restoreBaseline = () => {
-      this.restoreFindingDraftBaseline(graphBaseline, coldBaseline, sliceBaseline);
-      this.ctx.pathGraphCache = new Map(cacheBaseline.pathGraphCache);
-      this.ctx.communityCache = cacheBaseline.communityCache
-        ? new Map(cacheBaseline.communityCache)
-        : null;
-      this.frontierCache = cacheBaseline.frontierCache
-        ? detached(cacheBaseline.frontierCache)
-        : null;
-      this.healthReportCache = cacheBaseline.healthReportCache
-        ? detached(cacheBaseline.healthReportCache)
-        : null;
+      footprintCapture.restore();
+      this.ctx.applyDurableStatePatch(sliceBaseline);
+      this.restoreApplicationCommandDraftPreimages();
+      this.applyRestoredRuntimeProjections();
+      this.inference.invalidateCaches();
+      this.ctx.pathGraphCache = cacheBaseline.pathGraphCache;
+      this.ctx.communityCache = cacheBaseline.communityCache;
+      this.frontierCache = cacheBaseline.frontierCache;
+      this.healthReportCache = cacheBaseline.healthReportCache;
     };
 
     let captured!: { result: T; operations: EngineOperation[] };
-    let graphAfter!: ReturnType<OverwatchGraph['export']>;
-    let coldAfter!: ReturnType<EngineContext['coldStore']['export']>;
     let slicesAfter!: ReturnType<EngineContext['captureDurableStateSlices']>;
+    let footprintAfter!: FinalizedTransactionFootprint;
+    installScratchCaches();
     try {
-      captured = this.ctx.captureEngineOperations(mutation);
+      this.beginApplicationCommandDraftCapture();
+      captured = this.ctx.captureEngineOperations(mutation, footprintCapture);
       captured = detached(captured);
-      graphAfter = detached(this.ctx.graph.export());
-      coldAfter = detached(this.ctx.coldStore.export());
       slicesAfter = this.ctx.captureDurableStateSlices(stateKeys);
+      footprintAfter = footprintCapture.finalize();
     } finally {
       restoreBaseline();
     }
 
-    const detail = this.deriveGraphUpdateDetail(graphBaseline, graphAfter, []);
+    const detail = footprintAfter.update_detail;
+    const boundedStateSlices = this.withoutApplicationCommandMap(
+      this.changedDurableStateSlices(sliceBaseline, slicesAfter),
+    );
+    // Activity and its frontier-linkage side effect are represented by bounded
+    // activity_append operations captured above. Keeping either full slice in
+    // every command would make tiny mutations grow with engagement history.
+    const hasActivityDelta = captured.operations.some(
+      operation => operation.type === 'activity_append',
+    );
+    if (hasActivityDelta) {
+      delete boundedStateSlices.activity;
+      delete boundedStateSlices.frontier;
+    }
+    if (captured.operations.some(operation =>
+      operation.type === 'application_command_change'
+      || operation.type === 'command_coordination_change')) {
+      delete boundedStateSlices.command_state;
+    }
     const statePatch: DurableStatePatchV1 = {
       payload_version: 1,
       operation_id: uuidv4(),
       occurred_at: this.ctx.nowIso(),
       reason,
-      slices: slicesAfter,
+      slices: boundedStateSlices,
     };
     const operations: EngineOperation[] = [
       ...captured.operations,
-      {
-        type: 'state_patch',
-        payload: statePatch as unknown as Record<string, unknown>,
-      },
+      ...(Object.keys(boundedStateSlices).length > 0
+        ? [{
+            type: 'state_patch' as const,
+            payload: statePatch as unknown as Record<string, unknown>,
+          }]
+        : []),
     ];
     const transactionDraft = {
       operations,
@@ -7078,22 +7952,41 @@ export class GraphEngine {
       update_detail: detail,
     };
 
+    if (operations.length === 0) return captured.result;
+
+    installScratchCaches();
     try {
+      this.beginApplicationCommandDraftCapture();
       const replayed = this.persistence.applyTransactionDraft(transactionDraft, this);
       if (replayed.status === 'skipped') {
         throw new Error(`${reason} operation draft could not replay: ${replayed.reason}`);
       }
       if (
-        canonicalJson({
-          graph: this.ctx.graph.export(),
-          cold_store: this.ctx.coldStore.export(),
-          slices: this.ctx.captureDurableStateSlices(stateKeys),
-        })
-        !== canonicalJson({
-          graph: graphAfter,
-          cold_store: coldAfter,
-          slices: slicesAfter,
-        })
+        !footprintCapture.matchesCurrentAfter(footprintAfter)
+        || this.ctx.graph.order !== graphOrderBaseline
+          + footprintAfter.node_changes.filter(
+            change => change.before === null && change.after !== null,
+          ).length
+          - footprintAfter.node_changes.filter(
+            change => change.before !== null && change.after === null,
+          ).length
+        || this.ctx.graph.size !== graphSizeBaseline
+          + footprintAfter.edge_changes.filter(
+            change => change.before === null && change.after !== null,
+          ).length
+          - footprintAfter.edge_changes.filter(
+            change => change.before !== null && change.after === null,
+          ).length
+        || this.ctx.coldStore.count() !== coldCountBaseline
+          + footprintAfter.cold_changes.filter(
+            change => change.before === null && change.after !== null,
+          ).length
+          - footprintAfter.cold_changes.filter(
+            change => change.before !== null && change.after === null,
+          ).length
+        || canonicalJson(this.ctx.captureDurableStateSlices(stateKeys))
+          !== canonicalJson(slicesAfter)
+        || !this.applicationCommandOperationsMatchAfter(operations)
       ) {
         throw new Error(`${reason} operation draft replay did not reproduce its captured after-state.`);
       }
@@ -7101,16 +7994,27 @@ export class GraphEngine {
       restoreBaseline();
     }
 
+    installScratchCaches();
     try {
+      this.beginApplicationCommandDraftCapture();
       this.ctx.applyEngineTransaction(
         transactionDraft,
-        () => this.persistence.applyTransactionDraft(transactionDraft, this),
+        () => {
+          const applied = this.persistence.applyTransactionDraft(transactionDraft, this);
+          if (applied.status === 'applied') {
+            this.invalidatePathGraph();
+            this.invalidateAllCaches();
+            this.inference.invalidateCaches();
+          }
+          return applied;
+        },
         reason,
       );
     } catch (error) {
       restoreBaseline();
       throw error;
     }
+    this.finishApplicationCommandDraftCapture();
     this.persist(detail);
     return captured.result;
   }
@@ -7130,87 +8034,119 @@ export class GraphEngine {
       return;
     }
 
-    const stateKeys: DurableStateSliceKey[] = [
-      'config',
-      'activity',
-      'frontier',
-      ...(applicationCommand ? ['command_state' as const] : []),
-    ];
-    const graphBaseline = detached(this.ctx.graph.export());
-    const coldBaseline = detached(this.ctx.coldStore.export());
+    const stateKeys: DurableStateSliceKey[] = ['config', 'frontier_weights'];
     const sliceBaseline = this.ctx.captureDurableStateSlices(stateKeys);
+    const graphOrderBaseline = this.ctx.graph.order;
+    const graphSizeBaseline = this.ctx.graph.size;
+    const coldCountBaseline = this.ctx.coldStore.count();
+    const footprintCapture = new BoundedTransactionFootprintCapture(this.ctx);
     const cacheBaseline = {
-      pathGraphCache: new Map(this.ctx.pathGraphCache),
-      communityCache: this.ctx.communityCache ? new Map(this.ctx.communityCache) : null,
-      frontierCache: this.frontierCache ? detached(this.frontierCache) : null,
-      healthReportCache: this.healthReportCache ? detached(this.healthReportCache) : null,
+      pathGraphCache: this.ctx.pathGraphCache,
+      communityCache: this.ctx.communityCache,
+      frontierCache: this.frontierCache,
+      healthReportCache: this.healthReportCache,
+    };
+    const installScratchCaches = () => {
+      this.ctx.pathGraphCache = new Map();
+      this.ctx.communityCache = null;
+      this.frontierCache = null;
+      this.healthReportCache = null;
     };
     const restoreBaseline = () => {
-      this.restoreFindingDraftBaseline(graphBaseline, coldBaseline, sliceBaseline);
-      this.ctx.pathGraphCache = new Map(cacheBaseline.pathGraphCache);
-      this.ctx.communityCache = cacheBaseline.communityCache
-        ? new Map(cacheBaseline.communityCache)
-        : null;
-      this.frontierCache = cacheBaseline.frontierCache
-        ? detached(cacheBaseline.frontierCache)
-        : null;
-      this.healthReportCache = cacheBaseline.healthReportCache
-        ? detached(cacheBaseline.healthReportCache)
-        : null;
+      footprintCapture.restore();
+      this.ctx.applyDurableStatePatch(sliceBaseline);
+      this.restoreApplicationCommandDraftPreimages();
+      this.applyRestoredRuntimeProjections();
+      this.inference.invalidateCaches();
+      this.ctx.pathGraphCache = cacheBaseline.pathGraphCache;
+      this.ctx.communityCache = cacheBaseline.communityCache;
+      this.frontierCache = cacheBaseline.frontierCache;
+      this.healthReportCache = cacheBaseline.healthReportCache;
     };
 
     let captured!: { result: void; operations: EngineOperation[] };
-    let graphAfter!: ReturnType<OverwatchGraph['export']>;
-    let coldAfter!: ReturnType<EngineContext['coldStore']['export']>;
     let slicesAfter!: ReturnType<EngineContext['captureDurableStateSlices']>;
+    let footprintAfter!: FinalizedTransactionFootprint;
+    installScratchCaches();
     try {
+      this.beginApplicationCommandDraftCapture();
       captured = this.ctx.captureEngineOperations(() => {
         this.applyRuntimeConfig(next, context);
         if (event) this.recordConfigCommitEvent(event);
         if (applicationCommand) {
           this.recordApplicationCommand(applicationCommand);
         }
-      });
-      graphAfter = detached(this.ctx.graph.export());
-      coldAfter = detached(this.ctx.coldStore.export());
+      }, footprintCapture);
       slicesAfter = this.ctx.captureDurableStateSlices(stateKeys);
+      footprintAfter = footprintCapture.finalize();
     } finally {
       restoreBaseline();
     }
 
-    const detail = this.deriveGraphUpdateDetail(graphBaseline, graphAfter, []);
+    const detail = footprintAfter.update_detail;
+    const boundedConfigSlices = this.withoutApplicationCommandMap(
+      this.changedDurableStateSlices(sliceBaseline, slicesAfter),
+    );
+    if (captured.operations.some(operation => operation.type === 'activity_append')) {
+      delete boundedConfigSlices.activity;
+      delete boundedConfigSlices.frontier;
+    }
+    if (captured.operations.some(operation =>
+      operation.type === 'application_command_change'
+      || operation.type === 'command_coordination_change')) {
+      delete boundedConfigSlices.command_state;
+    }
     const statePatch: DurableStatePatchV1 = {
       payload_version: 1,
       operation_id: uuidv4(),
       occurred_at: this.ctx.nowIso(),
       reason: `commit runtime configuration (${context.source})`,
-      slices: slicesAfter,
+      slices: boundedConfigSlices,
     };
     const operations: EngineOperation[] = [
       ...captured.operations,
-      {
-        type: 'state_patch',
-        payload: statePatch as unknown as Record<string, unknown>,
-      },
+      ...(Object.keys(boundedConfigSlices).length > 0
+        ? [{
+            type: 'state_patch' as const,
+            payload: statePatch as unknown as Record<string, unknown>,
+          }]
+        : []),
     ];
     const transactionDraft = { operations, update_detail: detail };
 
+    installScratchCaches();
     try {
+      this.beginApplicationCommandDraftCapture();
       const replayed = this.persistence.applyTransactionDraft(transactionDraft, this);
       if (replayed.status === 'skipped') {
         throw new Error(`Configuration operation draft could not replay: ${replayed.reason}`);
       }
       if (
-        canonicalJson({
-          graph: this.ctx.graph.export(),
-          cold_store: this.ctx.coldStore.export(),
-          slices: this.ctx.captureDurableStateSlices(stateKeys),
-        })
-        !== canonicalJson({
-          graph: graphAfter,
-          cold_store: coldAfter,
-          slices: slicesAfter,
-        })
+        !footprintCapture.matchesCurrentAfter(footprintAfter)
+        || this.ctx.graph.order !== graphOrderBaseline
+          + footprintAfter.node_changes.filter(
+            change => change.before === null && change.after !== null,
+          ).length
+          - footprintAfter.node_changes.filter(
+            change => change.before !== null && change.after === null,
+          ).length
+        || this.ctx.graph.size !== graphSizeBaseline
+          + footprintAfter.edge_changes.filter(
+            change => change.before === null && change.after !== null,
+          ).length
+          - footprintAfter.edge_changes.filter(
+            change => change.before !== null && change.after === null,
+          ).length
+        || this.ctx.coldStore.count() !== coldCountBaseline
+          + footprintAfter.cold_changes.filter(
+            change => change.before === null && change.after !== null,
+          ).length
+          - footprintAfter.cold_changes.filter(
+            change => change.before !== null && change.after === null,
+          ).length
+        || canonicalJson(this.ctx.captureDurableStateSlices(stateKeys))
+          !== canonicalJson(slicesAfter)
+        || !this.applicationCommandOperationsMatchAfter(operations)
       ) {
         throw new Error('Configuration operation draft replay did not reproduce its captured after-state.');
       }
@@ -7218,16 +8154,27 @@ export class GraphEngine {
       restoreBaseline();
     }
 
+    installScratchCaches();
     try {
+      this.beginApplicationCommandDraftCapture();
       this.ctx.applyEngineTransaction(
         transactionDraft,
-        () => this.persistence.applyTransactionDraft(transactionDraft, this),
+        () => {
+          const applied = this.persistence.applyTransactionDraft(transactionDraft, this);
+          if (applied.status === 'applied') {
+            this.invalidatePathGraph();
+            this.invalidateAllCaches();
+            this.inference.invalidateCaches();
+          }
+          return applied;
+        },
         'runtime configuration commit',
       );
     } catch (error) {
       restoreBaseline();
       throw error;
     }
+    this.finishApplicationCommandDraftCapture();
     this.persist(detail);
   }
 
@@ -7339,7 +8286,7 @@ export class GraphEngine {
       === canonicalJson(this.ctx.config.scope)
     ) {
       const scope = detached(this.ctx.config.scope);
-      return this.configService.commitWithCommand(
+      const committed = this.configService.commitWithCommand(
         parsedNext,
         source,
         committedConfig => buildCommand(committedConfig, {
@@ -7348,6 +8295,14 @@ export class GraphEngine {
           affected_node_count: 0,
         }),
       );
+      const installedCommand = this.getApplicationCommand(
+        committed.command.idempotency_key,
+      );
+      if (!installedCommand) {
+        throw new Error('Configuration update committed without its application-command receipt.');
+      }
+      this.pruneInstalledApplicationCommand(installedCommand);
+      return { config: committed.config, command: installedCommand };
     }
 
     const plan = planScopeUpdate(this.scopeHost, {
@@ -7372,33 +8327,7 @@ export class GraphEngine {
     }
     const sourceFileHash = this.configService.getStatus().file_hash
       ?? computeConfigHash(this.ctx.config);
-    const stateKeys = ['command_state'] as const;
-    const stateBefore = this.ctx.captureDurableStateSlices(stateKeys);
-    let draft!: {
-      result: PersistedApplicationCommandV1;
-      slices: DurableStatePatchV1['slices'];
-    };
-    try {
-      draft = this.ctx.draftDurableStateSlices(
-        stateKeys,
-        () => this.installApplicationCommandDraft(command),
-      );
-    } finally {
-      this.applyRestoredRuntimeProjections();
-    }
-    const changedStateKeys = Object.keys(
-      draft.slices,
-    ) as DurableStateSliceKey[];
-    const stateBeforePatch = Object.fromEntries(
-      changedStateKeys.map(key => [key, stateBefore[key]]),
-    ) as DurableStateSlices;
-    const statePatch: DurableStatePatchV1 = {
-      payload_version: 1,
-      operation_id: uuidv4(),
-      occurred_at: this.ctx.nowIso(),
-      reason: source,
-      slices: draft.slices,
-    };
+    const commandOperation = this.applicationCommandChangeOperation(command);
     this.commitScopePlan(
       plan,
       targetConfig,
@@ -7406,17 +8335,20 @@ export class GraphEngine {
       sourceFileHash,
       undefined,
       undefined,
-      statePatch,
-      createHash('sha256')
-        .update(canonicalJson(stateBeforePatch))
-        .digest('hex'),
-      createHash('sha256')
-        .update(canonicalJson(draft.slices))
-        .digest('hex'),
+      undefined,
+      undefined,
+      undefined,
+      [commandOperation],
+      command.action_id,
     );
+    const installedCommand = this.getApplicationCommand(command.idempotency_key);
+    if (!installedCommand) {
+      throw new Error('Configuration update committed without its application-command receipt.');
+    }
+    this.pruneInstalledApplicationCommand(installedCommand);
     return {
       config: this.getConfig(),
-      command: detached(draft.result),
+      command: installedCommand,
     };
   }
 
@@ -7903,75 +8835,6 @@ export class GraphEngine {
       this.ctx.graph.replaceNodeAttributes(props.id, detached(props));
     }
     this.invalidateAllCaches();
-  }
-
-  private restoreFindingDraftBaseline(
-    graph: ReturnType<OverwatchGraph['export']>,
-    coldStore: ReturnType<EngineContext['coldStore']['export']>,
-    slices: ReturnType<EngineContext['captureDurableStateSlices']>,
-  ): void {
-    this.ctx.graph.clear();
-    // Graphology and ColdStore may retain imported attribute/record objects.
-    // Clone on every restore so a later scratch replay cannot mutate the
-    // authoritative rollback snapshot by reference.
-    this.ctx.graph.import(detached(graph));
-    this.ctx.coldStore.import(detached(coldStore));
-    this.ctx.applyDurableStatePatch(slices);
-    this.applyRestoredRuntimeProjections();
-    this.inference.invalidateCaches();
-  }
-
-  private deriveGraphUpdateDetail(
-    before: ReturnType<OverwatchGraph['export']>,
-    after: ReturnType<OverwatchGraph['export']>,
-    inferredEdgeIds: string[],
-  ): GraphUpdateDetail {
-    const beforeNodes = new Map(before.nodes.map(node => [String(node.key), node.attributes]));
-    const afterNodes = new Map(after.nodes.map(node => [String(node.key), node.attributes]));
-    const beforeEdges = new Map(before.edges.map(edge => [String(edge.key), edge]));
-    const afterEdges = new Map(after.edges.map(edge => [String(edge.key), edge]));
-    const newNodes = [...afterNodes.keys()]
-      .filter(id => !beforeNodes.has(id))
-      .sort();
-    const removedNodes = [...beforeNodes.keys()]
-      .filter(id => !afterNodes.has(id))
-      .sort();
-    const updatedNodes = [...afterNodes.keys()]
-      .filter(id =>
-        beforeNodes.has(id)
-        && canonicalJson(beforeNodes.get(id)) !== canonicalJson(afterNodes.get(id)),
-      )
-      .sort();
-    const newEdges = [...afterEdges.keys()]
-      .filter(id => !beforeEdges.has(id))
-      .sort();
-    const removedEdges = [...beforeEdges.keys()]
-      .filter(id => !afterEdges.has(id))
-      .sort();
-    const updatedEdges = [...afterEdges.keys()]
-      .filter(id => {
-        const prior = beforeEdges.get(id);
-        const next = afterEdges.get(id);
-        return prior !== undefined
-          && (
-            prior.source !== next?.source
-            || prior.target !== next?.target
-            || canonicalJson(prior.attributes) !== canonicalJson(next?.attributes)
-          );
-      })
-      .sort();
-    const inferredEdges = [...new Set(inferredEdgeIds)]
-      .filter(id => afterEdges.has(id))
-      .sort();
-    return {
-      ...(newNodes.length > 0 ? { new_nodes: newNodes } : {}),
-      ...(newEdges.length > 0 ? { new_edges: newEdges } : {}),
-      ...(updatedNodes.length > 0 ? { updated_nodes: updatedNodes } : {}),
-      ...(updatedEdges.length > 0 ? { updated_edges: updatedEdges } : {}),
-      ...(inferredEdges.length > 0 ? { inferred_edges: inferredEdges } : {}),
-      ...(removedNodes.length > 0 ? { removed_nodes: removedNodes } : {}),
-      ...(removedEdges.length > 0 ? { removed_edges: removedEdges } : {}),
-    };
   }
 
   invalidateFrontierCache(): void {

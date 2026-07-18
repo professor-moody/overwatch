@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -76,6 +76,30 @@ describe('revisioned active config write-through', () => {
     });
   });
 
+  it('commits config and objective-node deltas without full graph exports', () => {
+    const configured = legacyConfig({
+      objectives: [{
+        id: 'bounded-objective',
+        description: 'Bounded objective',
+        target_node_type: 'host',
+        achieved: false,
+      }],
+    });
+    writeFileSync(configPath, JSON.stringify(configured));
+    const engine = start(configured);
+    const graphExport = vi.spyOn(internals(engine).graph, 'export');
+    const coldExport = vi.spyOn(internals(engine).coldStore, 'export');
+
+    const updated = engine.updateConfig({
+      name: 'Bounded config update',
+      objectives: [],
+    });
+
+    expect(updated.objectives).toEqual([]);
+    expect(graphExport).not.toHaveBeenCalled();
+    expect(coldExport).not.toHaveBeenCalled();
+  });
+
   it('starts read-only on unexplained divergence and resolves with optimistic hashes', () => {
     writeFileSync(configPath, JSON.stringify(legacyConfig()));
     const first = start(legacyConfig());
@@ -128,17 +152,17 @@ describe('revisioned active config write-through', () => {
       },
     }, 9);
     const persistence = (first as unknown as {
-      persistence: { persistImmediate: () => void };
+      persistence: { noteJournaledDurableConfig: (config: EngagementConfig) => void };
     }).persistence;
-    const persistImmediate = persistence.persistImmediate.bind(persistence);
-    persistence.persistImmediate = () => {
-      persistImmediate();
+    const noteJournaledDurableConfig = persistence.noteJournaledDurableConfig.bind(persistence);
+    persistence.noteJournaledDurableConfig = config => {
+      noteJournaledDurableConfig(config);
       writeFileSync(configPath, JSON.stringify(external));
     };
 
     expect(() => first.updateConfig({ name: 'Durable interrupted target' }))
       .toThrow(/did not converge/i);
-    persistence.persistImmediate = persistImmediate;
+    persistence.noteJournaledDurableConfig = noteJournaledDurableConfig;
     const intentPath = `${configPath}.write-intent.json`;
     expect(existsSync(intentPath)).toBe(true);
     first.dispose();

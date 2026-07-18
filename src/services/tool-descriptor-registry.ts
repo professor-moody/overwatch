@@ -305,6 +305,49 @@ export function toolRequiresWritablePersistence(
     return input.write_to_disk === true || input.persist_to_archive !== false;
   }
   if (descriptor.name === 'run_retrospective') return input.write_to_disk === true;
+  if (descriptor.name === 'create_engagement') return input.dry_run !== true;
+  if (descriptor.name === 'update_scope' || descriptor.name === 'set_opsec') {
+    return input.confirm === true;
+  }
+  if (descriptor.name === 'manage_campaign') {
+    return !['status', 'check_abort', 'children', 'parent_progress']
+      .includes(String(input.action ?? ''));
+  }
+  return descriptor.persistence.mode !== 'read';
+}
+
+/** Whether this concrete invocation crosses an externally visible mutation
+ * boundary. This is intentionally distinct from the recovery write gate:
+ * previews and status actions may share a mutation-capable tool descriptor. */
+export function toolInvocationMutatesDurableState(
+  descriptor: ToolDescriptor,
+  input: Record<string, unknown>,
+): boolean {
+  switch (descriptor.name) {
+    case 'get_state':
+      return input.snapshot === true;
+    case 'get_system_prompt':
+      return input.snapshot !== false;
+    case 'generate_report':
+      return input.write_to_disk === true || input.persist_to_archive !== false;
+    case 'run_retrospective':
+      return input.write_to_disk === true;
+    case 'bundle_engagement':
+      return true;
+    case 'create_engagement':
+      return input.dry_run !== true;
+    case 'update_scope':
+    case 'set_opsec':
+      return input.confirm === true;
+    case 'manage_campaign':
+      return !['status', 'check_abort', 'children', 'parent_progress']
+        .includes(String(input.action ?? ''));
+    default:
+      return descriptor.persistence.mode === 'write';
+  }
+}
+
+export function toolCanMutateDurableState(descriptor: ToolDescriptor): boolean {
   return descriptor.persistence.mode !== 'read';
 }
 

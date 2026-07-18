@@ -680,6 +680,27 @@ export const DASHBOARD_OPERATION_IDS = [
 ] as const;
 export type DashboardOperationId = (typeof DASHBOARD_OPERATION_IDS)[number];
 
+const DASHBOARD_BOUNDARY_EXEMPT_WRITE_OPERATIONS = new Set<DashboardOperationId>([
+  'previewScope',
+  'exportGraph',
+]);
+
+/**
+ * Whether an endpoint invocation crosses the dashboard's durable mutation
+ * boundary. HTTP method alone is deliberately insufficient: two POST-shaped
+ * compatibility operations are pure previews/exports. Keeping this next to
+ * the canonical registry makes new mutation routes fail the architecture
+ * audit unless their semantics are consciously classified.
+ */
+export function dashboardEndpointMutatesDurableState(
+  endpoint: DashboardEndpointDefinition,
+): boolean {
+  if (endpoint.method === 'GET') return false;
+  return !DASHBOARD_BOUNDARY_EXEMPT_WRITE_OPERATIONS.has(
+    endpoint.operation_id as DashboardOperationId,
+  );
+}
+
 const dashboardCoreEndpoints = {
   getRecovery: endpoint({ operation_id: 'getRecovery', method: 'GET', path: '/api/recovery', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: RecoveryStatusResponseSchema }, response_kind: 'json', summary: 'Read persistence and configuration recovery status' }),
   resolveConfigDivergence: endpoint({ operation_id: 'resolveConfigDivergence', method: 'POST', path: '/api/recovery/config/resolve', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: ConfigDivergenceResolveRequestSchema, responses: { 200: ConfigDivergenceResolveResponseSchema }, response_kind: 'json', summary: 'Resolve configuration divergence' }),
@@ -738,7 +759,7 @@ const dashboardConfigEndpoints = {
   createObjective: endpoint({ operation_id: 'createObjective', method: 'POST', path: '/api/config/objectives', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: ObjectiveCreateRequestSchema, responses: { 201: ObjectiveCreateResponseSchema }, response_kind: 'json', summary: 'Create an objective' }),
   getFrontierWeights: endpoint({ operation_id: 'getFrontierWeights', method: 'GET', path: '/api/frontier/weights', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: FrontierWeightsDtoSchema }, response_kind: 'json', summary: 'Read frontier weights' }),
   updateFrontierWeights: endpoint({ operation_id: 'updateFrontierWeights', method: 'PATCH', path: '/api/frontier/weights', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: FrontierWeightsPatchSchema, responses: { 200: FrontierWeightsUpdateResultSchema }, response_kind: 'json', summary: 'Update frontier weights' }),
-  resetFrontierWeights: endpoint({ operation_id: 'resetFrontierWeights', method: 'POST', path: '/api/frontier/weights/reset', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: FrontierWeightsResetResultSchema }, response_kind: 'json', summary: 'Reset frontier weights' }),
+  resetFrontierWeights: endpoint({ operation_id: 'resetFrontierWeights', method: 'POST', path: '/api/frontier/weights/reset', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: z.union([NoBodySchema, EmptyBodySchema]), responses: { 200: FrontierWeightsResetResultSchema }, response_kind: 'json', summary: 'Reset frontier weights' }),
   getOpsecBudget: endpoint({ operation_id: 'getOpsecBudget', method: 'GET', path: '/api/opsec/budget', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: OpsecBudgetResponseSchema }, response_kind: 'json', summary: 'Read OPSEC budget' }),
   getHealth: endpoint({ operation_id: 'getHealth', method: 'GET', path: '/api/health', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: HealthDtoSchema }, response_kind: 'json', summary: 'Read graph health' }),
   getRuntime: endpoint({ operation_id: 'getRuntime', method: 'GET', path: '/api/runtime', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: z.object({ runtime_build: RuntimeBuildInfoDtoSchema.optional() }).passthrough() }, response_kind: 'json', summary: 'Read lightweight daemon build identity' }),
@@ -765,7 +786,7 @@ const dashboardToolingEndpoints = {
   exportGraph: endpoint({ operation_id: 'exportGraph', method: 'POST', path: '/api/graph/export', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: z.union([NoBodySchema, EmptyBodySchema]), responses: { 200: RawGraphDtoSchema }, response_kind: 'json', summary: 'Export the raw graph' }),
   correctGraph: endpoint({ operation_id: 'correctGraph', method: 'POST', path: '/api/graph/correct', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: GraphCorrectionRequestSchema, responses: { 200: GraphCorrectionResultSchema }, response_kind: 'json', summary: 'Apply graph corrections' }),
   getTapeStatus: endpoint({ operation_id: 'getTapeStatus', method: 'GET', path: '/api/tape', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: TapeStatusResponseSchema }, response_kind: 'json', summary: 'Read tape status' }),
-  toggleTape: endpoint({ operation_id: 'toggleTape', method: 'POST', path: '/api/tape/toggle', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: z.object({ action: z.enum(['enable', 'disable']).optional(), dir: z.string().optional(), file: z.string().optional(), session_id: z.string().optional() }).strict(), responses: { 200: TapeStatusResponseSchema }, response_kind: 'json', summary: 'Toggle tape capture' }),
+  toggleTape: endpoint({ operation_id: 'toggleTape', method: 'POST', path: '/api/tape/toggle', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: z.object({ action: z.enum(['enable', 'disable']).optional(), dir: z.string().optional(), file: z.string().optional(), session_id: z.string().optional() }).strict(), responses: { 200: TapeStatusResponseSchema, 400: DashboardErrorSchema, 503: DashboardErrorSchema }, response_kind: 'json', summary: 'Set tape capture state (omitted action retains legacy toggle behavior)' }),
   getFindings: endpoint({ operation_id: 'getFindings', method: 'GET', path: '/api/findings', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: FindingsResponseSchema }, response_kind: 'json', summary: 'List findings' }),
   listReports: endpoint({ operation_id: 'listReports', method: 'GET', path: '/api/reports', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: ReportsListResponseSchema }, response_kind: 'json', summary: 'List reports' }),
   renderReport: endpoint({ operation_id: 'renderReport', method: 'POST', path: '/api/reports/render', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: ReportRenderBodySchema, responses: { 201: ReportRenderResponseSchema }, response_kind: 'json', summary: 'Render a report' }),

@@ -5,6 +5,7 @@ import {
   DASHBOARD_OPERATION_IDS,
   DashboardHttpRegistry,
   buildDashboardPath,
+  dashboardEndpointMutatesDurableState,
   getDashboardRouteManifest,
   matchDashboardEndpoint,
 } from '../dashboard-api-v1.js';
@@ -125,6 +126,19 @@ describe('dashboard compatibility-v1 registry', () => {
       const withUnexpected = endpoint.body_schema.safeParse({ __unexpected_dashboard_field: true });
       if (baseline.success) expect(withUnexpected.success, endpoint.operation_id).toBe(false);
     }
+  });
+
+  it('classifies every route at the durable mutation boundary', () => {
+    for (const endpoint of Object.values(DashboardHttpRegistry)) {
+      const mutates = dashboardEndpointMutatesDurableState(endpoint);
+      expect(typeof mutates, endpoint.operation_id).toBe('boolean');
+      if (endpoint.method === 'GET') expect(mutates, endpoint.operation_id).toBe(false);
+    }
+    expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.previewScope)).toBe(false);
+    expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.exportGraph)).toBe(false);
+    expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.toggleTape)).toBe(true);
+    expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.resolveConfigDivergence)).toBe(true);
+    expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.closeSession)).toBe(true);
   });
 
   it('requires stable envelopes for operator-critical responses', () => {

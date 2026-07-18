@@ -7,9 +7,13 @@ import {
   fetchAuthenticatedBlobUrl,
   initializeDashboardAuth,
   openDashboardResource,
+  resetDashboardPendingCommandsForTest,
 } from '../dashboard-transport';
+import { resetBrowserStorageMemoryForTest } from '../browser-storage';
 
 afterEach(() => {
+  resetDashboardPendingCommandsForTest();
+  resetBrowserStorageMemoryForTest();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -85,6 +89,280 @@ describe('dashboard transport', () => {
     expect(headers.get('Authorization')).toBe('Bearer bearer-token');
     expect(headers.get('Accept')).toBe('application/json');
     expect(headers.get('X-Trace')).toBe('one');
+  });
+
+  it('retries one failed mutation transport with the exact same command identity', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError('response connection lost'))
+      .mockResolvedValueOnce(new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'X-Overwatch-Server-Response': '1' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await dashboardFetch('/api/config/objectives', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'one mutation' }),
+    });
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstHeaders = new Headers(fetchMock.mock.calls[0][1]?.headers);
+    const secondHeaders = new Headers(fetchMock.mock.calls[1][1]?.headers);
+    expect(secondHeaders.get('X-Overwatch-Command-Id'))
+      .toBe(firstHeaders.get('X-Overwatch-Command-Id'));
+    expect(secondHeaders.get('Idempotency-Key'))
+      .toBe(firstHeaders.get('Idempotency-Key'));
+    expect(fetchMock.mock.calls[1][1]?.body).toBe(fetchMock.mock.calls[0][1]?.body);
+  });
+
+  it('retains a bounded binary mutation identity across a complete outage', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError('response connection lost'))
+      .mockRejectedValueOnce(new TypeError('daemon remains unavailable'));
+    vi.stubGlobal('fetch', fetchMock);
+    const request = {
+      method: 'POST',
+      body: new Blob([new Uint8Array([1, 2, 3, 4])]),
+    };
+
+    await expect(dashboardFetch('/api/binary-mutation', request))
+      .rejects.toThrow('daemon remains unavailable');
+    const retainedId = new Headers(fetchMock.mock.calls[0][1]?.headers)
+      .get('X-Overwatch-Command-Id');
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers)
+      .get('X-Overwatch-Command-Id')).toBe(retainedId);
+
+    fetchMock.mockResolvedValueOnce(new Response('{"ok":true}', {
+      status: 200,
+      headers: { 'X-Overwatch-Server-Response': '1' },
+    }));
+    const response = await dashboardFetch('/api/binary-mutation', request);
+    expect(new Headers(fetchMock.mock.calls[2][1]?.headers)
+      .get('X-Overwatch-Command-Id')).toBe(retainedId);
+    await response.text();
+  });
+
+  it('fails closed before sending an unidentifiable oversized binary mutation', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(dashboardFetch('/api/binary-mutation', {
+      method: 'POST',
+      body: new Uint8Array(256 * 1024 + 1),
+    })).rejects.toThrow(/no larger than 262144 bytes/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('fingerprints the effective body of Request inputs', async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async input => {
+      requests.push(input as Request);
+      return new Response('{"error":"ambiguous proxy response"}', { status: 504 });
+    }));
+
+    await dashboardFetch(new Request('https://ops.example.test/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    }));
+    await dashboardFetch(new Request('https://ops.example.test/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    }));
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].headers.get('X-Overwatch-Command-Id'))
+      .not.toBe(requests[1].headers.get('X-Overwatch-Command-Id'));
+    expect(await requests[0].clone().text()).toBe('{"enabled":true}');
+    expect(await requests[1].clone().text()).toBe('{"enabled":false}');
+  });
+
+  it('retries a consumed Request body with identical bytes and identity', async () => {
+    const bodies: string[] = [];
+    const commandIds: Array<string | null> = [];
+    const fetchMock = vi.fn<typeof fetch>(async input => {
+      const request = input as Request;
+      commandIds.push(request.headers.get('X-Overwatch-Command-Id'));
+      bodies.push(await request.text());
+      if (bodies.length === 1) throw new TypeError('response lost after body upload');
+      return new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'X-Overwatch-Server-Response': '1' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await dashboardFetch(new Request(
+      'https://ops.example.test/api/config/objectives',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'request body replay' }),
+      },
+    ));
+    expect(response.status).toBe(200);
+    expect(bodies).toEqual([
+      '{"description":"request body replay"}',
+      '{"description":"request body replay"}',
+    ]);
+    expect(commandIds[1]).toBe(commandIds[0]);
+  });
+
+  it('hashes a RequestInit body override as the effective mutation body', async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async input => {
+      requests.push(input as Request);
+      return new Response('{"error":"ambiguous proxy response"}', { status: 504 });
+    }));
+    const original = new Request('https://ops.example.test/api/settings', {
+      method: 'PATCH',
+      body: '{"enabled":false}',
+    });
+    await dashboardFetch(original, { body: '{"enabled":true}' });
+    await dashboardFetch(new Request('https://ops.example.test/api/settings', {
+      method: 'PATCH',
+      body: '{"enabled":true}',
+    }));
+    expect(await requests[0].clone().text()).toBe('{"enabled":true}');
+    expect(requests[0].headers.get('X-Overwatch-Command-Id'))
+      .toBe(requests[1].headers.get('X-Overwatch-Command-Id'));
+  });
+
+  it('fails closed before sending an unidentifiable oversized Request mutation', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetchMock);
+    const request = new Request('https://ops.example.test/api/settings', {
+      method: 'PATCH',
+      body: 'x'.repeat(256 * 1024 + 1),
+    });
+    await expect(dashboardFetch(request)).rejects.toThrow(/no larger than 262144 bytes/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('retains a pending mutation identity across an outage and clears it after a response', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError('daemon stopped after commit'))
+      .mockRejectedValueOnce(new TypeError('daemon remains unavailable'));
+    vi.stubGlobal('fetch', fetchMock);
+    const request = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'outage-safe mutation' }),
+    };
+    await expect(dashboardFetch('/api/config/objectives', request))
+      .rejects.toThrow('daemon remains unavailable');
+    const retainedId = new Headers(fetchMock.mock.calls[0][1]?.headers)
+      .get('X-Overwatch-Command-Id');
+
+    fetchMock.mockResolvedValueOnce(new Response('{"ok":true}', {
+      status: 200,
+      headers: { 'X-Overwatch-Server-Response': '1' },
+    }));
+    const recovered = await dashboardFetch('/api/config/objectives', request);
+    expect(new Headers(fetchMock.mock.calls[2][1]?.headers).get('X-Overwatch-Command-Id'))
+      .toBe(retainedId);
+    await recovered.text();
+
+    fetchMock.mockResolvedValueOnce(new Response('{"ok":true}', {
+      status: 200,
+      headers: { 'X-Overwatch-Server-Response': '1' },
+    }));
+    await dashboardFetch('/api/config/objectives', request);
+    expect(new Headers(fetchMock.mock.calls[3][1]?.headers).get('X-Overwatch-Command-Id'))
+      .not.toBe(retainedId);
+  });
+
+  it('keeps a pending identity after a proxy-generated complete response', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{"error":"gateway timeout"}', { status: 504 }))
+      .mockResolvedValueOnce(new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'X-Overwatch-Server-Response': '1' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const request = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'proxy ambiguity' }),
+    };
+
+    await (await dashboardFetch('/api/config/objectives', request)).text();
+    const firstId = new Headers(fetchMock.mock.calls[0][1]?.headers)
+      .get('X-Overwatch-Command-Id');
+    await (await dashboardFetch('/api/config/objectives', request)).text();
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get('X-Overwatch-Command-Id'))
+      .toBe(firstId);
+  });
+
+  it('retains identity for an authoritative but response-unavailable command receipt', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{"status":"running"}', {
+        status: 409,
+        headers: {
+          'X-Overwatch-Server-Response': '1',
+          'X-Overwatch-Boundary-Command-Id': 'boundary-running',
+          'X-Overwatch-Command-Status': 'running',
+          'X-Overwatch-Command-Response-Available': '0',
+        },
+      }))
+      .mockResolvedValueOnce(new Response('{"ok":true}', {
+        status: 200,
+        headers: {
+          'X-Overwatch-Server-Response': '1',
+          'X-Overwatch-Boundary-Command-Id': 'boundary-running',
+          'X-Overwatch-Command-Status': 'succeeded',
+          'X-Overwatch-Command-Response-Available': '1',
+        },
+      }))
+      .mockResolvedValueOnce(new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'X-Overwatch-Server-Response': '1' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const request = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'ambiguous receipt' }),
+    };
+    await (await dashboardFetch('/api/config/objectives', request)).text();
+    const retained = new Headers(fetchMock.mock.calls[0][1]?.headers)
+      .get('X-Overwatch-Command-Id');
+    await (await dashboardFetch('/api/config/objectives', request)).text();
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get('X-Overwatch-Command-Id'))
+      .toBe(retained);
+    await (await dashboardFetch('/api/config/objectives', request)).text();
+    expect(new Headers(fetchMock.mock.calls[2][1]?.headers).get('X-Overwatch-Command-Id'))
+      .not.toBe(retained);
+  });
+
+  it('clears a pending identity after a definitive expired-receipt response', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{"error":"receipt expired"}', {
+        status: 409,
+        headers: {
+          'X-Overwatch-Server-Response': '1',
+          'X-Overwatch-Boundary-Command-Id': 'boundary-expired',
+          'X-Overwatch-Command-Status': 'failed',
+          'X-Overwatch-Command-Response-Available': '1',
+        },
+      }))
+      .mockResolvedValueOnce(new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'X-Overwatch-Server-Response': '1' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const request = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'expired pending identity' }),
+    };
+    await (await dashboardFetch('/api/config/objectives', request)).text();
+    const expiredId = new Headers(fetchMock.mock.calls[0][1]?.headers)
+      .get('X-Overwatch-Command-Id');
+    await dashboardFetch('/api/config/objectives', request);
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get('X-Overwatch-Command-Id'))
+      .not.toBe(expiredId);
   });
 
   it('encodes the token on all WebSocket paths', () => {
