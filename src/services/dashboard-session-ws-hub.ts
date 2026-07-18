@@ -1,10 +1,31 @@
+import { randomUUID } from 'node:crypto';
 import { WebSocket, WebSocketServer } from 'ws';
+import { z } from 'zod';
 import type { GraphEngine } from './graph-engine.js';
 import type { SessionManager } from './session-manager.js';
 import {
   SessionWebSocketClientEventSchema,
   SessionWebSocketServerEventSchema,
 } from '../contracts/dashboard-v1.js';
+import {
+  buildExternalMutationFingerprint,
+} from './external-mutation-command-service.js';
+import {
+  ApplicationCommandService,
+  type ApplicationCommandExecution,
+} from './application-command-service.js';
+
+const SessionMutationDescriptorSchema = z.object({
+  operation_id: z.string().trim().min(1).max(256),
+  request_fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+
+// Session input is ordered within one accepted connection generation. Retain
+// enough receipts to make response-loss retries safe without allowing normal
+// typing to grow snapshots forever. The class cap naturally retires receipts
+// from closed generations as newer terminal activity arrives.
+const SESSION_RECEIPTS_PER_GENERATION = 512;
+const SESSION_RECEIPTS_GLOBAL = 4_096;
 
 export interface SessionSocketExpectedGeneration {
   expected_connection_id?: string;
@@ -14,12 +35,14 @@ export interface SessionSocketExpectedGeneration {
 export class DashboardSessionWebSocketHub {
   readonly server = new WebSocketServer({ noServer: true });
   pollers = new Map<WebSocket, ReturnType<typeof setInterval>>();
+  private readonly mutationBoundary: ApplicationCommandService;
 
   constructor(
     private readonly engine: GraphEngine,
     private sessionManager: SessionManager | null,
     private readonly pollMs = 50,
   ) {
+    this.mutationBoundary = new ApplicationCommandService(engine);
     this.server.on('error', () => { /* connection-local errors are handled below */ });
   }
 
@@ -65,6 +88,10 @@ export class DashboardSessionWebSocketHub {
         : {}),
     };
     const generationAddressed = connectionId !== undefined || connectionGeneration !== undefined;
+    // Legacy clients may omit command identity. A connection generation can
+    // have multiple terminals and reconnects, so sequence alone is not unique.
+    const attachmentId = randomUUID();
+    let mutationSequence = 0;
     const readGeneration = (from?: number, tail?: number) => generationAddressed
       ? this.sessionManager!.read(sessionId, from, tail, expectedGeneration)
       : this.sessionManager!.read(sessionId, from, tail);
@@ -139,42 +166,139 @@ export class DashboardSessionWebSocketHub {
         return;
       }
 
-      if (parsed.data.type === 'input') {
-        try {
-          if (generationAddressed) {
-            this.sessionManager!.write(
-              sessionId,
-              parsed.data.data,
-              'dashboard',
-              true,
-              expectedGeneration,
+      const event = parsed.data;
+      const sequence = ++mutationSequence;
+      const publicCommandId = event.command_id
+        ?? `ws-session-${sessionId}-${connectionGeneration ?? 0}-${attachmentId}-${sequence}`;
+      const idempotencyKey = event.idempotency_key
+        ?? `ws-session:${sessionId}:${connectionId ?? connectionGeneration ?? 'legacy'}:${publicCommandId}`;
+      const descriptor = {
+          operation_id: `ws.session.${event.type}`,
+          request_fingerprint: buildExternalMutationFingerprint({
+            session_id: sessionId,
+            connection_id: connectionId,
+            connection_generation: connectionGeneration,
+            ...(event.type === 'input'
+              ? { data_sha256: buildExternalMutationFingerprint(event.data) }
+              : { cols: event.cols, rows: event.rows }),
+          }),
+        };
+      const retention = {
+        retention_class: 'dashboard.session_ws',
+        retention_group:
+          `${sessionId}:${connectionId ?? connectionGeneration ?? 'legacy'}`,
+        max_group_records: SESSION_RECEIPTS_PER_GENERATION,
+        max_class_records: SESSION_RECEIPTS_GLOBAL,
+      } as const;
+      try {
+        const reserved = this.mutationBoundary.reserveSync({
+          command_kind: `external.${descriptor.operation_id}`,
+          input: descriptor,
+          schema: SessionMutationDescriptorSchema,
+          metadata: {
+          transport: 'dashboard',
+          command_id: publicCommandId,
+          idempotency_key: idempotencyKey,
+          ...(event.retry_token ? { retry_token: event.retry_token } : {}),
+          },
+          retention,
+          reserve: () => ({ result: { reserved: true } }),
+        });
+        let command: ApplicationCommandExecution<unknown> = reserved;
+        if (!reserved.replayed) {
+          let operationError: unknown;
+          try {
+            if (event.type === 'input') {
+              if (generationAddressed) {
+                this.sessionManager!.write(
+                  sessionId,
+                  event.data,
+                  'dashboard',
+                  true,
+                  expectedGeneration,
+                );
+              } else {
+                this.sessionManager!.write(sessionId, event.data, 'dashboard', true);
+              }
+            } else {
+              this.sessionManager!.resize(
+                sessionId,
+                event.cols,
+                event.rows,
+                'dashboard',
+                true,
+              );
+            }
+          } catch (error) {
+            operationError = error;
+          }
+          // A failure of the external write itself can be finalized as failed.
+          // Keep the success transition outside that catch: if its WAL/fsync
+          // fails after the bytes were sent, the accepted reservation must
+          // remain ambiguous and a retry must never execute the input again.
+          if (operationError !== undefined) {
+            command = this.mutationBoundary.transition(
+              reserved.command_id,
+              {
+                status: 'failed',
+                error: {
+                  code: typeof (operationError as { code?: unknown })?.code === 'string'
+                    ? (operationError as { code: string }).code
+                    : 'SESSION_MUTATION_FAILED',
+                  message: operationError instanceof Error
+                    ? operationError.message
+                    : String(operationError),
+                },
+              },
+              [],
+              undefined,
+              retention,
             );
           } else {
-            this.sessionManager!.write(sessionId, parsed.data.data, 'dashboard', true);
+            command = this.mutationBoundary.transition(
+              reserved.command_id,
+              { status: 'succeeded', result: { op: event.type } },
+              [],
+              undefined,
+              retention,
+            );
           }
-        } catch (error) {
+        }
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (command.status !== 'succeeded') {
           this.send(ws, {
             type: 'error',
-            op: 'input',
-            error: error instanceof Error ? error.message : String(error),
+            op: event.type,
+            code: command.error?.code
+              ?? 'APPLICATION_COMMAND_NOT_SUCCEEDED',
+            error: command.error?.message
+              ?? `Session command is ${command.status}.`,
+            command_id: command.command_id,
+            retry_token: command.retry_token,
+            status: command.status,
+            replayed: command.replayed,
           });
+          return;
         }
-      } else {
-        try {
-          this.sessionManager!.resize(
-            sessionId,
-            parsed.data.cols,
-            parsed.data.rows,
-            'dashboard',
-            true,
-          );
-        } catch (error) {
-          this.send(ws, {
-            type: 'error',
-            op: 'resize',
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+        this.send(ws, {
+          type: 'command_result',
+          op: event.type,
+          command_id: command.command_id,
+          retry_token: command.retry_token,
+          status: command.status,
+          replayed: command.replayed,
+        });
+      } catch (error) {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        this.send(ws, {
+          type: 'error',
+          op: event.type,
+          code: typeof (error as { code?: unknown })?.code === 'string'
+            ? (error as { code: string }).code
+            : undefined,
+          error: error instanceof Error ? error.message : String(error),
+          command_id: publicCommandId,
+        });
       }
     });
 

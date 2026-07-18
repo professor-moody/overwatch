@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "tool_count": 91,
-  "registry_sha256": "5a99cd25acea90c6bdf2efb723dee7848d638f7df9fee7fdd197e7c7ad513090",
+  "registry_sha256": "a45188a59b808c3853ed0f2639a3e94738fb0e960acd1f537ec0cf8a8c89053c",
   "categories": [
     {
       "id": "state-readiness",
@@ -60,8 +60,25 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "directive_id": {
             "description": "The directive id from agent_heartbeat.pending_directive",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "task_id": {
@@ -76,7 +93,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "37e3d2084941d3dee95efeb013d8b434bdb1994bac061b796b3208ac37b52b7b",
+      "input_schema_sha256": "06bcb15fb516b000d83ebdf4ab34a555110f4d42f3c2b7a9f23ee11379435e83",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/acknowledge-agent-directive.md",
@@ -126,9 +143,26 @@
             },
             "type": "array"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "description": {
             "description": "What achieving this objective means (e.g. \"Compromise the domain controller\")",
             "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "target_criteria": {
@@ -147,7 +181,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "64bc69056d7f20b2fa93eb7340dd6cb7a8a6d778b399fc2f7ae040340347cf18",
+      "input_schema_sha256": "79c467778c2aa549176cf7e287befbd76b96e3d47ecacd10a441ee8db4aacf17",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/add-objective.md",
@@ -180,6 +214,23 @@
             "description": "Answer query_id already received and acted on; stops redelivery.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "task_id": {
             "description": "Task ID returned from register_agent",
             "type": "string"
@@ -191,7 +242,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "3c20728a010ab5dc1d3e526c64e34fdd35dbe6c305328b696f22c38e547316d4",
+      "input_schema_sha256": "8f201703df5aaf8a360bfda0f0195886e215486b67ad1cd698156512fe0e2125",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/agent-heartbeat.md",
@@ -239,8 +290,25 @@
             "minLength": 1,
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "notes": {
             "description": "Optional operator notes recorded with the approval",
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           }
         },
@@ -250,7 +318,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "2f860adc261e7de32552f56740465e44b0fb92786523a737e48cb1a84b872a91",
+      "input_schema_sha256": "27613b45f1507edfd25a7185b4200810dca608f9dd91a79a98501958c218f0e7",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/approve-action.md",
@@ -283,6 +351,18 @@
             "description": "Your agent id (for attribution)",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "options": {
             "description": "Optional suggested answers the operator can pick from",
             "items": {
@@ -292,6 +372,11 @@
           },
           "question": {
             "description": "The question for the operator — be specific and self-contained",
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "task_id": {
@@ -306,7 +391,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "ff2914a6010a3f6362087b38c0cfbca72320229c351246a725e8cb0fe4639657",
+      "input_schema_sha256": "820e67e049df28bfe90b200ad94fd52737ba65bd6c7cc9e22c3f864c1ec3203c",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/ask-operator.md",
@@ -349,6 +434,18 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "include_snapshots": {
             "default": false,
             "description": "Include .snapshots/ directory (periodic state snapshots). Can add significant size.",
@@ -362,12 +459,17 @@
           "output_path": {
             "description": "Absolute path for the output .tar.gz file. Defaults alongside writable state, or in the OS temp directory during degraded read-only recovery.",
             "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           }
         },
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "cdaebe4f3b7af5e47b1c78b2da9150112d3e8c9dff316221af6729d39cfd858f",
+      "input_schema_sha256": "a5b9b8b80aec1bde00ae5d057699d98f13f13e474761e989b256cfa41324a3cc",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/bundle-engagement.md",
@@ -401,15 +503,32 @@
             "description": "Only show currently running processes",
             "type": "boolean"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "process_id": {
             "description": "Check a specific tracked process by ID",
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           }
         },
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "b6ba8f95e01af2c28ff0b4c45fd2975281d77039ae385fb009ae3a827929dfe0",
+      "input_schema_sha256": "85240e1d7d2a6062522b500b9a709aa7c9bdb6999346e6b1c1a8d1add695ddd0",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/check-processes.md",
@@ -495,10 +614,27 @@
             "description": "Agent performing the close (checked against claimed_by)",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "force": {
             "default": false,
             "description": "Override ownership check",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "session_id": {
             "description": "Session ID to close",
@@ -511,7 +647,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "2f09f149f9febc12bf4617bc132a0f8bc9f1ca7202228c9aa8ad19f37b610184",
+      "input_schema_sha256": "9bc00f37ae65e01d1784e69da807f1779529bd8c14d96b48e23a35320aef09d2",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/sessions.md",
@@ -550,6 +686,12 @@
             "minLength": 1,
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "error": {
             "maxLength": 8000,
             "type": "string"
@@ -578,6 +720,12 @@
             },
             "type": "array"
           },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "parse_outcome": {
             "enum": [
               "ok",
@@ -586,6 +734,11 @@
               "parser_exception",
               "partial"
             ],
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "run_id": {
@@ -610,7 +763,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "b4fce336642e15f09d2bc5405ffcce490348efd61506a884553e74f29c6b754a",
+      "input_schema_sha256": "4de148af637eb6291cad8924b2abfcd00d3c1574688f0873bbd9b5201c2d1888",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -642,9 +795,26 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "connection_string": {
             "description": "postgres:// or postgresql:// connection string",
             "minLength": 5,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "schema": {
@@ -659,7 +829,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "9e7a7142f2328e36de380c80092b5bb6fdc3f3f11f97fe715050ca7eaaece6f0",
+      "input_schema_sha256": "20b94cbd08ddab80efe251c10bb07e04eee6002e68e1ecadccdfdfc88d157e1e",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/postgres.md",
@@ -690,6 +860,18 @@
         "properties": {
           "action_id": {
             "description": "Action ID to link this correction back to the triggering workflow.",
+            "type": "string"
+          },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "operations": {
@@ -918,6 +1100,11 @@
             "description": "Operator-provided reason for the correction batch.",
             "minLength": 1,
             "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           }
         },
         "required": [
@@ -927,7 +1114,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "fe2fdfe188f589e5aee1d534e2a0b6ade35f04ab64b218a3e1c2d5c06ccc7f09",
+      "input_schema_sha256": "147c6aa01ccdba128c1c00b0d9b957dd05c95c8c190a5a3a123a94f4554b87f1",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/correct-graph.md",
@@ -963,6 +1150,12 @@
             },
             "type": "array"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "domains": {
             "description": "In-scope domains",
             "items": {
@@ -981,6 +1174,12 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
           },
           "name": {
             "description": "Engagement name (also seeds the id)",
@@ -1014,6 +1213,11 @@
             ],
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "template": {
             "description": "Template id to base it on (e.g. ctf, internal-pentest, external-assessment, red-team, cloud-assessment, assumed-breach)",
             "type": "string"
@@ -1025,7 +1229,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "a349856b782dd43afdff86f9c96d1db3efd1e955e9fb5150893c15488f8a05bb",
+      "input_schema_sha256": "2ca2fcc909e85466483650e70049a8f4f72e5af182add5f8bed7b8a9efbe03da",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/create-engagement.md",
@@ -1059,8 +1263,25 @@
             "minLength": 1,
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "reason": {
             "description": "Optional operator reason recorded with the denial",
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           }
         },
@@ -1070,7 +1291,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "0b00c04d8ff1d423cd3a197a75b14ec182b2c868c11686ed1ba4a317564440dd",
+      "input_schema_sha256": "4234c92e4a200d66a86c052c3ac1e0a0f6796737523507a285a149ac8b2a92a9",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/deny-action.md",
@@ -1103,6 +1324,12 @@
             "description": "Optional agent-type override applied to every dispatched agent. When omitted, each agent's archetype is auto-selected from its frontier item type + node type.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "count": {
             "default": 3,
             "description": "Maximum number of agents to dispatch",
@@ -1116,6 +1343,17 @@
             "maximum": 5,
             "minimum": 1,
             "type": "integer"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "skill": {
             "description": "Optional skill override applied to each dispatched agent",
@@ -1154,7 +1392,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "a5a73e651bfe620b78e78d3cc3378b7d7e5073966d4b9deda46946357b255546",
+      "input_schema_sha256": "69205485bceac4544cf4025b08ba0034b44dbf6e83cc889a290c3608179b596e",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/dispatch-agents.md",
@@ -1191,6 +1429,12 @@
             "description": "ID of the campaign to dispatch agents for",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "hops": {
             "default": 2,
             "description": "Hops for subgraph scope computation",
@@ -1198,12 +1442,23 @@
             "minimum": 1,
             "type": "integer"
           },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "max_agents": {
             "default": 8,
             "description": "Maximum number of agents to dispatch",
             "maximum": 20,
             "minimum": 1,
             "type": "integer"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "skill": {
             "description": "Optional skill override applied to each dispatched agent",
@@ -1216,7 +1471,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "d47bad7dae79a2b0e6d9caae1d6b0e4be53c0f7c4997359a4e68bdddc67ea828",
+      "input_schema_sha256": "368edcddfa1c3247f4d70c898a2a741e3394b1971adbc16165dd6502fac3d9e0",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/dispatch-campaign-agents.md",
@@ -1245,6 +1500,12 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "hops": {
             "default": 2,
             "description": "Hops for subgraph scope computation",
@@ -1252,12 +1513,23 @@
             "minimum": 1,
             "type": "integer"
           },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "max_agents": {
             "default": 8,
             "description": "Maximum number of agents to dispatch",
             "maximum": 20,
             "minimum": 1,
             "type": "integer"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "skill": {
             "default": "subnet-enumeration",
@@ -1268,7 +1540,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "f495d1bac897e7c6586d8d4193d0d73e0ded1502dd007361ac963548d09e3d6c",
+      "input_schema_sha256": "a4e0b008024d8cf30b01358b936692267d24ef003b3a60abf5e612ba27483e62",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/dispatch-subnet-agents.md",
@@ -1301,8 +1573,20 @@
             "description": "OAuth client id the refresh token was issued for.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "credential_id": {
             "description": "Refresh token credential id (cred_material_kind: oidc_refresh_token).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
             "minLength": 1,
             "type": "string"
           },
@@ -1315,6 +1599,11 @@
             "default": "OVERWATCH_ENTRA_REFRESH_TOKEN",
             "description": "run_bash.env variable that will be populated from the selected refresh credential.",
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "scope": {
@@ -1334,7 +1623,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "9010172ce5702817865d757730c12c511b845366d008d57b2e3e9f72a318a65c",
+      "input_schema_sha256": "b054170b5fc5b3f76ab93e929a7d2aa02deb61dbb87f3fc016e8642ee0aa2276",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -1371,8 +1660,20 @@
             "pattern": "^[A-Za-z0-9_+=,.@-]{1,128}$",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "credential_id": {
             "description": "AWS-shaped credential node id.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
             "minLength": 1,
             "type": "string"
           },
@@ -1393,6 +1694,11 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "session_credentials_env_var": {
             "default": "OVERWATCH_AWS_SESSION_CREDENTIALS",
@@ -1417,7 +1723,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "4e4ee7b817f13bba87a33bcebd95f1ddd244d81bf646df4b66363321d434d1dc",
+      "input_schema_sha256": "2aaa7424549da36aa761e0b5191d9860f0585693d0905aeeae8a7b4769911342",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -1449,6 +1755,12 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "confirm_provider": {
             "default": false,
             "description": "Explicitly confirm an otherwise-unmarked access token is an Entra credential.",
@@ -1456,6 +1768,12 @@
           },
           "credential_id": {
             "description": "Entra access token credential id.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
             "minLength": 1,
             "type": "string"
           },
@@ -1468,6 +1786,11 @@
             "default": false,
             "description": "Start another run instead of resuming the matching logical run.",
             "type": "boolean"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "tenant_id": {
             "description": "Tenant id or domain (overrides credential's cred_issuer).",
@@ -1486,7 +1809,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "6bbf7a0f9ed8009a9055970c31d5d9fb0e1c30a6bc77e214dfb7d2a962a7c4be",
+      "input_schema_sha256": "4961d6faf18c47aec17b055e9da5df8dee7a63da9c2b0d7d746c04dcebfe5273",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -1549,6 +1872,12 @@
             },
             "type": "array"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "confirm_provider": {
             "default": false,
             "description": "Explicitly confirm an otherwise-unmarked token is a GitHub credential.",
@@ -1556,6 +1885,12 @@
           },
           "credential_id": {
             "description": "Credential node id. Must be a token-shaped GitHub credential.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
             "minLength": 1,
             "type": "string"
           },
@@ -1576,6 +1911,11 @@
             "description": "Start another run instead of resuming the matching logical run.",
             "type": "boolean"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "token_env_var": {
             "default": "OVERWATCH_GITHUB_TOKEN",
             "description": "Environment variable containing this selected credential at execution time. Commands fail closed when it is unset.",
@@ -1589,7 +1929,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "cec1388faba43d19135661a16e30446a51796f797c1a876f119e650bd58b4b96",
+      "input_schema_sha256": "a522f6b9dbca3b2a3fd37cf6071fcf8fda88f8156ccf0dc7d9d7efea69f5d268",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -1621,8 +1961,20 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "credential_id": {
             "description": "Credential node id of the captured OIDC token.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
             "minLength": 1,
             "type": "string"
           },
@@ -1637,6 +1989,11 @@
             "default": false,
             "description": "Start another run instead of resuming the matching logical run.",
             "type": "boolean"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           }
         },
         "required": [
@@ -1645,7 +2002,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "76c9ac6e6c89ff267965efbca35d459a6d8f7e3be670b3ef27f99acc683ff8df",
+      "input_schema_sha256": "0e202791ca09464ee99e8d6e958f5ba4e37da810181b50b7e8213d8f9dbff10a",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -1836,6 +2193,12 @@
             "description": "Produce a client-deliverable variant. Strips cred_value, raw_output, stdout/stderr previews, and operator-machine paths from the rendered report. Output files get a `.client-safe.<ext>` suffix when written to disk. Defaults to false so the operator-internal report is unchanged.",
             "type": "boolean"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "evidence_style": {
             "default": "proof_cards",
             "description": "Evidence presentation style: proof_cards in findings, appendix-first references, or full_inline raw previews for operator binders.",
@@ -1856,6 +2219,12 @@
               "json",
               "pdf"
             ],
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "include_attack_navigator": {
@@ -1918,6 +2287,11 @@
             ],
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "theme": {
             "default": "light",
             "description": "Theme for HTML output",
@@ -1936,7 +2310,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "a42e7732d7b22fa83babc0a3b5a404229857cb7b36e5ee4c6ce3c0d689e52f55",
+      "input_schema_sha256": "5a33285decddb3773339c90e844a76bf83ce0aa0ba3eb790f16b9c86ccd193cf",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/generate-report.md",
@@ -2456,10 +2830,22 @@
             "minimum": 1,
             "type": "integer"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "compact": {
             "default": false,
             "description": "Return compact JSON (no indentation) to save tokens. Default false (pretty-printed). The payload is identical either way — only whitespace differs.",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
           },
           "include_full_frontier": {
             "default": true,
@@ -2476,6 +2862,11 @@
             "description": "Include `category=system` entries in recent_activity (snapshots, ingested transcript turns, instrumentation warnings). Set false to focus on operational events only.",
             "type": "boolean"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "since": {
             "description": "ISO timestamp of your last get_state call. When set, the response adds a `changes_since` summary — new findings + which sub-agents completed since then + a recommendation — so a dispatching primary sees at a glance whether to re-synthesize without scanning recent_activity. Unparseable values are ignored.",
             "type": "string"
@@ -2489,7 +2880,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "30bf4821a6cd768b295e2662bb3ec91a40844984ca2f2b91acf7d21aae34ee9a",
+      "input_schema_sha256": "f9e00c49ad774f46bf7a083d7365e901202cd59bc085204883f8345fa3375f95",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/get-state.md",
@@ -2522,6 +2913,18 @@
             "description": "For sub_agent role: the agent ID to scope the instructions",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "include_state": {
             "default": true,
             "description": "Include current state snapshot in the prompt",
@@ -2531,6 +2934,11 @@
             "default": true,
             "description": "Include tool reference table in the prompt",
             "type": "boolean"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "role": {
             "description": "Consumer role: primary orchestrator or scoped sub-agent",
@@ -2552,7 +2960,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "edb6ee6205aa441832ce3ea9f503ba33bedef4665aa13a4c0b6991ca15076f9f",
+      "input_schema_sha256": "dd922585025cdbb3c349581e9d638b691ac4f20501e805bac12a6c25edc2d14d",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/get-system-prompt.md",
@@ -2660,6 +3068,18 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "max_files": {
             "default": 20,
             "description": "Maximum number of JSON files to process from a directory",
@@ -2670,6 +3090,11 @@
           "path": {
             "description": "Path to AzureHound JSON file or directory containing JSON files",
             "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           }
         },
         "required": [
@@ -2678,7 +3103,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "643b6aaadf995945a8f9c877445670029005d017b88ff1d6a5db24dcf482b347",
+      "input_schema_sha256": "e143b6f44aa660fd58fb9b66791920e6f901ebc9da4bc88792a63d7a2bf4be83",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/ingest-azurehound.md",
@@ -2707,6 +3132,18 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "max_files": {
             "default": 20,
             "description": "Maximum number of JSON files to process from a directory",
@@ -2717,6 +3154,11 @@
           "path": {
             "description": "Path to BloodHound JSON file or directory containing JSON files",
             "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           }
         },
         "required": [
@@ -2725,7 +3167,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "9ebbe58567f28973d1e8eebc7ff8360db383e5ad4432c6ac92dc042430d8c355",
+      "input_schema_sha256": "417cb240e1b87b4fa05eb5e68dd726cfa10291a36ab95f0f7a936244ab17a808",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/ingest-bloodhound.md",
@@ -2758,12 +3200,24 @@
             "description": "Agent ID credited for this ingest.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "content": {
             "description": "Raw JSON, JSON array, or JSONL string. Mutually exclusive with file_path.",
             "type": "string"
           },
           "file_path": {
             "description": "Absolute path to a JSON or JSONL file. Mutually exclusive with content.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "label": {
@@ -2843,6 +3297,11 @@
             },
             "minItems": 1,
             "type": "array"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           }
         },
         "required": [
@@ -2851,7 +3310,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "d75fd1e531a18be6456f061d1b515947470c358119edeaf3ed86275a528734e3",
+      "input_schema_sha256": "a95169e9659588b22cc552ca6a4f6aa2c5ad8b9adbb97dd991a32fc05bc6fdca",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/ingest-json.md",
@@ -2884,8 +3343,20 @@
             "description": "Agent performing the ingest",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "filter": {
             "description": "SQL WHERE clause (without the WHERE keyword)",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "limit": {
@@ -2925,6 +3396,11 @@
             ],
             "type": "object"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "table": {
             "description": "Table name (optionally schema-qualified, e.g. \"public.hosts\")",
             "type": "string"
@@ -2937,7 +3413,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "0c1142d8a35ee27591a0245ca9432c5ac3d4cb82b8de228b9b57f25d66a6fe1d",
+      "input_schema_sha256": "cf24b1532a3b6e24ae64bc607321b8501bbe66e1bc09e74b85afa28e2f364dbf",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/postgres.md",
@@ -2974,12 +3450,29 @@
             "description": "Attribution: agent that ran the capture.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "jsonl_path": {
             "description": "Path to the gowitness JSON-lines report. Defaults to <report_dir>/gowitness.jsonl.",
             "type": "string"
           },
           "report_dir": {
             "description": "Absolute directory holding the screenshot PNGs (and, by default, gowitness.jsonl).",
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           }
         },
@@ -2989,7 +3482,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "3db64b3def3028638ed94c991d0ebc27a1a8b61a47bb36363af6eab7acb6e48e",
+      "input_schema_sha256": "f57e49947160d54ce334fbb4a26337f10fc0eb0e07eb5169007a2a00b04930df",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/ingest-screenshots.md",
@@ -3022,6 +3515,18 @@
             "description": "Optional agent_id to associate with these turns (e.g. when the transcript is a sub-agent run).",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "provenance": {
             "default": "ingested",
             "description": "Provenance to record on each turn event.",
@@ -3029,6 +3534,11 @@
               "ingested",
               "operator"
             ],
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "session_id": {
@@ -3050,7 +3560,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "e34f01a4726593ac5be8c3cb8149bb56b3b44107d4c1ce02ba008d7cbd321e35",
+      "input_schema_sha256": "260fe9c437797f6430d1da125521d5b117dd5951c708c872d01620a0971b1c89",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/transcripts.md",
@@ -3079,8 +3589,25 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "reason": {
             "maxLength": 2000,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "run_id": {
@@ -3103,7 +3630,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "eaa26d7c8a41f17c9611821e57e5f72c76b5b600c82bb9e00480198dac3f6592",
+      "input_schema_sha256": "aae74e26f5a4696be2c9b9ad2487dbb8d531f451bb64bc275baae7a8ddac2f54",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -3319,6 +3846,12 @@
             "description": "Agent or session responsible for the action.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "description": {
             "description": "Human-readable description of the action event. Auto-defaults from event_type if omitted.",
             "type": "string"
@@ -3340,6 +3873,12 @@
           },
           "frontier_item_id": {
             "description": "Frontier item this action came from, if applicable.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "linked_agent_task_id": {
@@ -3366,6 +3905,11 @@
               "partial",
               "neutral"
             ],
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "target_ips": {
@@ -3403,7 +3947,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "2e0635757762878a2f63f7e8e55c67cae199ca1135c9d9123913a71d23d56a61",
+      "input_schema_sha256": "d15c4bd47b6ab5765b20d0f0a5e0a8a4b6b4bbd993fdefbb739fc66add8a12aa",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/log-action-event.md",
@@ -3446,6 +3990,12 @@
             "description": "Agent or session producing the thought.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "confidence": {
             "description": "Subjective confidence in the thought (0.0–1.0).",
             "maximum": 1,
@@ -3461,6 +4011,12 @@
           },
           "frontier_item_id": {
             "description": "Frontier item the thought concerns, if any.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "kind": {
@@ -3483,6 +4039,11 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "tags": {
             "description": "Free-form tags for downstream filtering.",
@@ -3510,7 +4071,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "a42f9be0bd1662c1c1b6dc01c074e84db2388838ed3a37906875fcf38d30831b",
+      "input_schema_sha256": "a5a52a5e348859764b97bf63de255536adb618acf53ebeb44d5a2aee7b68fc80",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/log-thought.md",
@@ -3553,12 +4114,24 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "frontier_types": {
             "description": "skip_types / prioritize: frontier item types",
             "items": {
               "type": "string"
             },
             "type": "array"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
           },
           "issued_by": {
             "description": "Operator id (defaults to \"primary\")",
@@ -3588,6 +4161,11 @@
             "description": "instruct: the free-text instruction; otherwise an optional human-readable note",
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "task_id": {
             "description": "Agent task ID to steer",
             "type": "string"
@@ -3600,7 +4178,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "4d258926652b70016f0554d6859bc0e8001a85ce043349dc5a0f9c2ba4717857",
+      "input_schema_sha256": "dc5f8a2621c61275601b1c912089276c301976e7dba607aa708924b58637a37d",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/manage-agent-directive.md",
@@ -3685,6 +4263,18 @@
             "description": "Campaign ID (required for all actions except create)",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "item_ids": {
             "description": "Frontier item IDs (required for create)",
             "items": {
@@ -3702,6 +4292,11 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "split_count": {
             "description": "Number of sub-campaigns to create (for split; defaults to 1 per item)",
@@ -3726,7 +4321,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "af0e6863f6ce366ba5c30899ea3a19cd9bd6d6e2b190e782c2e490806f0ec4c8",
+      "input_schema_sha256": "ecd42b88ded7e053cdfdb2741188dd630f82dc7033f034b5ffc38ddee004009b",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/manage-campaign.md",
@@ -3755,6 +4350,12 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "compact": {
             "default": false,
             "description": "Return compact JSON (no indentation) to save tokens. Default false (pretty-printed). The payload is identical either way — only whitespace differs.",
@@ -3769,6 +4370,12 @@
             ],
             "type": "string"
           },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "include_filtered": {
             "default": false,
             "description": "Also return items that were filtered out, with reasons",
@@ -3780,12 +4387,17 @@
             "maximum": 50,
             "minimum": 1,
             "type": "integer"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           }
         },
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "901c78082731088f3990cb340c34814a7b0701273c50e4fdc1457f2a81aadb69",
+      "input_schema_sha256": "7d98de11c075d11941bd0f62e39605c66a1c898ab151d9a4957a562d1afd4afb",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/next-task.md",
@@ -3857,6 +4469,12 @@
             "description": "Terminal columns (default: 120)",
             "type": "integer"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "credential_node": {
             "description": "Graph node ID of the credential used for authentication",
             "minLength": 1,
@@ -3913,6 +4531,12 @@
           },
           "host": {
             "description": "Target host (required for ssh and socket connect mode)",
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
             "minLength": 1,
             "type": "string"
           },
@@ -3974,6 +4598,11 @@
             "minLength": 1,
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "rows": {
             "description": "Terminal rows (default: 30)",
             "type": "integer"
@@ -4013,7 +4642,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "9f334073f373f3506a107d1006587cd0c27d79c2d4a820ca193fd2bf7953f1bd",
+      "input_schema_sha256": "a9cc954d7a2e51592f104c47500dad49de6a443c1b1fa5feba21e9be1b416b8c",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/sessions.md",
@@ -4223,6 +4852,11 @@
             "description": "Raw tool output to parse",
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "tool": {
             "description": "Alias for tool_name",
             "type": "string"
@@ -4235,7 +4869,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "16212dd5df513627067f0bda2f455942d495d117b74a3f6ae7b115c08dbb1bb0",
+      "input_schema_sha256": "d7be47966eac63fd8f04719cf09b05fc87b5c53aec7bc21193065ed36d04c41a",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/parse-output.md",
@@ -4276,6 +4910,18 @@
           },
           "command": {
             "description": "The operator command this plan answers",
+            "type": "string"
+          },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "ops": {
@@ -4441,6 +5087,11 @@
             "description": "Why these ops accomplish the command",
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "summary": {
             "description": "One-line human-readable summary of the plan",
             "type": "string"
@@ -4457,7 +5108,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "12469f4c5ad12d2fde6f0dad11057ed96e709a9df411b30294e874f5da133370",
+      "input_schema_sha256": "82145e71e11f37ad5c7f98499689a516d0aef0fa0340f3914bcb4182054a53d4",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/propose-plan.md",
@@ -4772,11 +5423,30 @@
       "open_world": false,
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
-        "properties": {},
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "7a014b717a77aac971ea0ab5c0ff47bb13e6cae7ef9442d9dedb15ce36381b15",
+      "input_schema_sha256": "5550e4eaa28e0cc322e8a9577ea94dd82f6eb1457939bab492111570a43bf15f",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/recompute-objectives.md",
@@ -4817,8 +5487,25 @@
             "description": "Optional agent-type override (e.g. recon_scanner, web_tester, credential_operator, post_exploit, cve_researcher). When omitted, the archetype is auto-selected from the frontier item type + node type.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "frontier_item_id": {
             "description": "ID of the frontier item this agent should work on (recommended for attribution)",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "skill": {
@@ -4837,7 +5524,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "086d00305b9b68bb254f531c3373cc00db41a358db32c9dd53576c5d816b9fe0",
+      "input_schema_sha256": "31e0f41936363ccaf0f2e3720bdbdb9ddbe84cdd93923eb8eb97157c7bdca0c1",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/register-agent.md",
@@ -4891,7 +5578,19 @@
             "description": "Session id of the long-lived process running the listener.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "frontier_item_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "notes": {
@@ -4920,6 +5619,11 @@
             ],
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "target_node": {
             "description": "Optional host node id for RUNS_ON edge (defaults to leaving it unattached when host unknown).",
             "type": "string"
@@ -4934,7 +5638,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "f5f1b62a51984bdfab25fd9b82735ae60f0ffbfd7437352ecb44727390416435",
+      "input_schema_sha256": "f997ac281ac761278080cb1a42d0785f8e2f5f9621ed2dcca1dda62f6af364bd",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/register-mock-service.md",
@@ -4963,7 +5667,24 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "notes": {
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "session_id": {
@@ -4985,7 +5706,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "134be2ad51121618fb62b3b6a5f133d018390dbbc9268e315f06dd215c89db65",
+      "input_schema_sha256": "edc8eae16e16563c3c63c76627f5240723bb172d1fd03ab3628d0830251abdc8",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/tape-sessions.md",
@@ -5020,6 +5741,12 @@
           },
           "agent_id": {
             "description": "ID of the reporting agent (optional for primary session)",
+            "type": "string"
+          },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "edges": {
@@ -5181,6 +5908,12 @@
             "description": "Frontier item this finding came from",
             "type": "string"
           },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "nodes": {
             "default": [],
             "description": "New or updated nodes to add to the graph",
@@ -5249,6 +5982,11 @@
             "description": "Raw command/tool output for logging",
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "target_node_ids": {
             "default": [],
             "description": "Primary graph node IDs this finding came from",
@@ -5269,7 +6007,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "a0555b48418ad48a9f078159b299352c5d16d6b7a7da7948bbb025480b868029",
+      "input_schema_sha256": "ca3475d43dbd2d67ef4424c9c9f9851283c5d372dcfbde5ca3ce3b9eba8b0d9e",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/report-finding.md",
@@ -5363,6 +6101,23 @@
             },
             "type": "array"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "service_id": {
             "description": "The service node id that was researched",
             "type": "string"
@@ -5379,7 +6134,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "524c3c81186138c5116a7dc0ba758613fa02bfc064a8d12be65b34bd7687f4e5",
+      "input_schema_sha256": "ec42858bb00be725101c13ee25233aa58a695334abf3e1e9d9734da91af4d134",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/research-cve.md",
@@ -5418,10 +6173,27 @@
             "description": "New column count",
             "type": "integer"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "force": {
             "default": false,
             "description": "Override ownership check",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "rows": {
             "description": "New row count",
@@ -5440,7 +6212,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "fe732d062d0cf9a600065cccfc9d32679733224e68968644ebf5358cd14dcbf0",
+      "input_schema_sha256": "f9281f7b4f8ede2ee2779540c95241dd3aff2aba542995f4c8ebf8a91d4a3dd3",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/sessions.md",
@@ -5471,6 +6243,12 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "expected_file_hash": {
             "pattern": "^[0-9a-f]{64}$",
             "type": "string"
@@ -5478,11 +6256,22 @@
           "expected_state_hash": {
             "$ref": "#/properties/expected_file_hash"
           },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "resolution": {
             "enum": [
               "use_file",
               "use_state"
             ],
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           }
         },
@@ -5494,7 +6283,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "31eb66817418e490091a18a491f3d28b97a21e0a08b85457b89e3c5f4bb41401",
+      "input_schema_sha256": "5c341d25a2e94ea00d5126e9bcba501f148b6cfac4ad66481710f38cef3d9040",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/resolve-config-divergence.md",
@@ -5523,6 +6312,23 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "run_id": {
             "minLength": 1,
             "type": "string"
@@ -5538,7 +6344,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "ccf73ce965a28ac504a35218f609bc6f508687357950d1cd9c5777959d389d00",
+      "input_schema_sha256": "c2659059101a0d7c102f0f88e7f866b14bcd485989184a24b0f8159bcb8908c2",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -5574,10 +6380,27 @@
             "description": "Task resuming the listener (checked against claimed_by)",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "force": {
             "default": false,
             "description": "Override ownership check",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "session_id": {
             "description": "Recovered listener session ID",
@@ -5590,7 +6413,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "472a206cf36267bf44e277bd604422d73277709d72a130becf4c38c34f5ff135",
+      "input_schema_sha256": "c28dbc4945c1ddd984f4d2950449d72fcfc834deba189225e0cb0708b7bd9973",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/sessions.md",
@@ -5621,6 +6444,23 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "run_id": {
             "minLength": 1,
             "type": "string"
@@ -5641,7 +6481,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "26fcea6870325785b09af7ae8932e91952b4eb621fb9c9d03a4e67a63f1ca5d0",
+      "input_schema_sha256": "189aaafbd8bb9ebf2f632aca0fbd7214775038e94e3e1bec661f8dfbdd443514",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -5901,6 +6741,11 @@
             "minLength": 1,
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "target_cidr": {
             "description": "Raw target CIDR for scanner/subnet scope validation",
             "type": "string"
@@ -5964,7 +6809,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "50c898edd56e03772d68aeb169f189c33fb4c0b1c31fde2d963a6321334950bf",
+      "input_schema_sha256": "f4783d5ce9748beff0d251eb7eaf4f63be097318e5c3ad6cbaab15ba7f77c687",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/run-bash.md",
@@ -6076,9 +6921,26 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "output_dir": {
             "default": "./retrospective/",
             "description": "Directory for output files (used when write_to_disk is true)",
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "write_to_disk": {
@@ -6090,7 +6952,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "778fa12f316b4a71f6ec0f7c102850f8161acb60c52199984f789b582c2223cc",
+      "input_schema_sha256": "c5ed8985721ea139d6b550649012a8d0ad993932f5988da1a29178907c4700fb",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/run-retrospective.md",
@@ -6355,6 +7217,11 @@
             "minLength": 1,
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "target_cidr": {
             "description": "Raw target CIDR for scanner/subnet scope validation",
             "type": "string"
@@ -6418,7 +7285,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "b9fd8bbb474f5cf6d8e5e69c32a5bbcb2ee40e26b04c9eb5168dcc60e6eb8013",
+      "input_schema_sha256": "25071ae85b196fa20faf6f9e27ce2b0ddfc50583e5e27c2acb8c4ce95ee86183",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/run-tool.md",
@@ -6494,6 +7361,11 @@
             "description": "Per-command noise estimate (records OPSEC noise; enforced only when OPSEC is enabled).",
             "type": "number"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "session_id": {
             "description": "Session ID",
             "type": "string"
@@ -6531,7 +7403,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "ea107d919ec67e8438ef0c8265782460c943a7cc928fde507ba240011cbac49e",
+      "input_schema_sha256": "5a13f811dfb1b5794a02f1ff72b2d3030dfccb2d7c0fa009cbbd9da7b9ca88b0",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/sessions.md",
@@ -6583,6 +7455,12 @@
             },
             "type": "array"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "confirm": {
             "default": false,
             "description": "Set true to apply. False (default) returns a dry-run diff.",
@@ -6591,6 +7469,12 @@
           "enabled": {
             "description": "Enable/disable OPSEC enforcement",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
           },
           "max_noise": {
             "description": "Noise ceiling 0.0–1.0",
@@ -6601,6 +7485,11 @@
           "reason": {
             "description": "Why (recorded in the activity log for attribution)",
             "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "time_window": {
@@ -6638,7 +7527,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "0881b2591f5580b3bd90a43693e9214ae605e349e9f9784e9c152caf31c428cb",
+      "input_schema_sha256": "a6296b2fe1b091f83f73a41531525c19af44fe880e9eea34fccfe0f9cf8f05e9",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/set-opsec.md",
@@ -6671,10 +7560,27 @@
             "description": "Agent performing the signal (checked against claimed_by)",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "force": {
             "default": false,
             "description": "Override ownership check",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "session_id": {
             "description": "Session ID",
@@ -6692,7 +7598,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "dff6239ba6b0a761ab42a614835bd8e4dfb5f8af916a5b77efd222f04c23b836",
+      "input_schema_sha256": "bb6fec613f52216a8b1d1712d6f967c14b71237562fba8c6d5a38905ce0bd3f1",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/sessions.md",
@@ -6723,8 +7629,25 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "reason": {
             "maxLength": 2000,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "run_id": {
@@ -6747,7 +7670,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "eaa26d7c8a41f17c9611821e57e5f72c76b5b600c82bb9e00480198dac3f6592",
+      "input_schema_sha256": "aae74e26f5a4696be2c9b9ad2487dbb8d531f451bb64bc275baae7a8ddac2f54",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -6779,6 +7702,23 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "run_id": {
             "minLength": 1,
             "type": "string"
@@ -6799,7 +7739,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "26fcea6870325785b09af7ae8932e91952b4eb621fb9c9d03a4e67a63f1ca5d0",
+      "input_schema_sha256": "189aaafbd8bb9ebf2f632aca0fbd7214775038e94e3e1bec661f8dfbdd443514",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/cloud-playbooks.md",
@@ -6835,6 +7775,18 @@
             "description": "Agent task ID this transcript belongs to. Accepted as a legacy alias for `task_id`; a legacy agent label resolves only when exactly one task has that label.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "key_finding_ids": {
             "description": "Finding IDs the primary should review first",
             "items": {
@@ -6852,6 +7804,11 @@
           "planner_outcome": {
             "const": "unexpressible",
             "description": "Planner-only structured conclusion when no allowed operation can represent the command",
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "summary": {
@@ -6874,7 +7831,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "a72eced20637b59be8312f1a2ae1377e7327d9e0f06471a2259f6015943c7548",
+      "input_schema_sha256": "43fabc75b407e2d3334e4cc15a3dc344dca47ed08d108615ea61a89411edb916",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/transcripts.md",
@@ -6922,8 +7879,20 @@
             "description": "Run this rule against all existing matching nodes immediately",
             "type": "boolean"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "description": {
             "description": "What this rule detects and why it matters",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "name": {
@@ -7057,6 +8026,11 @@
             "minItems": 1,
             "type": "array"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "trigger_node_type": {
             "description": "Node type that triggers this rule",
             "enum": [
@@ -7108,7 +8082,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "75719a44bdeb2b554c1985912e561940eef696d9b2efdf5aac1b6bba38d5f0cc",
+      "input_schema_sha256": "ba9c772f98a611ce9711c43cb338244316882bdb8e9dfcb9c3955929819bd940",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/suggest-inference-rule.md",
@@ -7145,6 +8119,12 @@
             "description": "Agent or session responsible for the action.",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "credential_id": {
             "description": "Credential node id to test. Must be usable for auth (not expired / rotated / MFA-blocked).",
             "type": "string"
@@ -7155,6 +8135,12 @@
           },
           "header_name": {
             "description": "bearer: custom header to carry the raw token (e.g. 'X-API-Key'); default 'Authorization: Bearer <token>'. cookie: the cookie name (default 'session').",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "login_path": {
@@ -7179,6 +8165,11 @@
           },
           "password_field": {
             "description": "form only: password form field name (default 'password').",
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "session_jar_id": {
@@ -7240,7 +8231,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "dd643f72c7e1ddcd22a5230dedf5ca900e4b410ea0391c9a8fed7987b78f5789",
+      "input_schema_sha256": "5925aecf4b4776d7ef1a655825a9fdc167d77d07f9b379b65882af6f923cfe83",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/test-webapp-credential.md",
@@ -7283,14 +8274,31 @@
             "description": "Command that was executed",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "description": {
             "description": "Human-readable description of what this scan does",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "pid": {
             "description": "Process ID of the running scan",
             "exclusiveMinimum": 0,
             "type": "integer"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           },
           "target_node": {
             "description": "Node ID being targeted by this scan",
@@ -7309,7 +8317,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "00b5107cafa4f237da9472c45d81acf75255960dc9c5fb469a32030a9977de94",
+      "input_schema_sha256": "8018924308e59e4e502913ac4cbdbadcfc23c9e69dd4c3ec44bd1bd123be1374",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/track-process.md",
@@ -7344,6 +8352,23 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "status": {
             "description": "New status",
             "enum": [
@@ -7368,7 +8393,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "c18fb7f01a0741e9751bab9e0d152924625091d488d101b9ef925cff6c9fca87",
+      "input_schema_sha256": "6a46d8c1b9fa490b0477cf35639fc394a70d3484f9f2d614cd38ff134d3acd30",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/update-agent.md",
@@ -7432,10 +8457,22 @@
             },
             "type": "array"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "confirm": {
             "default": false,
             "description": "Set to true to apply the change. False (default) returns a dry-run preview.",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
           },
           "reason": {
             "description": "Operator-provided reason for the scope change (required)",
@@ -7461,6 +8498,11 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
           }
         },
         "required": [
@@ -7469,7 +8511,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "ac74e61a4208e1aa40305e496d8eaa8c0f9e4d8d5002dcebbfc600edade6cc0d",
+      "input_schema_sha256": "8c2ab4ade10e1ea3386a82a113ee92fbc5718923e05322010d4e9c53f2f42169",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/update-scope.md",
@@ -7508,13 +8550,30 @@
             "description": "Transfer ownership to this task_id (unique legacy agent label accepted)",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "force": {
             "default": false,
             "description": "Override ownership check",
             "type": "boolean"
           },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
           "notes": {
             "description": "Operational notes",
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "session_id": {
@@ -7550,7 +8609,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "251fd156bc03bc1e5158ca042377f29192b4aaddfa21c9fd9d341c7b34c5c406",
+      "input_schema_sha256": "82ee8f2f5ac9a27325de6eb2181e6155b3dfa1ecb76c89aa7191da6496428531",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/sessions.md",
@@ -7593,6 +8652,12 @@
             "description": "Cloud resource identifier to validate against scope (AWS ARN, Azure subscription path, GCP project path)",
             "type": "string"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "description": {
             "description": "Human-readable description of the planned action",
             "type": "string"
@@ -7607,6 +8672,17 @@
           },
           "frontier_item_id": {
             "description": "Frontier item this action came from",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
             "type": "string"
           },
           "target_cidr": {
@@ -7641,7 +8717,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "2162fc5cb1d69ce839b76ec07229375657556221a7e2efada0a9d722ca58e8f2",
+      "input_schema_sha256": "3fdac732537184cda31b119cf650e29b97f54c047e896c5562f49f98d6a77b51",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/validate-action.md",
@@ -7748,6 +8824,11 @@
             ],
             "type": "string"
           },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "target_cloud_identity_id": {
             "description": "AWS STS only: cloud_identity node id for the target role; used as the target of the ASSUMES_ROLE edge.",
             "type": "string"
@@ -7773,7 +8854,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "0c6433e40f7d8b5e2cd18fc57a5b73aa9e18f66f2ae07888a248ef460e9f1296",
+      "input_schema_sha256": "57e4982d475ada565f7441130e75aebf9b6f4f5841aa191447f70c5bb3f315ec",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/token-credential.md",
@@ -7845,6 +8926,12 @@
             "description": "Append \\n after data",
             "type": "boolean"
           },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "connection_generation": {
             "description": "Expected connection generation number.",
             "minimum": 0,
@@ -7863,6 +8950,17 @@
             "description": "Override ownership check",
             "type": "boolean"
           },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
           "session_id": {
             "description": "Session ID to write to",
             "type": "string"
@@ -7875,7 +8973,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "36e19d4fd8ba8c0453fa170abde2af7ac6ed6f9ff6a8e5a5905dd3123ac5a44e",
+      "input_schema_sha256": "d3f293c39236bba36e23f4945a86d1dc94537b0b0c22d2937013300f07969766",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/sessions.md",

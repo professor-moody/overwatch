@@ -21,6 +21,10 @@ export const DURABLE_STATE_SLICE_KEYS = [
   'command_state',
   'opsec',
   'frontier',
+  // Bounded command transactions persist score weights without cloning the
+  // unbounded frontier-linkage registry. The legacy combined `frontier` slice
+  // remains readable for older transactions and bulk restore paths.
+  'frontier_weights',
   'finding_counters',
   'phase',
   'config',

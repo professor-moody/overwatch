@@ -22,7 +22,10 @@
 // ============================================================
 
 import { spawn, type ChildProcess } from 'child_process';
+import { z } from 'zod';
 import type { GraphEngine } from './graph-engine.js';
+import { ApplicationCommandService } from './application-command-service.js';
+import { AgentLifecycleCommandService } from './agent-lifecycle-command-service.js';
 import type {
   SubAgentMessage,
   SubAgentAssign,
@@ -101,6 +104,18 @@ export async function runSubAgent(
   let findingsReceived = 0;
   let finalStatus: SubAgentRunResult['status'] = 'interrupted';
   let resultSummary: string | undefined;
+  let messageSequence = 0;
+  const commands = new ApplicationCommandService(engine);
+  const lifecycle = new AgentLifecycleCommandService(engine, commands);
+  const metadata = (kind: string) => {
+    const sequence = messageSequence++;
+    return {
+      transport: 'system' as const,
+      actor_task_id: task.task_id ?? task.id,
+      command_id: `ipc-${task.id}-${kind}-${sequence}`,
+      idempotency_key: `ipc:${task.id}:${kind}:${sequence}`,
+    };
+  };
 
   // Resolve when child sends submit_transcript OR exits.
   let resolveDone: (() => void) | undefined;
@@ -138,47 +153,96 @@ export async function runSubAgent(
       }
 
       case 'report_finding': {
+        const commandMetadata = metadata('finding');
+        const findingSchema = z.custom<Finding>(value =>
+          Boolean(value && typeof value === 'object' && 'id' in value));
         try {
-          engine.ingestFinding(msg.finding as Finding);
+          const existing = commands.lookup<Finding, unknown>(
+            'agent.ipc.report_finding',
+            msg.finding,
+            commandMetadata,
+          );
+          if (!existing) {
+            engine.ingestFinding(msg.finding, {
+              complete: result => {
+                commands.recordSuccessInDomainTransaction({
+                  command_kind: 'agent.ipc.report_finding',
+                  input: msg.finding,
+                  schema: findingSchema,
+                  metadata: commandMetadata,
+                  result,
+                  record: finding => ({
+                    entity_refs: {
+                      finding_id: finding.id,
+                      task_id: task.task_id ?? task.id,
+                    },
+                  }),
+                });
+              },
+            });
+          }
           // Durability: a sub-agent can be killed at any moment (reap / timeout /
           // crash). Flush the finding to disk synchronously so it survives even a
           // crash in the next instant, rather than riding the ≤500ms debounce.
           engine.flushNow();
           findingsReceived++;
         } catch (err) {
+          try {
+            commands.recordFailureSync({
+              command_kind: 'agent.ipc.report_finding',
+              input: msg.finding,
+              schema: findingSchema,
+              metadata: commandMetadata,
+              error: err,
+            });
+          } catch { /* preserve the original ingestion failure */ }
           log?.(`[parent] ingestFinding error: ${err instanceof Error ? err.message : err}`);
         }
         return;
       }
 
       case 'log_thought': {
-        engine.logActionEvent({
-          description: msg.thought,
-          event_type: 'thought',
-          category: 'reasoning',
-          agent_id: task.agent_id,
-          linked_agent_task_id: task.id,
-          frontier_item_id: task.frontier_item_id,
-          result_classification: 'neutral',
-          details: {
-            kind: msg.thought_kind,
-            considered_alternatives: msg.considered_alternatives,
-            related_action_ids: msg.related_action_ids,
-            confidence: msg.confidence,
-          },
+        commands.executeSync({
+          command_kind: 'agent.ipc.log_thought',
+          input: msg,
+          schema: z.unknown(),
+          metadata: metadata('thought'),
+          state_keys: ['activity', 'frontier'],
+          execute: () => engine.logActionEvent({
+            description: msg.thought,
+            event_type: 'thought',
+            category: 'reasoning',
+            agent_id: task.agent_id,
+            linked_agent_task_id: task.id,
+            frontier_item_id: task.frontier_item_id,
+            result_classification: 'neutral',
+            details: {
+              kind: msg.thought_kind,
+              considered_alternatives: msg.considered_alternatives,
+              related_action_ids: msg.related_action_ids,
+              confidence: msg.confidence,
+            },
+          }),
         });
         return;
       }
 
       case 'heartbeat': {
-        engine.agentHeartbeat(task.id);
+        lifecycle.heartbeat(
+          { task_id: task.task_id ?? task.id },
+          metadata('heartbeat'),
+        );
         return;
       }
 
       case 'submit_transcript': {
         finalStatus = msg.status;
         resultSummary = msg.result_summary;
-        engine.updateAgentStatus(task.id, msg.status, msg.result_summary);
+        lifecycle.updateStatus({
+          task_id: task.task_id ?? task.id,
+          status: msg.status,
+          summary: msg.result_summary,
+        }, metadata('status'));
         // Tell the child we accepted the transcript and to shut down.
         channel.send({ kind: 'shutdown', task_id: task.id, reason: 'transcript accepted' });
         resolveDone?.();
@@ -235,7 +299,11 @@ export async function runSubAgent(
       : 'subagent_exited_without_transcript';
     resultSummary = resultSummary ?? reason;
     try {
-      engine.updateAgentStatus(task.id, 'interrupted', resultSummary);
+      lifecycle.updateStatus({
+        task_id: task.task_id ?? task.id,
+        status: 'interrupted',
+        summary: resultSummary,
+      }, metadata('interrupted'));
     } catch (err) {
       log?.(`[parent] updateAgentStatus error: ${err instanceof Error ? err.message : err}`);
     }

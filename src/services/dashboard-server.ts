@@ -10,7 +10,7 @@ import type { FileHandle } from 'fs/promises';
 import { extname, join } from 'path';
 import { tmpdir } from 'os';
 import { pipeline } from 'stream/promises';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { GraphEngine } from './graph-engine.js';
 import {
@@ -19,6 +19,10 @@ import {
   getApplicationCommandInvocation,
   withApplicationCommandInvocation,
 } from './application-command-service.js';
+import {
+  ExternalMutationCommandService,
+  buildExternalMutationFingerprint,
+} from './external-mutation-command-service.js';
 import {
   DispatchCommandError,
   DispatchCommandService,
@@ -152,6 +156,7 @@ import {
 } from '../contracts/dashboard-v1.js';
 import {
   dashboardMethodsForPath,
+  dashboardEndpointMutatesDurableState,
   matchDashboardEndpoint,
   responseSchemaFor,
   type DashboardEndpointDefinition,
@@ -179,6 +184,17 @@ interface DashboardRequestContract {
   endpoint: DashboardEndpointDefinition;
 }
 
+interface CachedDashboardRequestBody {
+  bytes: number;
+  value: unknown;
+}
+
+interface CapturedDashboardResponse {
+  status_code: number;
+  headers: Record<string, string | string[]>;
+  body: string;
+}
+
 export class DashboardServer {
   private httpServer: ReturnType<typeof createServer>;
   private wss: WebSocketServer;
@@ -193,6 +209,7 @@ export class DashboardServer {
   private sessionPollers: Map<WebSocket, ReturnType<typeof setInterval>>;
   private actionPollers: Map<WebSocket, ReturnType<typeof setInterval>>;
   private requestContracts = new WeakMap<IncomingMessage, DashboardRequestContract>();
+  private requestBodies = new WeakMap<IncomingMessage, Promise<CachedDashboardRequestBody>>();
   private _running: boolean = false;
 
   private get clients(): Set<WebSocket> { return this.mainHub.clients; }
@@ -253,6 +270,7 @@ export class DashboardServer {
   }
 
   private readonly applicationCommands: ApplicationCommandService;
+  private readonly mutationBoundary: ExternalMutationCommandService;
   private readonly dispatchCommands: DispatchCommandService;
   private readonly operatorCommands: OperatorCommandService;
   private readonly approvalCommands: ApprovalCommandService;
@@ -279,6 +297,7 @@ export class DashboardServer {
     this.engine = engine;
     this.dashboardProjections = new DashboardProjectionService(engine);
     this.applicationCommands = applicationCommands ?? new ApplicationCommandService(engine);
+    this.mutationBoundary = new ExternalMutationCommandService(engine);
     this.dispatchCommands = new DispatchCommandService(engine, this.applicationCommands);
     this.operatorCommands = new OperatorCommandService(engine, this.applicationCommands);
     this.approvalCommands = new ApprovalCommandService(engine, this.applicationCommands);
@@ -537,19 +556,23 @@ export class DashboardServer {
     const client = req.headers['x-overwatch-client'];
     const commandId = req.headers['x-overwatch-command-id'];
     const idempotencyKey = req.headers['idempotency-key'];
-    const actorTaskId = req.headers['x-overwatch-actor-task-id'];
+    const retryToken = req.headers['x-overwatch-retry-token'];
     withApplicationCommandInvocation(
       {
         transport: client === 'cli' ? 'cli' : 'dashboard',
-        actor_task_id: typeof actorTaskId === 'string' && actorTaskId.trim()
-          ? actorTaskId.trim()
-          : null,
+        // Browser/CLI headers are not task authority. Managed MCP workers are
+        // authenticated separately and receive their actor identity from the
+        // daemon-issued credential rather than caller-controlled HTTP input.
+        actor_task_id: null,
         request_id: `${req.method ?? 'GET'}:${req.url ?? '/'}:${randomUUID()}`,
         ...(typeof commandId === 'string' && commandId.trim()
           ? { command_id: commandId.trim() }
           : {}),
         ...(typeof idempotencyKey === 'string' && idempotencyKey.trim()
           ? { idempotency_key: idempotencyKey.trim() }
+          : {}),
+        ...(typeof retryToken === 'string' && retryToken.trim()
+          ? { retry_token: retryToken.trim() }
           : {}),
       },
       () => {
@@ -577,8 +600,16 @@ export class DashboardServer {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, Idempotency-Key, X-Overwatch-Command-Id, X-Overwatch-Actor-Task-Id, X-Overwatch-Client',
+      'Content-Type, Authorization, Idempotency-Key, X-Overwatch-Command-Id, X-Overwatch-Retry-Token, X-Overwatch-Client',
     );
+    res.setHeader(
+      'Access-Control-Expose-Headers',
+      'X-Overwatch-Boundary-Command-Id, X-Overwatch-Retry-Token, X-Overwatch-Command-Replayed, X-Overwatch-Command-Status, X-Overwatch-Command-Response-Available, X-Overwatch-Server-Response',
+    );
+    // Clients retain their crash-safe command identity until they know the
+    // response came from Overwatch rather than an intermediary-generated
+    // 502/504. Set this marker before every API/static response path.
+    res.setHeader('X-Overwatch-Server-Response', '1');
 
     if (method === 'OPTIONS') {
       res.writeHead(204);
@@ -605,6 +636,30 @@ export class DashboardServer {
       return;
     }
 
+    const matchedEndpoint = matchDashboardEndpoint(method, pathname);
+
+    // Stopping an active recorder is the one runtime shutdown control that
+    // remains available while durable writes are blocked. It must be an
+    // explicit disable request; writable enable/disable/toggle operations use
+    // the ordinary application-command boundary below.
+    const recoverySafeTapeDisable = pathname === '/api/tape/toggle'
+      && method === 'POST'
+      && !this.engine.isPersistenceWritable();
+    if (recoverySafeTapeDisable) {
+      if (!this.checkMutationAuth(req, res)) return;
+      if (!matchedEndpoint) {
+        this.sendUncontractedJson(res, 404, { error: 'Dashboard API route not found', code: 'ROUTE_NOT_FOUND' });
+        return;
+      }
+      this.requestContracts.set(req, {
+        operation_id: matchedEndpoint.operation_id,
+        endpoint: matchedEndpoint.endpoint,
+      });
+      this.installResponseContract(matchedEndpoint, res);
+      void this.handleTapeToggle(req, res, true);
+      return;
+    }
+
     // A partial WAL recovery remains inspectable, but no dashboard command may
     // start target work or create a new durable mutation until recovery is
     // complete.  Keep the two POST-shaped pure-read operations available.
@@ -626,7 +681,6 @@ export class DashboardServer {
       return;
     }
 
-    const matchedEndpoint = matchDashboardEndpoint(method, pathname);
     if (matchedEndpoint) {
       let requestUrl: URL;
       try {
@@ -650,6 +704,22 @@ export class DashboardServer {
         operation_id: matchedEndpoint.operation_id,
         endpoint: matchedEndpoint.endpoint,
       });
+      if (dashboardEndpointMutatesDurableState(matchedEndpoint.endpoint)) {
+        // Authentication and CSRF checks must happen before reserving a
+        // durable application command. Individual handlers retain their
+        // compatibility checks as a defense-in-depth boundary.
+        if (!this.checkMutationAuth(req, res)) return;
+        if (matchedEndpoint.operation_id !== 'resolveConfigDivergence') {
+          void this.dispatchDurableDashboardMutation(
+            matchedEndpoint,
+            req,
+            res,
+            url,
+            queryResult.data,
+          );
+          return;
+        }
+      }
       this.installResponseContract(matchedEndpoint, res);
       this.dispatchApiOperation(matchedEndpoint, req, res, url);
       return;
@@ -799,6 +869,220 @@ export class DashboardServer {
   private sendContractedJson(res: ServerResponse, status: number, payload: unknown): void {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(payload));
+  }
+
+  private async dispatchDurableDashboardMutation(
+    matched: MatchedDashboardEndpoint,
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: string,
+    query: unknown,
+  ): Promise<void> {
+    try {
+      const body = await this.readJsonBody(req, 256 * 1024);
+      const requestFingerprint = buildExternalMutationFingerprint({
+        operation_id: matched.operation_id,
+        path: matched.path_params,
+        query,
+        body,
+      });
+      const invocation = getApplicationCommandInvocation();
+      const publicIdentity = invocation?.command_id
+        ?? invocation?.idempotency_key
+        ?? invocation?.request_id
+        ?? randomUUID();
+      const boundaryCommandId = `boundary_${createHash('sha256')
+        .update(`dashboard\0${matched.operation_id}\0${publicIdentity}`)
+        .digest('hex')
+        .slice(0, 48)}`;
+      const command = await this.mutationBoundary.execute<CapturedDashboardResponse>({
+        descriptor: {
+          operation_id: `dashboard.${matched.operation_id}`,
+          request_fingerprint: requestFingerprint,
+        },
+        metadata: {
+          command_id: boundaryCommandId,
+          idempotency_key: `dashboard-boundary:${matched.operation_id}:${
+            invocation?.idempotency_key ?? publicIdentity
+          }`,
+          ...(invocation?.retry_token ? { retry_token: invocation.retry_token } : {}),
+        },
+        operation: () => withApplicationCommandInvocation(
+          {
+            ...(invocation ?? { transport: 'dashboard' as const }),
+            // A receipt token identifies external.dashboard.*. A nested
+            // domain command reuses the raw public identity, never the outer
+            // token, so both records remain independently replayable.
+            retry_token: undefined,
+          },
+          () => this.captureDashboardResponse(
+            res,
+            () => this.dispatchApiOperation(matched, req, res, url),
+          ),
+        ),
+      });
+      if (!command.response) {
+        const errorDetails = command.error?.details;
+        const explicitHttpStatus = errorDetails
+          && typeof errorDetails === 'object'
+          && !Array.isArray(errorDetails)
+          && typeof (errorDetails as Record<string, unknown>).http_status === 'number'
+          ? (errorDetails as Record<string, number>).http_status
+          : undefined;
+        const definitiveExpiredReceipt =
+          command.error?.code === 'COMMAND_RECEIPT_EXPIRED';
+        const status = explicitHttpStatus
+          ?? (command.status === 'accepted' || command.status === 'running'
+          ? 409
+          : command.delivery_error
+            ? 409
+            : 500);
+        // The request crossed the durable reservation boundary, but there is
+        // no replayable wire response yet. Surface that distinction so clients
+        // retain their pending identity instead of inventing a fresh command.
+        res.setHeader('X-Overwatch-Boundary-Command-Id', command.command_id);
+        res.setHeader('X-Overwatch-Retry-Token', command.retry_token);
+        res.setHeader('X-Overwatch-Command-Replayed', String(command.replayed));
+        res.setHeader('X-Overwatch-Command-Status', command.status);
+        res.setHeader(
+          'X-Overwatch-Command-Response-Available',
+          definitiveExpiredReceipt ? '1' : '0',
+        );
+        this.sendUncontractedJson(res, status, {
+          error: command.error?.message
+            ?? command.delivery_error?.message
+            ?? `Dashboard command is ${command.status}.`,
+          code: command.error?.code
+            ?? command.delivery_error?.code
+            ?? 'APPLICATION_COMMAND_NOT_SUCCEEDED',
+          command_id: command.command_id,
+          retry_token: command.retry_token,
+          command_status: command.status,
+          replayed: command.replayed,
+        });
+        return;
+      }
+
+      for (const [name, value] of Object.entries(command.response.headers)) {
+        if (name.toLowerCase() === 'content-length') continue;
+        res.setHeader(name, value);
+      }
+      res.setHeader('X-Overwatch-Boundary-Command-Id', command.command_id);
+      res.setHeader('X-Overwatch-Retry-Token', command.retry_token);
+      res.setHeader('X-Overwatch-Command-Replayed', String(command.replayed));
+      res.setHeader('X-Overwatch-Command-Status', command.status);
+      res.setHeader('X-Overwatch-Command-Response-Available', '1');
+      this.installResponseContract(matched, res);
+      res.writeHead(command.response.status_code);
+      res.end(command.response.body);
+    } catch (error) {
+      if (error instanceof DashboardRequestContractError) {
+        this.sendUncontractedJson(res, 400, {
+          error: 'Invalid dashboard request body',
+          code: 'DASHBOARD_REQUEST_INVALID',
+          operation_id: error.operationId,
+          issues: error.issues,
+        });
+        return;
+      }
+      if (error instanceof ApplicationCommandConflictError) {
+        this.sendUncontractedJson(res, 409, {
+          error: error.message,
+          code: error.code,
+          command_id: error.existing.command_id,
+          retry_token: error.existing.idempotency_key,
+        });
+        return;
+      }
+      this.respondMutationFailure(res, error);
+    }
+  }
+
+  private captureDashboardResponse(
+    res: ServerResponse,
+    dispatch: () => void,
+  ): Promise<CapturedDashboardResponse> {
+    const originalWriteHead = res.writeHead.bind(res);
+    const originalWrite = res.write.bind(res);
+    const originalEnd = res.end.bind(res);
+    const chunks: Buffer[] = [];
+    let statusCode = res.statusCode || 200;
+    let settled = false;
+
+    const restore = () => {
+      res.writeHead = originalWriteHead as typeof res.writeHead;
+      res.write = originalWrite as typeof res.write;
+      res.end = originalEnd as typeof res.end;
+    };
+    const capturedHeaders = (): Record<string, string | string[]> =>
+      Object.fromEntries(Object.entries(res.getHeaders()).flatMap(([name, value]) => {
+        if (value === undefined) return [];
+        const lowerName = name.toLowerCase();
+        if (
+          lowerName.startsWith('access-control-')
+          || lowerName === 'connection'
+          || lowerName === 'content-length'
+          || lowerName === 'date'
+          || lowerName === 'transfer-encoding'
+          || lowerName === 'x-overwatch-boundary-command-id'
+          || lowerName === 'x-overwatch-command-replayed'
+          || lowerName === 'x-overwatch-retry-token'
+        ) return [];
+        return [[name, Array.isArray(value) ? value.map(String) : String(value)]];
+      }));
+    const append = (chunk: unknown, encoding?: BufferEncoding) => {
+      if (chunk === undefined || chunk === null) return;
+      if (Buffer.isBuffer(chunk)) chunks.push(Buffer.from(chunk));
+      else if (chunk instanceof Uint8Array) chunks.push(Buffer.from(chunk));
+      else chunks.push(Buffer.from(String(chunk), encoding));
+    };
+
+    return new Promise((resolve, reject) => {
+      res.writeHead = ((
+        status: number,
+        statusMessageOrHeaders?: string | Record<string, string | string[]>,
+        maybeHeaders?: Record<string, string | string[]>,
+      ) => {
+        statusCode = status;
+        res.statusCode = status;
+        const headers = typeof statusMessageOrHeaders === 'string'
+          ? maybeHeaders
+          : statusMessageOrHeaders;
+        if (headers) {
+          for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+        }
+        return res;
+      }) as typeof res.writeHead;
+      res.write = ((chunk: unknown, encodingOrCallback?: BufferEncoding | (() => void), callback?: () => void) => {
+        append(chunk, typeof encodingOrCallback === 'string' ? encodingOrCallback : undefined);
+        if (typeof encodingOrCallback === 'function') encodingOrCallback();
+        callback?.();
+        return true;
+      }) as typeof res.write;
+      res.end = ((chunk?: unknown, encodingOrCallback?: BufferEncoding | (() => void), callback?: () => void) => {
+        if (settled) return res;
+        settled = true;
+        append(chunk, typeof encodingOrCallback === 'string' ? encodingOrCallback : undefined);
+        const response: CapturedDashboardResponse = {
+          status_code: statusCode,
+          headers: capturedHeaders(),
+          body: Buffer.concat(chunks).toString('utf8'),
+        };
+        restore();
+        if (typeof encodingOrCallback === 'function') encodingOrCallback();
+        callback?.();
+        resolve(response);
+        return res;
+      }) as typeof res.end;
+
+      try {
+        dispatch();
+      } catch (error) {
+        settled = true;
+        restore();
+        reject(error);
+      }
+    });
   }
 
   private installResponseContract(matched: MatchedDashboardEndpoint, res: ServerResponse): void {
@@ -972,9 +1256,7 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid settings patch', issues: parsed.error.issues }));
         return;
       }
-      const execution = this.engagementCommands.updateSettings(parsed.data, {
-        transport: 'dashboard',
-      });
+      const execution = this.engagementCommands.updateSettings(parsed.data);
       const payload = SettingsUpdateResultSchema.parse({
         ...execution.result,
         command_id: execution.command_id,
@@ -1052,9 +1334,7 @@ export class DashboardServer {
         }
       }
       try {
-        const execution = this.engagementCommands.patchConfig(b, {
-          transport: 'dashboard',
-        });
+        const execution = this.engagementCommands.patchConfig(b);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           ...execution.result,
@@ -1081,9 +1361,7 @@ export class DashboardServer {
         return;
       }
       try {
-        const execution = this.engagementCommands.replaceScope(body, {
-          transport: 'dashboard',
-        });
+        const execution = this.engagementCommands.replaceScope(body);
         const scopeResult = execution.result!;
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1166,9 +1444,7 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Invalid objective create request', issues: parsed.error.issues }));
         return;
       }
-      const execution = this.engagementCommands.addObjective(parsed.data, {
-        transport: 'dashboard',
-      });
+      const execution = this.engagementCommands.addObjective(parsed.data);
       const payload = ObjectiveCreateResponseSchema.parse({
         ...execution.result,
         command_id: execution.command_id,
@@ -1200,7 +1476,6 @@ export class DashboardServer {
       const execution = this.engagementCommands.updateObjective(
         id,
         parsed.data,
-        { transport: 'dashboard' },
       );
       const payload = ObjectiveUpdateResponseSchema.parse({
         updated: true,
@@ -1224,9 +1499,7 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     if (!this.requireWritablePersistence(res)) return;
     try {
-      const execution = this.engagementCommands.deleteObjective(id, {
-        transport: 'dashboard',
-      });
+      const execution = this.engagementCommands.deleteObjective(id);
       const payload = ObjectiveDeleteResponseSchema.parse({
         deleted: true,
         command_id: execution.command_id,
@@ -1440,7 +1713,7 @@ export class DashboardServer {
       const execution = this.agentLifecycleCommands.answerQuestions({
         query_ids: [queryId],
         answer,
-      }, { transport: 'dashboard' });
+      });
       const resolved = execution.result!.queries[0];
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -1482,7 +1755,7 @@ export class DashboardServer {
       const execution = this.agentLifecycleCommands.answerQuestions({
         query_ids: queryIds,
         answer,
-      }, { transport: 'dashboard' });
+      });
       const resolved = execution.result!.queries;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -1505,9 +1778,7 @@ export class DashboardServer {
       // Dismiss a planner-proposed plan without executing it.
       if (b.deny === true && typeof b.plan_id === 'string') {
         try {
-          const execution = this.operatorCommands.denyPlan(b.plan_id, {
-            transport: 'dashboard',
-          });
+          const execution = this.operatorCommands.denyPlan(b.plan_id);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             ...execution.result,
@@ -1526,9 +1797,7 @@ export class DashboardServer {
       // (the shared ProposedPlanStore) — both execute through the same path.
       if (b.confirm === true && typeof b.plan_id === 'string') {
         try {
-          const execution = this.operatorCommands.confirmPlan(b.plan_id, {
-            transport: 'dashboard',
-          });
+          const execution = this.operatorCommands.confirmPlan(b.plan_id);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             ...execution.result,
@@ -1575,7 +1844,6 @@ export class DashboardServer {
         const execution = this.operatorCommands.createGrammarPlan(
           command,
           interp.ops,
-          { transport: 'dashboard' },
         );
         plan_id = execution.result!.plan_id;
         preview_command_id = execution.command_id;
@@ -1598,7 +1866,6 @@ export class DashboardServer {
             runtime_available:
               this.taskExecution?.isHeadlessAvailable() === true,
           },
-          { transport: 'dashboard' },
         );
         planner_command_id = execution.command_id;
         planner_status = execution.status;
@@ -1945,7 +2212,7 @@ export class DashboardServer {
           mode: parsed.data.resolution,
           expected_file_hash: parsed.data.expected_file_hash,
           expected_state_hash: parsed.data.expected_state_hash,
-        }, { transport: 'dashboard' });
+        });
         const payload = ConfigDivergenceResolveResponseSchema.parse({
           ...execution.result,
           command_id: execution.command_id,
@@ -2652,7 +2919,6 @@ export class DashboardServer {
       const execution = this.agentLifecycleCommands.cancel(
         taskId,
         REASON,
-        { transport: 'dashboard' },
       );
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -2679,7 +2945,6 @@ export class DashboardServer {
         const execution = this.agentLifecycleCommands.dismiss(
           taskId,
           force,
-          { transport: 'dashboard' },
         );
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -2736,7 +3001,7 @@ export class DashboardServer {
         frontier_types: Array.isArray(b.frontier_types) ? (b.frontier_types as unknown[]).filter(x => typeof x === 'string') as string[] : undefined,
         note: typeof b.note === 'string' ? b.note : undefined,
         issued_by: 'operator',
-      }, { transport: 'dashboard' });
+      });
       const results = [{
         op: {
           op: 'directive',
@@ -2789,7 +3054,7 @@ export class DashboardServer {
         campaign_id: typeof b.campaign_id === 'string'
           ? b.campaign_id
           : undefined,
-      }, { transport: 'dashboard' });
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ...execution.result,
@@ -2813,7 +3078,7 @@ export class DashboardServer {
         campaign_id: typeof b.campaign_id === 'string'
           ? b.campaign_id
           : undefined,
-      }, { transport: 'dashboard' });
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ...execution.result,
@@ -2896,7 +3161,6 @@ export class DashboardServer {
       const execution = this.campaignCommands.action(
         campaignId,
         parsed.data,
-        { transport: 'dashboard' },
       );
       const payload = CampaignActionResponseSchema.parse(execution.result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2925,7 +3189,7 @@ export class DashboardServer {
         max_agents: parsed.data.max_agents,
         hops: parsed.data.hops,
         skill: parsed.data.skill,
-      }, { transport: 'dashboard' });
+      });
       const payload = CampaignDispatchResponseSchema.parse(execution.result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -2954,7 +3218,6 @@ export class DashboardServer {
       }
       const execution = this.campaignCommands.create(
         parsed.data,
-        { transport: 'dashboard' },
       );
       const payload = CampaignCreateResponseSchema.parse(execution.result);
       res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -2981,7 +3244,6 @@ export class DashboardServer {
       const execution = this.campaignCommands.update(
         campaignId,
         parsed.data,
-        { transport: 'dashboard' },
       );
       const payload = CampaignUpdateResponseSchema.parse(execution.result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3000,7 +3262,6 @@ export class DashboardServer {
     try {
       const execution = this.campaignCommands.delete(
         campaignId,
-        { transport: 'dashboard' },
       );
       const payload = CampaignDeleteResponseSchema.parse(execution.result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3019,7 +3280,6 @@ export class DashboardServer {
     try {
       const execution = this.campaignCommands.clone(
         campaignId,
-        { transport: 'dashboard' },
       );
       const payload = CampaignCloneResponseSchema.parse(execution.result);
       res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -3047,7 +3307,6 @@ export class DashboardServer {
       const execution = this.campaignCommands.split(
         campaignId,
         parsed.data.count,
-        { transport: 'dashboard' },
       );
       const payload = CampaignSplitResponseSchema.parse(execution.result);
       res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -3560,37 +3819,59 @@ export class DashboardServer {
   }
 
   private readJsonBody(req: IncomingMessage, maxBytes: number = 64 * 1024): Promise<any> {
-    return new Promise((resolve, reject) => {
+    let cached = this.requestBodies.get(req);
+    if (!cached) {
+      cached = new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
       let size = 0;
-      const MAX_BODY = maxBytes;
+      const hardLimit = 256 * 1024;
+      let oversized = false;
       req.on('data', (chunk: Buffer) => {
         size += chunk.length;
-        if (size > MAX_BODY) {
-          req.destroy();
-          reject(new Error('Body too large'));
+        if (size > hardLimit) {
+          oversized = true;
           return;
         }
         chunks.push(chunk);
       });
       req.on('end', () => {
+        if (oversized) {
+          reject(new Error('Body too large'));
+          return;
+        }
+        const raw = Buffer.concat(chunks).toString('utf-8');
+        let decoded: unknown;
         try {
-          const raw = Buffer.concat(chunks).toString('utf-8');
-          const decoded = raw ? JSON.parse(raw) : {};
-          const contract = this.requestContracts.get(req);
-          if (!contract) {
-            resolve(decoded);
-            return;
-          }
-          const parsed = contract.endpoint.body_schema.safeParse(decoded);
-          if (!parsed.success) {
-            reject(new DashboardRequestContractError(contract.operation_id, parsed.error.issues));
-            return;
-          }
-          resolve(parsed.data);
-        } catch { reject(new Error('Invalid JSON')); }
+          decoded = raw ? JSON.parse(raw) : undefined;
+        } catch {
+          reject(new Error('Invalid JSON'));
+          return;
+        }
+        const contract = this.requestContracts.get(req);
+        if (!contract) {
+          resolve({ bytes: size, value: decoded ?? {} });
+          return;
+        }
+        let parsed = contract.endpoint.body_schema.safeParse(decoded);
+        // Compatibility: historically an empty body decoded to {}. Preserve
+        // that for endpoints whose canonical schema explicitly accepts it,
+        // while NoBody schemas retain undefined.
+        if (!parsed.success && decoded === undefined) {
+          parsed = contract.endpoint.body_schema.safeParse({});
+        }
+        if (!parsed.success) {
+          reject(new DashboardRequestContractError(contract.operation_id, parsed.error.issues));
+          return;
+        }
+        resolve({ bytes: size, value: parsed.data });
       });
       req.on('error', reject);
+    });
+      this.requestBodies.set(req, cached);
+    }
+    return cached.then(result => {
+      if (result.bytes > maxBytes) throw new Error('Body too large');
+      return structuredClone(result.value);
     });
   }
 
@@ -3689,7 +3970,6 @@ export class DashboardServer {
       const execution = this.approvalCommands.approve(
         actionId,
         typeof body?.notes === 'string' ? body.notes : undefined,
-        { transport: 'dashboard' },
       );
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -3710,7 +3990,6 @@ export class DashboardServer {
       const execution = this.approvalCommands.deny(
         actionId,
         typeof body?.reason === 'string' ? body.reason : undefined,
-        { transport: 'dashboard' },
       );
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -3749,7 +4028,6 @@ export class DashboardServer {
       for (const [index, id] of ids.entries()) {
         try {
           this.approvalCommands.approve(id, notes, {
-            transport: 'dashboard',
             command_id: randomUUID(),
             idempotency_key: `${batchIdentity}:approve:${index}:${id}`,
           });
@@ -3794,7 +4072,6 @@ export class DashboardServer {
       for (const [index, id] of ids.entries()) {
         try {
           this.approvalCommands.deny(id, reason, {
-            transport: 'dashboard',
             command_id: randomUUID(),
             idempotency_key: `${batchIdentity}:deny:${index}:${id}`,
           });
@@ -4136,9 +4413,7 @@ export class DashboardServer {
         if (!this.requireWritablePersistence(res)) return;
         const activeEngagement = id === this.engine.getConfig().id;
         const execution = activeEngagement
-          ? this.engagementCommands.patchConfig(update, {
-              transport: 'dashboard',
-            })
+          ? this.engagementCommands.patchConfig(update)
           : undefined;
         if (!activeEngagement) {
           this.engagementManager!.updateEngagement(id, update);
@@ -4406,7 +4681,11 @@ export class DashboardServer {
     res.end(JSON.stringify(this.tape.getStatus()));
   }
 
-  private async handleTapeToggle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleTapeToggle(
+    req: IncomingMessage,
+    res: ServerResponse,
+    recoverySafeOnly = false,
+  ): Promise<void> {
     if (!this.checkMutationAuth(req, res)) return;
     if (!this.tape) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -4414,32 +4693,53 @@ export class DashboardServer {
       return;
     }
     try {
-      const body = await this.readJsonBody(req).catch(() => ({} as Record<string, unknown>));
+      const body = await this.readJsonBody(req);
       const action = (body as { action?: string }).action;
       const dir = (body as { dir?: string }).dir;
       const file = (body as { file?: string }).file;
       const sessionId = (body as { session_id?: string }).session_id;
       const current = this.tape.getStatus();
       const disabling = action === 'disable' || (action !== 'enable' && current.enabled);
-      // Runtime shutdown must remain available when persistence degrades. It
-      // closes the file without attempting an audit mutation; only starting a
-      // new durable capture requires writable engagement persistence.
-      if (!disabling && !this.requireWritablePersistence(res)) return;
+      if (recoverySafeOnly && action !== 'disable') {
+        this.sendUncontractedJson(res, 503, {
+          error: 'Only an explicit tape disable is available while persistence is read-only.',
+          code: 'PERSISTENCE_READ_ONLY',
+          recovery: this.engine.getPersistenceRecoveryStatus(),
+        });
+        return;
+      }
+      if (!recoverySafeOnly && !this.requireWritablePersistence(res)) return;
       let status;
-      if (action === 'enable') {
-        status = this.tape.enable({ defaultDir: dir, file, sessionId, startedBy: 'dashboard' });
-      } else if (action === 'disable') {
-        status = await this.tape.disable({ audit: this.engine.isPersistenceWritable() });
+      if (disabling) {
+        status = await this.tape.disable({ audit: !recoverySafeOnly });
       } else {
-        // Default = toggle: if currently enabled, disable; else enable.
-        status = current.enabled
-          ? await this.tape.disable({ audit: this.engine.isPersistenceWritable() })
-          : this.tape.enable({ defaultDir: dir, file, sessionId, startedBy: 'dashboard' });
+        status = await this.tape.enable({
+          defaultDir: dir,
+          file,
+          sessionId,
+          startedBy: 'dashboard',
+        });
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status));
     } catch (err) {
+      if (err instanceof DashboardRequestContractError) {
+        this.sendUncontractedJson(res, 400, {
+          error: 'Invalid dashboard request body',
+          code: 'DASHBOARD_REQUEST_INVALID',
+          operation_id: err.operationId,
+          issues: err.issues,
+        });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
+      if (message === 'Invalid JSON' || message === 'Body too large') {
+        this.sendUncontractedJson(res, 400, {
+          error: 'Invalid dashboard request body',
+          code: 'DASHBOARD_REQUEST_INVALID',
+        });
+        return;
+      }
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: message }));
     }
@@ -4513,29 +4813,6 @@ export class DashboardServer {
       });
       await pipeline(createReadStream(bundle.archivePath), res, { signal: abortController.signal });
       responseCompleted = true;
-
-      // Diagnostic export remains available in degraded read-only mode. Audit
-      // only when the durable mutation boundary is writable, and never turn a
-      // completed download into a transport failure because audit persistence
-      // later became unavailable.
-      if (this.engine.isPersistenceWritable()) {
-        try {
-          this.engine.logActionEvent({
-            description: `Dashboard bundle downloaded: ${filename}`,
-            event_type: 'system',
-            category: 'system',
-            details: {
-              bundle_id: bundle.bundleId,
-              size_bytes: bundle.sizeBytes,
-              sha256: bundle.sha256,
-              transport: 'dashboard_download',
-            },
-          });
-          this.engine.flushNow();
-        } catch (error) {
-          console.error(`[dashboard] bundle download audit failed after delivery: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
     } catch (err) {
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -4803,9 +5080,7 @@ export class DashboardServer {
         }));
         return;
       }
-      const execution = this.graphCorrectionCommands.correct(parsed.data, {
-        transport: 'dashboard',
-      });
+      const execution = this.graphCorrectionCommands.correct(parsed.data);
       const payload = GraphCorrectionResultSchema.parse({
         ...execution.result,
         command_id: execution.command_id,

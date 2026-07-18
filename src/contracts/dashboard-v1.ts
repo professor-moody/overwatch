@@ -1527,11 +1527,20 @@ export const MainWebSocketEventSchema: z.ZodType<MainWebSocketEvent> = z.discrim
 ]);
 
 export const SessionWebSocketClientEventSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('input'), data: z.string() }).strict(),
+  z.object({
+    type: z.literal('input'),
+    data: z.string(),
+    command_id: z.string().min(1).max(256).optional(),
+    idempotency_key: z.string().min(1).max(512).optional(),
+    retry_token: z.string().regex(/^idem_[a-f0-9]{64}$/).optional(),
+  }).strict(),
   z.object({
     type: z.literal('resize'),
     cols: z.number().int().positive(),
     rows: z.number().int().positive(),
+    command_id: z.string().min(1).max(256).optional(),
+    idempotency_key: z.string().min(1).max(512).optional(),
+    retry_token: z.string().regex(/^idem_[a-f0-9]{64}$/).optional(),
   }).strict(),
 ]);
 export type SessionWebSocketClientEvent = z.infer<typeof SessionWebSocketClientEventSchema>;
@@ -1548,10 +1557,22 @@ export const SessionWebSocketServerEventSchema = z.discriminatedUnion('type', [
     connection_id: z.string().optional(),
   }).passthrough(),
   z.object({
+    type: z.literal('command_result'),
+    op: z.enum(['input', 'resize']),
+    command_id: z.string(),
+    retry_token: z.string().regex(/^idem_[a-f0-9]{64}$/),
+    status: z.enum(['accepted', 'running', 'succeeded', 'failed', 'interrupted']),
+    replayed: z.boolean(),
+  }).passthrough(),
+  z.object({
     type: z.literal('error'),
     op: z.string().optional(),
     code: z.string().optional(),
     error: z.string(),
+    command_id: z.string().optional(),
+    retry_token: z.string().regex(/^idem_[a-f0-9]{64}$/).optional(),
+    status: z.enum(['accepted', 'running', 'succeeded', 'failed', 'interrupted']).optional(),
+    replayed: z.boolean().optional(),
     recovery: RecoveryStatusDtoSchema.optional(),
   }).passthrough(),
 ]);

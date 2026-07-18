@@ -40,6 +40,19 @@ the stored outcome; reuse with different input is rejected as a conflict. This
 keeps dashboard, MCP, CLI, planner, scripted-runner, and headless-runner retries
 from performing the same mutation twice.
 
+Full command outcomes have a bounded replay window so response payloads cannot
+grow without limit. Ordinary terminal outcomes are retained for up to 30 days,
+10,000 records, and 256 MiB for the shared command class (the first limit
+reached wins). Session-WebSocket receipts use the tighter live-terminal window:
+512 per accepted connection generation and 4,096 globally. Active
+`accepted`/`running` records are never retired. When a full response ages out,
+Overwatch atomically replaces it with a compact durable identity tombstone. A
+later retry fails closed as `COMMAND_RECEIPT_EXPIRED`; it is never re-executed
+merely because the response body was retired. Because arbitrary idempotency
+keys cannot be safely forgotten, the compact identity ledger has a hard
+1,000,000-entry admission cap; reaching it stops new command identities instead
+of weakening replay safety.
+
 Domain command services cover dispatch, campaigns, agent lifecycle, approvals,
 configuration and scope, graph correction, parsing/ingestion, processes,
 sessions, playbooks, recovery, and operator plans. Read-only adapters may call

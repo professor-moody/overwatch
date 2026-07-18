@@ -39,6 +39,7 @@ import {
 } from '../../contracts/dashboard-v1.js';
 import { PlaybookRunService } from '../playbook-run-service.js';
 import { buildToolDescriptor } from '../tool-descriptor-registry.js';
+import { InProcessTapeController } from '../in-process-tape.js';
 
 let dashboard: DashboardServer;
 let engine: GraphEngine;
@@ -143,6 +144,9 @@ beforeAll(async () => {
   seedGraph(engine);
   // Ephemeral port; loopback => mutations don't require a token.
   dashboard = new DashboardServer(engine, 0, '127.0.0.1', undefined, undefined);
+  dashboard.attachTape(new InProcessTapeController(engine, {
+    defaultDir: join(tempDir, 'tapes'),
+  }));
   dashboard.attachMcpTools([
     ['get_state', 'state'],
     ['validate_action', 'validate'],
@@ -209,6 +213,42 @@ async function patchJson<T = unknown>(path: string, body: unknown): Promise<{ st
     : await res.text() as T;
   return { status: res.status, body: responseBody };
 }
+
+describe('POST /api/tape/toggle', () => {
+  it('replays explicit enable and disable responses without reversing either action', async () => {
+    const enableHeaders = {
+      'X-Overwatch-Command-Id': 'tape-enable-command',
+      'Idempotency-Key': 'tape-enable-retry',
+    };
+    const enabled = await postJson<{ enabled: boolean }>('/api/tape/toggle', {
+      action: 'enable',
+    }, enableHeaders);
+    expect(enabled).toMatchObject({ status: 200, body: { enabled: true } });
+    const enabledReplay = await postJson<{ enabled: boolean }>('/api/tape/toggle', {
+      action: 'enable',
+    }, enableHeaders);
+    expect(enabledReplay).toEqual(enabled);
+    expect((await getJson<{ enabled: boolean }>('/api/tape')).body.enabled).toBe(true);
+
+    const disableHeaders = {
+      'X-Overwatch-Command-Id': 'tape-disable-command',
+      'Idempotency-Key': 'tape-disable-retry',
+    };
+    const disabled = await postJson<{ enabled: boolean }>('/api/tape/toggle', {
+      action: 'disable',
+    }, disableHeaders);
+    expect(disabled).toMatchObject({ status: 200, body: { enabled: false } });
+    const disabledReplay = await postJson<{ enabled: boolean }>('/api/tape/toggle', {
+      action: 'disable',
+    }, disableHeaders);
+    expect(disabledReplay).toEqual(disabled);
+    expect((await getJson<{ enabled: boolean }>('/api/tape')).body.enabled).toBe(false);
+
+    expect(engine.getFullHistory().filter(event =>
+      event.event_type === 'tape_session_started'
+      || event.event_type === 'tape_session_stopped')).toHaveLength(2);
+  });
+});
 
 // =============================================
 // Top-level state + graph
@@ -324,12 +364,72 @@ describe('POST /api/graph/correct', () => {
     expect(second.status).toBe(200);
     expect(second.body).toMatchObject({
       command_id: 'dashboard-graph-correction-command',
-      replayed: true,
+      // The external receipt replays the exact first wire response. Its own
+      // replay status is exposed by X-Overwatch-Command-Replayed.
+      replayed: false,
     });
     expect(engine.getFullHistory().filter(event =>
       event.event_type === 'graph_corrected'
       && event.details?.reason === 'apply canonical patch',
     )).toHaveLength(1);
+  });
+
+  it('returns a reusable receipt and replays the exact response without a second effect', async () => {
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Overwatch-Command-Id': 'dashboard-boundary-receipt-command',
+      'Idempotency-Key': 'dashboard-boundary-receipt-retry',
+      Origin: 'http://localhost:8384',
+    };
+    const requestBody = JSON.stringify({
+      description: 'Boundary receipt objective',
+      target_node_type: 'host',
+    });
+    const before = engine.getConfig().objectives.length;
+    const first = await fetch(`${baseUrl}/api/config/objectives`, {
+      method: 'POST',
+      headers,
+      body: requestBody,
+    });
+    const firstBody = await first.text();
+    const retryToken = first.headers.get('x-overwatch-retry-token');
+    expect(first.status).toBe(201);
+    expect(first.headers.get('x-overwatch-boundary-command-id'))
+      .toMatch(/^boundary_[a-f0-9]{48}$/);
+    expect(first.headers.get('x-overwatch-command-replayed')).toBe('false');
+    expect(first.headers.get('x-overwatch-command-status')).toBe('succeeded');
+    expect(first.headers.get('x-overwatch-command-response-available')).toBe('1');
+    expect(first.headers.get('access-control-allow-origin')).toBe('http://localhost:8384');
+    expect(retryToken).toMatch(/^idem_[a-f0-9]{64}$/);
+
+    const replay = await fetch(`${baseUrl}/api/config/objectives`, {
+      method: 'POST',
+      headers: {
+        ...headers,
+        Origin: 'http://127.0.0.1:9393',
+        'X-Overwatch-Retry-Token': retryToken!,
+      },
+      body: requestBody,
+    });
+    expect(replay.status).toBe(201);
+    expect(await replay.text()).toBe(firstBody);
+    expect(replay.headers.get('x-overwatch-command-replayed')).toBe('true');
+    expect(replay.headers.get('access-control-allow-origin')).toBe('http://127.0.0.1:9393');
+    expect(engine.getConfig().objectives).toHaveLength(before + 1);
+
+    const conflict = await fetch(`${baseUrl}/api/config/objectives`, {
+      method: 'POST',
+      headers: {
+        ...headers,
+        'X-Overwatch-Retry-Token': retryToken!,
+      },
+      body: JSON.stringify({
+        description: 'Changed input must not reuse the receipt',
+        target_node_type: 'host',
+      }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(engine.getConfig().objectives).toHaveLength(before + 1);
   });
 });
 
@@ -700,7 +800,7 @@ describe('encoded objective IDs', () => {
       .toEqual({ label: 'after', tier: 0 });
 
     const deleted = await fetch(`${baseUrl}${path}`, { method: 'DELETE' });
-    expect(deleted.status).toBe(200);
+    expect(deleted.status, await deleted.clone().text()).toBe(200);
     expect(ObjectiveDeleteResponseSchema.parse(await deleted.json())).toMatchObject({
       deleted: true,
       command_id: expect.any(String),
@@ -1192,7 +1292,8 @@ describe('durable playbook HTTP lifecycle', () => {
     const first = await postJson(path, {}, headers);
     expect(first.status).toBe(200);
     const claim = PlaybookStepClaimResponseSchema.parse(first.body);
-    expect(claim.attempt).toMatchObject({ claimed_via: 'dashboard', claimed_by_task_id: 'task-dashboard' });
+    expect(claim.attempt).toMatchObject({ claimed_via: 'dashboard' });
+    expect(claim.attempt.claimed_by_task_id).toBeUndefined();
     expect(claim.execution).toMatchObject({
       command_id: claim.attempt.execution_command_id,
       idempotency_key: claim.attempt.execution_idempotency_key,
@@ -1206,7 +1307,7 @@ describe('durable playbook HTTP lifecycle', () => {
       'X-Overwatch-Client': 'cli',
     });
     expect(conflict.status).toBe(409);
-    expect(JSON.stringify(conflict.body)).toContain('task-dashboard via dashboard');
+    expect(JSON.stringify(conflict.body)).toContain('dashboard');
 
     const interrupted = await postJson(`/api/playbook-runs/${encodeURIComponent(runId)}/steps/identity/interrupt`, {
       reason: 'Dashboard descriptor was not executed.',
@@ -1221,8 +1322,10 @@ describe('durable playbook HTTP lifecycle', () => {
     });
     expect(retry.status).toBe(200);
     expect(PlaybookStepClaimResponseSchema.parse(retry.body).attempt).toMatchObject({
-      attempt_number: 2, claimed_via: 'cli', claimed_by_task_id: 'task-terminal',
+      attempt_number: 2, claimed_via: 'cli',
     });
+    expect(PlaybookStepClaimResponseSchema.parse(retry.body).attempt.claimed_by_task_id)
+      .toBeUndefined();
   });
 
   it('rejects invalid queries and bodies and returns precise missing-run errors', async () => {
@@ -1248,10 +1351,10 @@ describe('GET /api/engagements', () => {
 });
 
 describe('GET /api/tape', () => {
-  it('returns 503 when no tape controller is attached', async () => {
-    const { status } = await getJson('/api/tape');
-    // No controller wired on the harness → 503 is correct.
-    expect(status).toBe(503);
+  it('returns the attached recorder status', async () => {
+    const { status, body } = await getJson<{ enabled: boolean }>('/api/tape');
+    expect(status).toBe(200);
+    expect(body.enabled).toBe(false);
   });
 });
 

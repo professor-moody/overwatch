@@ -57,10 +57,11 @@ describe('EngineTransaction v2 coordination boundary', () => {
     const base = checkpoint(statePath);
     const updates: unknown[] = [];
     first.onUpdate(detail => updates.push(detail));
+    const now = Date.now();
     const planId = first.createCommandPlan({
       command: 'dispatch recon',
       ops: [],
-      now: 1_000,
+      now,
       ttlMs: 60_000,
     });
 
@@ -69,11 +70,13 @@ describe('EngineTransaction v2 coordination boundary', () => {
     expect(transactions[0]).toMatchObject({
       seq: base + 1,
       operations: [{
-        type: 'state_patch',
+        type: 'command_coordination_change',
         payload: {
           payload_version: 1,
-          reason: 'create command plan',
-          slices: { command_state: expect.anything() },
+          record_kind: 'plan',
+          key: planId,
+          before: null,
+          after: expect.objectContaining({ command: 'dispatch recon' }),
         },
       }],
     });
@@ -81,10 +84,10 @@ describe('EngineTransaction v2 coordination boundary', () => {
     crash(first);
 
     const second = open();
-    expect(second.getCommandPlan(planId, 1_001)).toMatchObject({
+    expect(second.getCommandPlan(planId, now + 1)).toMatchObject({
       command: 'dispatch recon',
-      created_at: 1_000,
-      expires_at: 61_000,
+      created_at: now,
+      expires_at: now + 60_000,
     });
     expect(second.getPersistenceRecoveryStatus()).toMatchObject({
       outcome: 'recovered',
@@ -93,6 +96,38 @@ describe('EngineTransaction v2 coordination boundary', () => {
       base_checkpoint: base + 1,
       journal: { applied: 1, skipped: 0, failed: 0 },
     });
+  });
+
+  it('replays an outcome update before pruning an expired snapshot preimage', () => {
+    const first = open();
+    first.recordCommandOutcome('completed-plan', [{ revision: 1 }], 1_000, 10_000);
+    first.flushNow();
+    const base = checkpoint(statePath);
+    first.recordCommandOutcome('completed-plan', [{ revision: 2 }], 2_000, 10_000);
+    const update = new MutationJournal(statePath).readTransactionsSince(base)[0]!;
+    expect(update.operations).toEqual([
+      expect.objectContaining({
+        type: 'command_coordination_change',
+        payload: expect.objectContaining({
+          record_kind: 'outcome',
+          key: 'completed-plan',
+          before: expect.objectContaining({ results: [{ revision: 1 }] }),
+          after: expect.objectContaining({ results: [{ revision: 2 }] }),
+        }),
+      }),
+    ]);
+    crash(first);
+
+    const second = open();
+    expect(second.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'recovered',
+      complete: true,
+      writable: true,
+      journal: { skipped: 0, failed: 0 },
+    });
+    // The update replayed against its exact snapshot preimage. Only after
+    // recovery became writable did startup expiry remove the stale outcome.
+    expect(second.getCommandOutcome('completed-plan', Date.now())).toBeUndefined();
   });
 
   it('commits action start and runtime reservation in one crash-recoverable transaction', () => {
@@ -123,16 +158,18 @@ describe('EngineTransaction v2 coordination boundary', () => {
     const transactions = new MutationJournal(statePath).readTransactionsSince(base);
     expect(transactions).toHaveLength(1);
     expect(transactions[0]).toMatchObject({
-      operations: [{
-        type: 'state_patch',
-        payload: {
-          slices: {
-            runtime_runs: expect.anything(),
-            activity: expect.anything(),
-            opsec: expect.anything(),
+      operations: [
+        { type: 'activity_append' },
+        {
+          type: 'state_patch',
+          payload: {
+            slices: {
+              runtime_runs: expect.anything(),
+              opsec: expect.anything(),
+            },
           },
         },
-      }],
+      ],
     });
     crash(first);
 
@@ -187,15 +224,17 @@ describe('EngineTransaction v2 coordination boundary', () => {
     const transactions = new MutationJournal(statePath).readTransactionsSince(base);
     expect(transactions).toHaveLength(1);
     expect(transactions[0]).toMatchObject({
-      operations: [{
-        type: 'state_patch',
-        payload: {
-          slices: {
-            runtime_runs: expect.anything(),
-            activity: expect.anything(),
+      operations: [
+        { type: 'activity_append' },
+        {
+          type: 'state_patch',
+          payload: {
+            slices: {
+              runtime_runs: expect.anything(),
+            },
           },
         },
-      }],
+      ],
     });
     crash(first);
 
@@ -228,12 +267,12 @@ describe('EngineTransaction v2 coordination boundary', () => {
       appended.push(structuredClone(draft));
       return appendTransaction(draft);
     });
-    const persistImmediate = persistence.persistImmediate.bind(persistence);
-    vi.spyOn(persistence, 'persistImmediate')
+    const noteJournaledDurableConfig = persistence.noteJournaledDurableConfig.bind(persistence);
+    vi.spyOn(persistence, 'noteJournaledDurableConfig')
       .mockImplementationOnce(() => {
         throw new Error('synthetic config crash before checkpoint');
       })
-      .mockImplementation(persistImmediate);
+      .mockImplementation(noteJournaledDurableConfig);
 
     expect(() => first.updateConfig({
       name: 'Transactionally updated',
@@ -263,8 +302,6 @@ describe('EngineTransaction v2 coordination boundary', () => {
             name: 'Transactionally updated',
             opsec: expect.objectContaining({ enabled: true, max_noise: 0.25 }),
           }),
-          activity: expect.anything(),
-          frontier: expect.anything(),
         },
       },
     });
@@ -291,20 +328,20 @@ describe('EngineTransaction v2 coordination boundary', () => {
     const first = open();
     first.flushNow();
     const base = checkpoint(statePath);
-    const ctx = (first as any).ctx;
-    const applyDurableStatePatch = ctx.applyDurableStatePatch.bind(ctx);
-    vi.spyOn(ctx, 'applyDurableStatePatch').mockImplementationOnce((slices: any) => {
-      // Simulate an applier that mutates the selected live slice and only then
+    const applyCoordination = first.applyCommandCoordinationChangeMutation.bind(first);
+    vi.spyOn(first, 'applyCommandCoordinationChangeMutation').mockImplementationOnce((payload, recovery) => {
+      // Simulate an applier that mutates the selected live key and only then
       // fails. The transaction is committed, but degraded memory must return
       // to the pre-append baseline until restart replays the transaction.
-      applyDurableStatePatch({ command_state: slices.command_state });
+      applyCoordination(payload, recovery);
       throw new Error('synthetic state-patch apply failure');
     });
 
+    const planNow = Date.now();
     expect(() => first.createCommandPlan({
       command: 'durable despite failed live apply',
       ops: [],
-      now: 2_000,
+      now: planNow,
       ttlMs: 60_000,
     })).toThrow('synthetic state-patch apply failure');
     expect(first.getPersistenceRecoveryStatus()).toMatchObject({
@@ -315,15 +352,13 @@ describe('EngineTransaction v2 coordination boundary', () => {
       reason: expect.stringContaining('failed during in-memory application'),
     });
     const committed = new MutationJournal(statePath).readTransactionsSince(base);
-    const commandPlans = (committed[0]!.operations[0]!.payload as any)
-      .slices.command_state.commandPlans as Array<[string, unknown]>;
-    const planId = commandPlans[0]![0];
-    expect(first.getCommandPlan(planId, 2_001)).toBeUndefined();
+    const planId = (committed[0]!.operations[0]!.payload as { key: string }).key;
+    expect(first.getCommandPlan(planId, planNow + 1)).toBeUndefined();
     crash(first);
     vi.restoreAllMocks();
 
     const second = open();
-    expect(second.getCommandPlan(planId, 2_001)).toMatchObject({
+    expect(second.getCommandPlan(planId, planNow + 1)).toMatchObject({
       command: 'durable despite failed live apply',
     });
     expect(second.getPersistenceRecoveryStatus()).toMatchObject({
@@ -396,16 +431,17 @@ describe('EngineTransaction v2 coordination boundary', () => {
     expect(result.ok).toBe(true);
 
     const [transaction] = new MutationJournal(statePath).readTransactionsSince(base);
-    expect(transaction.operations).toHaveLength(1);
-    expect(transaction.operations[0]).toMatchObject({
-      type: 'state_patch',
-      payload: {
-        slices: {
-          agents: expect.anything(),
-          activity: expect.anything(),
+    expect(transaction.operations).toMatchObject([
+      { type: 'activity_append' },
+      {
+        type: 'state_patch',
+        payload: {
+          slices: {
+            agents: expect.anything(),
+          },
         },
       },
-    });
+    ]);
     crash(first);
 
     const second = open();
@@ -566,13 +602,13 @@ describe('EngineTransaction v2 coordination boundary', () => {
 
     const [transaction] = new MutationJournal(statePath).readTransactionsSince(base);
     expect(transaction.operations).toEqual([
+      expect.objectContaining({ type: 'activity_append' }),
       expect.objectContaining({
         type: 'state_patch',
         payload: expect.objectContaining({
           reason: 'add or update inference rule',
           slices: expect.objectContaining({
             inference_rules: expect.anything(),
-            activity: expect.anything(),
           }),
         }),
       }),
@@ -637,6 +673,17 @@ describe('EngineTransaction v2 coordination boundary', () => {
       source_action_id: 'action-b',
       operations: [
         {
+          type: 'activity_append',
+          payload: expect.objectContaining({
+            items: [expect.objectContaining({
+              entry: expect.objectContaining({
+                event_type: 'finding_ingested',
+                linked_finding_ids: ['finding-duplicate'],
+              }),
+            })],
+          }),
+        },
+        {
           type: 'merge_node_attrs',
           payload: {
             props: expect.objectContaining({
@@ -651,7 +698,6 @@ describe('EngineTransaction v2 coordination boundary', () => {
             reason: 'record duplicate finding',
             slices: {
               finding_counters: expect.objectContaining({ dedupCount: 1 }),
-              activity: expect.anything(),
               campaigns: expect.anything(),
             },
           },
@@ -740,21 +786,18 @@ describe('EngineTransaction v2 coordination boundary', () => {
     expect(transactions).toHaveLength(1);
     expect(transactions[0].source_action_id).toBe('action-first');
     expect(transactions[0].operations.map(operation => operation.type)).toEqual(
-      expect.arrayContaining(['cold_add', 'add_node', 'add_edge', 'state_patch']),
+      expect.arrayContaining(['activity_append', 'cold_add', 'add_node', 'add_edge', 'state_patch']),
     );
     expect(transactions[0].operations.at(-1)).toMatchObject({
       type: 'state_patch',
       payload: {
         reason: 'ingest finding',
         slices: {
-          activity: expect.anything(),
-          frontier: expect.anything(),
           finding_counters: expect.objectContaining({
             recentFindingHashes: expect.any(Array),
             dedupCount: 0,
           }),
           campaigns: expect.anything(),
-          phase: expect.anything(),
         },
       },
     });
@@ -1094,6 +1137,10 @@ describe('EngineTransaction v2 coordination boundary', () => {
     expect((first as any).ctx.lastKnownPhaseId).toBe('recon');
 
     expect(first.updateObjective('phase-gate', { achieved: true })).toBe(true);
+    // Config mutations are WAL-durable and no longer force a whole-state base
+    // rewrite. Establish the test's explicit baseline before inspecting only
+    // the subsequent phase transaction.
+    first.flushNow();
     const base = checkpoint(statePath);
     (first as any).recordPhaseTransitionsIfAny();
 
@@ -1101,27 +1148,36 @@ describe('EngineTransaction v2 coordination boundary', () => {
     expect(transactions).toHaveLength(1);
     expect(transactions[0].operations).toEqual([
       expect.objectContaining({
+        type: 'activity_append',
+        payload: expect.objectContaining({
+          items: [expect.objectContaining({
+            entry: expect.objectContaining({
+              event_type: 'phase_exited',
+              details: expect.objectContaining({ phase_id: 'recon' }),
+            }),
+          })],
+        }),
+      }),
+      expect.objectContaining({
+        type: 'activity_append',
+        payload: expect.objectContaining({
+          items: [expect.objectContaining({
+            entry: expect.objectContaining({
+              event_type: 'phase_entered',
+              details: expect.objectContaining({ phase_id: 'exploit' }),
+            }),
+          })],
+        }),
+      }),
+      expect.objectContaining({
         type: 'state_patch',
         payload: expect.objectContaining({
           reason: 'record phase transition',
           slices: expect.objectContaining({
-            activity: expect.anything(),
             frontier: expect.anything(),
             phase: { lastKnownPhaseId: 'exploit' },
           }),
         }),
-      }),
-    ]);
-    const patchedHistory = (transactions[0].operations[0].payload as any)
-      .slices.activity.activityLog as Array<{ event_type?: string; details?: { phase_id?: string } }>;
-    expect(patchedHistory.slice(-2)).toEqual([
-      expect.objectContaining({
-        event_type: 'phase_exited',
-        details: expect.objectContaining({ phase_id: 'recon' }),
-      }),
-      expect.objectContaining({
-        event_type: 'phase_entered',
-        details: expect.objectContaining({ phase_id: 'exploit' }),
       }),
     ]);
     crash(first);
@@ -1199,12 +1255,22 @@ describe('EngineTransaction v2 coordination boundary', () => {
     const droppedTransaction = transactions.at(-1)!;
     expect(droppedTransaction.operations).toEqual([
       expect.objectContaining({
+        type: 'activity_append',
+        payload: expect.objectContaining({
+          items: [expect.objectContaining({
+            entry: expect.objectContaining({
+              event_type: 'frontier_item_dropped',
+              frontier_item_id: 'frontier-stale',
+            }),
+          })],
+        }),
+      }),
+      expect.objectContaining({
         type: 'state_patch',
         payload: expect.objectContaining({
           reason: 'record surfaced frontier items',
           slices: expect.objectContaining({
             frontier: expect.anything(),
-            activity: expect.anything(),
           }),
         }),
       }),
@@ -1219,6 +1285,24 @@ describe('EngineTransaction v2 coordination boundary', () => {
       entry.event_type === 'frontier_item_dropped'
       && entry.frontier_item_id === 'frontier-stale'
     )).toHaveLength(1);
+  });
+
+  it('rejects frontier emission nested inside an unrelated bounded command draft', () => {
+    const first = open();
+    first.flushNow();
+    const base = checkpoint(statePath);
+    const before = first.getFrontierLinkage().serialize();
+
+    expect(() => first.runAtomicGraphCommand(
+      'invalid nested frontier emission',
+      undefined,
+      () => first.recordFrontierEmission(['frontier-nested-leak']),
+    )).toThrow('Frontier emission cannot be composed inside another transaction');
+
+    expect(first.getFrontierLinkage().serialize()).toEqual(before);
+    const journal = new MutationJournal(statePath);
+    expect(journal.readTransactionsSince(base)).toEqual([]);
+    journal.dispose();
   });
 
   it('journals web-chain annotations as one graph transaction', () => {
@@ -1386,6 +1470,36 @@ describe('EngineTransaction v2 coordination boundary', () => {
     });
     expect(Math.max(...payloadSizes)).toBeLessThan(8 * 1024);
     expect(Math.max(...payloadSizes) - Math.min(...payloadSizes)).toBeLessThan(512);
+  });
+
+  it('removes newly created frontier linkage when activity application rolls back', () => {
+    const engine = open();
+    const ctx = (engine as unknown as {
+      ctx: {
+        prepareActivityAppend(event: Record<string, unknown>): { payload: unknown };
+        applyActivityAppend(payload: unknown): unknown;
+        frontierLinkage: {
+          observe(entry: unknown): void;
+          get(frontierId: string): unknown;
+        };
+      };
+    }).ctx;
+    const prepared = ctx.prepareActivityAppend({
+      description: 'synthetic frontier rollback',
+      event_type: 'action_validated',
+      category: 'frontier',
+      frontier_item_id: 'frontier-created-during-failure',
+    });
+    const observe = ctx.frontierLinkage.observe.bind(ctx.frontierLinkage);
+    vi.spyOn(ctx.frontierLinkage, 'observe').mockImplementation(entry => {
+      observe(entry);
+      throw new Error('synthetic linkage failure');
+    });
+
+    expect(() => ctx.applyActivityAppend(prepared.payload)).toThrow(
+      'synthetic linkage failure',
+    );
+    expect(ctx.frontierLinkage.get('frontier-created-during-failure')).toBeUndefined();
   });
 
   it('replays activity chain, checkpoint, action mapping, and frontier linkage exactly', () => {

@@ -28,6 +28,9 @@ import { DEFAULT_HEARTBEAT_TTL_SECONDS } from './agent-manager.js';
 import { HeadlessProcessRegistry } from './headless-process-registry.js';
 import { HeadlessMcpRunner, type HeadlessEndpoint, type HeadlessMcpRunnerOptions } from './headless-mcp-runner.js';
 import { ApplicationCommandService } from './application-command-service.js';
+import { DispatchCommandService } from './dispatch-command-service.js';
+import { AgentLifecycleCommandService } from './agent-lifecycle-command-service.js';
+import { createHash } from 'node:crypto';
 
 /**
  * Resolve which backend should execute a task. Explicit `task.backend` wins;
@@ -85,6 +88,8 @@ export class TaskExecutionService {
   private watchdog: AgentWatchdog;
   private registry: HeadlessProcessRegistry;
   private headlessRunner: HeadlessMcpRunner;
+  private readonly dispatchCommands: DispatchCommandService;
+  private readonly lifecycleCommands: AgentLifecycleCommandService;
   private running = false;
   private startRequested = false;
   private persistenceGateTimer: ReturnType<typeof setInterval> | null = null;
@@ -118,6 +123,8 @@ export class TaskExecutionService {
 
   constructor(engine: GraphEngine, processTracker: ProcessTracker, options: TaskExecutionServiceOptions = {}) {
     this.engine = engine;
+    this.dispatchCommands = new DispatchCommandService(engine);
+    this.lifecycleCommands = new AgentLifecycleCommandService(engine);
     this.scripted = new ScriptedAgentRunner(engine);
     this.watchdog = new AgentWatchdog(engine, {
       intervalMs: options.watchdogIntervalMs,
@@ -365,7 +372,7 @@ export class TaskExecutionService {
       // re-entrant pass from double-dispatching the same item.
       this.cveAttempted.add(item.id);
       const taskId = uuidv4();
-      const result = this.engine.registerAgent({
+      const task: AgentTask = {
         id: taskId,
         agent_id: `cve-research-${taskId.slice(0, 8)}`,
         assigned_at: new Date().toISOString(),
@@ -375,7 +382,13 @@ export class TaskExecutionService {
         backend: 'headless_mcp',
         role: 'research',
         skill: 'cve-research',
-      });
+      };
+      const result = this.dispatchCommands.registerExact(task, {
+        transport: 'system',
+        command_id: `scheduler-cve-${taskId}`,
+        idempotency_key: `scheduler:cve:${item.id}:${taskId}`,
+        frontier_item_id: item.id,
+      }).result!.registration;
       // Only a real launch consumes one of our concurrency slots; a lease conflict
       // (another task already working the item) does not, so don't burn budget on
       // it. registerAgent fires onUpdate → drainHeadless launches the sub-agent.
@@ -483,7 +496,21 @@ export class TaskExecutionService {
     if (timer) { clearTimeout(timer); this.timeoutTimers.delete(task_id); }
     const task = this.engine.getTask(task_id);
     if (task && (task.status === 'running' || task.status === 'pending')) {
-      this.engine.updateAgentStatus(task_id, 'interrupted', reason);
+      const digest = createHash('sha256')
+        .update(task_id)
+        .update('\0')
+        .update(reason)
+        .digest('hex');
+      this.lifecycleCommands.updateStatus({
+        task_id,
+        status: 'interrupted',
+        summary: reason,
+      }, {
+        transport: 'system',
+        actor_task_id: task_id,
+        command_id: `task-cancel-${digest.slice(0, 48)}`,
+        idempotency_key: `task-execution:cancel:${digest}`,
+      });
     }
     if (task?.application_command_id) {
       const command = this.engine.getApplicationCommandById(task.application_command_id);
@@ -773,7 +800,7 @@ export class TaskExecutionService {
 
     const id = uuidv4();
     const agentId = `orchestrator-${id.slice(0, 8)}`;
-    const reg = this.engine.registerAgent({
+    const orchestratorTask: AgentTask = {
       id,
       agent_id: agentId,
       assigned_at: new Date().toISOString(),
@@ -786,7 +813,12 @@ export class TaskExecutionService {
       // shouldn't be reaped for infrequent beats; if it truly hangs, the watchdog
       // still reaps it here and reconcileOrchestrator restarts it.
       heartbeat_ttl_seconds: 600,
-    });
+    };
+    const reg = this.dispatchCommands.registerExact(orchestratorTask, {
+      transport: 'system',
+      command_id: `scheduler-orchestrator-${id}`,
+      idempotency_key: `scheduler:orchestrator:${id}`,
+    }).result!.registration;
     if (reg.ok) {
       this.orchestratorTaskId = id;
       this.orchestratorSpawnedAt = Date.now();

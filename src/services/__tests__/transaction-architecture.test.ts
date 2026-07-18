@@ -93,6 +93,7 @@ const ALLOWED_RAW_SCOPES = new Map<string, Set<string>>([
     'applyIdentityRewriteMutation',
     'applyGraphCorrectedMutation',
     'applyScopeUpdatedMutation',
+    'applyCommandCoordinationChangeMutation',
     'addEdgeToCorrectionDraft',
     'restoreWebChainAnnotationBaseline',
     'restoreFindingDraftBaseline',
@@ -138,6 +139,7 @@ const ALLOWED_DURABLE_SCOPES = new Map<string, Set<string>>([
     'applyIdentityRewriteMutation',
     'applyGraphCorrectedMutation',
     'applyScopeUpdatedMutation',
+    'applyCommandCoordinationChangeMutation',
     'applyTrackedProcesses',
     // Bounded retention helper invoked only from runtime finalization/recovery
     // methods after their transactDurableSlices boundary is active.
@@ -151,6 +153,11 @@ const ALLOWED_DURABLE_SCOPES = new Map<string, Set<string>>([
   // writes use EngagementConfigService and the scope transaction applier.
   ['services/config-manager.ts', new Set(['updateConfig'])],
   ['services/scope-manager.ts', new Set(['updateScope'])],
+  ['services/transaction-footprint.ts', new Set([
+    // Exact in-memory preimage restoration for a bounded speculative draft.
+    // The immutable forward mutation still commits through applyEngineTransaction.
+    'restore',
+  ])],
 ]);
 
 type GraphOrigin = 'live' | 'scratch' | 'unknown';

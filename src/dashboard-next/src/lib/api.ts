@@ -1088,7 +1088,10 @@ export async function toggleTape(opts?: {
   file?: string;
   session_id?: string;
 }): Promise<TapeStatus> {
-  return request('toggleTape', { body: opts ?? {} });
+  // The shared request helper throws non-2xx responses; its generated return
+  // union still includes documented 400/503 error bodies for lower-level
+  // callers, so this ergonomic wrapper narrows the fulfilled value to 200.
+  return request('toggleTape', { body: opts ?? {} }) as unknown as Promise<TapeStatus>;
 }
 
 // --- B.2 / B.3 Findings + Reports ---

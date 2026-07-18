@@ -21,7 +21,10 @@ import {
   type GraphUpdateDetail,
   type ActivityLogEntry,
 } from './engine-context.js';
-import { FrontierLinkageTracker } from './frontier-linkage.js';
+import {
+  FrontierLinkageTracker,
+  type FrontierLinkageRecord,
+} from './frontier-linkage.js';
 import { FrontierLeases } from './frontier-leases.js';
 import {
   type EngagementConfig,
@@ -35,6 +38,7 @@ import { normalizeNodeProvenance } from './provenance-utils.js';
 import { OpsecTracker } from './opsec-tracker.js';
 import {
   MutationJournal,
+  validateTransactionOperationRelationships,
   type MutationApplyResult,
   type MutationReplayResult,
   type ScopeUpdatedMutationPayloadV1,
@@ -76,12 +80,28 @@ import {
   type DurableStateSliceKey,
 } from './durable-state-patch.js';
 import type { ActivityAppendPayloadV1 } from './activity-append.js';
+import type { ApplicationCommandChangePayloadV1 } from './application-command-change.js';
+import type { CommandCoordinationChangePayloadV1 } from './command-coordination-change.js';
 import {
   TransactionFootprintAccumulator,
   type GraphColdInverse,
   type GraphEdgeSnapshot,
   type GraphNodeSnapshot,
 } from './transaction-footprint.js';
+
+type BoundedTransactionInverse = GraphColdInverse | {
+  kind: 'application_command';
+  payload: ApplicationCommandChangePayloadV1;
+} | {
+  kind: 'command_coordination';
+  payload: CommandCoordinationChangePayloadV1;
+} | {
+  kind: 'activity_append';
+  payload: ActivityAppendPayloadV1;
+  activity_ref: ActivityLogEntry[];
+  checkpoint_ref: EngineContext['chainCheckpoints'];
+  linkage_before: Map<string, FrontierLinkageRecord | undefined>;
+};
 import {
   agentLabelOf,
   coordinationRecoveryWarning,
@@ -144,12 +164,20 @@ function compareSnapshotPaths(a: string, b: string): number {
  *  parallel raw-graph reimplementation. GraphEngine satisfies this structurally. */
 export interface ReplayMutators {
   addNode(props: NodeProperties): string;
-  addEdge(source: string, target: string, props: EdgeProperties, replayEdgeId?: string): { id: string; isNew: boolean };
+  addEdge(
+    source: string,
+    target: string,
+    props: EdgeProperties,
+    replayEdgeId?: string,
+    replayOptions?: { suppress_derived_audit?: boolean },
+  ): { id: string; isNew: boolean };
   applyScopeUpdatedMutation(payload: ScopeUpdatedMutationPayloadV1, recovery?: boolean): MutationApplyResult;
   applyDropNodeMutation(payload: DropNodeMutationPayloadV1, recovery?: boolean): MutationApplyResult;
   applyIdentityRewriteMutation(payload: IdentityRewriteMutationPayloadV1, recovery?: boolean): MutationApplyResult;
   applyGraphCorrectedMutation(payload: GraphCorrectedMutationPayloadV1, recovery?: boolean): MutationApplyResult;
   applyStatePatchMutation(payload: DurableStatePatchV1, recovery?: boolean): MutationApplyResult;
+  applyApplicationCommandChangeMutation(payload: ApplicationCommandChangePayloadV1, recovery?: boolean): MutationApplyResult;
+  applyCommandCoordinationChangeMutation(payload: CommandCoordinationChangePayloadV1, recovery?: boolean): MutationApplyResult;
   prepareRecoveryCommit?(): void;
   completeRecoveryCommit?(): void;
   abortRecoveryReplay?(): void;
@@ -717,6 +745,15 @@ export class StatePersistence {
     return this.durableConfig
       ? JSON.parse(JSON.stringify(this.durableConfig)) as EngagementConfig
       : undefined;
+  }
+
+  /**
+   * Advance the in-process durable-config projection after a successfully
+   * fsynced config transaction. The journal is already recovery authority;
+   * updating this cache must not force a full graph snapshot.
+   */
+  noteJournaledDurableConfig(config: EngagementConfig): void {
+    this.durableConfig = JSON.parse(JSON.stringify(config)) as EngagementConfig;
   }
 
   /**
@@ -1901,9 +1938,16 @@ export class StatePersistence {
         const intent = this.rollbackIntent;
         if (!intent) return;
         try {
+          // Config adoption and session reconciliation may append legitimate
+          // post-rollback transactions while the rollback authority remains
+          // installed. The final base contains those effects, so checkpoint
+          // their contiguous applied head instead of making startup replay an
+          // already-materialized activity/config suffix.
+          const releaseCheckpoint = this.ctx.mutationJournal?.getAppliedThroughSeq()
+            ?? intent.checkpoint;
           this.rollbackIntent = undefined;
           this.writeStateToDisk({
-            journalCheckpointSeq: intent.checkpoint,
+            journalCheckpointSeq: releaseCheckpoint,
             rotateExisting: false,
             allowIntegrityReplacement: true,
           });
@@ -1916,7 +1960,7 @@ export class StatePersistence {
             source: 'snapshot',
             complete: true,
             writable: true,
-            checkpoint: intent.checkpoint,
+            checkpoint: releaseCheckpoint,
             preserved: false,
           });
         } catch (error) {
@@ -2370,15 +2414,13 @@ export class StatePersistence {
       }
     }
     this.ctx.agentQueryStore.restore(agentQueries);
-    const restoreNow = Date.now();
     this.ctx.commandPlans = new Map(
       (data.commandPlans || []).filter((entry: unknown) =>
         Array.isArray(entry)
         && entry.length === 2
         && entry[1]
         && typeof entry[1] === 'object'
-        && typeof (entry[1] as { expires_at?: unknown }).expires_at === 'number'
-        && (entry[1] as { expires_at: number }).expires_at > restoreNow),
+        && typeof (entry[1] as { expires_at?: unknown }).expires_at === 'number'),
     );
     this.ctx.commandOutcomes = new Map(
       (data.commandOutcomes || []).filter((entry: unknown) =>
@@ -2386,8 +2428,7 @@ export class StatePersistence {
         && entry.length === 2
         && entry[1]
         && typeof entry[1] === 'object'
-        && typeof (entry[1] as { expires_at?: unknown }).expires_at === 'number'
-        && (entry[1] as { expires_at: number }).expires_at > restoreNow),
+        && typeof (entry[1] as { expires_at?: unknown }).expires_at === 'number'),
     );
     this.ctx.applicationCommands = new Map(
       (data.applicationCommands || []).filter((entry: unknown) =>
@@ -2397,6 +2438,7 @@ export class StatePersistence {
         && entry[1]
         && typeof entry[1] === 'object'),
     );
+    this.ctx.rebuildApplicationCommandIndex();
     this.ctx.inferenceRules = [...builtinRules];
     if (data.inferenceRules) {
       for (const rule of data.inferenceRules) {
@@ -4146,7 +4188,10 @@ export class StatePersistence {
    * temporarily suppressed (via `mutationJournal: null`) so we don't
    * double-record entries during replay.
    */
-  private makeMutationApplier(mutators?: ReplayMutators): import('./mutation-journal.js').MutationApplier {
+  private makeMutationApplier(
+    mutators?: ReplayMutators,
+    recovery = true,
+  ): import('./mutation-journal.js').MutationApplier {
     const ctx = this.ctx;
     return {
       apply(entry) {
@@ -4234,6 +4279,38 @@ export class StatePersistence {
               }
               return mutators.applyStatePatchMutation(payload, true);
             }
+            case 'application_command_change': {
+              const payload = entry.payload as unknown as ApplicationCommandChangePayloadV1;
+              if (payload.payload_version !== 1) {
+                return {
+                  status: 'skipped',
+                  reason: `unsupported application_command_change payload version: ${String(payload.payload_version)}`,
+                };
+              }
+              if (!mutators) {
+                return {
+                  status: 'skipped',
+                  reason: 'application_command_change replay requires the engine command applier',
+                };
+              }
+              return mutators.applyApplicationCommandChangeMutation(payload, true);
+            }
+            case 'command_coordination_change': {
+              const payload = entry.payload as unknown as CommandCoordinationChangePayloadV1;
+              if (payload.payload_version !== 1) {
+                return {
+                  status: 'skipped',
+                  reason: `unsupported command_coordination_change payload version: ${String(payload.payload_version)}`,
+                };
+              }
+              if (!mutators) {
+                return {
+                  status: 'skipped',
+                  reason: 'command_coordination_change replay requires the engine command applier',
+                };
+              }
+              return mutators.applyCommandCoordinationChangeMutation(payload, true);
+            }
             case 'activity_append': {
               return ctx.applyActivityAppend(
                 entry.payload as unknown as ActivityAppendPayloadV1,
@@ -4245,12 +4322,19 @@ export class StatePersistence {
                 target: string;
                 props: import('../types.js').EdgeProperties;
                 edge_id?: string;
+                audit_externalized?: boolean;
               };
               if (!ctx.graph.hasNode(p.source) || !ctx.graph.hasNode(p.target)) {
                 return { status: 'skipped', reason: `missing endpoint(s): ${p.source} -> ${p.target}` };
               }
               if (mutators) {
-                mutators.addEdge(p.source, p.target, p.props, p.edge_id);
+                mutators.addEdge(
+                  p.source,
+                  p.target,
+                  p.props,
+                  p.edge_id,
+                  { suppress_derived_audit: p.audit_externalized === true },
+                );
               } else {
                 const existingEdges = ctx.graph.edges(p.source, p.target);
                 let merged = false;
@@ -4349,7 +4433,7 @@ export class StatePersistence {
               if (!mutators) {
                 return { status: 'skipped', reason: 'scope_updated replay requires the engine scope applier' };
               }
-              return mutators.applyScopeUpdatedMutation(payload, true);
+              return mutators.applyScopeUpdatedMutation(payload, recovery);
             }
             default:
               // Unknown / future types are tolerated (forward-compat for
@@ -4364,8 +4448,11 @@ export class StatePersistence {
     };
   }
 
-  private makeTransactionApplier(mutators?: ReplayMutators): EngineTransactionApplier {
-    const operationApplier = this.makeMutationApplier(mutators);
+  private makeTransactionApplier(
+    mutators?: ReplayMutators,
+    recovery = true,
+  ): EngineTransactionApplier {
+    const operationApplier = this.makeMutationApplier(mutators, recovery);
     const durableSliceKeys = new Set<string>(DURABLE_STATE_SLICE_KEYS);
 
     const nodeSnapshot = (nodeId: string): GraphNodeSnapshot | null =>
@@ -4485,6 +4572,18 @@ export class StatePersistence {
             }
             break;
           }
+          case 'drop_node': {
+            const drop = payload as unknown as DropNodeMutationPayloadV1;
+            if (
+              !mutators
+              || drop.payload_version !== 1
+              || drop.audit_event_externalized !== true
+              || typeof drop.node_id !== 'string'
+              || !Array.isArray(drop.incident_edges)
+              || drop.incident_edges.some(edge => typeof edge.edge_id !== 'string')
+            ) return undefined;
+            break;
+          }
           case 'cold_add':
             if (
               typeof payload.record !== 'object'
@@ -4507,6 +4606,41 @@ export class StatePersistence {
             }
             break;
           }
+          case 'application_command_change': {
+            if (!mutators) return undefined;
+            const change = payload as unknown as ApplicationCommandChangePayloadV1;
+            if (
+              change.payload_version !== 1
+              || typeof change.idempotency_key !== 'string'
+              || change.idempotency_key.length === 0
+              || !Object.prototype.hasOwnProperty.call(change, 'before')
+              || !Object.prototype.hasOwnProperty.call(change, 'after')
+            ) return undefined;
+            break;
+          }
+          case 'command_coordination_change': {
+            if (!mutators) return undefined;
+            const change = payload as unknown as CommandCoordinationChangePayloadV1;
+            if (
+              change.payload_version !== 1
+              || (change.record_kind !== 'plan' && change.record_kind !== 'outcome')
+              || typeof change.key !== 'string'
+              || change.key.length === 0
+              || !Object.prototype.hasOwnProperty.call(change, 'before')
+              || !Object.prototype.hasOwnProperty.call(change, 'after')
+            ) return undefined;
+            break;
+          }
+          case 'activity_append': {
+            const append = payload as unknown as ActivityAppendPayloadV1;
+            if (
+              append.payload_version !== 1
+              || !Array.isArray(append.items)
+              || typeof append.expected !== 'object'
+              || append.expected === null
+            ) return undefined;
+            break;
+          }
           default:
             return undefined;
         }
@@ -4515,11 +4649,59 @@ export class StatePersistence {
     };
 
     const restoreBounded = (
-      inverses: GraphColdInverse[],
+      inverses: BoundedTransactionInverse[],
       stateBaseline: ReturnType<EngineContext['captureDurableStateSlices']>,
     ): void => {
       for (let index = inverses.length - 1; index >= 0; index--) {
         const inverse = inverses[index]!;
+        if (inverse.kind === 'application_command') {
+          const restored = mutators!.applyApplicationCommandChangeMutation(
+            structuredClone(inverse.payload),
+            true,
+          );
+          if (restored.status === 'skipped') {
+            throw new Error(`Bounded application-command rollback was rejected: ${restored.reason}`);
+          }
+          continue;
+        }
+        if (inverse.kind === 'command_coordination') {
+          const restored = mutators!.applyCommandCoordinationChangeMutation(
+            structuredClone(inverse.payload),
+            true,
+          );
+          if (restored.status === 'skipped') {
+            throw new Error(`Bounded command-coordination rollback was rejected: ${restored.reason}`);
+          }
+          continue;
+        }
+        if (inverse.kind === 'activity_append') {
+          inverse.activity_ref.length = inverse.payload.expected.activity_length;
+          this.ctx.activityLog = inverse.activity_ref;
+          inverse.checkpoint_ref.length = inverse.payload.expected.checkpoint_count;
+          this.ctx.chainCheckpoints = inverse.checkpoint_ref;
+          this.ctx.lastChainHash = inverse.payload.expected.last_chain_hash;
+          this.ctx.chainEventsSinceCheckpoint =
+            inverse.payload.expected.chain_events_since_checkpoint;
+          this.ctx.deterministicSeq = inverse.payload.expected.deterministic_seq;
+          const frontierUpdate = inverse.payload.action_frontier_update;
+          if (frontierUpdate) {
+            if (frontierUpdate.before) {
+              this.ctx.actionFrontierMap.set(
+                frontierUpdate.action_id,
+                structuredClone(frontierUpdate.before),
+              );
+            } else {
+              this.ctx.actionFrontierMap.delete(frontierUpdate.action_id);
+            }
+          }
+          for (const [frontierId, record] of inverse.linkage_before) {
+            this.ctx.frontierLinkage.restoreRecord(
+              frontierId,
+              record ? structuredClone(record) : undefined,
+            );
+          }
+          continue;
+        }
         if (inverse.kind === 'node') {
           if (inverse.snapshot === null) {
             if (this.ctx.graph.hasNode(inverse.node_id)) this.ctx.graph.dropNode(inverse.node_id);
@@ -4574,7 +4756,7 @@ export class StatePersistence {
         const stateBaseline = bounded
           ? this.ctx.captureDurableStateSlices(bounded.stateKeys)
           : {};
-        const inverses: GraphColdInverse[] = [];
+        const inverses: BoundedTransactionInverse[] = [];
         const footprint = new TransactionFootprintAccumulator();
         let rollbackStarted = false;
         const rollback = () => {
@@ -4592,6 +4774,9 @@ export class StatePersistence {
             let nodeBefore: GraphNodeSnapshot | null | undefined;
             let edgeBefore = new Map<string, GraphEdgeSnapshot | null>();
             let coldBefore: ReturnType<EngineContext['coldStore']['captureEntrySnapshot']> | undefined;
+            let applicationCommandInverse: BoundedTransactionInverse | undefined;
+            let commandCoordinationInverse: BoundedTransactionInverse | undefined;
+            let activityAppendInverse: BoundedTransactionInverse | undefined;
             if (bounded) {
               if (
                 operation.type === 'add_node'
@@ -4601,6 +4786,22 @@ export class StatePersistence {
                 const nodeId = (payload.props as NodeProperties).id;
                 nodeBefore = nodeSnapshot(nodeId);
                 inverses.push({ kind: 'node', node_id: nodeId, snapshot: nodeBefore });
+              } else if (operation.type === 'drop_node') {
+                const drop = payload as unknown as DropNodeMutationPayloadV1;
+                nodeBefore = nodeSnapshot(drop.node_id);
+                edgeBefore = new Map(drop.incident_edges.map(edge => [
+                  edge.edge_id,
+                  edgeSnapshot(edge.edge_id),
+                ]));
+                // Reverse rollback restores the node before its edges.
+                for (const [edgeId, snapshot] of edgeBefore) {
+                  inverses.push({ kind: 'edge', edge_id: edgeId, snapshot });
+                }
+                inverses.push({
+                  kind: 'node',
+                  node_id: drop.node_id,
+                  snapshot: nodeBefore,
+                });
               } else if (operation.type === 'add_edge') {
                 const edgeIds = new Set([
                   payload.edge_id as string,
@@ -4620,6 +4821,57 @@ export class StatePersistence {
                   : payload.id as string;
                 coldBefore = this.ctx.coldStore.captureEntrySnapshot(id);
                 inverses.push({ kind: 'cold', snapshot: coldBefore });
+              } else if (operation.type === 'application_command_change') {
+                const change = operation.payload as unknown as ApplicationCommandChangePayloadV1;
+                const actualBefore = this.ctx.applicationCommands.get(
+                  change.idempotency_key,
+                ) ?? null;
+                applicationCommandInverse = {
+                  kind: 'application_command',
+                  payload: {
+                    ...structuredClone(change),
+                    operation_id: `${change.operation_id}:rollback`,
+                    before: structuredClone(change.after),
+                    after: actualBefore ? structuredClone(actualBefore) : null,
+                  },
+                };
+                inverses.push(applicationCommandInverse);
+              } else if (operation.type === 'command_coordination_change') {
+                const change = operation.payload as unknown as CommandCoordinationChangePayloadV1;
+                const map = change.record_kind === 'plan'
+                  ? this.ctx.commandPlans
+                  : this.ctx.commandOutcomes;
+                const actualBefore = map.get(change.key) ?? null;
+                commandCoordinationInverse = {
+                  kind: 'command_coordination',
+                  payload: {
+                    ...structuredClone(change),
+                    operation_id: `${change.operation_id}:rollback`,
+                    before: structuredClone(change.after),
+                    after: actualBefore ? structuredClone(actualBefore) : null,
+                } as CommandCoordinationChangePayloadV1,
+                };
+                inverses.push(commandCoordinationInverse);
+              } else if (operation.type === 'activity_append') {
+                const append = operation.payload as unknown as ActivityAppendPayloadV1;
+                const linkageBefore = new Map<string, FrontierLinkageRecord | undefined>();
+                for (const item of append.items) {
+                  const frontierId = item.entry.frontier_item_id;
+                  if (!frontierId || linkageBefore.has(frontierId)) continue;
+                  const record = this.ctx.frontierLinkage.get(frontierId);
+                  linkageBefore.set(
+                    frontierId,
+                    record ? structuredClone(record) : undefined,
+                  );
+                }
+                activityAppendInverse = {
+                  kind: 'activity_append',
+                  payload: structuredClone(append),
+                  activity_ref: this.ctx.activityLog,
+                  checkpoint_ref: this.ctx.chainCheckpoints,
+                  linkage_before: linkageBefore,
+                };
+                inverses.push(activityAppendInverse);
               }
             }
             const result = operationApplier.apply({
@@ -4632,11 +4884,26 @@ export class StatePersistence {
                 : {}),
             });
             if (result.status === 'skipped') {
+              if (commandCoordinationInverse && inverses.at(-1) === commandCoordinationInverse) {
+                inverses.pop();
+              }
+              if (applicationCommandInverse && inverses.at(-1) === applicationCommandInverse) {
+                inverses.pop();
+              }
+              if (activityAppendInverse && inverses.at(-1) === activityAppendInverse) {
+                inverses.pop();
+              }
               rollback();
               return result;
             }
             if (bounded) {
-              if (nodeBefore !== undefined) {
+              if (operation.type === 'drop_node') {
+                const drop = payload as unknown as DropNodeMutationPayloadV1;
+                footprint.recordNode(drop.node_id, nodeBefore ?? null, nodeSnapshot(drop.node_id));
+                for (const [edgeId, before] of edgeBefore) {
+                  footprint.recordEdge(edgeId, before, edgeSnapshot(edgeId));
+                }
+              } else if (nodeBefore !== undefined) {
                 const nodeId = (payload.props as NodeProperties).id;
                 footprint.recordNode(nodeId, nodeBefore, nodeSnapshot(nodeId));
               }
@@ -4694,7 +4961,14 @@ export class StatePersistence {
   applyTransactionDraft(
     draft: EngineTransactionDraft,
     mutators?: ReplayMutators,
+    options: { recovery?: boolean } = {},
   ): EngineTransactionApplyResult {
+    const relationshipValidation = validateTransactionOperationRelationships(
+      draft.operations,
+    );
+    if (!relationshipValidation.ok) {
+      return { status: 'skipped', reason: relationshipValidation.reason };
+    }
     const transaction = {
       version: 2 as const,
       tx_id: 'uncommitted-draft',
@@ -4704,7 +4978,10 @@ export class StatePersistence {
       ts: this.ctx.nowIso(),
       ...structuredClone(draft),
     };
-    return this.makeTransactionApplier(mutators).applyTransaction(transaction);
+    return this.makeTransactionApplier(
+      mutators,
+      options.recovery ?? false,
+    ).applyTransaction(transaction);
   }
 
   recoverFromSnapshot(builtinRules: InferenceRule[], mutators?: ReplayMutators): boolean {

@@ -9,7 +9,7 @@ import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, Sta
 import { useNavigation } from '../../hooks/useNavigation';
 import type { SessionInfo } from '../../lib/types';
 import { deriveNodeRelationships } from '../../lib/relationships';
-import { createDashboardWebSocket } from '../../lib/dashboard-transport';
+import { createDashboardCommandId, createDashboardWebSocket } from '../../lib/dashboard-transport';
 import {
   buildDashboardWebSocketPath,
   SessionWebSocketClientEventSchema,
@@ -36,6 +36,11 @@ import {
   type SessionGroup,
 } from '../../lib/session-workspace';
 import type { SessionBufferResponse } from '../../lib/types';
+import {
+  listPendingTerminalMutations,
+  pendingTerminalMutationBucket,
+  settlePendingTerminalMutation,
+} from '../../lib/session-terminal-pending';
 
 interface TerminalEntry {
   sessionId: string;
@@ -77,7 +82,9 @@ export function SessionsPanel() {
   const [buffer, setBuffer] = useState<SessionBufferResponse | null>(null);
   const [bufferQuery, setBufferQuery] = useState('');
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [pendingTerminalWarning, setPendingTerminalWarning] = useState<string | null>(null);
   const terminalsRef = useRef<Map<string, TerminalEntry>>(new Map());
+  const mountedRef = useRef(true);
   const autoAttachAttemptedRef = useRef<Set<string>>(new Set());
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -100,6 +107,49 @@ export function SessionsPanel() {
     const id = setInterval(load, 5000);
     return () => { cancelled = true; clearInterval(id); };
   }, [setStoreSessions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let reconciling = false;
+    const reconcile = async () => {
+      if (reconciling) return;
+      reconciling = true;
+      try {
+        const pending = listPendingTerminalMutations();
+        await Promise.all(pending.map(async item => {
+          const commandId = item.command.command_id;
+          if (!commandId) return;
+          try {
+            const receipt = await api.getApplicationCommand(commandId);
+            const status = receipt.command.status;
+            if (
+              status === 'succeeded'
+              || status === 'failed'
+              || status === 'interrupted'
+            ) {
+              settlePendingTerminalMutation(item.generation, commandId, status);
+            }
+          } catch {
+            // Missing or unreachable remains ambiguous. Keep the exact
+            // memory-only payload and identity until a terminal receipt exists.
+          }
+        }));
+        if (cancelled) return;
+        const unresolved = listPendingTerminalMutations();
+        setPendingTerminalWarning(unresolved.length > 0
+          ? `${unresolved.length} terminal command(s) still await durable acknowledgement across connection generations.`
+          : null);
+      } finally {
+        reconciling = false;
+      }
+    };
+    void reconcile();
+    const interval = window.setInterval(reconcile, 2_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const visibleSessions = useMemo(() => {
     return sortSessionsForWorkspace(sessions.filter(session => searchSession(session, query.trim())));
@@ -136,10 +186,17 @@ export function SessionsPanel() {
     }
     const connectionId = session.connection_id;
     const connectionGeneration = session.connection_generation ?? 0;
+    const pendingGeneration = {
+      session_id: sessionId,
+      connection_id: connectionId,
+      connection_generation: connectionGeneration,
+    };
+    const pendingMutations = pendingTerminalMutationBucket(pendingGeneration);
     const canResize = sessionSupportsResize(session);
     const { Terminal } = await import('@xterm/xterm');
     await import('@xterm/xterm/css/xterm.css');
     const { FitAddon } = await import('@xterm/addon-fit');
+    if (!mountedRef.current) return;
 
     const term = new Terminal({
       fontSize: 13,
@@ -187,6 +244,9 @@ export function SessionsPanel() {
     ws.onopen = () => {
       setAttachError(null);
       term.write('\r\n\x1b[32mConnected to session ' + sessionId.slice(0, 8) + '\x1b[0m\r\n');
+      for (const pending of pendingMutations.values()) {
+        ws.send(JSON.stringify(pending));
+      }
     };
 
     ws.onmessage = (event) => {
@@ -197,7 +257,20 @@ export function SessionsPanel() {
           const msg = SessionWebSocketServerEventSchema.parse(JSON.parse(event.data as string));
           if (msg.type === 'output' && msg.text) {
             term.write(msg.text);
+          } else if (msg.type === 'command_result') {
+            settlePendingTerminalMutation(
+              pendingGeneration,
+              msg.command_id,
+              msg.status,
+            );
           } else if (msg.type === 'error' && msg.error) {
+            if (msg.command_id && msg.status) {
+              settlePendingTerminalMutation(
+                pendingGeneration,
+                msg.command_id,
+                msg.status,
+              );
+            }
             term.write(`\r\n\x1b[31m${msg.error}\x1b[0m\r\n`);
           } else if (msg.type === 'session_closed') {
             term.write('\r\n\x1b[31mSession closed\x1b[0m\r\n');
@@ -210,6 +283,12 @@ export function SessionsPanel() {
 
     ws.onclose = () => {
       term.write('\r\n\x1b[31mSession disconnected\x1b[0m\r\n');
+      if (pendingMutations.size > 0) {
+        const ids = [...pendingMutations.keys()].slice(0, 3).join(', ');
+        setAttachError(
+          `${pendingMutations.size} terminal command(s) await durable acknowledgement (${ids}${pendingMutations.size > 3 ? ', …' : ''}). Reattach to this connection generation to resolve them safely.`,
+        );
+      }
       refresh();
     };
 
@@ -220,13 +299,30 @@ export function SessionsPanel() {
 
     term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(SessionWebSocketClientEventSchema.parse({ type: 'input', data })));
+        const commandId = createDashboardCommandId();
+        const message = SessionWebSocketClientEventSchema.parse({
+          type: 'input',
+          data,
+          command_id: commandId,
+          idempotency_key: `dashboard:ws:input:${commandId}`,
+        });
+        pendingMutations.set(commandId, message);
+        ws.send(JSON.stringify(message));
       }
     });
 
     term.onResize(({ cols, rows }) => {
       if (canResize && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(SessionWebSocketClientEventSchema.parse({ type: 'resize', cols, rows })));
+        const commandId = createDashboardCommandId();
+        const message = SessionWebSocketClientEventSchema.parse({
+          type: 'resize',
+          cols,
+          rows,
+          command_id: commandId,
+          idempotency_key: `dashboard:ws:resize:${commandId}`,
+        });
+        pendingMutations.set(commandId, message);
+        ws.send(JSON.stringify(message));
       }
     });
 
@@ -242,6 +338,26 @@ export function SessionsPanel() {
     setActiveTab(sessionId);
     setSelectedSessionId(sessionId);
   }, [refresh]);
+
+  useEffect(() => {
+    // React StrictMode intentionally performs setup → cleanup → setup in
+    // development. Re-arm attachment ownership on every setup.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      for (const entry of terminalsRef.current.values()) {
+        if (entry.ws) {
+          entry.ws.onopen = null;
+          entry.ws.onmessage = null;
+          entry.ws.onclose = null;
+          entry.ws.onerror = null;
+          entry.ws.close();
+        }
+        entry.terminal.dispose();
+      }
+      terminalsRef.current.clear();
+    };
+  }, []);
 
   const attachSession = useCallback((sessionId: string) => {
     attach(sessionId).catch(error => {
@@ -471,9 +587,9 @@ export function SessionsPanel() {
                 )
               )}
             </div>
-            {attachError && (
+            {(attachError || pendingTerminalWarning) && (
               <div className="flex-shrink-0 border-b border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                {attachError}
+                {attachError ?? pendingTerminalWarning}
               </div>
             )}
             {attachedIds.length > 0 ? (

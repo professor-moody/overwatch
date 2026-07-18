@@ -350,7 +350,10 @@ describe('WS graph_update push on mutation', () => {
         }),
       });
       expect(replay.status).toBe(200);
-      expect(await replay.json()).toMatchObject({ replayed: true });
+      expect(replay.headers.get('X-Overwatch-Command-Replayed')).toBe('true');
+      // The outer boundary replays the exact first wire response. Its header is
+      // authoritative; nested domain fields remain byte-identical to delivery 1.
+      expect(await replay.json()).toMatchObject({ replayed: false });
       dashboard.flush();
       await new Promise(resolve => setImmediate(resolve));
       expect(conn.messages.slice(replayStart).filter(message =>

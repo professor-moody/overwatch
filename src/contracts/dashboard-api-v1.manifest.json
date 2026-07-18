@@ -642,9 +642,11 @@
       "path": "/api/tape/toggle",
       "response_kind": "json",
       "success_statuses": [
-        200
+        200,
+        400,
+        503
       ],
-      "summary": "Toggle tape capture"
+      "summary": "Set tape capture state (omitted action retains legacy toggle behavior)"
     },
     {
       "operation_id": "getFindings",
@@ -1408,7 +1410,7 @@
     "resetFrontierWeights": {
       "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
-      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "body": "310d667e92dace7c2938023daec225653753e89080d1f63fba9912c472d05d1c",
       "responses": {
         "200": "45b86fe82f97a2603b917f9a30fcfb16fba0195edc6ddfa42459d20ce8a1e10e"
       }
@@ -1578,7 +1580,9 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "99066800be0a3264491cdfd6801feaf745962b44221025a5fdaca0313706bdbd",
       "responses": {
-        "200": "323d5b4caae131d9a491d5082673af53e56340019e1ede1143c6b676a047ca69"
+        "200": "323d5b4caae131d9a491d5082673af53e56340019e1ede1143c6b676a047ca69",
+        "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "503": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
       }
     },
     "getFindings": {
@@ -1921,8 +1925,8 @@
     "session": {
       "operation_id": "dashboardSessionSocket",
       "path": "/ws/session/{session_id}",
-      "client_events": "dddd7a6ad36d8a6df46d3fd15106f5fea136ebfac3c58fef630b77f58efc27a1",
-      "server_events": "f56cab57f39cdcf82ae51fc0be826bc831dd896e765cdc63952af5e45708840e"
+      "client_events": "5962c478e12d23fba558c5cc3d53e2134e1f4333914a10fb24b12f76b27380b7",
+      "server_events": "329232a97bfde8e52cf2580a1a4e0724a1b1470ede8df4cf983c125a7d6640e9"
     },
     "action_output": {
       "operation_id": "dashboardActionOutputSocket",
@@ -1930,5 +1934,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "5b45b75947d90b883fd3d35d51f7a56ece3f4c1a76d9257f5b59dd5fee54cb07"
+  "schema_hash": "7663de79c432b658880ffb8df222df330c47a8e56f43e90b8591bca7bca1f58d"
 }

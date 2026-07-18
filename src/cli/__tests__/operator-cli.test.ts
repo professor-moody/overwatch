@@ -114,6 +114,171 @@ describe('client option resolution', () => {
       globalThis.fetch = realFetch;
     }
   });
+
+  it('retries one failed mutation with the same command identity', async () => {
+    const calls: RequestInit[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string | URL, init: RequestInit) => {
+      calls.push(init);
+      if (calls.length === 1) throw new TypeError('response connection lost');
+      return new Response('{"ok":true}', {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'X-Overwatch-Server-Response': '1',
+        },
+      });
+    }) as typeof fetch;
+    try {
+      await createClient({ url: 'http://h:8384' }).post('/api/test', { value: 1 });
+      expect(calls).toHaveLength(2);
+      expect(calls[1].headers).toEqual(calls[0].headers);
+      expect(calls[1].body).toBe(calls[0].body);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('retains a mutation identity across process-like clients until a response arrives', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'overwatch-cli-pending-'));
+    const previousPendingDirectory = process.env.OVERWATCH_CLI_PENDING_DIR;
+    process.env.OVERWATCH_CLI_PENDING_DIR = directory;
+    const calls: RequestInit[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string | URL, init: RequestInit) => {
+      calls.push(init);
+      if (calls.length <= 2) throw new TypeError('daemon unavailable');
+      return new Response('{"ok":true}', {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'X-Overwatch-Server-Response': '1',
+        },
+      });
+    }) as typeof fetch;
+    try {
+      await expect(createClient({ url: 'http://h:8384' }).post('/api/test', { value: 1 }))
+        .rejects.toMatchObject({ unreachable: true });
+      const retainedId = (calls[0].headers as Record<string, string>)['X-Overwatch-Command-Id'];
+
+      await createClient({ url: 'http://h:8384' }).post('/api/test', { value: 1 });
+      expect((calls[2].headers as Record<string, string>)['X-Overwatch-Command-Id'])
+        .toBe(retainedId);
+
+      await createClient({ url: 'http://h:8384' }).post('/api/test', { value: 1 });
+      expect((calls[3].headers as Record<string, string>)['X-Overwatch-Command-Id'])
+        .not.toBe(retainedId);
+    } finally {
+      globalThis.fetch = realFetch;
+      if (previousPendingDirectory === undefined) delete process.env.OVERWATCH_CLI_PENDING_DIR;
+      else process.env.OVERWATCH_CLI_PENDING_DIR = previousPendingDirectory;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a mutation identity after an unmarked proxy response', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'overwatch-cli-proxy-pending-'));
+    const previousPendingDirectory = process.env.OVERWATCH_CLI_PENDING_DIR;
+    process.env.OVERWATCH_CLI_PENDING_DIR = directory;
+    const calls: RequestInit[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string | URL, init: RequestInit) => {
+      calls.push(init);
+      return calls.length === 1
+        ? new Response('{"error":"gateway timeout"}', { status: 504 })
+        : new Response('{"ok":true}', {
+            status: 200,
+            headers: { 'X-Overwatch-Server-Response': '1' },
+          });
+    }) as typeof fetch;
+    try {
+      await expect(createClient({ url: 'http://h:8384' }).post('/api/test', { value: 1 }))
+        .rejects.toMatchObject({ status: 504 });
+      const firstId = (calls[0].headers as Record<string, string>)['X-Overwatch-Command-Id'];
+      await createClient({ url: 'http://h:8384' }).post('/api/test', { value: 1 });
+      expect((calls[1].headers as Record<string, string>)['X-Overwatch-Command-Id'])
+        .toBe(firstId);
+    } finally {
+      globalThis.fetch = realFetch;
+      if (previousPendingDirectory === undefined) delete process.env.OVERWATCH_CLI_PENDING_DIR;
+      else process.env.OVERWATCH_CLI_PENDING_DIR = previousPendingDirectory;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a mutation identity for a durable response-unavailable receipt', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'overwatch-cli-ambiguous-pending-'));
+    const previousPendingDirectory = process.env.OVERWATCH_CLI_PENDING_DIR;
+    process.env.OVERWATCH_CLI_PENDING_DIR = directory;
+    const calls: RequestInit[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string | URL, init: RequestInit) => {
+      calls.push(init);
+      if (calls.length === 1) {
+        return new Response('{"error":"command is running"}', {
+          status: 409,
+          headers: {
+            'X-Overwatch-Server-Response': '1',
+            'X-Overwatch-Boundary-Command-Id': 'boundary-running',
+            'X-Overwatch-Command-Status': 'running',
+            'X-Overwatch-Command-Response-Available': '0',
+          },
+        });
+      }
+      return new Response('{"ok":true}', {
+        status: 200,
+        headers: {
+          'X-Overwatch-Server-Response': '1',
+          'X-Overwatch-Boundary-Command-Id': 'boundary-running',
+          'X-Overwatch-Command-Status': 'succeeded',
+          'X-Overwatch-Command-Response-Available': '1',
+        },
+      });
+    }) as typeof fetch;
+    try {
+      await expect(createClient({ url: 'http://h:8384' }).post('/api/test', { value: 1 }))
+        .rejects.toMatchObject({ status: 409 });
+      const retained = (calls[0].headers as Record<string, string>)['X-Overwatch-Command-Id'];
+      await createClient({ url: 'http://h:8384' }).post('/api/test', { value: 1 });
+      expect((calls[1].headers as Record<string, string>)['X-Overwatch-Command-Id'])
+        .toBe(retained);
+    } finally {
+      globalThis.fetch = realFetch;
+      if (previousPendingDirectory === undefined) delete process.env.OVERWATCH_CLI_PENDING_DIR;
+      else process.env.OVERWATCH_CLI_PENDING_DIR = previousPendingDirectory;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts explicit command ids for independent identical CLI intents', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'overwatch-cli-explicit-pending-'));
+    const previousPendingDirectory = process.env.OVERWATCH_CLI_PENDING_DIR;
+    process.env.OVERWATCH_CLI_PENDING_DIR = directory;
+    const calls: RequestInit[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string | URL, init: RequestInit) => {
+      calls.push(init);
+      return new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'X-Overwatch-Server-Response': '1' },
+      });
+    }) as typeof fetch;
+    try {
+      await createClient({ url: 'http://h:8384', commandId: 'independent-a' })
+        .post('/api/test', { value: 1 });
+      await createClient({ url: 'http://h:8384', commandId: 'independent-b' })
+        .post('/api/test', { value: 1 });
+      expect((calls[0].headers as Record<string, string>)['X-Overwatch-Command-Id'])
+        .toBe('independent-a');
+      expect((calls[1].headers as Record<string, string>)['X-Overwatch-Command-Id'])
+        .toBe('independent-b');
+    } finally {
+      globalThis.fetch = realFetch;
+      if (previousPendingDirectory === undefined) delete process.env.OVERWATCH_CLI_PENDING_DIR;
+      else process.env.OVERWATCH_CLI_PENDING_DIR = previousPendingDirectory;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 // Fake client returning canned API payloads keyed by path.

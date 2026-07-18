@@ -15,6 +15,7 @@ import {
   EngagementCommandService,
 } from '../engagement-command-service.js';
 import { GraphEngine } from '../graph-engine.js';
+import { MutationJournal } from '../mutation-journal.js';
 
 function config(): EngagementConfig {
   return {
@@ -161,6 +162,45 @@ describe('EngagementCommandService', () => {
       },
     });
     expect(engine.getConfig().scope.hosts).toEqual(['new.internal']);
+  });
+
+  it('keeps config and scope command history out of composite state patches', () => {
+    const statePath = join(directory, 'state.json');
+    engine.flushNow();
+    const checkpoint = JSON.parse(readFileSync(statePath, 'utf8')) as {
+      journalSnapshotSeq: number;
+    };
+    const service = new EngagementCommandService(engine);
+    invoke(
+      'bounded-settings-command',
+      'bounded-settings-retry',
+      () => service.updateSettings({ max_noise: 0.5 }),
+    );
+    invoke(
+      'bounded-scope-command',
+      'bounded-scope-retry',
+      () => service.replaceScope({
+        ...engine.getConfig().scope,
+        cidrs: ['10.0.0.0/24', '10.0.3.0/24'],
+      }),
+    );
+
+    const transactions = new MutationJournal(statePath)
+      .readTransactionsSince(checkpoint.journalSnapshotSeq);
+    const configTransaction = transactions.find(transaction =>
+      transaction.operations.some(operation => operation.type === 'state_patch')
+      && transaction.operations.some(operation =>
+        operation.type === 'application_command_change'
+        && (operation.payload as { after?: { command_id?: string } }).after?.command_id
+          === 'bounded-settings-command'))!;
+    const scopeTransaction = transactions.find(transaction =>
+      transaction.operations.some(operation => operation.type === 'scope_updated'))!;
+
+    for (const transaction of [configTransaction, scopeTransaction]) {
+      expect(transaction.operations.map(operation => operation.type))
+        .toContain('application_command_change');
+      expect(JSON.stringify(transaction.operations)).not.toContain('applicationCommands');
+    }
   });
 
   it('commits a combined scope, OPSEC, and objective patch once and replays after restart', () => {

@@ -1,13 +1,19 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { EdgeProperties, NodeProperties } from '../types.js';
+import type { ChainCheckpoint } from './activity-chain.js';
+import type {
+  ActivityActionFrontierValueV1,
+  ActivityAppendPayloadV1,
+} from './activity-append.js';
 import type { ColdNodeRecord, ColdStoreEntrySnapshot } from './cold-store.js';
-import type { EngineContext, GraphUpdateDetail } from './engine-context.js';
+import type { ActivityLogEntry, EngineContext, GraphUpdateDetail } from './engine-context.js';
 import type {
   EngineOperation,
   EngineOperationDraftObserver,
   EngineTransactionDraft,
 } from './engine-transaction.js';
 import { edgeIdentityMatches } from './edge-identity.js';
+import type { FrontierLinkageRecord } from './frontier-linkage.js';
 
 export interface GraphNodeSnapshot {
   node_id: string;
@@ -32,6 +38,20 @@ export type GraphColdInverse =
   | { kind: 'node'; node_id: string; snapshot: GraphNodeSnapshot | null }
   | { kind: 'edge'; edge_id: string; snapshot: GraphEdgeSnapshot | null }
   | { kind: 'cold'; snapshot: ColdEntrySnapshot };
+
+interface ActivityInverse {
+  kind: 'activity';
+  activity_ref: ActivityLogEntry[];
+  activity_length: number;
+  checkpoint_ref: ChainCheckpoint[];
+  checkpoint_length: number;
+  last_chain_hash: string;
+  chain_events_since_checkpoint: number;
+  deterministic_seq: number;
+  action_id?: string;
+  action_before?: ActivityActionFrontierValueV1;
+  linkage_before: Map<string, FrontierLinkageRecord | undefined>;
+}
 
 export interface FinalizedTransactionFootprint {
   node_changes: Array<{ node_id: string } & EntityChange<GraphNodeSnapshot>>;
@@ -264,6 +284,7 @@ function matchingEdgeIds(
  */
 export class BoundedTransactionFootprintCapture implements EngineOperationDraftObserver {
   private readonly inverses: GraphColdInverse[] = [];
+  private readonly activityInverses: ActivityInverse[] = [];
   private readonly accumulator = new TransactionFootprintAccumulator();
 
   constructor(private readonly ctx: EngineContext) {}
@@ -383,6 +404,29 @@ export class BoundedTransactionFootprintCapture implements EngineOperationDraftO
   }
 
   restore(): void {
+    for (let index = this.activityInverses.length - 1; index >= 0; index--) {
+      const inverse = this.activityInverses[index]!;
+      inverse.activity_ref.length = inverse.activity_length;
+      this.ctx.activityLog = inverse.activity_ref;
+      inverse.checkpoint_ref.length = inverse.checkpoint_length;
+      this.ctx.chainCheckpoints = inverse.checkpoint_ref;
+      this.ctx.lastChainHash = inverse.last_chain_hash;
+      this.ctx.chainEventsSinceCheckpoint = inverse.chain_events_since_checkpoint;
+      this.ctx.deterministicSeq = inverse.deterministic_seq;
+      if (inverse.action_id) {
+        if (inverse.action_before) {
+          this.ctx.actionFrontierMap.set(
+            inverse.action_id,
+            structuredClone(inverse.action_before),
+          );
+        } else {
+          this.ctx.actionFrontierMap.delete(inverse.action_id);
+        }
+      }
+      for (const [frontierId, record] of inverse.linkage_before) {
+        this.ctx.frontierLinkage.restoreRecord(frontierId, record);
+      }
+    }
     for (let index = this.inverses.length - 1; index >= 0; index--) {
       const inverse = this.inverses[index]!;
       if (inverse.kind === 'node') {
@@ -515,7 +559,74 @@ export class BoundedTransactionFootprintCapture implements EngineOperationDraftO
             .map(change => change.edge_id as string)),
         };
       }
-      case 'activity_append':
+      case 'drop_node': {
+        const nodeId = payload.node_id;
+        const incidentEdges = Array.isArray(payload.incident_edges)
+          ? payload.incident_edges as Array<{ edge_id?: unknown }>
+          : [];
+        if (
+          payload.payload_version !== 1
+          || typeof nodeId !== 'string'
+          || incidentEdges.some(edge => typeof edge.edge_id !== 'string')
+        ) {
+          throw new Error('Bounded transaction cannot capture malformed drop_node.');
+        }
+        const nodes = new Map([[nodeId, nodeSnapshot(this.ctx, nodeId)]]);
+        const edges = new Map(incidentEdges.map(edge => {
+          const edgeId = edge.edge_id as string;
+          return [edgeId, edgeSnapshot(this.ctx, edgeId)] as const;
+        }));
+        // Reverse restoration installs the node before its incident edges.
+        for (const [edgeId, snapshot] of edges) {
+          this.inverses.push({ kind: 'edge', edge_id: edgeId, snapshot });
+        }
+        this.inverses.push({ kind: 'node', node_id: nodeId, snapshot: nodes.get(nodeId)! });
+        return {
+          kind: 'graph_delta',
+          nodes,
+          edges,
+          inferred_edge_ids: new Set(),
+        };
+      }
+      case 'activity_append': {
+        const activity = operation.payload as unknown as ActivityAppendPayloadV1;
+        if (activity.payload_version !== 1 || !Array.isArray(activity.items)) {
+          throw new Error('Bounded transaction cannot capture malformed activity_append.');
+        }
+        const actionId = activity.action_frontier_update?.action_id;
+        const linkageBefore = new Map<string, FrontierLinkageRecord | undefined>();
+        for (const item of activity.items) {
+          const frontierId = item.entry.frontier_item_id;
+          if (!frontierId || linkageBefore.has(frontierId)) continue;
+          const current = this.ctx.frontierLinkage.get(frontierId);
+          linkageBefore.set(frontierId, current ? structuredClone(current) : undefined);
+        }
+        this.activityInverses.push({
+          kind: 'activity',
+          activity_ref: this.ctx.activityLog,
+          activity_length: this.ctx.activityLog.length,
+          checkpoint_ref: this.ctx.chainCheckpoints,
+          checkpoint_length: this.ctx.chainCheckpoints.length,
+          last_chain_hash: this.ctx.lastChainHash,
+          chain_events_since_checkpoint: this.ctx.chainEventsSinceCheckpoint,
+          deterministic_seq: this.ctx.deterministicSeq,
+          ...(actionId
+            ? {
+                action_id: actionId,
+                action_before: this.ctx.actionFrontierMap.get(actionId)
+                  ? structuredClone(this.ctx.actionFrontierMap.get(actionId)!)
+                  : undefined,
+              }
+            : {}),
+          linkage_before: linkageBefore,
+        });
+        return { kind: 'none' };
+      }
+      case 'application_command_change':
+      case 'command_coordination_change':
+        // These operations are durable siblings of the graph footprint. They
+        // do not authorize graph/cold-store writes and are restored by their
+        // owning command-state draft capture rather than this graph recorder.
         return { kind: 'none' };
       default:
         throw new Error(`Bounded transaction drafting does not support ${operation.type}.`);

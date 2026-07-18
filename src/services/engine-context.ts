@@ -221,6 +221,15 @@ export class EngineContext {
   commandPlans: Map<string, Omit<PersistedCommandPlanV1, 'plan_id'>>;
   commandOutcomes: Map<string, Omit<PersistedCommandOutcomeV1, 'plan_id'>>;
   applicationCommands: Map<string, PersistedApplicationCommandV1>;
+  /** Derived command_id → actor-scoped idempotency key index. */
+  applicationCommandIds: Map<string, string>;
+  private applicationCommandCompletionSequence: number;
+  /** Ephemeral O(1) retention indexes rebuilt from durable command records at
+   * startup. They prevent each terminal keystroke from scanning/cloning the
+   * complete command ledger. */
+  private applicationCommandTerminalClasses: Map<string, Map<string, true>>;
+  private applicationCommandTerminalGroups: Map<string, Map<string, true>>;
+  private applicationCommandTerminalClassBytes: Map<string, number>;
   /** Runtime-neutral descriptors only; handles, buffers, env and secrets stay
    * in SessionManager/TaskExecutionService and are never serialized. */
   sessionDescriptors: PersistedSessionDescriptorV1[];
@@ -287,6 +296,10 @@ export class EngineContext {
    * apply to the caller's temporary live draft, and do not touch the WAL. */
   private operationDraftDepth = 0;
   private operationDraftCollector?: EngineOperation[];
+  /** Bounded operations emitted by a state-only draft. Unlike the graph draft
+   * collector this does not authorize raw graph/cold writes; it lets command
+   * deltas join the outer immutable state transaction without touching WAL. */
+  private stateDraftOperationCollector?: EngineOperation[];
   private operationDraftObserver?: EngineOperationDraftObserver;
   private operationDraftAuthorizationTokens: unknown[] = [];
   /** Set during WAL replay so the guarded mutators (addNode/addEdge) re-apply
@@ -325,6 +338,11 @@ export class EngineContext {
     this.commandPlans = new Map();
     this.commandOutcomes = new Map();
     this.applicationCommands = new Map();
+    this.applicationCommandIds = new Map();
+    this.applicationCommandCompletionSequence = 0;
+    this.applicationCommandTerminalClasses = new Map();
+    this.applicationCommandTerminalGroups = new Map();
+    this.applicationCommandTerminalClassBytes = new Map();
     this.sessionDescriptors = [];
     this.runtimeRuns = [];
     this.playbookRuns = new Map();
@@ -426,12 +444,36 @@ export class EngineContext {
     label = 'engine transaction',
   ): T {
     this.persistenceWriteGuard?.();
-    if (this.transactionApplyDepth > 0) return apply();
     const frozenDraft: EngineTransactionDraft = structuredClone({
       operations: draft.operations as EngineOperation[],
       ...(draft.source_action_id ? { source_action_id: draft.source_action_id } : {}),
       ...(draft.update_detail === undefined ? {} : { update_detail: draft.update_detail }),
     });
+    if (this.transactionApplyDepth > 0) {
+      const nestedActivityOnly = frozenDraft.operations.length > 0
+        && frozenDraft.operations.every(operation => operation.type === 'activity_append');
+      if (nestedActivityOnly && this.operationDraftCollector) {
+        const observerToken = this.operationDraftObserver?.beforeOperation(frozenDraft);
+        this.operationDraftCollector.push(...frozenDraft.operations);
+        this.operationDraftAuthorizationTokens.push(observerToken);
+        this.transactionApplyDepth++;
+        try {
+          const result = apply();
+          if (isSkippedMutationApplyResult(result)) {
+            throw new Error(`Draft ${label} was not applied: ${result.reason}`);
+          }
+          this.operationDraftObserver?.afterOperation(frozenDraft, observerToken);
+          return result;
+        } finally {
+          this.transactionApplyDepth--;
+          this.operationDraftAuthorizationTokens.pop();
+        }
+      }
+      if (nestedActivityOnly && this.stateDraftOperationCollector) {
+        this.stateDraftOperationCollector.push(...frozenDraft.operations);
+      }
+      return apply();
+    }
     if (this.operationDraftCollector) {
       const observerToken = this.operationDraftObserver?.beforeOperation(frozenDraft);
       this.operationDraftCollector.push(...frozenDraft.operations);
@@ -447,6 +489,19 @@ export class EngineContext {
       } finally {
         this.transactionApplyDepth--;
         this.operationDraftAuthorizationTokens.pop();
+      }
+    }
+    if (this.stateDraftOperationCollector) {
+      this.stateDraftOperationCollector.push(...frozenDraft.operations);
+      this.transactionApplyDepth++;
+      try {
+        const result = apply();
+        if (isSkippedMutationApplyResult(result)) {
+          throw new Error(`Draft ${label} was not applied: ${result.reason}`);
+        }
+        return result;
+      } finally {
+        this.transactionApplyDepth--;
       }
     }
     if (!this.mutationJournal) return apply();
@@ -475,6 +530,11 @@ export class EngineContext {
 
   isDraftingTransaction(): boolean {
     return this.transactionDraftDepth > 0 || this.operationDraftDepth > 0;
+  }
+
+  isCapturingEngineOperations(): boolean {
+    return this.operationDraftCollector !== undefined
+      || this.stateDraftOperationCollector !== undefined;
   }
 
   withTransactionDraft<T>(mutation: () => T): T {
@@ -739,7 +799,6 @@ export class EngineContext {
           slices.command_state = structuredClone({
             commandPlans: [...this.commandPlans.entries()],
             commandOutcomes: [...this.commandOutcomes.entries()],
-            applicationCommands: [...this.applicationCommands.entries()],
           });
           break;
         case 'opsec':
@@ -750,6 +809,11 @@ export class EngineContext {
             linkage: this.frontierLinkage.serialize(),
             weights: this.frontierWeights ?? { fan_out: {}, noise: {} },
           });
+          break;
+        case 'frontier_weights':
+          slices.frontier_weights = structuredClone(
+            this.frontierWeights ?? { fan_out: {}, noise: {} },
+          );
           break;
         case 'finding_counters':
           slices.finding_counters = structuredClone({
@@ -836,7 +900,10 @@ export class EngineContext {
         case 'command_state':
           this.commandPlans = new Map(value.commandPlans);
           this.commandOutcomes = new Map(value.commandOutcomes);
-          this.applicationCommands = new Map(value.applicationCommands ?? []);
+          if (Object.prototype.hasOwnProperty.call(value, 'applicationCommands')) {
+            this.applicationCommands = new Map(value.applicationCommands ?? []);
+            this.rebuildApplicationCommandIndex();
+          }
           break;
         case 'opsec':
           this.opsecTracker = OpsecTracker.deserialize(value, this);
@@ -844,6 +911,9 @@ export class EngineContext {
         case 'frontier':
           this.frontierLinkage = FrontierLinkageTracker.deserialize(value.linkage);
           this.frontierWeights = value.weights;
+          break;
+        case 'frontier_weights':
+          this.frontierWeights = value;
           break;
         case 'finding_counters':
           this.recentFindingHashes = new Map(value.recentFindingHashes);
@@ -866,13 +936,171 @@ export class EngineContext {
     this.applyDurableStateSlices(slices, true);
   }
 
+  rebuildApplicationCommandIndex(): void {
+    const next = new Map<string, string>();
+    this.applicationCommandTerminalClasses = new Map();
+    this.applicationCommandTerminalGroups = new Map();
+    this.applicationCommandTerminalClassBytes = new Map();
+    let completionHighWater = 0;
+    for (const command of this.applicationCommands.values()) {
+      if (command.completion_sequence !== undefined) {
+        completionHighWater = Math.max(
+          completionHighWater,
+          command.completion_sequence,
+        );
+      }
+    }
+    const legacyTerminal = [...this.applicationCommands.entries()]
+      .filter(([, command]) =>
+        command.completion_sequence === undefined
+        && ['succeeded', 'failed', 'interrupted'].includes(command.status))
+      .sort((left, right) =>
+        (left[1].completed_at ?? left[1].created_at).localeCompare(
+          right[1].completed_at ?? right[1].created_at,
+        )
+        || left[1].created_at.localeCompare(right[1].created_at)
+        || left[1].command_id.localeCompare(right[1].command_id)
+        || left[0].localeCompare(right[0]));
+    for (const [key, command] of legacyTerminal) {
+      this.applicationCommands.set(key, {
+        ...command,
+        completion_sequence: ++completionHighWater,
+      });
+    }
+    this.applicationCommandCompletionSequence = completionHighWater;
+    for (const [idempotencyKey, command] of this.applicationCommands) {
+      const duplicate = next.get(command.command_id);
+      if (duplicate && duplicate !== idempotencyKey) {
+        throw new Error(
+          `Application command command_id ${command.command_id} is bound to both ${duplicate} and ${idempotencyKey}.`,
+        );
+      }
+      next.set(command.command_id, idempotencyKey);
+    }
+    this.applicationCommandIds = next;
+    [...this.applicationCommands.values()]
+      .filter(command => ['succeeded', 'failed', 'interrupted'].includes(command.status))
+      .sort((left, right) =>
+        (left.completion_sequence ?? Number.MAX_SAFE_INTEGER)
+          - (right.completion_sequence ?? Number.MAX_SAFE_INTEGER)
+        || left.command_id.localeCompare(right.command_id))
+      .forEach(command => this.addApplicationCommandRetentionIndex(command));
+  }
+
+  nextApplicationCommandCompletionSequence(): number {
+    this.applicationCommandCompletionSequence += 1;
+    return this.applicationCommandCompletionSequence;
+  }
+
+  updateApplicationCommandRetentionIndex(
+    before: PersistedApplicationCommandV1 | null,
+    after: PersistedApplicationCommandV1 | null,
+  ): void {
+    if (before) this.removeApplicationCommandRetentionIndex(before);
+    if (after) this.addApplicationCommandRetentionIndex(after);
+  }
+
+  terminalApplicationCommandCount(retentionClass: string, retentionGroup?: string): number {
+    return retentionGroup === undefined
+      ? this.applicationCommandTerminalClasses.get(retentionClass)?.size ?? 0
+      : this.applicationCommandTerminalGroups
+          .get(this.applicationCommandRetentionGroupKey(retentionClass, retentionGroup))
+          ?.size ?? 0;
+  }
+
+  terminalApplicationCommandBytes(retentionClass: string): number {
+    return this.applicationCommandTerminalClassBytes.get(retentionClass) ?? 0;
+  }
+
+  terminalApplicationCommandKeys(
+    retentionClass: string,
+    retentionGroup?: string,
+  ): IterableIterator<string> {
+    return (retentionGroup === undefined
+      ? this.applicationCommandTerminalClasses.get(retentionClass)
+      : this.applicationCommandTerminalGroups.get(
+          this.applicationCommandRetentionGroupKey(retentionClass, retentionGroup),
+        ))?.keys() ?? new Map<string, true>().keys();
+  }
+
+  private applicationCommandRetentionGroupKey(
+    retentionClass: string,
+    retentionGroup: string,
+  ): string {
+    return `${retentionClass}\0${retentionGroup}`;
+  }
+
+  private applicationCommandRetentionBytes(command: PersistedApplicationCommandV1): number {
+    return Buffer.byteLength(JSON.stringify(command));
+  }
+
+  private addApplicationCommandRetentionIndex(command: PersistedApplicationCommandV1): void {
+    if (command.receipt_expired_at) return;
+    if (!['succeeded', 'failed', 'interrupted'].includes(command.status)) return;
+    if (command.completion_sequence !== undefined) {
+      this.applicationCommandCompletionSequence = Math.max(
+        this.applicationCommandCompletionSequence,
+        command.completion_sequence,
+      );
+    }
+    const retentionClass = command.retention_class ?? 'application.command';
+    const retentionGroup = command.retention_group
+      ?? `${command.transport}:${command.command_kind}`;
+    let classIndex = this.applicationCommandTerminalClasses.get(retentionClass);
+    if (!classIndex) {
+      classIndex = new Map();
+      this.applicationCommandTerminalClasses.set(retentionClass, classIndex);
+    }
+    classIndex.set(command.idempotency_key, true);
+    const groupKey = this.applicationCommandRetentionGroupKey(
+      retentionClass,
+      retentionGroup,
+    );
+    let groupIndex = this.applicationCommandTerminalGroups.get(groupKey);
+    if (!groupIndex) {
+      groupIndex = new Map();
+      this.applicationCommandTerminalGroups.set(groupKey, groupIndex);
+    }
+    groupIndex.set(command.idempotency_key, true);
+    this.applicationCommandTerminalClassBytes.set(
+      retentionClass,
+      (this.applicationCommandTerminalClassBytes.get(retentionClass) ?? 0)
+        + this.applicationCommandRetentionBytes(command),
+    );
+  }
+
+  private removeApplicationCommandRetentionIndex(command: PersistedApplicationCommandV1): void {
+    if (command.receipt_expired_at) return;
+    if (!['succeeded', 'failed', 'interrupted'].includes(command.status)) return;
+    const retentionClass = command.retention_class ?? 'application.command';
+    const retentionGroup = command.retention_group
+      ?? `${command.transport}:${command.command_kind}`;
+    const classIndex = this.applicationCommandTerminalClasses.get(retentionClass);
+    classIndex?.delete(command.idempotency_key);
+    if (classIndex?.size === 0) this.applicationCommandTerminalClasses.delete(retentionClass);
+    const groupKey = this.applicationCommandRetentionGroupKey(
+      retentionClass,
+      retentionGroup,
+    );
+    const groupIndex = this.applicationCommandTerminalGroups.get(groupKey);
+    groupIndex?.delete(command.idempotency_key);
+    if (groupIndex?.size === 0) this.applicationCommandTerminalGroups.delete(groupKey);
+    const remainingBytes = Math.max(
+      0,
+      (this.applicationCommandTerminalClassBytes.get(retentionClass) ?? 0)
+        - this.applicationCommandRetentionBytes(command),
+    );
+    if (remainingBytes === 0) this.applicationCommandTerminalClassBytes.delete(retentionClass);
+    else this.applicationCommandTerminalClassBytes.set(retentionClass, remainingBytes);
+  }
+
   draftDurableStateSlices<T>(
     keys: readonly DurableStateSliceKey[],
     mutate: () => T,
-  ): { result: T; slices: DurableStateSlices } {
+  ): { result: T; slices: DurableStateSlices; operations: EngineOperation[] } {
     this.persistenceWriteGuard?.();
     if (this.transactionDraftDepth > 0) {
-      return { result: mutate(), slices: {} };
+      return { result: mutate(), slices: {}, operations: [] };
     }
     const baseline = this.captureDurableStateSlices(keys);
     const original = {
@@ -898,6 +1126,11 @@ export class EngineContext {
       commandPlans: this.commandPlans,
       commandOutcomes: this.commandOutcomes,
       applicationCommands: this.applicationCommands,
+      applicationCommandIds: this.applicationCommandIds,
+      applicationCommandCompletionSequence: this.applicationCommandCompletionSequence,
+      applicationCommandTerminalClasses: this.applicationCommandTerminalClasses,
+      applicationCommandTerminalGroups: this.applicationCommandTerminalGroups,
+      applicationCommandTerminalClassBytes: this.applicationCommandTerminalClassBytes,
       opsecTracker: this.opsecTracker,
       frontierLinkage: this.frontierLinkage,
       frontierWeights: this.frontierWeights,
@@ -908,6 +1141,33 @@ export class EngineContext {
       artifactReferences: this.artifactReferences,
     };
     this.applyDurableStateSlices(baseline, false);
+    // Activity is captured as an explicit bounded operation even when callers
+    // do not request the legacy `activity`/`frontier` state slices. Give every
+    // state draft private chain/linkage containers so preparing and applying
+    // that delta cannot advance the live baseline before WAL commit.
+    this.activityLog = structuredClone(this.activityLog);
+    this.actionFrontierMap = new Map(
+      [...this.actionFrontierMap].map(([key, value]) => [key, structuredClone(value)]),
+    );
+    this.chainCheckpoints = structuredClone(this.chainCheckpoints);
+    this.frontierLinkage = FrontierLinkageTracker.deserialize(
+      this.frontierLinkage.serialize(),
+    );
+    // Command deltas are captured separately from command_state map patches.
+    // Give the draft private maps so applying those deltas cannot leak its
+    // speculative command truth into the live baseline before WAL commit.
+    this.commandPlans = new Map(
+      [...this.commandPlans].map(([key, value]) => [key, structuredClone(value)]),
+    );
+    this.commandOutcomes = new Map(
+      [...this.commandOutcomes].map(([key, value]) => [key, structuredClone(value)]),
+    );
+    this.applicationCommands = new Map(
+      [...this.applicationCommands].map(([key, value]) => [key, structuredClone(value)]),
+    );
+    this.rebuildApplicationCommandIndex();
+    const operations: EngineOperation[] = [];
+    this.stateDraftOperationCollector = operations;
     this.transactionDraftDepth++;
     try {
       const result = mutate();
@@ -921,9 +1181,11 @@ export class EngineContext {
       return {
         result: structuredClone(result),
         slices: changed,
+        operations: structuredClone(operations),
       };
     } finally {
       this.transactionDraftDepth--;
+      this.stateDraftOperationCollector = undefined;
       Object.assign(this, original);
     }
   }
@@ -991,9 +1253,12 @@ export class EngineContext {
   logEvent(event: ActivityLogInput): ActivityLogEntry {
     if (
       this.activityTransactionRunner
-      && this.transactionApplyDepth === 0
-      && this.transactionDraftDepth === 0
-      && this.operationDraftDepth === 0
+      && (
+        (this.transactionApplyDepth === 0
+          && this.transactionDraftDepth === 0
+          && this.operationDraftDepth === 0)
+        || this.isCapturingEngineOperations()
+      )
     ) {
       return this.activityTransactionRunner(event);
     }
@@ -1247,7 +1512,10 @@ export class EngineContext {
     if (!continuityMatches) {
       return {
         status: 'skipped',
-        reason: 'activity_append continuity does not match the restored activity tail',
+        reason: 'activity_append continuity does not match the restored activity tail '
+          + `(expected length=${expected.activity_length}, tail=${expected.activity_tail_event_id}, `
+          + `hash=${expected.last_chain_hash}; observed length=${this.activityLog.length}, `
+          + `tail=${this.activityLog.at(-1)?.event_id ?? null}, hash=${this.lastChainHash})`,
       };
     }
     const frontierUpdate = payload.action_frontier_update;
@@ -1324,12 +1592,10 @@ export class EngineContext {
         }
       }
       for (const [frontierId, baseline] of linkageBefore) {
-        const current = this.frontierLinkage.get(frontierId);
-        if (current && baseline) {
-          const mutable = current as unknown as Record<string, unknown>;
-          for (const key of Object.keys(mutable)) delete mutable[key];
-          Object.assign(current, baseline);
-        }
+        this.frontierLinkage.restoreRecord(
+          frontierId,
+          baseline ? structuredClone(baseline) : undefined,
+        );
       }
       throw error;
     }

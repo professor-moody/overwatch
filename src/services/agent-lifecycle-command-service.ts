@@ -16,7 +16,7 @@ import type { GraphEngine } from './graph-engine.js';
 
 const AgentStatusUpdateInputSchema = z.object({
   task_id: z.string().trim().min(1),
-  status: z.enum(['completed', 'failed', 'interrupted']),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'interrupted']),
   summary: z.string().optional(),
 }).strict();
 
@@ -267,7 +267,10 @@ export class AgentLifecycleCommandService {
       ],
       execute: parsed => {
         const task = this.requireTask(parsed.task_id);
-        if (task.role === 'planner' && task.application_command_id) {
+        const terminal = parsed.status === 'completed'
+          || parsed.status === 'failed'
+          || parsed.status === 'interrupted';
+        if (terminal && task.role === 'planner' && task.application_command_id) {
           const owningCommand = this.engine.getApplicationCommandById(
             task.application_command_id,
           );
@@ -315,7 +318,7 @@ export class AgentLifecycleCommandService {
           }
         }
         let transcriptWarning: string | undefined;
-        if (!this.hasSubmittedTranscript(task)) {
+        if (terminal && !this.hasSubmittedTranscript(task)) {
           this.engine.logActionEvent({
             description: `Agent ${parsed.task_id} closed with status "${parsed.status}" without calling submit_agent_transcript first`,
             event_type: 'instrumentation_warning',

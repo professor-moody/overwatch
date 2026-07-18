@@ -127,6 +127,7 @@ function executionFromRecord<T>(
 ): ApplicationCommandExecution<T> {
   return {
     command_id: record.command_id,
+    retry_token: record.idempotency_key,
     idempotency_key: record.idempotency_key,
     status: record.status,
     replayed,

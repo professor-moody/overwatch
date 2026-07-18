@@ -205,13 +205,43 @@ describe('DashboardServer', () => {
       end(body?: string) { this.body = body || ''; },
       setHeader() {},
     };
-    const pending = (dashboard as any).handleTapeToggle(req, res);
+    (dashboard as any).handleHttpRoute(req, res);
     req.end(JSON.stringify({ action: 'disable' }));
-    await pending;
+    await new Promise(resolve => setTimeout(resolve, 20));
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ enabled: false, frame_count: 0 });
     expect(tape.getStatus().enabled).toBe(false);
+    rmSync(tapeDir, { recursive: true, force: true });
+  });
+
+  it('rejects invalid degraded tape requests without toggling the recorder', async () => {
+    const tapeDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-tape-invalid-'));
+    const tape = new InProcessTapeController(engine, { defaultDir: tapeDir });
+    await tape.enable({ startedBy: 'dashboard' });
+    dashboard.attachTape(tape);
+    vi.spyOn(engine, 'isPersistenceWritable').mockReturnValue(false);
+
+    const req = new PassThrough() as any;
+    req.headers = { 'content-type': 'application/json' };
+    req.url = '/api/tape/toggle';
+    req.method = 'POST';
+    const headers: Record<string, string | string[]> = {};
+    const res = {
+      statusCode: 0,
+      body: '',
+      setHeader(name: string, value: string | string[]) { headers[name] = value; },
+      removeHeader(name: string) { delete headers[name]; },
+      writeHead(statusCode: number) { this.statusCode = statusCode; },
+      end(body?: string) { this.body = body || ''; },
+    };
+    (dashboard as any).handleHttpRoute(req, res);
+    req.end('{not-json');
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    expect(res.statusCode).toBe(400);
+    expect(tape.getStatus().enabled).toBe(true);
+    await tape.disable({ audit: false });
     rmSync(tapeDir, { recursive: true, force: true });
   });
 
@@ -1816,8 +1846,7 @@ describe('DashboardServer', () => {
     vi.useRealTimers();
   });
 
-  it('handleSessionConnection forwards input and resize messages', () => {
-    vi.useFakeTimers();
+  it('handleSessionConnection commands input and resize exactly once', async () => {
     const mockMeta = completeSessionMeta();
     const writeSpy = vi.fn();
     const resizeSpy = vi.fn();
@@ -1845,17 +1874,142 @@ describe('DashboardServer', () => {
     const messageHandler = listeners['message']?.[0];
     expect(messageHandler).toBeDefined();
 
-    // Send input
-    messageHandler(JSON.stringify({ type: 'input', data: 'ls -la\n' }));
+    // Send the same command identity twice. The second message replays the
+    // receipt and must not write another byte to the live session.
+    const input = {
+      type: 'input',
+      data: 'ls -la\n',
+      command_id: 'ws-input-command-1',
+      idempotency_key: 'ws-input-retry-1',
+    };
+    messageHandler(JSON.stringify(input));
+    messageHandler(JSON.stringify(input));
+    await vi.waitFor(() => {
+      expect(writeSpy).toHaveBeenCalledTimes(1);
+      const receipts = mockWs.send.mock.calls
+        .map(([message]) => JSON.parse(String(message)))
+        .filter(message => message.type === 'command_result' && message.op === 'input');
+      expect(receipts).toHaveLength(2);
+      expect(receipts.map(receipt => receipt.replayed)).toContain(true);
+    });
     expect(writeSpy).toHaveBeenCalledWith('sess-1', 'ls -la\n', 'dashboard', true);
 
     // Send resize
-    messageHandler(JSON.stringify({ type: 'resize', cols: 120, rows: 40 }));
-    expect(resizeSpy).toHaveBeenCalledWith('sess-1', 120, 40, 'dashboard', true);
+    messageHandler(JSON.stringify({
+      type: 'resize',
+      cols: 120,
+      rows: 40,
+      command_id: 'ws-resize-command-1',
+      idempotency_key: 'ws-resize-retry-1',
+    }));
+    await vi.waitFor(() => {
+      expect(resizeSpy).toHaveBeenCalledWith('sess-1', 120, 40, 'dashboard', true);
+    });
 
     // Cleanup
     listeners['close']?.[0]?.();
-    vi.useRealTimers();
+  });
+
+  it('does not repeat session input when terminal receipt persistence fails', () => {
+    const mockMeta = completeSessionMeta();
+    const writeSpy = vi.fn();
+    (dashboard as any).sessionManager = {
+      getSession: () => mockMeta,
+      read: vi.fn().mockReturnValue({ text: '', end_pos: 0, start_pos: 0, truncated: false }),
+      write: writeSpy,
+      resize: vi.fn(),
+    };
+    const listeners: Record<string, Function[]> = {};
+    const mockWs = {
+      close: vi.fn(),
+      on: vi.fn((event: string, cb: Function) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(cb);
+      }),
+      send: vi.fn(),
+      readyState: WebSocket.OPEN,
+    };
+    const original = engine.runApplicationCommandTransaction.bind(engine);
+    let transactions = 0;
+    vi.spyOn(engine, 'runApplicationCommandTransaction').mockImplementation((...args: any[]) => {
+      transactions++;
+      if (transactions === 2) throw new Error('terminal receipt fsync failed');
+      return (original as (...values: any[]) => any)(...args);
+    });
+
+    (dashboard as any).handleSessionConnection(mockWs, 'sess-1');
+    const message = JSON.stringify({
+      type: 'input',
+      data: 'id\n',
+      command_id: 'ws-ambiguous-input-1',
+      idempotency_key: 'ws-ambiguous-input-1',
+    });
+    listeners.message?.[0]?.(message);
+    listeners.message?.[0]?.(message);
+
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(engine.getApplicationCommandById('ws-ambiguous-input-1')).toMatchObject({
+      status: 'accepted',
+      retention_class: 'dashboard.session_ws',
+    });
+    const errors = mockWs.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)))
+      .filter(event => event.type === 'error');
+    expect(errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ error: 'terminal receipt fsync failed' }),
+      expect.objectContaining({ status: 'accepted', replayed: true }),
+    ]));
+    listeners.close?.[0]?.();
+  });
+
+  it('gives legacy session messages unique identities across parallel attachments and reconnects', async () => {
+    const mockMeta = completeSessionMeta();
+    const writeSpy = vi.fn();
+    (dashboard as any).sessionManager = {
+      getSession: () => mockMeta,
+      read: vi.fn().mockReturnValue({ text: '', end_pos: 0, start_pos: 0, truncated: false }),
+      write: writeSpy,
+      resize: vi.fn(),
+    };
+    const attach = () => {
+      const listeners: Record<string, Function[]> = {};
+      const ws = {
+        close: vi.fn(),
+        on: vi.fn((event: string, cb: Function) => {
+          if (!listeners[event]) listeners[event] = [];
+          listeners[event].push(cb);
+        }),
+        send: vi.fn(),
+        readyState: WebSocket.OPEN,
+      };
+      (dashboard as any).handleSessionConnection(ws, 'sess-1');
+      return { listeners, ws };
+    };
+    const first = attach();
+    const second = attach();
+
+    first.listeners.message?.[0]?.(JSON.stringify({ type: 'input', data: 'first\n' }));
+    second.listeners.message?.[0]?.(JSON.stringify({ type: 'input', data: 'second\n' }));
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(2));
+    const receipts = [first.ws, second.ws].map(ws => ws.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)))
+      .find(event => event.type === 'command_result'));
+    expect(receipts[0]?.command_id).toBeTruthy();
+    expect(receipts[1]?.command_id).toBeTruthy();
+    expect(receipts[0]?.command_id).not.toBe(receipts[1]?.command_id);
+    expect(writeSpy.mock.calls.map(call => call[1])).toEqual(['first\n', 'second\n']);
+
+    first.listeners.close?.[0]?.();
+    const reconnected = attach();
+    reconnected.listeners.message?.[0]?.(JSON.stringify({ type: 'input', data: 'third\n' }));
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(3));
+    const reconnectReceipt = reconnected.ws.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)))
+      .find(event => event.type === 'command_result');
+    expect(reconnectReceipt?.command_id).not.toBe(receipts[0]?.command_id);
+    expect(reconnectReceipt?.command_id).not.toBe(receipts[1]?.command_id);
+    reconnected.listeners.close?.[0]?.();
+    second.listeners.close?.[0]?.();
   });
 
   it('blocks an existing session socket when persistence becomes read-only', () => {
@@ -2630,7 +2784,9 @@ describe('DashboardServer', () => {
         url,
         method,
         headers: { host: 'localhost', origin: '' },
-        on: vi.fn(),
+        on: vi.fn((event: string, callback: () => void) => {
+          if (event === 'end') queueMicrotask(callback);
+        }),
         destroy: vi.fn(),
       } as any;
     }
@@ -2642,7 +2798,10 @@ describe('DashboardServer', () => {
         body: '' as string,
         writeHead(statusCode: number, headers?: Record<string, string>) { this.statusCode = statusCode; if (headers) this.headers = headers; },
         end(body?: string) { this.body = body || ''; },
+        write() { return true; },
         setHeader(_k: string, _v: string) { this.headers[_k] = _v; },
+        getHeaders() { return this.headers; },
+        removeHeader(_k: string) { delete this.headers[_k]; },
       };
     }
 
@@ -2677,12 +2836,14 @@ describe('DashboardServer', () => {
       expect(spy).toHaveBeenCalledWith('abc-123-def', res);
     });
 
-    it('routes POST /api/agents/:id/cancel to handleAgentCancel', () => {
+    it('routes POST /api/agents/:id/cancel to handleAgentCancel', async () => {
       const spy = vi.spyOn(dashboard as any, 'handleAgentCancel');
       const req = mockReq('/api/agents/abc-123-def/cancel', 'POST');
       const res = mockRes();
       (dashboard as any).handleHttp(req, res);
-      expect(spy).toHaveBeenCalledWith('abc-123-def', req, res);
+      await vi.waitFor(() => {
+        expect(spy).toHaveBeenCalledWith('abc-123-def', req, res);
+      });
     });
 
     it('routes non-uuid agent ids to the agent console endpoint', () => {
@@ -3053,7 +3214,8 @@ describe('DashboardServer', () => {
       // scope_updated audit event was emitted.
       const events = engine.getFullHistory().filter(e => e.event_type === 'scope_updated');
       expect(events.length).toBeGreaterThan(0);
-      expect((events[events.length - 1].details as any).reason).toContain('dashboard');
+      expect((events[events.length - 1].details as any).reason)
+        .toBe('engagement.scope.replace');
     });
   });
 

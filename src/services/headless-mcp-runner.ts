@@ -24,6 +24,7 @@ import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import type { GraphEngine } from './graph-engine.js';
 import { ApplicationCommandService } from './application-command-service.js';
+import { AgentLifecycleCommandService } from './agent-lifecycle-command-service.js';
 import type { ProcessTracker } from './process-tracker.js';
 import type { AgentTask } from '../types.js';
 import {
@@ -187,6 +188,7 @@ export class HeadlessMcpRunner {
   private now: () => string;
   private mutationAllowed: () => boolean;
   private compatibility: HeadlessClaudeCompatibility | null = null;
+  private readonly lifecycleCommands: AgentLifecycleCommandService;
 
   constructor(
     engine: GraphEngine,
@@ -195,6 +197,7 @@ export class HeadlessMcpRunner {
     options: HeadlessMcpRunnerOptions = {},
   ) {
     this.engine = engine;
+    this.lifecycleCommands = new AgentLifecycleCommandService(engine);
     this.registry = registry;
     this.processTracker = processTracker;
     this.spawnFn = options.spawnFn ?? (spawn as SpawnFn);
@@ -217,6 +220,33 @@ export class HeadlessMcpRunner {
    *  callbacks still run, but they cannot rewrite task/process truth afterward. */
   setMutationGuard(guard: () => boolean): void {
     this.mutationAllowed = guard;
+  }
+
+  private transitionTask(
+    taskReference: string,
+    status: AgentTask['status'],
+    summary?: string,
+  ): boolean {
+    const task = this.engine.getTask(taskReference);
+    if (!task) return false;
+    if (
+      task.status === 'completed'
+      || task.status === 'failed'
+      || task.status === 'interrupted'
+      || task.status === status
+    ) return false;
+    const taskId = task.task_id ?? task.id;
+    const eventHash = createHash('sha256')
+      .update(`${taskId}\0${status}\0${summary ?? ''}`)
+      .digest('hex');
+    this.lifecycleCommands.updateStatus({ task_id: taskId, status, summary }, {
+      transport: 'headless_runner',
+      actor_task_id: taskId,
+      command_id: `headless-lifecycle-${eventHash.slice(0, 48)}`,
+      idempotency_key: `headless-lifecycle:${taskId}:${eventHash}`,
+      frontier_item_id: task.frontier_item_id,
+    });
+    return true;
   }
 
   /**
@@ -242,7 +272,7 @@ export class HeadlessMcpRunner {
         const message = `Claude Code cannot run managed Overwatch agents: ${detail}. Update Claude Code and run npm run doctor.`;
         this.failOwnedCommand(task, 'PLANNER_RUNTIME_INCOMPATIBLE', message);
         if (this.mutationAllowed()) {
-          this.engine.updateAgentStatus(task.id, 'failed', message);
+          this.transitionTask(task.id, 'failed', message);
           this.engine.logActionEvent({
             description: message,
             event_type: 'instrumentation_warning',
@@ -296,7 +326,7 @@ export class HeadlessMcpRunner {
           `Planner ownership setup failed: ${error instanceof Error ? error.message : String(error)}`,
         );
         try {
-          this.engine.updateAgentStatus(
+          this.transitionTask(
             task.id,
             'failed',
             `headless runtime reservation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -360,7 +390,7 @@ export class HeadlessMcpRunner {
           recovery_warning: `Headless supervisor spawn failed: ${err instanceof Error ? err.message : String(err)}`,
         });
       } catch { /* recovery will reconcile the reservation */ }
-      this.engine.updateAgentStatus(task.id, 'failed', `headless spawn failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.transitionTask(task.id, 'failed', `headless spawn failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
 
@@ -497,14 +527,25 @@ export class HeadlessMcpRunner {
         const reason = targetCode === 0 && targetSignal == null
           ? 'headless agent ended its turn without submitting a transcript (clean exit) — work returned to the frontier'
           : `headless agent exited without submitting a transcript (code=${targetCode ?? 'null'}, signal=${targetSignal ?? 'null'}) — work returned to the frontier`;
-        this.engine.updateAgentStatus(task.id, 'interrupted', reason);
+        // Settle the owning planner command while the task still truthfully
+        // reflects an unreported exit. The lifecycle transition also knows how
+        // to settle planners, but it cannot distinguish this clean no-plan exit
+        // from an operator interruption after the task has become terminal.
+        this.finishOwnedCommandWithoutPlan(
+          task,
+          targetCode,
+          targetSignal,
+          current.status,
+        );
+        this.transitionTask(task.id, 'interrupted', reason);
+      } else {
+        this.finishOwnedCommandWithoutPlan(
+          task,
+          targetCode,
+          targetSignal,
+          current?.status,
+        );
       }
-      this.finishOwnedCommandWithoutPlan(
-        task,
-        targetCode,
-        targetSignal,
-        current?.status,
-      );
     });
 
     if (!child.pid) {
@@ -521,7 +562,7 @@ export class HeadlessMcpRunner {
         lifecycle: 'failed',
         recovery_warning: 'Headless supervisor spawn produced no pid.',
       });
-      this.engine.updateAgentStatus(task.id, 'failed', 'headless spawn produced no pid');
+      this.transitionTask(task.id, 'failed', 'headless spawn produced no pid');
       this.failOwnedCommand(task, 'PLANNER_SPAWN_FAILED', 'Planner spawn produced no pid.');
       return null;
     }
@@ -547,7 +588,7 @@ export class HeadlessMcpRunner {
           `Planner ownership setup failed: ${error instanceof Error ? error.message : String(error)}`,
         );
         try {
-          this.engine.updateAgentStatus(
+          this.transitionTask(
             task.id,
             'failed',
             `headless ownership setup failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -601,7 +642,7 @@ export class HeadlessMcpRunner {
       this.engine.markRuntimeRunLaunched(processId, targetPid);
       const currentTask = this.engine.getTask(task.id);
       if (currentTask?.status === 'pending') {
-        this.engine.updateAgentStatus(task.id, 'running');
+        this.transitionTask(task.id, 'running');
       }
       if (task.application_command_id) {
         new ApplicationCommandService(this.engine).transition(task.application_command_id, {
@@ -865,7 +906,7 @@ export class HeadlessMcpRunner {
     if (!this.mutationAllowed()) return;
     const current = this.engine.getTask(task_id);
     if (current && (current.status === 'running' || current.status === 'pending')) {
-      this.engine.updateAgentStatus(task_id, status, summary);
+      this.transitionTask(task_id, status, summary);
     }
   }
 

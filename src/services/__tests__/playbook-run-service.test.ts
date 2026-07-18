@@ -674,6 +674,7 @@ describe('PlaybookRunService', () => {
       action_id: claim.attempt.execution_action_id,
       status: 'succeeded',
       created_at: engine.now(),
+      started_at: engine.now(),
       completed_at: engine.now(),
       result: {
         response_evidence_id: 'response-from-completed-process',

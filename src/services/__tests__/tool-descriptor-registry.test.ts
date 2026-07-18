@@ -3,6 +3,8 @@ import { z } from 'zod';
 import {
   buildToolDescriptor,
   buildToolRegistryManifest,
+  toolCanMutateDurableState,
+  toolInvocationMutatesDurableState,
   toolRequiresWritablePersistence,
 } from '../tool-descriptor-registry.js';
 
@@ -110,5 +112,61 @@ describe('canonical tool descriptor registry', () => {
     expect(toolRequiresWritablePersistence(retrospective, { write_to_disk: false })).toBe(false);
     expect(toolRequiresWritablePersistence(retrospective, { write_to_disk: true })).toBe(true);
     expect(toolRequiresWritablePersistence(bundle, {})).toBe(false);
+  });
+
+  it('classifies every conditional invocation independently from descriptor capability', () => {
+    const conditional = (name: string) => buildToolDescriptor(name, {
+      description: `${name} conditional mutation.`,
+      inputSchema: {},
+      annotations: { ...annotations, readOnlyHint: false },
+    });
+
+    const state = conditional('get_state');
+    const prompt = conditional('get_system_prompt');
+    const report = conditional('generate_report');
+    const retrospective = conditional('run_retrospective');
+    const engagement = conditional('create_engagement');
+    const scope = conditional('update_scope');
+    const opsec = conditional('set_opsec');
+    const campaign = conditional('manage_campaign');
+    const bundle = conditional('bundle_engagement');
+
+    for (const descriptor of [
+      state,
+      prompt,
+      report,
+      retrospective,
+      engagement,
+      scope,
+      opsec,
+      campaign,
+      bundle,
+    ]) {
+      expect(toolCanMutateDurableState(descriptor)).toBe(true);
+    }
+    expect(toolInvocationMutatesDurableState(state, { snapshot: false })).toBe(false);
+    expect(toolInvocationMutatesDurableState(state, { snapshot: true })).toBe(true);
+    expect(toolInvocationMutatesDurableState(prompt, { snapshot: false })).toBe(false);
+    expect(toolInvocationMutatesDurableState(prompt, {})).toBe(true);
+    expect(toolInvocationMutatesDurableState(report, {
+      write_to_disk: false,
+      persist_to_archive: false,
+    })).toBe(false);
+    expect(toolInvocationMutatesDurableState(report, { persist_to_archive: true })).toBe(true);
+    expect(toolInvocationMutatesDurableState(retrospective, { write_to_disk: false })).toBe(false);
+    expect(toolInvocationMutatesDurableState(retrospective, { write_to_disk: true })).toBe(true);
+    expect(toolInvocationMutatesDurableState(engagement, { dry_run: true })).toBe(false);
+    expect(toolInvocationMutatesDurableState(engagement, { dry_run: false })).toBe(true);
+    expect(toolInvocationMutatesDurableState(scope, { confirm: false })).toBe(false);
+    expect(toolInvocationMutatesDurableState(scope, { confirm: true })).toBe(true);
+    expect(toolInvocationMutatesDurableState(opsec, { confirm: false })).toBe(false);
+    expect(toolInvocationMutatesDurableState(opsec, { confirm: true })).toBe(true);
+    for (const action of ['status', 'check_abort', 'children', 'parent_progress']) {
+      expect(toolInvocationMutatesDurableState(campaign, { action })).toBe(false);
+    }
+    for (const action of ['create', 'activate', 'pause', 'resume', 'abort', 'clone']) {
+      expect(toolInvocationMutatesDurableState(campaign, { action })).toBe(true);
+    }
+    expect(toolInvocationMutatesDurableState(bundle, {})).toBe(true);
   });
 });
