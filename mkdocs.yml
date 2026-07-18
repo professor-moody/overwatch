@@ -72,6 +72,7 @@ nav:
     - Claude Code Hooks: claude-hooks.md
     - Smoke Test: smoke-test.md
   - Operating:
+    - Daily Operation: daily-operations.md
     - Operator Cockpit: operator-cockpit.md
     - Live Dashboard: dashboard.md
     - Terminal CLI: cli.md

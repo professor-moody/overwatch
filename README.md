@@ -61,6 +61,9 @@ Claude's user settings only for authentication. This lets you keep using Claude
 interactively in your terminal while the dashboard deploys agents, without
 starting a second engine or mixing their sessions.
 
+For routine start/stop, approvals, planner diagnosis, recovery, upgrades, and
+backups, see [Daily Operation](docs/daily-operations.md).
+
 After later pulls, `npm run upgrade` first checks dependency and state/WAL
 migration readiness while the current daemon stays live, then stops the
 identity-verified daemon and repeats the state/WAL check against frozen files.

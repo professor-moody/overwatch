@@ -82,6 +82,10 @@ See [Two ways to run Overwatch](getting-started.md#two-ways-to-run-overwatch).
 
 Full walk-through with template list, dashboard tour, and "what to say to the AI first" prompts: [Getting Started](getting-started.md). Or jump straight to a [lab workflow](playbook/index.md).
 
+For the recurring operating routine—start/stop, concurrent terminal and
+dashboard work, approvals, planner status, recovery, upgrade, and backup—use
+[Daily Operation](daily-operations.md).
+
 ## Architecture at a Glance
 
 One persistent engine; terminal Claude, the dashboard, CLI, and managed workers are adapters over the same live state and command services:

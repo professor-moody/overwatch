@@ -26,6 +26,9 @@ Plain `claude` can still connect to the configured MCP endpoint, but its
 engagement-only hooks remain inactive. Use the environment flag above for real
 engagement work and leave it unset while developing Overwatch itself.
 
+See [Daily Operation](daily-operations.md) for shared-daemon ownership,
+approval timeout behavior, planner diagnosis, shutdown effects, and backups.
+
 ## Prerequisites
 
 The engagement must be running (it serves the API on `:8384`):

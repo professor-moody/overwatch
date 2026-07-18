@@ -294,6 +294,10 @@ the current graph or reseed the engagement. `npm run doctor` reports which
 preserved state was selected or why explicit selection is required; never use
 setup flags to overwrite recovery artifacts.
 
+For the normal start/stop routine, concurrent clients, approval timeout
+semantics, planner diagnosis, end-of-day choices, and safe backups, use the
+[Daily Operation](daily-operations.md) guide.
+
 ---
 
 ## Run as a persistent daemon (HTTP)
@@ -320,8 +324,8 @@ and the daemon's state-family lease:
 |---|---|
 | `npm run daemon:start` | Detached start; exact READY daemon is a successful no-op |
 | `npm run daemon:status` | Shows PID, lifecycle, engagement, state path, endpoints, build match, and recovery state |
-| `npm run daemon:stop` | Requests authenticated graceful shutdown only after PID/start/instance/state identity all match; waits for durable acknowledgement (verified POSIX runtimes retain a SIGTERM compatibility fallback) |
-| `npm run daemon:restart` | Verified stop, freshness build if needed, detached start |
+| `npm run daemon:stop` | Verified graceful shutdown; interrupts managed workers/planners and aborts their pending approvals before durable flush |
+| `npm run daemon:restart` | Verified stop with the same workload interruption semantics, freshness build if needed, detached start |
 | `npm run daemon -- logs` | Shows the managed log path and recent output |
 | `npm run start:daemon` | Foreground form for service managers or interactive diagnostics |
 | `npm run upgrade` | Dependency/live state preflight, verified stop, authoritative frozen state/WAL preflight, `npm ci`, build, and detached restart after you pull |
@@ -342,6 +346,10 @@ cannot prove the live PID's physical identity, it fails closed and signals
 nothing. Start, stop, restart, and upgrade are serialized by a local lifecycle
 lock. A failed final flush is not reported as a clean stop and blocks automatic
 restart or upgrade until recovery is inspected.
+
+Closing the browser or terminal Claude does not stop this daemon. Conversely,
+an intentional stop does not resume a live model turn later: durable state and
+artifacts remain, but unfinished managed work must be resumed or redispatched.
 
 It binds two loopback ports:
 
@@ -512,13 +520,9 @@ If none of the templates fit, the full schema is in [Configuration](configuratio
        than reseeding over the original bytes.
 
 ??? tip "Starting fresh"
-    Preserve the old engagement and select a genuinely new state path:
-
-    ```bash
-    cp -a /path/to/engagement /path/to/engagement-before-reset
-    export OVERWATCH_STATE_FILE=/path/to/engagement/state-<id>-fresh-$(date +%Y%m%d%H%M%S).json
-    # Restart Overwatch with the same validated engagement.json
-    ```
-
-    A new path creates a fresh graph without making the old state, WAL,
-    snapshots, evidence, reports, or migration backups unreachable.
+    An in-place graph reset is not a normal managed workflow. Export or stop and
+    preserve the complete engagement, then initialize a separate clean
+    workspace. Do not retarget the existing profile with a transient
+    `OVERWATCH_STATE_FILE` or delete one state file while its WAL, snapshots,
+    intents, evidence, and reports remain. See
+    [Daily Operation](daily-operations.md#backup-and-relocation).

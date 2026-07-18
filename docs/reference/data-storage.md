@@ -14,7 +14,11 @@ Do not treat these files as client deliverables. Use `generate_report({ client_s
 
 ## Config file
 
-Overwatch reads its active engagement config from the path set by the `OVERWATCH_CONFIG` environment variable. If that variable is unset, it falls back to `./engagement.json` relative to the working directory you start the server from.
+Raw Overwatch processes read their active config from `OVERWATCH_CONFIG` and
+fall back to `./engagement.json`. The recommended managed daemon does not
+retarget itself from each startup shell: `npm run setup` persists the exact
+selected config and state paths in `.overwatch-runtime/profile.json`, and
+lifecycle commands use that profile.
 
 ```
 OVERWATCH_CONFIG=/path/to/engagement.json  # override
@@ -75,7 +79,10 @@ This single JSON file contains:
 - **Chain checkpoints** — hash-chain integrity anchors (when `hash_chain_enabled: true`)
 - **External artifact references** — evidence/report manifests, tapes, bundles, and cookie jars by path/hash rather than embedded content
 
-Set `OVERWATCH_STATE_FILE=/path/to/state.json` to override the default. Durable
+For an explicitly isolated raw process or stopped setup selection,
+`OVERWATCH_STATE_FILE=/path/to/state.json` overrides the default. Do not use it
+to retarget an already configured managed daemon; update the stopped profile
+through setup instead. Durable
 mutations enter the WAL before live apply; checkpoint snapshots are
 write-triggered/debounced and are also flushed on clean shutdown. Active
 configuration changes atomically update the config file as part of their
@@ -272,14 +279,24 @@ A typical engagement directory after one session:
 
 ## Backup and portability
 
-**To back up an engagement:** copy the entire directory containing
-`engagement.json` and `state-<id>.json`. Include any adjacent
-`.write-intent.json`, intent conflict archives, mutation journal, and retained
-snapshots; do not omit them from a crash-state capture.
+**To back up a live engagement:** prefer `bundle_engagement`, which captures
+through the engine's artifact/state barrier. For a raw copy, first stop the
+verified daemon or use a filesystem snapshot that is consistent across the
+entire selected state family. The config and state may live in different
+directories; identify both with `npm run daemon:status` or `npm run doctor`.
+
+Copy `engagement.json`, `state-<id>.json`, and all adjacent WALs, snapshots,
+write/migration/rollback intents, conflict archives, migration backups,
+evidence, reports, tapes, and recovery artifacts. Do not omit uncertain bytes
+from a crash-state capture.
 
 The state file contains the full graph, activity log, agents, campaigns, and checkpoints. The config file contains the operator-authored engagement definition. Evidence blobs are referenced by ID from the manifest; copy the `evidence/` subdirectory to retain them.
 
-**To move to another machine:** copy the directory, set `OVERWATCH_CONFIG` to point at the new path, and start the server.
+**To move to another machine or path:** copy the complete artifacts while the
+writer is stopped, then run `npm run setup` in the moved checkout before
+starting. Setup regenerates machine-local profile, token-path, MCP, and Claude
+hook wiring without replacing the engagement. Do not use a transient
+`OVERWATCH_CONFIG` override as the normal managed startup path.
 
 **To export a shareable bundle:** use `bundle_engagement`. It produces a portable `.tar.gz` from one artifact-first/state capture barrier containing the state file, active config, evidence, reports, registered JSON-RPC tapes, `bundle-manifest.json`, and the mutation journal when present. Manifest v2 records format versions, checkpoint/config identity, recovery status, exact recovery-authority paths, and per-file sizes and SHA-256 digests. Active config intents, conflict archives, migration backups, rollback intents, and nonstandard recovery journals are copied under `recovery-artifacts/` when present. Optional snapshots can be included. Publication is atomic; an interrupted build cannot replace a prior good archive with a partial tarball. During degraded read-only recovery, staging and the default output move to the OS temp directory so diagnostic export does not require writes under the engagement root.
 

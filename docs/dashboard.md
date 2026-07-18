@@ -311,7 +311,15 @@ The Console is a focused **master-detail** workspace:
 - a **Fleet** roster on the left — select an agent to focus its detail, per-agent steering (Pause/Resume/Stop/Tell), and its own activity stream; with nothing selected, a fleet overview sits over the full primary/sub-agent stream. Terminal (completed/failed/interrupted) agents can be **dismissed** from the roster individually or via **Clear finished** in the fleet header;
 - a **Deploy** launcher and an **Add Targets** launcher in the header. See [Deploy](#deploy) and [Add Targets](#add-targets) below.
 
-Approve/deny here routes through the same canonical path as the terminal; resolved rows clear off the live `action_resolved` push. The standalone **Approvals** view (Console group) is the deep triage queue with the same controls **plus batch triage** for a busy queue — every path still an explicit operator decision (no auto-approval):
+Approve/deny here routes through the same canonical path as the terminal;
+resolved rows clear off the live `action_resolved` push. The standalone
+**Approvals** view (Console group) is the deep triage queue for actions that the
+effective policy actually queues, with the same controls **plus batch triage**
+for a busy queue. `auto-approve` does not queue; `approve-critical` queues only
+policy-selected actions; and `approve-all` queues every action. An unanswered
+queued action auto-executes after `approval_timeout_ms` as an explicitly stamped
+unattended timeout. Task cancellation/reaping or daemon shutdown aborts it
+instead:
 
 - **Multi-select** (the *Select* toggle) → **Approve/Deny selected**; **per-technique "Approve all (N)"** in each group header; denials always take one shared reason.
 - **Keyboard triage:** `a` approve the focused action · `j`/`k` move · `x` toggle its selection. (Deny stays click-driven — a reason is required.)
@@ -323,7 +331,10 @@ Free-form commands that need a planner are represented as durable application
 commands. The UI follows that server-owned command rather than imposing a
 browser-side planning timeout, so a page reload does not manufacture a failed
 plan while its worker is still thinking. A planner that really exits without a
-proposal reports that terminal outcome explicitly.
+proposal reports that terminal outcome explicitly. The default planner lane has
+one slot, so accepted work may be queued. Inspect active commands at
+`GET /api/commands/active` and a particular result at
+`GET /api/commands/{command_id}`; see [Daily Operation](daily-operations.md).
 
 Dashboard-managed planners and agents run as isolated headless Claude workers.
 Each worker receives a temporary task-specific MCP configuration, a bounded
@@ -374,6 +385,8 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/api/fleet/directive` | POST | Fleet-wide pause/resume/stop (optionally one campaign) |
 | `/api/fleet/dismiss` | POST | Bulk "Clear finished" — dismiss every terminal agent (optionally one campaign) |
 | `/api/commands` | POST | NL command — preview / confirm / deny (operator cockpit) |
+| `/api/commands/active` | GET | Active durable planner commands, including queued/running state |
+| `/api/commands/{command_id}` | GET | One durable command and its stored terminal outcome |
 | `/api/config/scope/preview` | POST | Read-only dry-run of a scope change — nodes entering/leaving scope, resolved suggestions (Add Targets) |
 | `/api/config/scope` | PATCH | Apply a scope change (full-replacement body, diffed server-side → `updateScope`) |
 | `/api/actions/:id/approve` · `/api/actions/:id/deny` | POST | Resolve a pending action (inline approve/deny; canonical `resolveApprovalRequest` path) |
