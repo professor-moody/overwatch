@@ -705,8 +705,9 @@ No state, WAL, snapshot, backup, evidence, report, or tape artifact was modified
 Next steps:
   ${opts.daemon ? `${runtimeCommand('npm run daemon:start', explicitStatePath || recoveryStatePath)}
   ${runtimeCommand('npm run doctor', explicitStatePath || recoveryStatePath)}${scopeItems.length === 0 ? '        # safe to start; add scope after launch' : ''}
-  ${dashboardNextStep} and run claude in this or another terminal.` : `
-  claude`}
+  ${dashboardNextStep}
+  OVERWATCH_ENGAGEMENT_ACTIVE=1 claude` : `
+  OVERWATCH_ENGAGEMENT_ACTIVE=1 claude`}
 
 State persists to ${statePath} unless OVERWATCH_STATE_FILE is set.`);
   }
