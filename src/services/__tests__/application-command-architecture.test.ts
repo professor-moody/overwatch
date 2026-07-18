@@ -94,6 +94,39 @@ describe('application-command architecture', () => {
     expect(facade.split('\n').length).toBeLessThan(100);
   });
 
+  it('types high-traffic command services against explicit capability ports', () => {
+    const boundaries = [
+      {
+        path: 'services/application-command-service.ts',
+        port: 'ApplicationCommandHost',
+      },
+      {
+        path: 'services/dispatch-command-service.ts',
+        port: 'DispatchCommandPort',
+      },
+      {
+        path: 'services/agent-lifecycle-command-service.ts',
+        port: 'AgentLifecycleCommandPort',
+      },
+      {
+        path: 'services/operator-command-service.ts',
+        port: 'OperatorCommandPort',
+      },
+    ];
+    for (const { path, port } of boundaries) {
+      const commandService = source(path);
+      expect(commandService).toContain(`export interface ${port}`);
+      expect(commandService).toContain(`private readonly engine: ${port}`);
+      expect(commandService).not.toContain("from './graph-engine.js'");
+      expect(commandService).not.toMatch(/\bengine\s*:\s*GraphEngine\b/);
+      expect(commandService).not.toMatch(/\bPick\s*<\s*GraphEngine\b/);
+      expect(commandService).not.toMatch(/\bas\s+GraphEngine\b/);
+      // An index signature would defeat the port: TypeScript must reject any
+      // this.engine capability that was not deliberately declared.
+      expect(commandService).not.toMatch(/\[\s*key\s*:\s*string\s*\]\s*:/);
+    }
+  });
+
   it('routes every audited external-effect surface through a durable command service', () => {
     expect(source('tools/_process-runner.ts')).toContain('ProcessCommandService');
     expect(source('tools/parse-output.ts')).toContain('ParseCommandService');

@@ -5,7 +5,14 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { FRONTIER_TYPES } from '../contracts/dashboard-v1.js';
-import type { AgentTask } from '../types.js';
+import type {
+  AgentTask,
+  Campaign,
+  EngagementConfig,
+  ExportedGraph,
+  FrontierItem,
+  NodeProperties,
+} from '../types.js';
 import { isIpInCidr } from './cidr.js';
 import {
   getArchetype,
@@ -19,10 +26,84 @@ import {
   ApplicationCommandConflictError,
   ApplicationCommandService,
   type ApplicationCommandExecution,
+  type ApplicationCommandHost,
   type ApplicationCommandMetadata,
 } from './application-command-service.js';
-import type { GraphEngine } from './graph-engine.js';
+import type { DurableStateSliceKey } from './durable-state-patch.js';
 import type { PersistedApplicationCommandV1 } from './persisted-state.js';
+
+export interface AgentRegistrationResult {
+  ok: boolean;
+  lease_conflict?: { existing_task_id: string; existing_agent_id: string };
+  node_conflict?: {
+    existing_task_id: string;
+    existing_agent_id: string;
+    node_id: string;
+  };
+  cap_exceeded?: {
+    scope: 'subnet' | 'target';
+    key: string;
+    limit: number;
+    current: number;
+  };
+}
+
+/** Domain capabilities needed to plan and register agent work. */
+export interface DispatchCommandPort extends ApplicationCommandHost {
+  registerAgent(task: AgentTask): AgentRegistrationResult;
+  computeFrontier(): FrontierItem[];
+  filterFrontier(frontier: FrontierItem[]): {
+    passed: FrontierItem[];
+    filtered: Array<{ item: FrontierItem; reason: string }>;
+  };
+  getAgentTasks(): AgentTask[];
+  getRunningTaskForFrontierItem(frontierItemId: string): AgentTask | null;
+  computeSubgraphNodeIds(frontierItemId: string, hops?: number): string[];
+  getNode(id: string): NodeProperties | null;
+  getCampaign(id: string): Campaign | null;
+  getCampaignChildren(parentId: string): Campaign[];
+  findCampaignForItem(frontierItemId: string): Campaign | null;
+  activateCampaign(id: string): Campaign | null;
+  getFrontierItem(frontierItemId: string): FrontierItem | null;
+  getActionableFrontierItem(frontierItemId: string): FrontierItem | null;
+  getConfig(): EngagementConfig;
+  exportGraph(options?: {
+    includeSuperseded?: boolean;
+    includeCold?: boolean;
+    sourceTrust?: boolean;
+    includeDerivedCommunities?: boolean;
+  }): ExportedGraph;
+  runAtomicScopeCommand<T>(
+    changes: {
+      add_cidrs?: string[];
+      remove_cidrs?: string[];
+      add_domains?: string[];
+      remove_domains?: string[];
+      add_exclusions?: string[];
+      remove_exclusions?: string[];
+      reason: string;
+    },
+    sourceActionId: string | undefined,
+    stateKeys: readonly DurableStateSliceKey[],
+    mutation: (scope: {
+      before: EngagementConfig['scope'];
+      after: EngagementConfig['scope'];
+      affected_node_count: number;
+    }) => T,
+    applicationCommandFromResult?: (
+      result: T,
+    ) => PersistedApplicationCommandV1 | undefined,
+  ): {
+    scope: {
+      applied: boolean;
+      errors: string[];
+      before: EngagementConfig['scope'];
+      after: EngagementConfig['scope'];
+      affected_node_count: number;
+    };
+    result: T;
+  };
+}
 
 export class DispatchCommandError extends Error {
   constructor(
@@ -80,7 +161,7 @@ const ExactAgentRegisterInputSchema = z.object({
 
 export interface ExactAgentRegisterResponse {
   task: AgentTask;
-  registration: ReturnType<GraphEngine['registerAgent']>;
+  registration: AgentRegistrationResult;
 }
 
 export interface DispatchCommandResponse {
@@ -288,7 +369,7 @@ function domainErrorFromExecution(
 
 export class DispatchCommandService {
   constructor(
-    private readonly engine: GraphEngine,
+    private readonly engine: DispatchCommandPort,
     private readonly commands: ApplicationCommandService = new ApplicationCommandService(engine),
   ) {}
 
