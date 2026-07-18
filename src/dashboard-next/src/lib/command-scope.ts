@@ -1,4 +1,5 @@
 import type { AgentInfo } from './types';
+import { agentDisplayLabel, canonicalAgentTaskId } from './agent-reference';
 
 // Phase 5 (Mission Control) — one contextual command box replaces the separate
 // global command bar and per-agent "Tell" box. A scope pill selects where the
@@ -39,7 +40,11 @@ export function canScopeToAgent(agent: AgentInfo | null | undefined): boolean {
  *  commandable agent scopes to it; otherwise fall back to the planner. */
 export function defaultScopeFor(agent: AgentInfo | null | undefined): CommandScope {
   if (agent && canScopeToAgent(agent)) {
-    return { kind: 'agent', taskId: agent.id, label: agent.agent_id || agent.id };
+    return {
+      kind: 'agent',
+      taskId: canonicalAgentTaskId(agent),
+      label: agentDisplayLabel(agent),
+    };
   }
   return ENGAGEMENT_SCOPE;
 }

@@ -1,6 +1,7 @@
 import type { AgentInfo, PendingAction, SessionInfo } from './types';
 import type { AgentQuery } from './api';
 import { sessionsForAgent } from './session-workspace';
+import { agentDisplayLabel, canonicalAgentTaskId } from './agent-reference';
 
 // Phase 5 (Mission Control) — project the scattered per-agent signals the
 // dashboard already receives (status, current_action, campaign, frontier item,
@@ -173,8 +174,8 @@ export function buildMissionCard(agent: AgentInfo, ctx: MissionContext = {}): Mi
   else tone = 'running';
 
   return {
-    id: agent.id,
-    label: agent.agent_id || agent.id,
+    id: canonicalAgentTaskId(agent),
+    label: agentDisplayLabel(agent),
     status: agent.status,
     role: agent.skill,
     campaignId: agent.campaign_id || agent.campaign?.id,

@@ -45,6 +45,18 @@ describe('buildMissionCard', () => {
     expect(card.tone).toBe('running');
   });
 
+  it('uses canonical task identity for roster selection and actions', () => {
+    const card = buildMissionCard(agent({
+      task_id: 'task-canonical',
+      agent_label: 'recon-canonical',
+      id: 'legacy-task',
+      agent_id: 'legacy-recon',
+    }), { now: NOW });
+
+    expect(card.id).toBe('task-canonical');
+    expect(card.label).toBe('recon-canonical');
+  });
+
   it('marks blocked + waiting-on-answer when the agent has an open question', () => {
     const card = buildMissionCard(agent(), { now: NOW, agentQueries: [query()] });
     expect(card.awaitingAnswer).toBe(true);
@@ -162,9 +174,9 @@ describe('buildMissionCard', () => {
 
 describe('sortMissionCards / groupMissionCards', () => {
   const cards = (): MissionCard[] => [
-    buildMissionCard(agent({ id: 'a', agent_id: 'a', status: 'completed', campaign_id: 'c1', campaign: { id: 'c1', name: 'Beta', strategy: 'x' } }), { now: NOW }),
-    buildMissionCard(agent({ id: 'b', agent_id: 'b', campaign_id: 'c1', campaign: { id: 'c1', name: 'Beta', strategy: 'x' } }), { now: NOW, agentQueries: [query({ task_id: 'b', agent_id: 'b' })] }),
-    buildMissionCard(agent({ id: 'c', agent_id: 'c' }), { now: NOW }),
+    buildMissionCard(agent({ task_id: 'a', agent_label: 'a', id: 'a', agent_id: 'a', status: 'completed', campaign_id: 'c1', campaign: { id: 'c1', name: 'Beta', strategy: 'x' } }), { now: NOW }),
+    buildMissionCard(agent({ task_id: 'b', agent_label: 'b', id: 'b', agent_id: 'b', campaign_id: 'c1', campaign: { id: 'c1', name: 'Beta', strategy: 'x' } }), { now: NOW, agentQueries: [query({ task_id: 'b', agent_id: 'b' })] }),
+    buildMissionCard(agent({ task_id: 'c', agent_label: 'c', id: 'c', agent_id: 'c' }), { now: NOW }),
   ];
 
   it('floats attention (blocked) above running above done', () => {
@@ -217,9 +229,9 @@ describe('buildMissionCard — stuck detection', () => {
 
   it('sortMissionCards places stuck below blocked, above running', () => {
     const sorted = sortMissionCards([
-      buildMissionCard(agent({ id: 'r', agent_id: 'run', status: 'running', current_action_at: new Date(NOW).toISOString() }), { now: NOW }),
-      buildMissionCard(idle({ id: 's', agent_id: 'stuck' }), { now: NOW }),
-      buildMissionCard(agent({ id: 'b', agent_id: 'blk' }), { now: NOW, agentQueries: [query({ task_id: 'b', agent_id: 'blk' })] }),
+      buildMissionCard(agent({ task_id: 'r', agent_label: 'run', id: 'r', agent_id: 'run', status: 'running', current_action_at: new Date(NOW).toISOString() }), { now: NOW }),
+      buildMissionCard(idle({ task_id: 's', agent_label: 'stuck', id: 's', agent_id: 'stuck' }), { now: NOW }),
+      buildMissionCard(agent({ task_id: 'b', agent_label: 'blk', id: 'b', agent_id: 'blk' }), { now: NOW, agentQueries: [query({ task_id: 'b', agent_id: 'blk' })] }),
     ]);
     expect(sorted.map(c => c.tone)).toEqual(['blocked', 'stuck', 'running']);
   });

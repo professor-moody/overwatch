@@ -12,6 +12,7 @@ import {
   type CommandScope,
 } from '../../lib/command-scope';
 import { cn } from '../../lib/utils';
+import { agentDisplayLabel, canonicalAgentTaskId } from '../../lib/agent-reference';
 import { ActionButton } from '../shared/primitives';
 import { OperatorCommandBar } from './OperatorCommandBar';
 
@@ -45,13 +46,16 @@ export function ContextualCommandBar({
   const terminalFocused = !!focusedAgent && !commandable;
   const hasRunning = (agents ?? []).some(a => a.status === 'running');
   const primary = (agents ?? []).find(a => a.role === 'orchestrator' && a.status === 'running');
+  const focusedTaskId = focusedAgent ? canonicalAgentTaskId(focusedAgent) : undefined;
+  const focusedLabel = focusedAgent ? agentDisplayLabel(focusedAgent) : undefined;
+  const primaryTaskId = primary ? canonicalAgentTaskId(primary) : undefined;
 
   // Follow focus: when the focused AGENT changes, default the scope to it (or
   // Plan). Keyed on id ONLY — a status heartbeat on the same agent must not clobber
   // a deliberate Plan / All-agents / Primary choice the operator made.
   useEffect(() => {
     setScope(defaultScopeFor(focusedAgent));
-  }, [focusedAgent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [focusedTaskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Guard a stranded scope: if the scope's target stops being valid — the focused
   // agent went terminal, the fleet emptied under an "All agents" broadcast, or the
@@ -61,7 +65,7 @@ export function ContextualCommandBar({
     if (scope.kind === 'agent' && !commandable) setScope(ENGAGEMENT_SCOPE);
     else if (scope.kind === 'all_agents' && !hasRunning) setScope(ENGAGEMENT_SCOPE);
     else if (scope.kind === 'primary' && !primary) setScope(ENGAGEMENT_SCOPE);
-  }, [scope.kind, commandable, hasRunning, primary?.id]);
+  }, [scope.kind, commandable, hasRunning, primaryTaskId]);
 
   const route = routeCommand(scope);
 
@@ -80,14 +84,14 @@ export function ContextualCommandBar({
         )}
         {focusedAgent && commandable && (
           <ScopePill
-            label={focusedAgent.agent_id || focusedAgent.id}
+            label={focusedLabel!}
             active={scope.kind === 'agent'}
-            onClick={() => setScope({ kind: 'agent', taskId: focusedAgent.id, label: focusedAgent.agent_id || focusedAgent.id })}
+            onClick={() => setScope({ kind: 'agent', taskId: focusedTaskId!, label: focusedLabel! })}
           />
         )}
         {focusedAgent && terminalFocused && (
           <ScopePill
-            label={`${focusedAgent.agent_id || focusedAgent.id} · ${focusedAgent.status}`}
+            label={`${focusedLabel} · ${focusedAgent.status}`}
             active={false}
             disabled
             title="This agent has finished — you can't command it. Dismiss it, or select a running/pending agent."
@@ -110,7 +114,7 @@ export function ContextualCommandBar({
         // Resolve the orchestrator id LIVE at render, not at click — so a crash +
         // respawn (a new task id) re-points steering to the healthy orchestrator
         // instead of 409'ing against the dead one.
-        <InstructBar taskId={primary.id} placeholder={scopePlaceholder(scope)} onSent={onAgentCommandSent} />
+        <InstructBar taskId={primaryTaskId!} placeholder={scopePlaceholder(scope)} onSent={onAgentCommandSent} />
       )}
       {route.via === 'instruct_all' && (
         <InstructAllBar placeholder={scopePlaceholder(scope)} onSent={onAgentCommandSent} />
