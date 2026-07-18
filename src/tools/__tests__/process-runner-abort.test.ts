@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { runProcess } from '../_process-runner.js';
-import { processIsAlive } from '../../services/process-identity.js';
+import { observeProcessIdentity, processIsAlive } from '../../services/process-identity.js';
 
 describe('runProcess cancellation', () => {
   it.each([
@@ -113,6 +113,7 @@ describe('runProcess cancellation', () => {
     async () => {
       const controller = new AbortController();
       let descendantPid: number | undefined;
+      let descendantStartIdentity: string | undefined;
       const source = `
         const { spawn } = require('node:child_process');
         const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); process.stdout.write("ready"); setInterval(() => {}, 1000)'], {
@@ -130,15 +131,27 @@ describe('runProcess cancellation', () => {
           const parsed = Number(chunk.toString('utf8').trim());
           if (Number.isSafeInteger(parsed) && parsed > 0) {
             descendantPid = parsed;
+            descendantStartIdentity = observeProcessIdentity(parsed).process_start_identity;
             controller.abort();
           }
         },
       });
 
       expect(descendantPid).toEqual(expect.any(Number));
-      expect(result.signal).toBe('SIGTERM');
+      // The direct target may report TERM before escalation, or SIGKILL when
+      // the group drain wins the race. Both are valid cancellation outcomes.
+      expect(['SIGTERM', 'SIGKILL']).toContain(result.signal);
       expect(result.timed_out).toBe(false);
-      expect(processIsAlive(descendantPid!)).toBe(false);
+      const observedAfter = observeProcessIdentity(descendantPid!);
+      const sameDescendantStillAlive = processIsAlive(descendantPid!)
+        && (
+          descendantStartIdentity === undefined
+          || observedAfter.process_start_identity === undefined
+          || observedAfter.process_start_identity === descendantStartIdentity
+        );
+      // Busy CI hosts may recycle the numeric PID immediately after the managed
+      // group drains. Ownership is physical-process identity, not PID alone.
+      expect(sameDescendantStillAlive).toBe(false);
     },
     10_000,
   );
