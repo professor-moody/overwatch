@@ -73,7 +73,8 @@ function printUsage(): void {
     --variant <name>       candidate prompt to A/B vs control, e.g. ${SUBAGENT_PROMPT_VARIANTS.filter(v => v !== 'control').join(', ')}
 
   Cost controls: cheap default model, Claude in-flight dollar cap, command-wide
-  dollar ceiling, turn/time caps, accounting-token batch gate, and baseline cache.`);
+  dollar ceiling, turn/time caps, accounting-token batch gate, and baseline cache.
+  Every real-run outcome is preserved privately under eval-artifacts/.`);
 }
 
 async function main(): Promise<void> {
@@ -155,6 +156,7 @@ async function main(): Promise<void> {
         model: args.model,
         maxTurns: args.maxTurns,
         maxBudgetUsd: assignedUsd,
+        maxTotalUsd: args.maxTotalUsd,
         variant: arm,
         timeoutMs: args.timeoutMs,
       });
@@ -165,10 +167,28 @@ async function main(): Promise<void> {
       if (run.costUsd !== undefined) budget.reportedUsd += run.costUsd;
       const grade = gradeRun(run.record, scenario.rubric);
       grades.push(grade);
-      await run.cleanup();
-      console.log(`[${scenario.id}] ${arm} trial ${t + 1}/${args.trials}: overall ${grade.overall.toFixed(3)} · ${formatUsage(run.usage)} · $${charge.chargedUsd.toFixed(4)} ${charge.source} · status ${run.record.taskStatus}`);
-      if (charge.chargedUsd > assignedUsd + 0.000001) {
+      const capExceeded = charge.chargedUsd > assignedUsd + 0.000001;
+      const artifactOutcome = capExceeded ? 'harness_error' : run.outcome;
+      try {
+        run.finalizeArtifacts({
+          outcome: artifactOutcome,
+          grade,
+          reportedCostUsd: run.costUsd,
+          reservedCostUsd: charge.source === 'reserved_cap' ? charge.chargedUsd : 0,
+          error: capExceeded
+            ? new Error(`Provider cost exceeded the assigned in-flight cap of $${assignedUsd.toFixed(6)}.`)
+            : undefined,
+        });
+      } finally {
+        await run.cleanup();
+      }
+      console.log(`[${scenario.id}] ${arm} trial ${t + 1}/${args.trials}: overall ${grade.overall.toFixed(3)} · ${formatUsage(run.usage)} · $${charge.chargedUsd.toFixed(4)} ${charge.source} · outcome ${artifactOutcome}${run.artifactDirectory ? ` · artifacts ${run.artifactDirectory}` : ''}`);
+      if (capExceeded) {
         console.error(`Provider cost $${charge.chargedUsd.toFixed(6)} exceeded the assigned $${assignedUsd.toFixed(6)} in-flight cap; stopping.`);
+        process.exit(2);
+      }
+      if (run.outcome !== 'completed') {
+        console.error(`Evaluation run ended as ${run.outcome}; it was preserved but is not eligible for a baseline.`);
         process.exit(2);
       }
       if (budget.used >= args.budget) {

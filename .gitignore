@@ -28,6 +28,8 @@ smoke-engagement/
 logs/
 # Local control baselines cached by `npm run prompt-eval` (machine/model-specific).
 eval-baselines/
+# Redacted evidence from explicitly invoked real-model qualification runs.
+eval-artifacts/
 
 # dashboard-next: Vite handles transpilation; tsc is typecheck-only.
 # Guard against accidental emit if someone runs `tsc -p src/dashboard-next`.

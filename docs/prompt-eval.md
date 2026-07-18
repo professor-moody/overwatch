@@ -70,6 +70,24 @@ accident:
    (gitignored); subsequent runs reuse them (`--refresh-baseline` to re-run), so
    iterating on a candidate never repays for control.
 
+### Preserved real-run evidence
+
+Every `--real` invocation writes a private, gitignored directory beneath
+`eval-artifacts/`. Each run retains a schema-versioned manifest, redacted Claude
+stream, record, grade, sanitized command/tool metadata, usage and cost accounting,
+graph delta, timestamps, and member checksums. Directories use mode `0700` and
+files use mode `0600`.
+
+The directory contains only the isolated synthetic evaluation runtime. It does
+not copy the active operator engagement, credentials, evidence, or reports.
+
+Terminal outcomes are recorded as `completed`, `failed`, `interrupted`,
+`timed_out`, `budget_exhausted`, or `harness_error`. A timeout cancels the model
+worker and waits for terminal process state before the isolated runtime is
+removed. Only `completed` runs are eligible for cached baselines; every other
+outcome remains diagnostic evidence. Deterministic fake-model and CI runs remain
+temporary unless an artifact test explicitly requests preservation.
+
 ### Scenarios
 
 The library ([`src/test-support/eval-scenarios.ts`](https://github.com/professor-moody/overwatch/blob/main/src/test-support/eval-scenarios.ts))

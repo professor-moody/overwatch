@@ -9,8 +9,9 @@
 // need a real model and are NOT asserted here — this proves the dispatch→child→
 // findings→record→grade PIPELINE, like the sub-agent plumbing smoke.
 import { describe, it, expect, afterEach, beforeAll } from 'vitest';
-import { resolve } from 'path';
-import { chmodSync } from 'fs';
+import { join, resolve } from 'path';
+import { chmodSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { createServer } from 'net';
 import { runOrchestrationScenario, type OrchEvalResult } from '../test-support/eval-run.js';
 import { gradeOrchestration, ORCH_CRITERIA } from '../services/eval-orchestration-rubric.js';
@@ -45,5 +46,28 @@ describe.skipIf(!supportsLocalListen)('orchestration eval pipeline smoke (fake)'
     expect(g.criteria.find(c => c.criterion === 'dispatches')!.score).toBe(1);
     expect(g.criteria.find(c => c.criterion === 'archetype_match')!.score).toBe(1);
     expect(g.criteria.find(c => c.criterion === 'objective_progress')!.score).toBe(1);
+  }, 45000);
+
+  it('uses the same explicit artifact finalization path as prompt evaluation', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'ow-orch-eval-artifact-smoke-'));
+    try {
+      last = await runOrchestrationScenario({
+        preserveArtifacts: true,
+        artifactRoot: join(sandbox, 'artifacts'),
+      });
+      const grade = gradeOrchestration(last.record);
+      const manifest = last.finalizeArtifacts({ grade });
+      expect(manifest).toMatchObject({
+        evaluation_kind: 'orchestration',
+        outcome: 'completed',
+        eligible_for_baseline: true,
+      });
+      expect(JSON.parse(readFileSync(join(last.artifactDirectory!, 'grade.json'), 'utf8')))
+        .toMatchObject({ outcome: 'completed', grade: { overall: grade.overall } });
+    } finally {
+      if (last) await last.cleanup();
+      last = null;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   }, 45000);
 });

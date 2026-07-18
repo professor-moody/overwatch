@@ -23,6 +23,7 @@ const EXACT_ARTIFACT_NAMES = new Set([
   '.snapshots',
   'engagement.json',
   'engagements',
+  'eval-artifacts',
   'eval-baselines',
   'evidence',
   'logs',

@@ -17,10 +17,14 @@ describe('artifact hygiene guard', () => {
 
     writeFileSync(sandbox.path('evidence', 'manifest.json'), 'after-after');
     writeFileSync(sandbox.path('state-new.json'), '{}');
+    mkdirSync(sandbox.path('eval-artifacts', 'run-1'), { recursive: true });
+    writeFileSync(sandbox.path('eval-artifacts', 'run-1', 'manifest.json'), '{}');
     const after = snapshotSensitiveArtifacts(sandbox.root);
     const diff = diffArtifactSnapshots(before, after);
 
     expect(diff.added).toContain('state-new.json');
+    expect(diff.added).toContain('eval-artifacts');
+    expect(diff.added).toContain('eval-artifacts/run-1/manifest.json');
     expect(diff.changed).toContain('evidence/manifest.json');
     expect(() => assertArtifactSnapshotUnchanged(before, after))
       .toThrow(/changed operator-owned artifacts/u);
