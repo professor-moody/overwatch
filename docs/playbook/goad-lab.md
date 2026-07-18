@@ -53,7 +53,7 @@ The dashboard's path overlays become useful here — Shift+click any owned crede
 ## Tips
 
 - **Run BloodHound early.** Inference rules need the structural data. Without it, the AI is guessing.
-- **Sub-agents are your friend.** AD engagements have lots of independent enum tasks — dispatch them in parallel with `register_agent` or `dispatch_campaign_agents`.
+- **Sub-agents are your friend.** AD engagements have lots of independent enum tasks — dispatch them in parallel with `dispatch_agents` or `dispatch_campaign_agents`.
 - **`run_graph_health` after big ingests.** Catches dangling edges or property issues before they propagate.
 - **Watch for ESC1-13 frontier items.** ADCS misconfigs are often the fastest path.
 

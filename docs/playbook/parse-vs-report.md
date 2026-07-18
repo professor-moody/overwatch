@@ -96,6 +96,8 @@ Anything that isn't a supported parser's output:
 ## Tips
 
 - **`ingest: false`** — preview what would be parsed without modifying the graph. Useful when you're unsure.
-- **Always pass `action_id`** if you have one (from `validate_action`) — it links the finding to the action that produced it.
+- **Always pass `action_id`** if you have one (normally returned by
+  `run_tool` / `run_bash`, or by `validate_action` for externally observed
+  work) — it links the finding to the action that produced it.
 - **Always pass `frontier_item_id`** if the action came from a frontier candidate — required for retrospective attribution.
 - **Node IDs follow conventions** — `host-<ip>`, `svc-<ip>-<port>`, `user-<domain>-<name>`. The parsers do this automatically; for `report_finding` you should match the pattern.

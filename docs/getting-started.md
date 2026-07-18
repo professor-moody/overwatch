@@ -231,7 +231,9 @@ Once `claude` is running and connected, the AI is waiting for direction. Some go
 > **"Show me a path from any owned credential to Domain Admin."**
 > Triggers `find_paths` and the AI explains what's missing.
 
-You're the operator giving direction; the AI handles the `validate_action` → `log_action_event` → execute → `parse_output` → `report_finding` bookkeeping for you.
+You're the operator giving direction; the AI uses instrumented `run_tool` /
+`run_bash` execution for validation, approval, lifecycle logging, and evidence,
+then lands discoveries through `parse_output` or `report_finding`.
 
 For a fully narrated example, read the [End-to-End Walkthrough](playbook/walkthrough.md).
 
