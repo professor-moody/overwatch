@@ -3,6 +3,7 @@ import {
   parseOrchArgs, meanOrchGrade,
   DEFAULT_ORCH_MAX_TURNS, DEFAULT_ORCH_TIMEOUT_MS, DEFAULT_ORCH_BUDGET,
 } from '../orch-eval.js';
+import { DEFAULT_MAX_BUDGET_USD, DEFAULT_MAX_TOTAL_USD } from '../prompt-eval-lib.js';
 import { gradeOrchestration, type OrchRunRecord } from '../../services/eval-orchestration-rubric.js';
 
 describe('parseOrchArgs', () => {
@@ -13,20 +14,29 @@ describe('parseOrchArgs', () => {
     expect(a.model).toBe('haiku');
     expect(a.trials).toBe(1);
     expect(a.budget).toBe(DEFAULT_ORCH_BUDGET);
+    expect(a.maxBudgetUsd).toBe(DEFAULT_MAX_BUDGET_USD);
+    expect(a.maxTotalUsd).toBe(DEFAULT_MAX_TOTAL_USD);
     expect(a.maxTurns).toBe(DEFAULT_ORCH_MAX_TURNS);
     expect(a.timeoutMs).toBe(DEFAULT_ORCH_TIMEOUT_MS);
   });
 
   it('parses overrides', () => {
-    const a = parseOrchArgs(['--real', '--yes', '--model', 'sonnet', '--trials', '3', '--budget', '600000', '--max-turns', '30', '--timeout-ms', '120000']);
-    expect(a).toMatchObject({ real: true, yes: true, model: 'sonnet', trials: 3, budget: 600000, maxTurns: 30, timeoutMs: 120000 });
+    const a = parseOrchArgs(['--real', '--yes', '--model', 'sonnet', '--trials', '3', '--budget', '600000', '--max-budget-usd', '0.25', '--max-total-usd', '1.25', '--max-turns', '30', '--timeout-ms', '120000']);
+    expect(a).toMatchObject({ real: true, yes: true, model: 'sonnet', trials: 3, budget: 600000, maxBudgetUsd: 0.25, maxTotalUsd: 1.25, maxTurns: 30, timeoutMs: 120000 });
   });
 
   it('a NaN/garbage numeric arg falls back to the default (never disables the budget guard)', () => {
-    const a = parseOrchArgs(['--budget', 'notanumber', '--trials', '-5', '--max-turns', '0']);
+    const a = parseOrchArgs(['--budget', 'notanumber', '--max-budget-usd', 'wat', '--max-total-usd', '-1', '--trials', '-5', '--max-turns', '0']);
     expect(a.budget).toBe(DEFAULT_ORCH_BUDGET);   // not NaN/0 → guard stays armed
     expect(a.trials).toBe(1);                     // negative rejected
     expect(a.maxTurns).toBe(DEFAULT_ORCH_MAX_TURNS);
+    expect(a.maxBudgetUsd).toBe(DEFAULT_MAX_BUDGET_USD);
+    expect(a.maxTotalUsd).toBe(DEFAULT_MAX_TOTAL_USD);
+  });
+
+  it('accepts deliberate zero dollar ceilings so main refuses before launch', () => {
+    expect(parseOrchArgs(['--max-budget-usd', '0', '--max-total-usd', '0']))
+      .toMatchObject({ maxBudgetUsd: 0, maxTotalUsd: 0 });
   });
 });
 

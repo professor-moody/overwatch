@@ -42,7 +42,7 @@ machinery A/Bs candidate-vs-control and flags regressions (`compareGrades`).
 ```bash
 npm run prompt-eval                                   # usage (no spend)
 npm run prompt-eval -- --real --yes                   # establish/refresh baselines
-npm run prompt-eval -- --real --scenarios recon --trials 1 --budget 20000 --yes
+npm run prompt-eval -- --real --scenarios recon --trials 1 --max-budget-usd 0.50 --max-total-usd 0.50 --yes
 ```
 
 ### Cost controls
@@ -51,22 +51,22 @@ These are the point of the design — Tier 2 is hard to run expensively by
 accident:
 
 1. **Cheap model by default** — `haiku`; override with `--model`.
-2. **Per-run caps** — `--max-turns` (default 10) bounds a runaway agent (the only
-   *per-run* token-ish bound — there is no mid-run token cap), and `--timeout-ms`
-   (default 600000 = 10 min) is the wall-clock cap a real run waits for terminal
-   status. A real `claude` sub-agent takes minutes, so the default is generous;
-   lower it to fail fast, raise it for slow models.
-3. **Global token budget** — `--budget` (default 50k), enforced two ways: a
-   pre-run gate whose per-run estimate adapts up to the heaviest run seen (so
-   after one heavy run it stops optimistically launching more), and a **hard
-   post-run stop** the moment *actual* cumulative spend reaches the budget. A run
-   already in flight is bounded only by `--max-turns`, so total spend can exceed
-   `--budget` by at most one run's cost — it is a tight bound, not a per-token
-   hard ceiling.
-4. **Tiny defaults** — 3 scenarios, `--trials 2`.
-5. **Pre-run estimate + confirm** — prints the run count + token estimate and
-   requires interactive `y` or `--yes`.
-6. **Baseline cache** — control results are cached to `eval-baselines/`
+2. **Hard in-flight dollar cap** — every real Claude invocation receives
+   `--max-budget-usd` (default `$0.50`). The evaluator refuses to run if the
+   installed Claude CLI does not advertise that flag.
+3. **Command-wide dollar ceiling** — `--max-total-usd` (default `$2.00`) limits
+   the sum charged across the command. When Claude does not report a cost, the
+   complete assigned run cap is reserved, so missing accounting never reopens
+   budget.
+4. **Turn and time caps** — `--max-turns` (default 10) and `--timeout-ms`
+   (default 600000 = 10 min) bound agent work and wall-clock waiting.
+5. **Token-accounting batch gate** — `--budget` (default 50k) uses input,
+   output, cache-read, and cache-creation accounting to decide whether another
+   run should start and to stop a batch after a large result. It is not an
+   in-flight spend ceiling; the dollar flags are.
+6. **Tiny defaults + confirmation** — 3 scenarios, `--trials 2`; the command
+   prints the maximum possible dollar spend and requires `y` or `--yes`.
+7. **Baseline cache** — control results are cached to `eval-baselines/`
    (gitignored); subsequent runs reuse them (`--refresh-baseline` to re-run), so
    iterating on a candidate never repays for control.
 

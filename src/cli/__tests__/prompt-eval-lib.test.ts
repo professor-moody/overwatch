@@ -4,14 +4,26 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath, percentile,
-  DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS, DEFAULT_TIMEOUT_MS,
+  allocateRunBudgetUsd, chargeRunBudgetUsd, inspectClaudeBudgetCompatibility,
+  DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_BUDGET_USD,
+  DEFAULT_MAX_TOTAL_USD, DEFAULT_MAX_TURNS, DEFAULT_TIMEOUT_MS,
 } from '../prompt-eval-lib.js';
 import { RUBRIC_CRITERIA, type RubricResult } from '../../services/eval-rubric.js';
 
 describe('parseArgs', () => {
   it('applies cheap, bounded defaults', () => {
     const a = parseArgs([]);
-    expect(a).toMatchObject({ real: false, yes: false, model: DEFAULT_MODEL, trials: DEFAULT_TRIALS, budget: DEFAULT_BUDGET, maxTurns: DEFAULT_MAX_TURNS, timeoutMs: DEFAULT_TIMEOUT_MS });
+    expect(a).toMatchObject({
+      real: false,
+      yes: false,
+      model: DEFAULT_MODEL,
+      trials: DEFAULT_TRIALS,
+      budget: DEFAULT_BUDGET,
+      maxBudgetUsd: DEFAULT_MAX_BUDGET_USD,
+      maxTotalUsd: DEFAULT_MAX_TOTAL_USD,
+      maxTurns: DEFAULT_MAX_TURNS,
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+    });
     expect(a.scenarios.length).toBeGreaterThan(0);
   });
 
@@ -22,11 +34,20 @@ describe('parseArgs', () => {
   });
 
   it('falls back to defaults on non-numeric values (a NaN budget would disable the guard)', () => {
-    const a = parseArgs(['--real', '--trials', 'abc', '--budget', 'xyz', '--max-turns', 'foo']);
+    const a = parseArgs(['--real', '--trials', 'abc', '--budget', 'xyz', '--max-budget-usd', 'wat', '--max-total-usd', '-1', '--max-turns', 'foo']);
     expect(a.trials).toBe(DEFAULT_TRIALS);
     expect(a.budget).toBe(DEFAULT_BUDGET);
     expect(a.maxTurns).toBe(DEFAULT_MAX_TURNS);
+    expect(a.maxBudgetUsd).toBe(DEFAULT_MAX_BUDGET_USD);
+    expect(a.maxTotalUsd).toBe(DEFAULT_MAX_TOTAL_USD);
     expect(Number.isFinite(a.budget)).toBe(true);
+  });
+
+  it('parses explicit per-run and command dollar ceilings, including a deliberate zero', () => {
+    expect(parseArgs(['--max-budget-usd', '0.25', '--max-total-usd', '1.5']))
+      .toMatchObject({ maxBudgetUsd: 0.25, maxTotalUsd: 1.5 });
+    expect(parseArgs(['--max-budget-usd', '0', '--max-total-usd', '0']))
+      .toMatchObject({ maxBudgetUsd: 0, maxTotalUsd: 0 });
   });
 
   it('does not swallow the next flag as a value', () => {
@@ -50,6 +71,39 @@ describe('parseArgs', () => {
   it('parses the candidate --variant for the A/B arm', () => {
     expect(parseArgs(['--real', '--variant', 'lean']).variant).toBe('lean');
     expect(parseArgs(['--real']).variant).toBeUndefined();
+  });
+});
+
+describe('real-model dollar guard', () => {
+  it('requires Claude to advertise the in-flight dollar flag', () => {
+    expect(inspectClaudeBudgetCompatibility('claude', () => '... --max-budget-usd <amount> ...')).toEqual({ ok: true });
+    expect(inspectClaudeBudgetCompatibility('claude', () => '--max-turns 10')).toMatchObject({ ok: false });
+    expect(inspectClaudeBudgetCompatibility('claude', () => { throw new Error('missing'); })).toMatchObject({ ok: false });
+  });
+
+  it('allocates no more than the per-run cap or remaining command allowance', () => {
+    expect(allocateRunBudgetUsd(0.5, 2, 0)).toBe(0.5);
+    expect(allocateRunBudgetUsd(0.5, 2, 1.8)).toBeCloseTo(0.2, 10);
+    expect(allocateRunBudgetUsd(0.5, 2, 2)).toBe(0);
+  });
+
+  it('charges provider cost when present and reserves the full cap when absent', () => {
+    expect(chargeRunBudgetUsd(0.5, 0.123)).toEqual({ chargedUsd: 0.123, source: 'reported' });
+    expect(chargeRunBudgetUsd(0.5, 0)).toEqual({ chargedUsd: 0, source: 'reported' });
+    expect(chargeRunBudgetUsd(0.5, undefined)).toEqual({ chargedUsd: 0.5, source: 'reserved_cap' });
+  });
+
+  it('stops cumulative allocation after missing costs reserve the command ceiling', () => {
+    let chargedUsd = 0;
+    const assigned: number[] = [];
+    for (let run = 0; run < 5; run += 1) {
+      const cap = allocateRunBudgetUsd(0.5, 2, chargedUsd);
+      assigned.push(cap);
+      if (cap === 0) break;
+      chargedUsd += chargeRunBudgetUsd(cap, undefined).chargedUsd;
+    }
+    expect(assigned).toEqual([0.5, 0.5, 0.5, 0.5, 0]);
+    expect(chargedUsd).toBe(2);
   });
 });
 
