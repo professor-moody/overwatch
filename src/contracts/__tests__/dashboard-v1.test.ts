@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AgentDtoSchema,
+  AgentDuplicatesResponseSchema,
+  AgentHandoffRequestSchema,
+  AgentHandoffResponseSchema,
+  AgentMergeRequestSchema,
+  AgentMergeResponseSchema,
+  AgentSplitRequestSchema,
+  AgentSplitResponseSchema,
   CampaignActionRequestSchema,
   CampaignCreateRequestSchema,
   CampaignListResponseSchema,
@@ -65,6 +73,167 @@ describe('dashboard v1 contracts', () => {
       expected_file_hash: 'a'.repeat(64),
       expected_state_hash: 'b'.repeat(64),
       ignored: true,
+    }).success).toBe(false);
+  });
+
+  it('keeps terminal-source work-shaping inputs strict and bounded', () => {
+    const successor = {
+      archetype: 'web_tester',
+      objective: 'Continue from the retained evidence',
+    };
+    expect(AgentHandoffRequestSchema.safeParse({
+      ...successor,
+      summary: 'The source completed discovery and is ready for a specialist.',
+    }).success).toBe(true);
+    expect(AgentHandoffRequestSchema.safeParse({
+      ...successor,
+      summary: 'ready',
+      source_task_id: 'source-is-owned-by-the-path',
+    }).success).toBe(false);
+    expect(AgentHandoffRequestSchema.safeParse({ ...successor, summary: 'x'.repeat(4_097) }).success).toBe(false);
+
+    const child = (id: number) => ({
+      archetype: 'recon_scanner',
+      objective: `Survey partition ${id}`,
+      target_node_ids: [`node-${id}`],
+    });
+    expect(AgentSplitRequestSchema.safeParse({
+      summary: 'Partition the terminal source scope.',
+      children: [child(1), child(2)],
+    }).success).toBe(true);
+    expect(AgentSplitRequestSchema.safeParse({ summary: 'too small', children: [child(1)] }).success).toBe(false);
+    expect(AgentSplitRequestSchema.safeParse({
+      summary: 'too large',
+      children: Array.from({ length: 21 }, (_, index) => child(index)),
+    }).success).toBe(false);
+    expect(AgentSplitRequestSchema.safeParse({
+      summary: 'strict children',
+      children: [{ ...child(1), parent_task_id: 'path-owned' }, child(2)],
+    }).success).toBe(false);
+
+    expect(AgentMergeRequestSchema.safeParse({
+      summary: 'Retain one canonical result.',
+      duplicate_task_ids: ['duplicate-1'],
+    }).success).toBe(true);
+    expect(AgentMergeRequestSchema.safeParse({
+      summary: 'No repeated task IDs.',
+      duplicate_task_ids: ['duplicate-1', 'duplicate-1'],
+    }).success).toBe(false);
+    expect(AgentMergeRequestSchema.safeParse({
+      summary: 'Canonical identity is path-owned.',
+      duplicate_task_ids: ['duplicate-1'],
+      canonical_task_id: 'canonical-1',
+    }).success).toBe(false);
+  });
+
+  it('projects additive durable work metadata through agents and work-shaping envelopes', () => {
+    const signature = 'a'.repeat(64);
+    const work = {
+      version: 1 as const,
+      root_task_id: 'root-task',
+      signature,
+      origin_frontier_item_id: 'frontier-1',
+      relation: {
+        kind: 'handoff' as const,
+        source_task_id: 'source-task',
+        created_at: '2026-07-17T12:00:00.000Z',
+        summary: 'Discovery handed to a specialist.',
+        key_finding_ids: ['finding-1'],
+        key_evidence_ids: ['evidence-1'],
+        key_event_ids: ['event-1'],
+      },
+      future_work_field: 'additive',
+    };
+    const task = {
+      task_id: 'successor-task',
+      agent_label: 'specialist',
+      id: 'successor-task',
+      agent_id: 'specialist',
+      status: 'pending' as const,
+      assigned_at: '2026-07-17T12:00:00.000Z',
+      queued: true,
+      lifecycle: 'queued' as const,
+      live: false,
+      subgraph_node_ids: ['node-1'],
+      findings_count: 0,
+      work,
+      merged_source_task_ids: ['duplicate-task'],
+    };
+    const parsedTask = AgentDtoSchema.parse(task);
+    expect(parsedTask.work?.relation?.source_task_id).toBe('source-task');
+    expect(parsedTask.work?.signature).toBe(signature);
+    expect((parsedTask.work as unknown as Record<string, unknown>).future_work_field).toBe('additive');
+    expect(AgentDtoSchema.safeParse({
+      ...task,
+      work: {
+        ...work,
+        relation: {
+          ...work.relation,
+          summary: undefined,
+        },
+      },
+    }).success).toBe(false);
+
+    const createdTask = {
+      task_id: task.task_id,
+      agent_label: task.agent_label,
+      id: task.id,
+      agent_id: task.agent_id,
+      status: task.status,
+      assigned_at: task.assigned_at,
+      subgraph_node_ids: task.subgraph_node_ids,
+      work,
+    };
+    const command = { command_id: 'command-1', idempotency_key: 'key-1', replayed: false };
+    expect(AgentHandoffResponseSchema.safeParse({
+      operation: 'handoff', source_task_id: 'source-task', created_tasks: [createdTask], warnings: [], reused_existing: false, ...command,
+      future_response_field: 'additive',
+    }).success).toBe(true);
+    expect(AgentHandoffResponseSchema.safeParse({
+      operation: 'handoff', source_task_id: 'source-task', created_tasks: [{ ...createdTask, work: undefined }], warnings: [], reused_existing: false, ...command,
+    }).success).toBe(false);
+    expect(AgentSplitResponseSchema.safeParse({
+      operation: 'split', source_task_id: 'source-task', created_tasks: [createdTask, { ...createdTask, id: 'child-2', task_id: 'child-2' }], warnings: [], reused_existing: false, ...command,
+    }).success).toBe(true);
+    expect(AgentMergeResponseSchema.safeParse({
+      operation: 'merge', canonical_task_id: 'successor-task', updated_tasks: [createdTask, { ...createdTask, id: 'duplicate-task', task_id: 'duplicate-task', work: { ...work, merged_into_task_id: 'successor-task' } }], warnings: [], reused_existing: false, ...command,
+    }).success).toBe(true);
+    expect(AgentHandoffResponseSchema.safeParse({
+      operation: 'handoff', source_task_id: 'source-task', created_tasks: [createdTask], warnings: [], ...command,
+    }).success).toBe(false);
+    expect(AgentDuplicatesResponseSchema.safeParse({
+      groups: [{
+        signature: work.signature,
+        canonical_task_id: task.task_id,
+        candidate_task_ids: [task.task_id, 'duplicate-task'],
+        tasks: [task, { ...task, task_id: 'duplicate-task', id: 'duplicate-task' }],
+        future_group_field: 'additive',
+      }],
+      total: 1,
+      future_response_field: 'additive',
+    }).success).toBe(true);
+    expect(AgentDuplicatesResponseSchema.safeParse({
+      groups: [{
+        signature,
+        canonical_task_id: 'missing-canonical',
+        candidate_task_ids: [task.task_id, 'duplicate-task'],
+        tasks: [task, { ...task, task_id: 'duplicate-task', id: 'duplicate-task' }],
+      }],
+      total: 1,
+    }).success).toBe(false);
+    expect(AgentDuplicatesResponseSchema.safeParse({
+      groups: [{
+        signature,
+        canonical_task_id: task.task_id,
+        candidate_task_ids: [task.task_id, 'duplicate-task'],
+        tasks: [task, {
+          ...task,
+          task_id: 'duplicate-task',
+          id: 'duplicate-task',
+          work: { ...work, signature: 'b'.repeat(64) },
+        }],
+      }],
+      total: 1,
     }).success).toBe(false);
   });
 

@@ -19,6 +19,7 @@ import {
 } from '../application-command-service.js';
 import { OperatorCommandService } from '../operator-command-service.js';
 import { AgentLifecycleCommandService } from '../agent-lifecycle-command-service.js';
+import { AgentWorkCommandService } from '../agent-work-command-service.js';
 import { projectAgentDtos } from '../dashboard-agent-projector.js';
 import { z } from 'zod';
 import type { EngagementConfig, AgentTask } from '../../types.js';
@@ -120,6 +121,123 @@ describe('Headless runner mechanics (injected spawn)', () => {
     spawnedArgs = [];
     spawnedCmds = [];
     nextPid = 1;
+  });
+
+  it('launches a handoff successor exactly once across command and semantic retries', async () => {
+    const source = headlessTask({
+      id: 'handoff-launch-source',
+      agent_id: 'handoff-launch-source',
+      status: 'completed',
+      subgraph_node_ids: [],
+      objective: 'Original terminal work',
+    });
+    engine.registerAgent(source);
+    const service = makeService();
+    service.start();
+    service.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+    expect(spawned).toHaveLength(0);
+
+    const work = new AgentWorkCommandService(engine);
+    const input = {
+      archetype: 'web_tester',
+      objective: 'Continue the application assessment',
+      summary: 'Carry the confirmed endpoint inventory forward.',
+      key_finding_ids: ['finding-handoff-launch'],
+    };
+    const first = work.handoff(source.id, input, { idempotency_key: 'launch-once' });
+    expect(first.result!.created_tasks[0]!.status).toBe('pending');
+    await settle();
+    expect(spawned).toHaveLength(1);
+    const successorId = first.result!.created_tasks[0]!.id;
+    expect(spawnedArgs[0]!.join(' ')).toContain(successorId);
+    expect(spawnedArgs[0]!.join(' ')).toContain('Read work.relation');
+
+    work.handoff(source.id, input, { idempotency_key: 'launch-once' });
+    work.handoff(source.id, input, { idempotency_key: 'launch-semantic-repeat' });
+    await settle();
+    expect(spawned).toHaveLength(1);
+    expect(engine.getAgentWorkSuccessors(source.id, 'handoff')).toHaveLength(1);
+    service.stop();
+  });
+
+  it('launches a recovered post-fsync handoff intent once and acknowledges it before running', async () => {
+    const source = headlessTask({
+      id: 'recovered-handoff-source',
+      agent_id: 'recovered-handoff-source',
+      status: 'completed',
+      subgraph_node_ids: [],
+      objective: 'Original terminal work',
+    });
+    engine.registerAgent(source);
+    engine.flushNow();
+    const journal = (engine as unknown as {
+      ctx: { mutationJournal: { appendTransaction: (draft: unknown) => unknown } };
+    }).ctx.mutationJournal;
+    const append = journal.appendTransaction.bind(journal);
+    vi.spyOn(journal, 'appendTransaction').mockImplementationOnce((draft: unknown) => {
+      append(draft);
+      throw new Error('synthetic crash after WAL fsync before apply');
+    });
+    const input = {
+      archetype: 'web_tester',
+      objective: 'Continue the recovered application assessment',
+      summary: 'Carry the recovered endpoint inventory forward.',
+      key_finding_ids: ['finding-recovered-handoff'],
+    };
+    const metadata = {
+      command_id: 'recovered-handoff-command',
+      idempotency_key: 'recovered-handoff-key',
+    };
+
+    expect(() => new AgentWorkCommandService(engine).handoff(source.id, input, metadata))
+      .toThrow('synthetic crash after WAL fsync before apply');
+    vi.restoreAllMocks();
+    const crashed = engine;
+    crashed.dispose();
+    engines.delete(crashed);
+    engine = createEngine();
+
+    const successors = engine.getAgentWorkSuccessors(source.id, 'handoff');
+    expect(successors).toHaveLength(1);
+    const successorId = successors[0]!.id;
+    expect(engine.getTask(successorId)).toMatchObject({ status: 'pending' });
+
+    const launchCheckpoints: Array<{ stage: string; status: AgentTask['status'] | undefined }> = [];
+    svc = new TaskExecutionService(engine, new ProcessTracker(), {
+      headless: {
+        logDir,
+        configDir: testDir,
+        spawnFn: (cmd: string, args: string[]) => {
+          spawnedCmds.push(cmd);
+          spawnedArgs.push(args);
+          const child = new FakeChild(4_000_000_000 + (nextPid++));
+          spawned.push(child);
+          return child as any;
+        },
+        onLaunchCheckpoint: stage => {
+          launchCheckpoints.push({ stage, status: engine.getTask(successorId)?.status });
+        },
+      },
+    });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+
+    expect(spawned).toHaveLength(1);
+    expect(spawnedArgs[0]!.join(' ')).toContain(successorId);
+    expect(launchCheckpoints).toEqual([
+      { stage: 'spawned', status: 'pending' },
+      { stage: 'ttl_registered', status: 'pending' },
+      { stage: 'process_registered', status: 'pending' },
+    ]);
+    expect(engine.getTask(successorId)).toMatchObject({ status: 'running' });
+
+    const replay = new AgentWorkCommandService(engine).handoff(source.id, input, metadata);
+    expect(replay.replayed).toBe(true);
+    await settle();
+    expect(spawned).toHaveLength(1);
+    expect(engine.getAgentWorkSuccessors(source.id, 'handoff')).toHaveLength(1);
   });
 
   it('fails compatibility when the Claude CLI lacks managed-worker isolation flags', () => {
@@ -574,6 +692,55 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(spawned.length).toBe(2);
   });
 
+  it('durably reacquires and renews a pending successor lease before any launch backend is available', () => {
+    const assignedAt = new Date(Date.now() - 15 * 60_000).toISOString();
+    expect(engine.registerAgent(headlessTask({
+      id: 'pending-recovered-lease',
+      agent_id: 'pending-recovered-lease',
+      status: 'pending',
+      assigned_at: assignedAt,
+      frontier_item_id: 'frontier-pending-recovered',
+    })).ok).toBe(true);
+    const ctx = (engine as unknown as {
+      ctx: {
+        frontierLeases: {
+          getSnapshot: (id: string) => any;
+          applySnapshot: (id: string, lease: any) => void;
+        };
+      };
+    }).ctx;
+    const expired = ctx.frontierLeases.getSnapshot('frontier-pending-recovered');
+    expect(expired).not.toBeNull();
+    expired.leased_at = new Date(Date.now() - 11 * 60_000).toISOString();
+    expired.expires_at = new Date(Date.now() - 60_000).toISOString();
+    ctx.frontierLeases.applySnapshot('frontier-pending-recovered', expired);
+
+    svc = makeService();
+    svc.start({ deferInitialDrain: true });
+    expect(spawned).toHaveLength(0);
+    expect(engine.getTask('pending-recovered-lease')).toMatchObject({ status: 'pending' });
+    expect(engine.getActiveFrontierLease('frontier-pending-recovered')).toMatchObject({
+      task_id: 'pending-recovered-lease',
+    });
+
+    // A watchdog pass refreshes the pending heartbeat and its newly-restored
+    // lease even with no HTTP endpoint and no child process.
+    svc.tickWatchdog();
+    expect(Date.now() - Date.parse(
+      engine.getTask('pending-recovered-lease')!.heartbeat_at!,
+    )).toBeLessThan(30_000);
+    engine.flushNow();
+    svc.beginShutdown();
+    const prior = engine;
+    prior.dispose();
+    engines.delete(prior);
+    engine = createEngine();
+    expect(engine.getTask('pending-recovered-lease')).toMatchObject({ status: 'pending' });
+    expect(engine.getActiveFrontierLease('frontier-pending-recovered')).toMatchObject({
+      task_id: 'pending-recovered-lease',
+    });
+  });
+
   it('keeps a LAUNCHED sub-agent alive while its process is live (busy in a long tool child), not reaped mid-scan', async () => {
     // A launched sub-agent must self-beat, but while it's blocked inside one long tool
     // child (a big nmap/subfinder/crawl) the model isn't looping, so no agent_heartbeat
@@ -710,6 +877,32 @@ describe('Headless runner mechanics (injected spawn)', () => {
     const t = engine.getTask('open-noep');
     expect(t?.status).toBe('failed');
     expect(t?.result_summary ?? '').toContain('no_scripted_handler');
+  });
+
+  it('claims a pending scripted task as running exactly when execution begins', async () => {
+    svc = makeService();
+    svc.start();
+    const disco = engine.computeFrontier().find(f => f.type === 'network_discovery');
+    expect(disco).toBeDefined();
+    const observedStatuses: Array<AgentTask['status']> = [];
+    const unsubscribe = engine.onUpdate(() => {
+      const status = engine.getTask('pending-scripted')?.status;
+      if (status) observedStatuses.push(status);
+    });
+    engine.registerAgent(headlessTask({
+      id: 'pending-scripted',
+      status: 'pending',
+      backend: 'scripted',
+      frontier_item_id: disco!.id,
+    }));
+    await settle();
+    unsubscribe();
+
+    expect(observedStatuses).toContain('running');
+    expect(engine.getTask('pending-scripted')).toMatchObject({
+      status: 'failed',
+      result_summary: expect.stringContaining('no_scripted_handler'),
+    });
   });
 
   it('reconciles a CLEAN exit (code 0) without a transcript to interrupted, with a non-crash reason, and salvages its output', async () => {

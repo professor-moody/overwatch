@@ -205,6 +205,11 @@ export class TaskExecutionService {
     this.executionActivated = options.deferInitialDrain !== true;
     let subscribedDuringStart = false;
     try {
+      // Restore pending ownership before any public readiness or scheduler drain.
+      // A queued successor can outlive the original lease TTL while the daemon is
+      // stopped; it must reacquire the item durably before duplicate dispatch is
+      // possible or its recovered launch intent is allowed to run.
+      this.recoverPendingFrontierLeases();
       this.startPersistenceGateMonitor();
       // The scripted runner only picks up tasks our routing assigns to it.
       this.scripted.setShouldHandle((task) => (
@@ -806,9 +811,10 @@ export class TaskExecutionService {
   private refreshSupervisedLiveness(): void {
     const now = Date.now();
     const isStale = (task: AgentTask): boolean => {
-      if (task.status !== 'running' || !task.heartbeat_at) return false;
+      if (task.status !== 'running' && task.status !== 'pending') return false;
       const ttlMs = (task.heartbeat_ttl_seconds ?? DEFAULT_HEARTBEAT_TTL_SECONDS) * 1000;
-      const age = now - Date.parse(task.heartbeat_at);
+      const reference = task.heartbeat_at ?? task.assigned_at;
+      const age = now - Date.parse(reference);
       return Number.isFinite(age) && age > ttlMs / 2;
     };
 
@@ -852,6 +858,18 @@ export class TaskExecutionService {
     //    OUTPUT — and keep it fresh as long as it has produced output within the wedged
     //    ceiling. Past the ceiling with no output it's genuinely hung: stop propping it
     //    up and let the reaper (+ the 30-min wall-clock timeout) take it.
+    // Pending tasks have no process identity yet. Keep their ownership durable
+    // even in stdio/manual mode, and reacquire an expired/missing lease before
+    // refreshing the heartbeat. Running-process liveness remains endpoint-owned
+    // below.
+    for (const task of this.engine.getAgentTasks()) {
+      if (task.status !== 'pending' || !task.frontier_item_id) continue;
+      if (!this.engine.ensurePendingAgentFrontierLease(task.id)) continue;
+      if (isStale(task)) {
+        this.engine.agentHeartbeat(task.id, undefined, { silent: true });
+      }
+    }
+
     if (!this.endpoint) return;
     for (const task of this.engine.getAgentTasks()) {
       if (task.status !== 'running') continue;                                  // cheap skip for terminal/historical
@@ -978,8 +996,14 @@ export class TaskExecutionService {
   private drainHeadless(): void {
     if (!this.running || !this.engine.isPersistenceWritable()) return;
     for (const task of this.engine.getAgentTasks()) {
-      const queuedPlanner = task.status === 'pending' && task.role === 'planner';
-      if (task.status !== 'running' && !queuedPlanner) continue;
+      if (task.status !== 'running' && task.status !== 'pending') continue;
+      if (
+        task.status === 'pending'
+        && task.frontier_item_id
+        && !this.engine.ensurePendingAgentFrontierLease(task.id)
+      ) {
+        continue;
+      }
       const backend = this.resolveBackend(task);
       if (backend === 'scripted') continue; // handled by ScriptedAgentRunner
 
@@ -1006,6 +1030,13 @@ export class TaskExecutionService {
         continue;
       }
       this.launchHeadless(task);
+    }
+  }
+
+  private recoverPendingFrontierLeases(): void {
+    for (const task of this.engine.getAgentTasks()) {
+      if (task.status !== 'pending' || !task.frontier_item_id) continue;
+      this.engine.ensurePendingAgentFrontierLease(task.id);
     }
   }
 

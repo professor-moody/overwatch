@@ -240,4 +240,60 @@ describe('agent identity recovery', () => {
     expect(recovered.getPersistenceRecoveryStatus().coordination_warnings).toBeUndefined();
     recovered.dispose();
   });
+
+  it('clears a runtime ambiguity marker when a later restart resolves one unique owner', () => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-agent-identity-runtime-resolution-'));
+    const stateFile = join(directory, 'state.json');
+    const first = new GraphEngine(config(), stateFile);
+    for (const id of ['task-a', 'task-b']) {
+      first.registerAgent({
+        id,
+        agent_id: 'shared-runtime-label',
+        assigned_at: '2026-07-16T01:00:00.000Z',
+        status: 'completed',
+        subgraph_node_ids: [],
+      });
+    }
+    first.persistImmediate();
+    first.dispose();
+
+    const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+    state.runtimeRuns = [{
+      run_id: 'run-resolves-later',
+      kind: 'headless_agent',
+      agent_id: 'shared-runtime-label',
+      started_at: '2026-07-16T01:07:00.000Z',
+      lifecycle: 'unknown',
+    }];
+    delete state.walCompactionAuthority;
+    writeFileSync(stateFile, JSON.stringify(state));
+
+    const ambiguous = new GraphEngine(config(), stateFile);
+    expect(ambiguous.getRuntimeRuns()[0]).toMatchObject({
+      recovery_warning: expect.stringContaining('ambiguous'),
+    });
+    expect(ambiguous.getRuntimeRuns()[0]?.task_id).toBeUndefined();
+    expect(ambiguous.getAgentWorkTransferBlockers('task-a')).toContain('unresolved_ownership');
+    expect(ambiguous.getAgentWorkTransferBlockers('task-b')).toContain('unresolved_ownership');
+    expect(ambiguous.dismissAgent('task-b')).toBe(true);
+    ambiguous.persistImmediate();
+    ambiguous.dispose();
+
+    const resolved = new GraphEngine(config(), stateFile);
+    expect(resolved.getRuntimeRuns()[0]).toMatchObject({
+      task_id: 'task-a',
+      agent_id: 'shared-runtime-label',
+    });
+    expect(resolved.getRuntimeRuns()[0]?.recovery_warning).toBeUndefined();
+    expect(resolved.getAgentWorkTransferBlockers('task-a')).toContain('runtime_run');
+    expect(resolved.getAgentWorkTransferBlockers('task-a')).not.toContain('unresolved_ownership');
+    expect(resolved.getAgentWorkTransferBlockers('task-b')).not.toContain('unresolved_ownership');
+    // The original warning remains available as recovery audit history; it no
+    // longer acts as a live ownership lock after exact resolution.
+    expect(resolved.getPersistenceRecoveryStatus().coordination_warnings)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ relationship: 'runtime_run:run-resolves-later' }),
+      ]));
+    resolved.dispose();
+  });
 });

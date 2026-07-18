@@ -2,6 +2,7 @@ import type { AgentTask, Campaign } from '../types.js';
 import type { AgentDto } from '../contracts/dashboard-v1.js';
 import type { ActivityLogEntry } from './engine-context.js';
 import { agentLabelOf, taskIdOf } from './agent-identity.js';
+import { readAgentWorkMetadata } from './agent-work.js';
 
 const BOOKKEEPING_EVENTS = new Set([
   'instrumentation_warning',
@@ -103,6 +104,16 @@ export function projectAgentDtos(
   }
 
   const campaignById = new Map(campaigns.map(campaign => [campaign.id, campaign]));
+  const mergedSourceIdsByTask = new Map<string, string[]>();
+  for (const task of tasks) {
+    const canonicalTaskId = task.work?.merged_into_task_id;
+    if (!canonicalTaskId) continue;
+    const sourceIds = mergedSourceIdsByTask.get(canonicalTaskId) ?? [];
+    sourceIds.push(taskIdOf(task));
+    mergedSourceIdsByTask.set(canonicalTaskId, sourceIds);
+  }
+  for (const sourceIds of mergedSourceIdsByTask.values()) sourceIds.sort();
+
   return tasks.map(task => {
     const taskId = taskIdOf(task);
     const agentLabel = agentLabelOf(task);
@@ -143,6 +154,10 @@ export function projectAgentDtos(
       } : {}),
       ...(lastFindingAtByTask.has(taskId) ? { last_finding_at: lastFindingAtByTask.get(taskId) } : {}),
       findings_count: findingIdsByTask.get(taskId)?.size ?? 0,
+      work: readAgentWorkMetadata(task),
+      ...(mergedSourceIdsByTask.has(taskId)
+        ? { merged_source_task_ids: mergedSourceIdsByTask.get(taskId) }
+        : {}),
     } satisfies AgentDto;
   });
 }

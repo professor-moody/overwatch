@@ -41,6 +41,10 @@ import {
   AgentLifecycleCommandService,
 } from './agent-lifecycle-command-service.js';
 import {
+  AgentWorkCommandError,
+  AgentWorkCommandService,
+} from './agent-work-command-service.js';
+import {
   CampaignCommandError,
   CampaignCommandService,
 } from './campaign-command-service.js';
@@ -276,6 +280,7 @@ export class DashboardServer {
   private readonly operatorCommands: OperatorCommandService;
   private readonly approvalCommands: ApprovalCommandService;
   private readonly agentLifecycleCommands: AgentLifecycleCommandService;
+  private readonly agentWorkCommands: AgentWorkCommandService;
   private readonly campaignCommands: CampaignCommandService;
   private readonly engagementCommands: EngagementCommandService;
   private readonly recoveryCommands: RecoveryCommandService;
@@ -348,6 +353,7 @@ export class DashboardServer {
     this.operatorCommands = new OperatorCommandService(engine, this.applicationCommands);
     this.approvalCommands = new ApprovalCommandService(engine, this.applicationCommands);
     this.agentLifecycleCommands = new AgentLifecycleCommandService(engine, this.applicationCommands);
+    this.agentWorkCommands = new AgentWorkCommandService(engine, this.applicationCommands);
     this.campaignCommands = new CampaignCommandService(engine, this.applicationCommands);
     this.engagementCommands = new EngagementCommandService(
       engine,
@@ -824,6 +830,10 @@ export class DashboardServer {
       skipPlaybookStep: () => { void this.handlePlaybookStepSkip(path.run_id, path.step_id, req, res); },
       interruptPlaybookAttempt: () => { void this.handlePlaybookAttemptInterrupt(path.run_id, path.step_id, req, res); },
       getAgents: () => this.serveAgents(res),
+      getAgentDuplicates: () => this.serveAgentDuplicates(res),
+      handoffAgent: () => { void this.handleAgentHandoff(path.task_id, req, res); },
+      splitAgent: () => { void this.handleAgentSplit(path.task_id, req, res); },
+      mergeAgent: () => { void this.handleAgentMerge(path.task_id, req, res); },
       dispatchAgent: () => this.handleAgentDispatch(req, res),
       dispatchAgentBatch: () => this.handleAgentDispatchBatch(req, res),
       quickDeployAgent: () => this.handleQuickDeploy(req, res),
@@ -2882,6 +2892,77 @@ export class DashboardServer {
     res.end(JSON.stringify(payload));
   }
 
+  private serveAgentDuplicates(res: ServerResponse): void {
+    const duplicates = this.agentWorkCommands.findDuplicates();
+    const projectedById = new Map(
+      this.dashboardAgentReads.listAgents().agents.map(agent => [agent.task_id, agent]),
+    );
+    this.sendContractedJson(res, 200, {
+      groups: duplicates.groups.map(group => ({
+        ...group,
+        tasks: group.candidate_task_ids.map(taskId => projectedById.get(taskId)),
+      })),
+      total: duplicates.total,
+    });
+  }
+
+  private async handleAgentHandoff(
+    taskId: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    try {
+      const body = await this.readJsonBody(req, 256 * 1024);
+      const execution = this.agentWorkCommands.handoff(taskId, body);
+      this.sendContractedJson(res, 200, {
+        ...execution.result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
+    } catch (error) {
+      this.respondAgentWorkCommandFailure(res, error);
+    }
+  }
+
+  private async handleAgentSplit(
+    taskId: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    try {
+      const body = await this.readJsonBody(req, 256 * 1024);
+      const execution = this.agentWorkCommands.split(taskId, body);
+      this.sendContractedJson(res, 200, {
+        ...execution.result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
+    } catch (error) {
+      this.respondAgentWorkCommandFailure(res, error);
+    }
+  }
+
+  private async handleAgentMerge(
+    taskId: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    try {
+      const body = await this.readJsonBody(req, 256 * 1024);
+      const execution = this.agentWorkCommands.merge(taskId, body);
+      this.sendContractedJson(res, 200, {
+        ...execution.result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
+    } catch (error) {
+      this.respondAgentWorkCommandFailure(res, error);
+    }
+  }
+
   private serveAgentContext(taskId: string, res: ServerResponse): void {
     const payload = this.dashboardAgentReads.getAgentContext(taskId);
     if (!payload) {
@@ -3731,6 +3812,47 @@ export class DashboardServer {
         code: error.code,
         ...error.details,
       }));
+      return;
+    }
+    this.respondMutationFailure(res, error);
+  }
+
+  private respondAgentWorkCommandFailure(
+    res: ServerResponse,
+    error: unknown,
+  ): void {
+    if (
+      error instanceof Error
+      && (error.message === 'Invalid JSON' || error.message === 'Body too large')
+    ) {
+      this.sendContractedJson(res, 400, {
+        error: 'Invalid JSON body',
+        code: 'INVALID_JSON_BODY',
+      });
+      return;
+    }
+    if (error instanceof z.ZodError) {
+      this.sendContractedJson(res, 400, {
+        error: error.issues.map(issue => issue.message).join('; '),
+        code: 'VALIDATION_ERROR',
+        issues: error.issues,
+      });
+      return;
+    }
+    if (error instanceof ApplicationCommandConflictError) {
+      this.sendContractedJson(res, 409, {
+        error: error.message,
+        code: error.code,
+        command_id: error.existing.command_id,
+      });
+      return;
+    }
+    if (error instanceof AgentWorkCommandError) {
+      this.sendContractedJson(res, error.http_status, {
+        error: error.message,
+        code: error.code,
+        ...error.details,
+      });
       return;
     }
     this.respondMutationFailure(res, error);

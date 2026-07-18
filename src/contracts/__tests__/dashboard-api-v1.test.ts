@@ -48,14 +48,53 @@ function samplePathParams(template: string): Record<string, string> {
 }
 
 describe('dashboard compatibility-v1 registry', () => {
-  it('has 103 unique operation IDs and method/path pairs', () => {
+  it('has 107 unique operation IDs and method/path pairs', () => {
     const registryIds = Object.keys(DashboardHttpRegistry);
-    expect(registryIds).toHaveLength(103);
+    expect(registryIds).toHaveLength(107);
     expect(new Set(registryIds).size).toBe(registryIds.length);
     expect(registryIds.sort()).toEqual([...DASHBOARD_OPERATION_IDS].sort());
 
     const routeKeys = getDashboardRouteManifest().map(route => `${route.method} ${route.path}`);
     expect(new Set(routeKeys).size).toBe(routeKeys.length);
+  });
+
+  it('registers terminal-source agent work routes with path-owned identities', () => {
+    expect(buildDashboardPath('getAgentDuplicates', {})).toBe('/api/agents/duplicates');
+    expect(buildDashboardPath('handoffAgent', { task_id: 'source value/1' }))
+      .toBe('/api/agents/source%20value%2F1/handoff');
+    expect(buildDashboardPath('splitAgent', { task_id: 'parent value/1' }))
+      .toBe('/api/agents/parent%20value%2F1/split');
+    expect(buildDashboardPath('mergeAgent', { task_id: 'canonical value/1' }))
+      .toBe('/api/agents/canonical%20value%2F1/merge');
+
+    expect(DashboardHttpRegistry.handoffAgent.body_schema.safeParse({
+      archetype: 'web_tester',
+      objective: 'Continue the terminal source work',
+      summary: 'Discovery is complete.',
+      key_finding_ids: ['finding-1'],
+    }).success).toBe(true);
+    expect(DashboardHttpRegistry.handoffAgent.body_schema.safeParse({
+      task_id: 'source-must-come-from-path',
+      archetype: 'web_tester',
+      objective: 'Continue the terminal source work',
+      summary: 'Discovery is complete.',
+    }).success).toBe(false);
+    expect(DashboardHttpRegistry.splitAgent.body_schema.safeParse({
+      summary: 'Partition the retained scope.',
+      children: [
+        { archetype: 'recon_scanner', objective: 'Partition one', target_node_ids: ['node-1'] },
+        { archetype: 'recon_scanner', objective: 'Partition two', target_node_ids: ['node-2'] },
+      ],
+    }).success).toBe(true);
+    expect(DashboardHttpRegistry.mergeAgent.body_schema.safeParse({
+      summary: 'Preserve the canonical result.',
+      duplicate_task_ids: ['duplicate-1'],
+    }).success).toBe(true);
+    expect(DashboardHttpRegistry.mergeAgent.body_schema.safeParse({
+      canonical_task_id: 'canonical-must-come-from-path',
+      summary: 'Preserve the canonical result.',
+      duplicate_task_ids: ['duplicate-1'],
+    }).success).toBe(false);
   });
 
   it('round-trips every route template through the shared builder and matcher', () => {
@@ -139,6 +178,10 @@ describe('dashboard compatibility-v1 registry', () => {
     expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.toggleTape)).toBe(true);
     expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.resolveConfigDivergence)).toBe(true);
     expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.closeSession)).toBe(true);
+    expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.getAgentDuplicates)).toBe(false);
+    expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.handoffAgent)).toBe(true);
+    expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.splitAgent)).toBe(true);
+    expect(dashboardEndpointMutatesDurableState(DashboardHttpRegistry.mergeAgent)).toBe(true);
   });
 
   it('requires stable envelopes for operator-critical responses', () => {
@@ -150,6 +193,10 @@ describe('dashboard compatibility-v1 registry', () => {
       'interpretCommand',
       'getProposedPlans',
       'getAgentQueries',
+      'getAgentDuplicates',
+      'handoffAgent',
+      'splitAgent',
+      'mergeAgent',
       'getApplicationCommand',
       'getActiveApplicationCommands',
       'getFindings',
@@ -241,6 +288,51 @@ describe('dashboard compatibility-v1 registry', () => {
       task: { id: 'legacy-task', agent_id: 'legacy-label' },
       subgraph: { nodes: [], edges: [] },
     }).success).toBe(true);
+    const canonicalContextTask = {
+      id: 'canonical-task',
+      task_id: 'canonical-task',
+      agent_id: 'canonical-label',
+      agent_label: 'canonical-label',
+      status: 'pending' as const,
+      assigned_at: '2026-07-17T00:00:00.000Z',
+      queued: true,
+      lifecycle: 'queued' as const,
+      live: false,
+      subgraph_node_ids: ['node-1'],
+      findings_count: 0,
+    };
+    expect(DashboardHttpRegistry.getAgentContext.responses[200].safeParse({
+      task: canonicalContextTask,
+      subgraph: { nodes: [], edges: [] },
+    }).success).toBe(false);
+    expect(DashboardHttpRegistry.getAgentContext.responses[200].safeParse({
+      task: {
+        ...canonicalContextTask,
+        work: {
+          version: 1,
+          root_task_id: 'canonical-task',
+          signature: 'a'.repeat(64),
+        },
+      },
+      subgraph: { nodes: [], edges: [] },
+    }).success).toBe(true);
+    expect(DashboardHttpRegistry.getAgentContext.responses[200].safeParse({
+      task: {
+        id: 'canonical-but-incomplete',
+        agent_id: 'canonical-label',
+        task_id: 'canonical-but-incomplete',
+        agent_label: 'canonical-label',
+      },
+      subgraph: { nodes: [], edges: [] },
+    }).success).toBe(false);
+    expect(DashboardHttpRegistry.getAgentContext.responses[200].safeParse({
+      task: {
+        id: 'legacy-with-malformed-work',
+        agent_id: 'legacy-label',
+        work: { version: 1 },
+      },
+      subgraph: { nodes: [], edges: [] },
+    }).success).toBe(false);
     expect(CampaignDispatchResponseSchema.safeParse({
       campaign_id: 'campaign-legacy',
       strategy: 'enumeration',

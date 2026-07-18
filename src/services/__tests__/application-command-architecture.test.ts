@@ -15,6 +15,7 @@ const agentToolModules = [
   'tools/agent-transcript-tools.ts',
   'tools/agent-lifecycle-tools.ts',
   'tools/agent-steering-tools.ts',
+  'tools/agent-work-tools.ts',
 ];
 
 describe('application-command architecture', () => {
@@ -84,6 +85,7 @@ describe('application-command architecture', () => {
       'registerAskOperatorTool',
       'registerManageAgentDirectiveTool',
       'registerAcknowledgeAgentDirectiveTool',
+      'registerAgentWorkTools',
     ];
     let previous = -1;
     for (const registration of registrations) {

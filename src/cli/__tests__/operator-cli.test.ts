@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { setColorEnabled, isColorEnabled, formatTable, truncate, keyValues } from '../operator/format.js';
 import { resolveClientOptions, createClient, ApiError, type ApiClient } from '../operator/client.js';
 import { READ_COMMANDS, WRITE_COMMANDS } from '../operator/commands.js';
-import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents, renderRecovery, renderSessions, renderPlaybooks } from '../operator/render.js';
+import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents, renderRecovery, renderSessions, renderPlaybooks, renderAgentDuplicates, renderAgentWorkMutation } from '../operator/render.js';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -443,6 +443,149 @@ function recordingClient(response: unknown = {}): { client: ApiClient; calls: Ar
 }
 
 describe('write commands', () => {
+  const work = {
+    version: 1 as const,
+    root_task_id: 'task-root',
+    signature: 'a'.repeat(64),
+  };
+  const task = (id: string) => ({
+    id,
+    task_id: id,
+    agent_id: `agent-${id}`,
+    assigned_at: '2026-07-18T00:00:00.000Z',
+    status: 'completed' as const,
+    subgraph_node_ids: ['node-1'],
+    work,
+  });
+
+  it('keeps the agent roster at `agents` with no subcommand', async () => {
+    const payload = { agents: [{ id: 'task-1', status: 'running', agent_id: 'agent-one' }] };
+    const client = fakeClient({ '/api/agents': payload });
+    const result = await WRITE_COMMANDS.agents.run({ client, args: [] });
+    expect(result.data).toEqual(payload.agents);
+    expect(result.text).toContain('task-1');
+  });
+
+  it('lists exact duplicate work groups from the shared endpoint', async () => {
+    const response = {
+      total: 1,
+      groups: [{
+        signature: 'b'.repeat(64),
+        canonical_task_id: 'task-1',
+        candidate_task_ids: ['task-1', 'task-2'],
+        tasks: [task('task-1'), task('task-2')],
+      }],
+    };
+    const client = fakeClient({ '/api/agents/duplicates': response });
+    const result = await WRITE_COMMANDS.agents.run({ client, args: ['duplicates'] });
+    expect(result.data).toEqual(response);
+    expect(result.text).toContain('task-1');
+    expect(result.text).toContain('task-2');
+  });
+
+  it('posts a handoff with required successor fields and repeatable key references', async () => {
+    const response = {
+      operation: 'handoff' as const,
+      source_task_id: 'task/source',
+      created_tasks: [task('task-next')],
+      warnings: [], command_id: 'cmd-1', idempotency_key: 'key-1', replayed: false,
+    };
+    const { client, calls } = recordingClient(response);
+    const result = await WRITE_COMMANDS.agents.run({ client, args: [
+      'handoff', 'task/source',
+      '--summary', 'Recon is complete; continue validation.',
+      '--archetype', 'web_tester',
+      '--objective', 'Validate the discovered login path',
+      '--agent-label', 'login follow-up',
+      '--skill', 'web-testing',
+      '--model', 'sonnet',
+      '--finding', 'finding-1', '--finding', 'finding-2',
+      '--evidence', 'evidence-1', '--event', 'event-1',
+    ] });
+    expect(calls).toEqual([{
+      path: '/api/agents/task%2Fsource/handoff',
+      body: {
+        summary: 'Recon is complete; continue validation.',
+        archetype: 'web_tester',
+        objective: 'Validate the discovered login path',
+        agent_label: 'login follow-up',
+        skill: 'web-testing',
+        model: 'sonnet',
+        key_finding_ids: ['finding-1', 'finding-2'],
+        key_evidence_ids: ['evidence-1'],
+        key_event_ids: ['event-1'],
+      },
+    }]);
+    expect(result.text).toContain('task-next');
+  });
+
+  it('loads and validates a strict split request from a JSON file', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'overwatch-agent-split-'));
+    try {
+      const path = join(directory, 'split.json');
+      const request = {
+        summary: 'Partition by host.',
+        key_finding_ids: ['finding-1'],
+        children: [
+          { archetype: 'recon_scanner', objective: 'Scan node one', target_node_ids: ['node-1'] },
+          { archetype: 'recon_scanner', objective: 'Scan node two', target_node_ids: ['node-2'] },
+        ],
+      };
+      writeFileSync(path, JSON.stringify(request));
+      const response = {
+        operation: 'split' as const,
+        source_task_id: 'task-1',
+        created_tasks: [task('child-1'), task('child-2')],
+        warnings: [], command_id: 'cmd-2', idempotency_key: 'key-2', replayed: false,
+      };
+      const { client, calls } = recordingClient(response);
+      const result = await WRITE_COMMANDS.agents.run({ client, args: ['split', 'task-1', '--file', path] });
+      expect(calls).toEqual([{ path: '/api/agents/task-1/split', body: request }]);
+      expect(result.text).toContain('child-1');
+      expect(result.text).toContain('child-2');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('posts a merge with unique duplicate task IDs and a summary', async () => {
+    const response = {
+      operation: 'merge' as const,
+      canonical_task_id: 'task-canonical',
+      updated_tasks: [task('task-canonical'), task('task-2'), task('task-3')],
+      warnings: [], command_id: 'cmd-3', idempotency_key: 'key-3', replayed: false,
+    };
+    const { client, calls } = recordingClient(response);
+    const result = await WRITE_COMMANDS.agents.run({ client, args: [
+      'merge', 'task-canonical',
+      '--duplicate', 'task-2', '--duplicate', 'task-3',
+      '--summary', 'The tasks describe the same terminal work.',
+    ] });
+    expect(calls).toEqual([{
+      path: '/api/agents/task-canonical/merge',
+      body: {
+        summary: 'The tasks describe the same terminal work.',
+        duplicate_task_ids: ['task-2', 'task-3'],
+      },
+    }]);
+    expect(result.text).toContain('task-canonical');
+    expect(result.text).toContain('2 duplicate tasks');
+  });
+
+  it('rejects incomplete or invalid agent work requests before HTTP', async () => {
+    const { client, calls } = recordingClient();
+    await expect(WRITE_COMMANDS.agents.run({ client, args: [
+      'handoff', 'task-1', '--summary', 'continue', '--archetype', 'web_tester',
+    ] })).rejects.toThrow(/objective/);
+    await expect(WRITE_COMMANDS.agents.run({ client, args: [
+      'split', 'task-1', '--file', '/definitely/missing/split.json',
+    ] })).rejects.toThrow(/Cannot read JSON request/);
+    await expect(WRITE_COMMANDS.agents.run({ client, args: [
+      'merge', 'task-1', '--duplicate', 'task-2', '--duplicate', 'task-2', '--summary', 'same',
+    ] })).rejects.toThrow(/unique/);
+    expect(calls).toHaveLength(0);
+  });
+
   it('prepares and releases playbook attempts without claiming target execution occurred', async () => {
     const prepared = recordingClient({ attempt: { attempt_id: 'attempt-1' }, execution: { command_id: 'exec-1' } });
     const start = await WRITE_COMMANDS.playbook.run({ client: prepared.client, args: ['start', 'run-1', 'step-1'] });
@@ -564,6 +707,24 @@ describe('write commands', () => {
 });
 
 describe('renderers', () => {
+  it('renders empty duplicate detection and mutation warnings clearly', () => {
+    expect(renderAgentDuplicates({ total: 0, groups: [] })).toContain('No exact duplicate');
+    const output = renderAgentWorkMutation({
+      operation: 'handoff', source_task_id: 'source', created_tasks: [{
+        id: 'next', task_id: 'next', agent_id: 'agent-next', agent_label: 'agent-next',
+        assigned_at: '2026-07-18T00:00:00.000Z', status: 'completed',
+        subgraph_node_ids: ['node-1'],
+        work: { version: 1, root_task_id: 'source', signature: 'a'.repeat(64) },
+      }],
+      warnings: ['Frontier was stale; created a node follow-up instead.'],
+      reused_existing: false,
+      command_id: 'cmd', idempotency_key: 'key', replayed: false,
+    });
+    expect(output).toContain('source');
+    expect(output).toContain('next');
+    expect(output).toContain('Frontier was stale');
+  });
+
   it('renderRecovery exposes copyable config observations and revisions', () => {
     const out = renderRecovery({
       recovery: {

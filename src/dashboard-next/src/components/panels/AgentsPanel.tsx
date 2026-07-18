@@ -501,6 +501,7 @@ export function AgentsPanel() {
                 onNavigateCampaign={navigateToCampaign}
                 onNavigateSession={navigateToSession}
                 onIssueDirective={issueAgentDirective}
+                onWorkChanged={() => { void refreshAgents(); void loadConsole(); }}
               />
             ) : (
               <PrimaryOperatorPanel />

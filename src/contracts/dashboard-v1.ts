@@ -301,6 +301,46 @@ export const CampaignDispatchResponseSchema = z.object({
 export type CampaignDispatchResponse = z.infer<typeof CampaignDispatchResponseSchema>;
 
 export const AgentStatusSchema = z.enum(['pending', 'running', 'completed', 'failed', 'interrupted']);
+export interface AgentWorkRelation {
+  kind: 'handoff' | 'split';
+  source_task_id: string;
+  created_at: string;
+  summary: string;
+  key_finding_ids?: string[];
+  key_evidence_ids?: string[];
+  key_event_ids?: string[];
+}
+export const AgentWorkRelationSchema: z.ZodType<AgentWorkRelation> = z.object({
+  kind: z.enum(['handoff', 'split']),
+  source_task_id: z.string().min(1),
+  created_at: z.string().min(1),
+  summary: z.string().trim().min(1).max(4_096),
+  key_finding_ids: z.array(z.string().min(1)).optional(),
+  key_evidence_ids: z.array(z.string().min(1)).optional(),
+  key_event_ids: z.array(z.string().min(1)).optional(),
+}).passthrough();
+
+/**
+ * Durable, server-owned work identity projected onto agent tasks. The browser
+ * may display this metadata, but never derives or mutates it locally.
+ */
+export interface AgentWorkMetadata {
+  version: 1;
+  root_task_id: string;
+  signature: string;
+  origin_frontier_item_id?: string;
+  relation?: AgentWorkRelation;
+  merged_into_task_id?: string;
+}
+export const AgentWorkMetadataSchema: z.ZodType<AgentWorkMetadata> = z.object({
+  version: z.literal(1),
+  root_task_id: z.string().min(1),
+  signature: Sha256Schema,
+  origin_frontier_item_id: z.string().min(1).optional(),
+  relation: AgentWorkRelationSchema.optional(),
+  merged_into_task_id: z.string().min(1).optional(),
+}).passthrough();
+
 export const AgentDtoSchema = z.object({
   task_id: z.string(),
   agent_label: z.string(),
@@ -331,6 +371,8 @@ export const AgentDtoSchema = z.object({
   current_action_at: z.string().optional(),
   last_finding_at: z.string().optional(),
   findings_count: z.number().int().nonnegative(),
+  work: AgentWorkMetadataSchema.optional(),
+  merged_source_task_ids: z.array(z.string().min(1)).optional(),
 }).passthrough();
 export type AgentDto = z.infer<typeof AgentDtoSchema>;
 export const AgentListResponseSchema = z.object({
@@ -355,14 +397,125 @@ export const DispatchedAgentTaskSchema = z.object({
   skill: z.string().optional(),
   objective: z.string().optional(),
   model: z.string().optional(),
+  work: AgentWorkMetadataSchema.optional(),
+  merged_source_task_ids: z.array(z.string().min(1)).optional(),
 }).passthrough();
 export type DispatchedAgentTask = z.infer<typeof DispatchedAgentTaskSchema>;
+export const AgentWorkTaskSchema = DispatchedAgentTaskSchema.extend({
+  task_id: z.string().min(1),
+  agent_label: z.string().min(1),
+  work: AgentWorkMetadataSchema,
+});
+export type AgentWorkTask = z.infer<typeof AgentWorkTaskSchema>;
+
+const AgentWorkSummarySchema = z.string().trim().min(1).max(4_096);
+const AgentWorkSuccessorSpecShape = {
+  agent_label: z.string().trim().min(1).optional(),
+  archetype: z.string().trim().min(1),
+  objective: z.string().trim().min(1).max(4_096),
+  skill: z.string().trim().min(1).optional(),
+  model: z.string().trim().min(1).optional(),
+};
+const AgentWorkReferenceShape = {
+  key_finding_ids: z.array(z.string().min(1)).optional(),
+  key_evidence_ids: z.array(z.string().min(1)).optional(),
+  key_event_ids: z.array(z.string().min(1)).optional(),
+};
+
+export const AgentHandoffRequestSchema = z.object({
+  ...AgentWorkSuccessorSpecShape,
+  ...AgentWorkReferenceShape,
+  summary: AgentWorkSummarySchema,
+}).strict();
+export type AgentHandoffRequest = z.infer<typeof AgentHandoffRequestSchema>;
+
+export const AgentSplitChildRequestSchema = z.object({
+  ...AgentWorkSuccessorSpecShape,
+  target_node_ids: z.array(z.string().min(1)).min(1),
+}).strict();
+export type AgentSplitChildRequest = z.infer<typeof AgentSplitChildRequestSchema>;
+
+export const AgentSplitRequestSchema = z.object({
+  summary: AgentWorkSummarySchema,
+  ...AgentWorkReferenceShape,
+  children: z.array(AgentSplitChildRequestSchema).min(2).max(20),
+}).strict();
+export type AgentSplitRequest = z.infer<typeof AgentSplitRequestSchema>;
+
+export const AgentMergeRequestSchema = z.object({
+  summary: AgentWorkSummarySchema,
+  duplicate_task_ids: z.array(z.string().min(1)).min(1).max(32)
+    .refine(ids => new Set(ids).size === ids.length, 'duplicate_task_ids must be unique'),
+}).strict();
+export type AgentMergeRequest = z.infer<typeof AgentMergeRequestSchema>;
 
 const DashboardCommandMetadataShape = {
   command_id: z.string(),
   idempotency_key: z.string(),
   replayed: z.boolean(),
 };
+
+const AgentWorkMutationBaseShape = {
+  source_task_id: z.string().min(1),
+  warnings: z.array(z.string()),
+  reused_existing: z.boolean(),
+  ...DashboardCommandMetadataShape,
+};
+
+export const AgentHandoffResponseSchema = z.object({
+  operation: z.literal('handoff'),
+  ...AgentWorkMutationBaseShape,
+  created_tasks: z.array(AgentWorkTaskSchema).length(1),
+}).passthrough();
+export type AgentHandoffResponse = z.infer<typeof AgentHandoffResponseSchema>;
+
+export const AgentSplitResponseSchema = z.object({
+  operation: z.literal('split'),
+  ...AgentWorkMutationBaseShape,
+  created_tasks: z.array(AgentWorkTaskSchema).min(2).max(20),
+}).passthrough();
+export type AgentSplitResponse = z.infer<typeof AgentSplitResponseSchema>;
+
+export const AgentMergeResponseSchema = z.object({
+  operation: z.literal('merge'),
+  canonical_task_id: z.string().min(1),
+  updated_tasks: z.array(AgentWorkTaskSchema).min(2).max(33),
+  warnings: z.array(z.string()),
+  reused_existing: z.boolean(),
+  ...DashboardCommandMetadataShape,
+}).passthrough();
+export type AgentMergeResponse = z.infer<typeof AgentMergeResponseSchema>;
+
+export const AgentDuplicateGroupSchema = z.object({
+  signature: Sha256Schema,
+  canonical_task_id: z.string().min(1),
+  candidate_task_ids: z.array(z.string().min(1)).min(2),
+  tasks: z.array(AgentDtoSchema.extend({ work: AgentWorkMetadataSchema })).min(2),
+}).passthrough().superRefine((group, ctx) => {
+  const candidateIds = group.candidate_task_ids;
+  if (new Set(candidateIds).size !== candidateIds.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['candidate_task_ids'], message: 'candidate_task_ids must be unique' });
+  }
+  if (!candidateIds.includes(group.canonical_task_id)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['canonical_task_id'], message: 'canonical_task_id must be a candidate' });
+  }
+  const taskIds = group.tasks.map(task => task.task_id);
+  if (new Set(taskIds).size !== taskIds.length
+    || taskIds.length !== candidateIds.length
+    || taskIds.some(taskId => !candidateIds.includes(taskId))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['tasks'], message: 'tasks must match candidate_task_ids exactly' });
+  }
+  if (group.tasks.some(task => task.work.signature !== group.signature)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['tasks'], message: 'every task must match the group signature' });
+  }
+});
+export type AgentDuplicateGroup = z.infer<typeof AgentDuplicateGroupSchema>;
+
+export const AgentDuplicatesResponseSchema = z.object({
+  groups: z.array(AgentDuplicateGroupSchema),
+  total: z.number().int().nonnegative(),
+}).passthrough();
+export type AgentDuplicatesResponse = z.infer<typeof AgentDuplicatesResponseSchema>;
 
 const DispatchRefusalSchema = z.object({
   dispatched: z.literal(false),

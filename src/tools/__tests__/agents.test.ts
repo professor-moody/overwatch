@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, unlinkSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
+import { AgentWorkCommandService } from '../../services/agent-work-command-service.js';
 import { registerAgentTools, dispatchCampaignAgents } from '../agents.js';
 import type { EngagementConfig } from '../../types.js';
 import { cleanupTestPersistence } from '../../__tests__/helpers/cleanup-test-persistence.js';
@@ -109,6 +110,43 @@ describe('agent tools', () => {
     expect(payload.subgraph.nodes).toBeInstanceOf(Array);
     expect(payload.subgraph.edges).toBeInstanceOf(Array);
     expect(payload.subgraph.nodes.some((n: { id: string }) => n.id === 'host-10-10-10-1')).toBe(true);
+  });
+
+  it('get_agent_context gives a successor its durable handoff summary and key references', async () => {
+    const sourceId = 'context-handoff-source';
+    engine.registerAgent({
+      id: sourceId,
+      task_id: sourceId,
+      agent_id: 'context-source',
+      agent_label: 'context-source',
+      assigned_at: new Date().toISOString(),
+      status: 'completed',
+      subgraph_node_ids: [],
+      archetype: 'recon_scanner',
+      objective: 'Map the source context',
+    });
+    const handedOff = new AgentWorkCommandService(engine).handoff(sourceId, {
+      archetype: 'web_tester',
+      objective: 'Continue with application validation',
+      summary: 'The login endpoint and tenant boundary are confirmed.',
+      key_finding_ids: ['finding-context'],
+      key_evidence_ids: ['evidence-context'],
+      key_event_ids: ['event-context'],
+    });
+    const successorId = handedOff.result!.created_tasks[0]!.id;
+    const payload = JSON.parse((await handlers.get_agent_context({
+      task_id: successorId,
+      hops: 1,
+    })).content[0].text);
+
+    expect(payload.work.relation).toMatchObject({
+      kind: 'handoff',
+      source_task_id: sourceId,
+      summary: 'The login endpoint and tenant boundary are confirmed.',
+      key_finding_ids: ['finding-context'],
+      key_evidence_ids: ['evidence-context'],
+      key_event_ids: ['event-context'],
+    });
   });
 
   it('get_agent_context surfaces prior_actions_on_scope (already-run actions on the agent\'s targets)', async () => {

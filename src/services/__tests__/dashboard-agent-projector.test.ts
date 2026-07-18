@@ -112,4 +112,50 @@ describe('dashboard agent projector', () => {
     const [projected] = projectAgentDtos([task({ assigned_at: 'not-a-date' })], [], [], NOW);
     expect(projected.elapsed_ms).toBeUndefined();
   });
+
+  it('projects durable work lineage and canonical merged-source links', () => {
+    const signature = 'a'.repeat(64);
+    const tasks = [
+      task({
+        id: 'canonical',
+        work: { version: 1, root_task_id: 'root', signature },
+      }),
+      task({
+        id: 'handoff-child',
+        work: {
+          version: 1,
+          root_task_id: 'root',
+          signature: 'b'.repeat(64),
+          relation: {
+            kind: 'handoff',
+            source_task_id: 'canonical',
+            created_at: '2026-07-15T11:58:00Z',
+            summary: 'Continue the assessment.',
+          },
+        },
+      }),
+      task({
+        id: 'duplicate',
+        status: 'completed',
+        work: {
+          version: 1,
+          root_task_id: 'root',
+          signature,
+          merged_into_task_id: 'canonical',
+        },
+      }),
+    ];
+
+    const projected = projectAgentDtos(tasks, [], [], NOW);
+    expect(projected.find(item => item.task_id === 'canonical')).toMatchObject({
+      work: { root_task_id: 'root', signature },
+      merged_source_task_ids: ['duplicate'],
+    });
+    expect(projected.find(item => item.task_id === 'handoff-child')?.work?.relation).toEqual({
+      kind: 'handoff',
+      source_task_id: 'canonical',
+      created_at: '2026-07-15T11:58:00Z',
+      summary: 'Continue the assessment.',
+    });
+  });
 });

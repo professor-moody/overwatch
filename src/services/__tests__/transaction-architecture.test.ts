@@ -79,6 +79,7 @@ const COLLECTION_MUTATORS = new Set([
   'renew',
   'releaseByTask',
   'reapExpired',
+  'applySnapshot',
 ]);
 
 /**
@@ -94,6 +95,7 @@ const ALLOWED_RAW_SCOPES = new Map<string, Set<string>>([
     'applyGraphCorrectedMutation',
     'applyScopeUpdatedMutation',
     'applyCommandCoordinationChangeMutation',
+    'applyAgentCoordinationChangeMutation',
     'addEdgeToCorrectionDraft',
     'restoreWebChainAnnotationBaseline',
     'restoreFindingDraftBaseline',
@@ -140,6 +142,7 @@ const ALLOWED_DURABLE_SCOPES = new Map<string, Set<string>>([
     'applyGraphCorrectedMutation',
     'applyScopeUpdatedMutation',
     'applyCommandCoordinationChangeMutation',
+    'applyAgentCoordinationChangeMutation',
     'applyTrackedProcesses',
     // Bounded retention helper invoked only from runtime finalization/recovery
     // methods after their transactDurableSlices boundary is active.

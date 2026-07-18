@@ -7,7 +7,8 @@ import type { EngineContext } from '../engine-context.js';
 import type { StatePersistence } from '../state-persistence.js';
 import { BoundedTransactionFootprintCapture } from '../transaction-footprint.js';
 import type { IdentityRewriteMutationPayloadV1 } from '../mutation-journal.js';
-import type { EngagementConfig, NodeProperties } from '../../types.js';
+import type { AgentTask, EngagementConfig, NodeProperties } from '../../types.js';
+import type { AgentCoordinationChangePayloadV1 } from '../agent-coordination-change.js';
 
 function config(id: string): EngagementConfig {
   return {
@@ -164,6 +165,40 @@ describe('bounded transaction applier', () => {
     expect(ctx.graph.hasNode('throw-first')).toBe(false);
     expect(ctx.graph.hasNode('throw-second')).toBe(false);
     expect(clearGraph).not.toHaveBeenCalled();
+  });
+
+  it('does not undo an idempotently pre-applied coordination change when a later sibling skips', () => {
+    const agent: AgentTask = {
+      id: 'coordination-idempotent',
+      task_id: 'coordination-idempotent',
+      agent_id: 'coordination-agent',
+      agent_label: 'coordination-agent',
+      assigned_at: '2026-07-17T00:00:00.000Z',
+      status: 'completed',
+      subgraph_node_ids: [],
+    };
+    expect(engine.registerAgent(agent).ok).toBe(true);
+    const before = engine.getTask(agent.id)!;
+    const after = { ...before, no_retry: true };
+    const coordination: AgentCoordinationChangePayloadV1 = {
+      payload_version: 1,
+      operation_id: 'coordination-idempotent-op',
+      occurred_at: '2026-07-17T00:00:00.000Z',
+      reason: 'idempotent rollback regression',
+      task_changes: [{ task_id: agent.id, before, after }],
+      lease_changes: [],
+    };
+    expect(engine.applyAgentCoordinationChangeMutation(coordination)).toEqual({ status: 'applied' });
+
+    const result = persistence.applyTransactionDraft({
+      operations: [
+        { type: 'agent_coordination_change', payload: coordination as unknown as Record<string, unknown> },
+        { type: 'merge_edge_attrs', payload: { edge_id: 'missing-after-coordination', props: { confidence: 0.5 } } },
+      ],
+    }, engine);
+
+    expect(result).toMatchObject({ status: 'skipped' });
+    expect(engine.getTask(agent.id)).toMatchObject({ no_retry: true });
   });
 
   it('retains the full-baseline fallback for unsupported composite operations', () => {

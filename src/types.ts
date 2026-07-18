@@ -1074,6 +1074,33 @@ export interface ScoredTask {
 
 // --- Agent Types ---
 
+/**
+ * Durable lineage for one unit of agent work. This metadata is deliberately
+ * additive to AgentTask so V1 state written before work shaping remains valid.
+ * Runtime/process ownership continues to use its own task-id references.
+ */
+export interface AgentWorkRelationV1 {
+  kind: 'handoff' | 'split';
+  source_task_id: string;
+  created_at: string;
+  summary: string;
+  key_finding_ids?: string[];
+  key_evidence_ids?: string[];
+  key_event_ids?: string[];
+}
+
+export interface AgentWorkMetadataV1 {
+  version: 1;
+  root_task_id: string;
+  /** SHA-256 of the canonical semantic work specification. */
+  signature: string;
+  /** Original frontier attribution, even when a successor has no live lease. */
+  origin_frontier_item_id?: string;
+  relation?: AgentWorkRelationV1;
+  /** Canonical task that retained this exact work after an explicit merge. */
+  merged_into_task_id?: string;
+}
+
 export interface AgentTask {
   /** Canonical durable identity. Present on every registered/restored task. */
   task_id?: string;
@@ -1120,6 +1147,8 @@ export interface AgentTask {
   // its bootstrap prompt). The 'planner' role carries the operator's free-form
   // command + a snapshot of steerable state here so it can propose a plan.
   objective?: string;
+  /** Additive durable work lineage and exact-duplicate identity. */
+  work?: AgentWorkMetadataV1;
   /** Durable application command that created/owns this task, when any.
    * Planner tasks use it to publish queued/running/plan-ready truth without
    * inferring lifecycle from dashboard polling. */

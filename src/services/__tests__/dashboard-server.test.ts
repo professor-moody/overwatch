@@ -2884,6 +2884,39 @@ describe('DashboardServer', () => {
       });
     });
 
+    it('routes agent work discovery and mutations through the registered contract handlers', async () => {
+      const duplicates = vi.spyOn(dashboard as any, 'serveAgentDuplicates');
+      const handoff = vi.spyOn(dashboard as any, 'handleAgentHandoff').mockResolvedValue(undefined);
+      const split = vi.spyOn(dashboard as any, 'handleAgentSplit').mockResolvedValue(undefined);
+      const merge = vi.spyOn(dashboard as any, 'handleAgentMerge').mockResolvedValue(undefined);
+
+      const duplicateReq = mockReq('/api/agents/duplicates');
+      const duplicateRes = mockRes();
+      (dashboard as any).dispatchApiOperation(
+        { operation_id: 'getAgentDuplicates', path_params: {} },
+        duplicateReq,
+        duplicateRes,
+        duplicateReq.url,
+      );
+      expect(duplicates).toHaveBeenCalledWith(duplicateRes);
+
+      for (const [operationId, suffix, spy] of [
+        ['handoffAgent', 'handoff', handoff],
+        ['splitAgent', 'split', split],
+        ['mergeAgent', 'merge', merge],
+      ] as const) {
+        const req = mockReq(`/api/agents/source-task/${suffix}`, 'POST');
+        const res = mockRes();
+        (dashboard as any).dispatchApiOperation(
+          { operation_id: operationId, path_params: { task_id: 'source-task' } },
+          req,
+          res,
+          req.url,
+        );
+        await vi.waitFor(() => expect(spy).toHaveBeenCalledWith('source-task', req, res));
+      }
+    });
+
     it('routes non-uuid agent ids to the agent console endpoint', () => {
       const spy = vi.spyOn(dashboard as any, 'serveAgentConsole');
       const req = mockReq('/api/agents/task-web-1/console?limit=5');

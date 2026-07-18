@@ -146,14 +146,27 @@ export class ScriptedAgentRunner {
     if (!this.running || !this.activated || !this.engine.isPersistenceWritable()) return;
     const tasks = this.engine.getAgentTasks();
     for (const task of tasks) {
-      if (task.status !== 'running') continue;
+      if (task.status !== 'running' && task.status !== 'pending') continue;
       // Only execute tasks this runner should own. The injected predicate routes
       // open-ended work to the headless runtime instead of auto-completing it.
       if (!this.shouldHandle(task)) continue;
       if (this.processing.has(task.id)) continue;
       if (!task.frontier_item_id) continue;
       this.processing.add(task.id);
-      const execution = this.runTask(task).catch(() => {
+      if (task.status === 'pending') {
+        try {
+          this.transitionTask(task, 'running');
+        } catch {
+          this.processing.delete(task.id);
+          continue;
+        }
+      }
+      const claimedTask = this.engine.getTask(task.id);
+      if (!claimedTask || claimedTask.status !== 'running') {
+        this.processing.delete(task.id);
+        continue;
+      }
+      const execution = this.runTask(claimedTask).catch(() => {
         // runTask handles its own error reporting; this is a safety net.
         this.processing.delete(task.id);
       });

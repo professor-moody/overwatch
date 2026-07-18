@@ -13,6 +13,10 @@ import {
   ApplicationCommandService,
   withApplicationCommandInvocation,
 } from '../application-command-service.js';
+import {
+  buildHandoffAgentWorkMetadata,
+  buildMergedAgentWorkMetadata,
+} from '../agent-work.js';
 
 function config(): EngagementConfig {
   return {
@@ -452,6 +456,83 @@ describe('AgentLifecycleCommandService', () => {
       forced: true,
     });
     expect(observed).toEqual(['cancel', 'dismissed']);
+  });
+
+  it('protects every work-lineage participant before force-cancelling or dismissing it', () => {
+    expect(engine.updateAgentStatus('task-1', 'completed', 'source settled')).toBe(true);
+    const source = engine.getTask('task-1')!;
+    const successor = task({
+      id: 'successor-task',
+      task_id: 'successor-task',
+      agent_id: 'successor-agent',
+      agent_label: 'successor-agent',
+      status: 'pending',
+      objective: 'Continue the source work',
+    });
+    successor.work = buildHandoffAgentWorkMetadata(source, successor, {
+      created_at: '2026-07-18T00:00:00.000Z',
+      summary: 'Continue with a fresh runtime.',
+    });
+    expect(engine.registerAgent(successor).ok).toBe(true);
+
+    let cancelCalls = 0;
+    service.setRuntimeController({
+      cancelHeadless: () => {
+        cancelCalls++;
+        return true;
+      },
+    });
+    expect(() => service.dismiss('successor-task', true)).toThrow(expect.objectContaining({
+      code: 'AGENT_DISMISS_LINEAGE_PROTECTED',
+      http_status: 409,
+    }));
+    expect(cancelCalls).toBe(0);
+    expect(engine.getTask('successor-task')?.status).toBe('pending');
+
+    expect(() => service.dismiss('task-1')).toThrow(expect.objectContaining({
+      code: 'AGENT_DISMISS_LINEAGE_PROTECTED',
+      http_status: 409,
+    }));
+    expect(engine.getTask('task-1')).toBeTruthy();
+    expect(engine.updateAgentStatus('successor-task', 'completed', 'done')).toBe(true);
+    expect(engine.dismissAgent('successor-task')).toBe(false);
+
+    const canonical = task({
+      id: 'canonical-task',
+      task_id: 'canonical-task',
+      agent_id: 'canonical-agent',
+      agent_label: 'canonical-agent',
+      status: 'completed',
+      subgraph_node_ids: ['node-merge'],
+      objective: 'Canonical merge work',
+    });
+    const duplicate = task({
+      id: 'duplicate-task',
+      task_id: 'duplicate-task',
+      agent_id: 'duplicate-agent',
+      agent_label: 'duplicate-agent',
+      status: 'completed',
+      subgraph_node_ids: ['node-merge'],
+      objective: 'Canonical merge work',
+    });
+    duplicate.work = buildMergedAgentWorkMetadata(duplicate, canonical);
+    expect(engine.registerAgent(canonical).ok).toBe(true);
+    expect(engine.registerAgent(duplicate).ok).toBe(true);
+    expect(engine.dismissAgent('canonical-task')).toBe(false);
+    expect(engine.dismissAgent('duplicate-task')).toBe(false);
+
+    expect(engine.registerAgent(task({
+      id: 'unrelated-task',
+      task_id: 'unrelated-task',
+      agent_id: 'unrelated-agent',
+      agent_label: 'unrelated-agent',
+      status: 'completed',
+    })).ok).toBe(true);
+    expect(() => service.dismissBatch({})).toThrow(expect.objectContaining({
+      code: 'AGENT_DISMISS_LINEAGE_PROTECTED',
+      http_status: 409,
+    }));
+    expect(engine.getTask('unrelated-task')).toBeTruthy();
   });
 
   it('replays fleet directives and fleet dismissals without duplicate mutations', () => {

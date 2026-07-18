@@ -45,4 +45,34 @@ describe('AgentDetailPanel', () => {
       expect(issueDirective).toHaveBeenCalledWith('task-canonical-42', 'pause');
     });
   });
+
+  it('does not offer handoff or split controls for a merged-away terminal task', () => {
+    render(
+      <AgentDetailPanel
+        agent={{
+          ...agent,
+          status: 'completed',
+          lifecycle: 'completed',
+          live: false,
+          subgraph_node_ids: ['node-1', 'node-2'],
+          work: {
+            version: 1,
+            root_task_id: agent.task_id,
+            signature: 'a'.repeat(64),
+            merged_into_task_id: 'task-canonical-target',
+          },
+        }}
+        context={null}
+        ownedSessions={[]}
+        onNavigateGraph={vi.fn()}
+        onNavigateCampaign={vi.fn()}
+        onNavigateSession={vi.fn()}
+        onIssueDirective={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Hand off' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Split' })).not.toBeInTheDocument();
+    expect(screen.getByText('task-canonical-target')).toBeInTheDocument();
+  });
 });

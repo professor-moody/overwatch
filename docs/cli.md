@@ -49,7 +49,6 @@ overwatch <command> [options]
 | `overwatch state migrate --check [--state-file PATH] [--config-file PATH]` | Side-effect-free local V0/V1, WAL, snapshot, and config migration readiness |
 | `overwatch frontier [--max N] [--type TYPE]` | Candidate next actions (the deterministic frontier) |
 | `overwatch findings [--severity S]` | Classified findings + severity summary |
-| `overwatch agents` | Running agent roster |
 | `overwatch approvals` | Pending operator approvals |
 | `overwatch opsec` | OPSEC noise budget + recommended approach |
 | `overwatch sessions` | Interactive sessions |
@@ -60,6 +59,11 @@ overwatch <command> [options]
 
 | Command | Does |
 |---|---|
+| `overwatch agents` | List the current agent roster |
+| `overwatch agents duplicates` | Find exact canonical work-signature groups and show each task's status plus terminal merge candidates |
+| `overwatch agents handoff <task-id> --summary TEXT --archetype TYPE --objective TEXT [options]` | Create one durable successor for settled work |
+| `overwatch agents split <task-id> --file PATH` | Atomically create the exact child partition for settled ad-hoc node work while retaining the non-retryable source (`-` reads stdin) |
+| `overwatch agents merge <canonical-task-id> --duplicate ID [--duplicate ID…] --summary TEXT` | Mark exact terminal duplicates as merged into one canonical task |
 | `overwatch approve <action-id>` | Approve a pending action |
 | `overwatch deny <action-id> [--reason TEXT]` | Deny a pending action |
 | `overwatch answer <query-id> <answer text…>` | Answer an agent's question |
@@ -76,6 +80,84 @@ overwatch <command> [options]
 A refusal (e.g. a frontier item already leased, or an out-of-scope target) prints
 the server's reason and exits non-zero; a success prints a confirmation (deploy /
 dispatch report the new task + agent id).
+
+## Agent handoff, split, and duplicate cleanup
+
+Work-shaping operations are deliberately conservative. A running task must be
+cancelled and allowed to settle before it can be handed off, split, or merged.
+The daemon refuses an operation while the source still owns a process, session,
+playbook attempt, approval, open plan, unanswered or unacknowledged question, or directive; these commands never move a
+live PID, socket, approval, or historical evidence between task identities.
+
+Hand off a settled task to one successor:
+
+```bash
+overwatch agents handoff task-recon-1 \
+  --summary "Recon is complete; validate the discovered login path." \
+  --archetype web_tester \
+  --objective "Validate authentication and land every confirmed finding" \
+  --agent-label "login follow-up" \
+  --skill web-testing \
+  --finding finding-login \
+  --evidence evidence-recon
+```
+
+`--finding`, `--evidence`, and `--event` are repeatable. `--agent-label`,
+`--skill`, and `--model` are optional. If the source's original frontier item
+is still actionable, the daemon reacquires it for the successor; otherwise the
+response includes a warning and uses the source's node scope. Campaign
+attribution is retained only for the same pending item in an active leaf
+campaign. A stale or terminal item falls back to node work without campaign
+attribution; inactive or parent campaigns require an explicit operator action.
+
+Split accepts a strict JSON request because each child has its own archetype,
+objective, optional label/skill/model, and non-empty node set. The children must
+be pairwise disjoint and their union must exactly equal the source task's ad-hoc
+node scope:
+
+```json
+{
+  "summary": "Partition the completed discovery scope by host.",
+  "key_finding_ids": ["finding-recon"],
+  "children": [
+    {
+      "archetype": "web_tester",
+      "objective": "Test the application on app-1",
+      "target_node_ids": ["app-1"]
+    },
+    {
+      "archetype": "credential_operator",
+      "objective": "Validate credentials captured on host-2",
+      "target_node_ids": ["host-2"]
+    }
+  ]
+}
+```
+
+```bash
+overwatch agents split task-recon-1 --file split.json
+# or without a temporary file:
+generate-split-request | overwatch agents split task-recon-1 --file -
+```
+
+Before merging, inspect `overwatch agents duplicates`. A group may have a live
+canonical task, which is preferred so completed copies consolidate into the
+work that is still in progress. The command prints every candidate as
+`task_id:status` and separately lists the terminal IDs eligible for `--duplicate`.
+Only exact canonical work-signature matches are candidates; the daemon
+revalidates the group and refuses ambiguous or live duplicate tasks:
+
+```bash
+overwatch agents merge task-canonical \
+  --duplicate task-copy-1 \
+  --duplicate task-copy-2 \
+  --summary "All three tasks represent the same completed node-scoped work."
+```
+
+Every mutation uses the CLI's durable local command receipt and server
+idempotency key. Retrying after a lost response returns the original outcome
+instead of creating another successor or child set. Use `--command-id` only
+when you intentionally want a distinct mutation identity.
 
 ## Recovery and config reconciliation
 

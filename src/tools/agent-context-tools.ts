@@ -5,6 +5,7 @@ import { isIpInCidr } from '../services/cidr.js';
 import type { ActivityLogEntry } from '../services/engine-context.js';
 import { taskWireIdentity } from './_agent-tool-shared.js';
 import { withErrorBoundary } from './error-boundary.js';
+import { readAgentWorkMetadata } from '../services/agent-work.js';
 
 interface PriorActionOnScope {
   action_id?: string;
@@ -123,6 +124,7 @@ auto-computed from the frontier item's target node(s).`,
               skill: task.skill,
               objective: task.objective,
               archetype: task.archetype,
+              work: readAgentWorkMetadata(task),
               discovery_context: {
                 target_cidr: frontierItem?.target_cidr,
                 scope: engine.getState().config.scope,
@@ -146,6 +148,7 @@ auto-computed from the frontier item's target node(s).`,
               skill: task.skill,
               objective: task.objective,
               archetype: task.archetype,
+              work: readAgentWorkMetadata(task),
               subgraph: { nodes: [], edges: [] },
               scope: engine.getState().config.scope,
               prior_actions_on_scope: [],
@@ -168,6 +171,7 @@ auto-computed from the frontier item's target node(s).`,
             skill: task.skill,
             archetype: task.archetype,
             objective: task.objective,
+            work: readAgentWorkMetadata(task),
             subgraph,
             prior_actions_on_scope: priorActions,
             message: `Subgraph context: ${subgraph.nodes.length} nodes, ${subgraph.edges.length} edges; ${priorActions.length} prior action(s) already run on your scope — review them to avoid repeating work and to find the gaps still worth doing.`,

@@ -25,11 +25,20 @@ Seed nodes are snapshotted at `register_agent` time when `subgraph_node_ids` is 
 | `agent_id` | `string` | Agent identifier |
 | `frontier_item_id` | `string` | Associated frontier item |
 | `skill` | `string` | Assigned skill (if any) |
+| `work` | `object` | Durable exact-work signature, lineage root, and optional shaping relation |
 | `subgraph` | `ExportedGraph` | Scoped nodes and edges |
 | `message` | `string` | Summary of subgraph size |
+
+Canonical responses identify the task with `task_id` and `agent_label` while
+retaining the one-release `id` and `agent_id` aliases. A successor's
+`work.relation` records whether it came from a handoff or split, its source task,
+the operator summary, creation time, and any key finding, evidence, or activity
+event IDs. Merged sources expose `work.merged_into_task_id`; canonical tasks may
+list `merged_source_task_ids`.
 
 ## Usage Notes
 
 - Call this at the start of every sub-agent session to get scoped context
 - Increase `hops` if the agent needs broader context (at the cost of a larger subgraph)
 - The subgraph includes credential and service nodes connected to any host in scope — agents don't need to query for these separately
+- Work summaries and key references are continuation context, not ownership transfer. Historical evidence, sessions, processes, approvals, questions, plans, and playbook attempts remain attached to their original task IDs.

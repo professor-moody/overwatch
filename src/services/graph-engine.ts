@@ -26,6 +26,7 @@ import {
   mergeCoordinationRecoveryWarnings,
   normalizeAgentTask,
   taskIdOf,
+  type CoordinationRecoveryWarning,
   type AgentIdentityResolution,
   type AgentTaskInput,
 } from './agent-identity.js';
@@ -122,6 +123,14 @@ import type {
   ScopeUpdatedMutationPayloadV1,
 } from './mutation-journal.js';
 import { MutationJournal } from './mutation-journal.js';
+import {
+  AGENT_COORDINATION_CHANGE_PAYLOAD_VERSION,
+  validateAgentCoordinationChangePayload,
+  type AgentCoordinationChangePayloadV1,
+  type AgentCoordinationTaskChangeV1,
+} from './agent-coordination-change.js';
+import { readAgentWorkMetadata } from './agent-work.js';
+import { FrontierLeases } from './frontier-leases.js';
 import type {
   DurableStatePatchV1,
   DurableStateSliceKey,
@@ -3993,7 +4002,10 @@ export class GraphEngine {
    * the "no-IP node is in-scope" precedent), or it's under the cap. Engagement-global
    * by design (blast radius doesn't care which campaign).
    */
-  private checkDispatchCap(task: AgentTask): { scope: 'subnet' | 'target'; key: string; limit: number; current: number } | null {
+  private checkDispatchCap(
+    task: AgentTask,
+    additionalLiveTasks: readonly AgentTask[] = [],
+  ): { scope: 'subnet' | 'target'; key: string; limit: number; current: number } | null {
     const limits = this.ctx.config.operator_policy?.dispatch_limits;
     if (!limits || (!limits.max_per_subnet && !limits.max_per_target)) return null;
     if (!isTargetFacing(task.archetype ?? task.role, limits.target_facing_archetypes)) return null;
@@ -4003,19 +4015,21 @@ export class GraphEngine {
 
     let sameTarget = 0;
     let sameSubnet = 0;
-    for (const other of this.ctx.agents.values()) {
-      if (other.id === task.id) continue;
+    const countTask = (other: AgentTask) => {
+      if (other.id === task.id) return;
       // Count live work: a running OR queued (pending) agent holds a slot — count
       // both so a queued dispatch doesn't let the cap be over-shot. A slot frees
       // when the agent reaches a terminal status (completed/failed/interrupted),
       // including the watchdog's running→interrupted reap.
-      if (other.status !== 'running' && other.status !== 'pending') continue;
-      if (!isTargetFacing(other.archetype ?? other.role, limits.target_facing_archetypes)) continue;
+      if (other.status !== 'running' && other.status !== 'pending') return;
+      if (!isTargetFacing(other.archetype ?? other.role, limits.target_facing_archetypes)) return;
       const otherIp = this.taskTargetIp(other);
-      if (!otherIp) continue;
+      if (!otherIp) return;
       if (otherIp === ip) sameTarget++;
       if (subnet && this.subnetKey(otherIp) === subnet) sameSubnet++;
-    }
+    };
+    for (const other of this.ctx.agents.values()) countTask(other);
+    for (const other of additionalLiveTasks) countTask(other);
 
     if (limits.max_per_target && sameTarget >= limits.max_per_target) {
       return { scope: 'target', key: ip, limit: limits.max_per_target, current: sameTarget };
@@ -4046,6 +4060,491 @@ export class GraphEngine {
   /** All known agent tasks (running, completed, failed, interrupted). */
   getAgentTasks(): AgentTask[] {
     return detached(this.agentMgr.getAll());
+  }
+
+  /** Read only the matching successor records without cloning the historical
+   * roster. PR10 may add an index if scan time becomes material; PR9 keeps
+   * allocation proportional to the returned lineage. */
+  getAgentWorkSuccessors(
+    sourceTaskId: string,
+    kind: 'handoff' | 'split',
+  ): AgentTask[] {
+    const matches: AgentTask[] = [];
+    for (const task of this.ctx.agents.values()) {
+      if (task.work?.relation?.kind !== kind
+        || task.work.relation.source_task_id !== sourceTaskId) continue;
+      matches.push(detached(task));
+    }
+    return matches;
+  }
+
+  /**
+   * Explain why a task must remain in the durable roster to preserve work
+   * lineage. Dismissal is intentionally conservative: source, successor,
+   * merged-source, canonical, and root records all carry references needed to
+   * make later duplicate detection and retry decisions unambiguous.
+   */
+  getAgentWorkDismissalBlocker(taskId: string): string | null {
+    const task = this.agentMgr.getTask(taskId);
+    if (!task) return null;
+    const work = readAgentWorkMetadata(task);
+    if (work.relation) {
+      return `task participates in ${work.relation.kind} lineage from ${work.relation.source_task_id}`;
+    }
+    if (work.merged_into_task_id) {
+      return `task is retained as a merged source of ${work.merged_into_task_id}`;
+    }
+
+    const related = this.agentMgr.getAll()
+      .filter(candidate => taskIdOf(candidate) !== taskId)
+      .sort((left, right) => {
+        const leftId = taskIdOf(left);
+        const rightId = taskIdOf(right);
+        return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+      });
+    for (const candidate of related) {
+      const candidateWork = readAgentWorkMetadata(candidate);
+      if (candidateWork.relation?.source_task_id === taskId) {
+        return `task is the source of ${candidateWork.relation.kind} successor ${taskIdOf(candidate)}`;
+      }
+      if (candidateWork.root_task_id === taskId) {
+        return `task is the lineage root of ${taskIdOf(candidate)}`;
+      }
+      if (candidateWork.merged_into_task_id === taskId) {
+        return `task is the canonical merge target for ${taskIdOf(candidate)}`;
+      }
+    }
+    return null;
+  }
+
+  /** Resource domains retain their original owner. A future-work handoff may
+   * proceed only after live ownership has been explicitly settled; PR9 never
+   * relabels a PID, session generation, approval, question, or playbook claim. */
+  getAgentWorkTransferBlockers(taskId: string): string[] {
+    const blockers: string[] = [];
+    const engineNow = Date.parse(this.ctx.nowIso());
+    if (this.ctx.runtimeRuns.some(run =>
+      run.task_id === taskId
+      && (run.lifecycle === 'reserved'
+        || run.lifecycle === 'running'
+        || run.lifecycle === 'unknown'))) {
+      blockers.push('runtime_run');
+    }
+    let hasAmbiguousTrackedProcess = false;
+    if (this.ctx.trackedProcesses.some(process => {
+      if (process.status !== 'running' && process.status !== 'unknown') return false;
+      if (process.task_id) return process.task_id === taskId;
+      if (!process.agent_id) return false;
+      const matchingTaskIds = [...this.ctx.agents.values()]
+        .filter(task => agentLabelOf(task) === process.agent_id)
+        .map(taskIdOf);
+      if (matchingTaskIds.length > 1 && matchingTaskIds.includes(taskId)) {
+        hasAmbiguousTrackedProcess = true;
+      }
+      return matchingTaskIds.length === 1 && matchingTaskIds[0] === taskId;
+    })) {
+      blockers.push('tracked_process');
+    }
+    if (hasAmbiguousTrackedProcess) blockers.push('unresolved_ownership');
+    if (this.ctx.sessionDescriptors.some(session =>
+      session.owner_task_id === taskId
+      && (session.lifecycle === 'pending'
+        || session.lifecycle === 'connected'
+        || session.recovery_lifecycle === 'resume_available'
+        || session.recovery_lifecycle === 'interrupted'))) {
+      blockers.push('session');
+    }
+    if ([...this.ctx.playbookRuns.values()].some(run =>
+      run.schema_version === 1 && run.steps.some(step => step.attempts.some(attempt =>
+        (attempt.claimed_by_task_id === taskId || attempt.executed_by_task_id === taskId)
+        && (attempt.status === 'claimed'
+          || attempt.status === 'awaiting_approval'
+          || attempt.status === 'running'))))) {
+      blockers.push('playbook_attempt');
+    }
+    if ([...this.ctx.approvalRequests.values()].some(approval =>
+      approval.task_id === taskId && approval.status === 'pending')) {
+      blockers.push('approval');
+    }
+    if (this.ctx.agentQueryStore.getAll().some(query =>
+      (query.status === 'open'
+        || (query.status === 'answered' && query.acknowledged_at === undefined))
+      && query.expires_at > engineNow
+      && (query.owner_task_id ?? query.task_id) === taskId)) {
+      blockers.push('question');
+    }
+    if (this.ctx.proposedPlanStore.getAll().some(plan =>
+      plan.status === 'open'
+      && plan.expires_at > engineNow
+      && (plan.owner_task_id ?? plan.source_task_id) === taskId)) {
+      blockers.push('plan');
+    }
+    if ((this.ctx.agentDirectives.get(taskId) ?? []).some(directive =>
+      directive.status === 'pending')) {
+      blockers.push('directive');
+    }
+    if (this.ctx.coordinationRecoveryWarnings.some(warning =>
+      warning.candidate_task_ids?.includes(taskId)
+      && this.isActiveCoordinationRecoveryWarning(warning, engineNow))) {
+      blockers.push('unresolved_ownership');
+    }
+    return blockers;
+  }
+
+  /** Recovery warnings are retained for audit, including after their resource
+   * becomes terminal. Only a warning that still represents live ownership may
+   * block work shaping; historical ambiguity must not permanently freeze a
+   * task. Current normalized records win over the preserved legacy payload. */
+  private isActiveCoordinationRecoveryWarning(
+    warning: CoordinationRecoveryWarning,
+    nowMs: number,
+  ): boolean {
+    const [kind, reference] = warning.relationship.split(':', 2);
+    if (!reference) return false;
+    switch (kind) {
+      case 'runtime_run': {
+        const run = this.ctx.runtimeRuns.find(candidate => candidate.run_id === reference);
+        return !!run
+          && run.task_id === undefined
+          && run.recovery_warning === warning.message
+          && (run.lifecycle === 'reserved'
+            || run.lifecycle === 'running'
+            || run.lifecycle === 'unknown');
+      }
+      case 'session': {
+        const session = this.ctx.sessionDescriptors.find(
+          candidate => candidate.session_id === reference,
+        );
+        return !!session
+          && session.recovery_warning === warning.message
+          && (session.lifecycle === 'pending'
+            || session.lifecycle === 'connected'
+            || session.recovery_lifecycle === 'resume_available'
+            || session.recovery_lifecycle === 'interrupted');
+      }
+      case 'approval': {
+        const approval = this.ctx.approvalRequests.get(reference);
+        return !!approval
+          && approval.recovery_warning === warning.message
+          && approval.status === 'pending'
+          && Date.parse(approval.timeout_at) > nowMs;
+      }
+      case 'plan': {
+        const plan = this.ctx.proposedPlanStore.getAll()
+          .find(candidate => candidate.plan_id === reference);
+        return !!plan
+          && plan.recovery_warning === warning.message
+          && plan.status === 'open'
+          && plan.expires_at > nowMs;
+      }
+      case 'agent_query': {
+        const query = this.ctx.agentQueryStore.getAll()
+          .find(candidate => candidate.query_id === reference);
+        return !!query
+          && query.recovery_warning === warning.message
+          && (query.status === 'open'
+            || (query.status === 'answered' && query.acknowledged_at === undefined))
+          && query.expires_at > nowMs;
+      }
+      case 'frontier_lease':
+        return this.warningPayloadHasLiveDeadline(warning.payload, nowMs, 'expires_at');
+      case 'directive':
+        return this.warningPayloadHasStatus(warning.payload, ['pending']);
+      default:
+        return this.warningPayloadHasStatus(
+          warning.payload,
+          ['pending', 'connected', 'reserved', 'running', 'unknown', 'resume_available', 'interrupted'],
+        ) && !this.warningPayloadDeadlineExpired(warning.payload, nowMs);
+    }
+  }
+
+  private warningPayloadHasStatus(payload: unknown, live: readonly string[]): boolean {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+    const record = payload as Record<string, unknown>;
+    const status = typeof record.status === 'string'
+      ? record.status
+      : typeof record.lifecycle === 'string'
+        ? record.lifecycle
+        : typeof record.recovery_lifecycle === 'string'
+          ? record.recovery_lifecycle
+          : undefined;
+    return status !== undefined && live.includes(status);
+  }
+
+  private warningPayloadHasLiveDeadline(
+    payload: unknown,
+    nowMs: number,
+    field: string,
+  ): boolean {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+    const value = (payload as Record<string, unknown>)[field];
+    const deadline = typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Date.parse(value)
+        : Number.NaN;
+    return Number.isFinite(deadline) && deadline > nowMs;
+  }
+
+  private warningPayloadDeadlineExpired(payload: unknown, nowMs: number): boolean {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+    const record = payload as Record<string, unknown>;
+    for (const field of ['expires_at', 'timeout_at'] as const) {
+      if (record[field] === undefined) continue;
+      const deadline = typeof record[field] === 'number'
+        ? record[field]
+        : typeof record[field] === 'string'
+          ? Date.parse(record[field])
+          : Number.NaN;
+      return Number.isFinite(deadline) && deadline <= nowMs;
+    }
+    return false;
+  }
+
+  /** Apply a bounded compare-and-swap batch for durable handoff/split/merge.
+   * Historical rosters may be large, so recovery touches only the exact task
+   * and lease images carried by the operation. */
+  applyAgentCoordinationChangeMutation(
+    payload: AgentCoordinationChangePayloadV1,
+    _recovery = true,
+  ): MutationApplyResult {
+    const validation = validateAgentCoordinationChangePayload(payload);
+    if (!validation.ok) return { status: 'skipped', reason: validation.reason };
+
+    const taskState = payload.task_changes.map(change => ({
+      change,
+      current: this.ctx.agents.get(change.task_id) ?? null,
+    }));
+    const leaseState = payload.lease_changes.map(change => ({
+      change,
+      current: this.ctx.frontierLeases.getSnapshot(change.frontier_item_id),
+    }));
+    for (const { change, current } of taskState) {
+      if (canonicalJson(current) === canonicalJson(change.after)) continue;
+      if (canonicalJson(current) !== canonicalJson(change.before)) {
+        return {
+          status: 'skipped',
+          reason: `agent task ${change.task_id} no longer matches its expected preimage`,
+        };
+      }
+    }
+    for (const { change, current } of leaseState) {
+      if (canonicalJson(current) === canonicalJson(change.after)) continue;
+      if (canonicalJson(current) !== canonicalJson(change.before)) {
+        return {
+          status: 'skipped',
+          reason: `frontier lease ${change.frontier_item_id} no longer matches its expected preimage`,
+        };
+      }
+    }
+
+    for (const { change, current } of taskState) {
+      if (canonicalJson(current) === canonicalJson(change.after)) continue;
+      if (change.after) {
+        this.ctx.agents.set(
+          change.task_id,
+          normalizeAgentTask(detached(change.after), change.task_id),
+        );
+      } else {
+        this.ctx.agents.delete(change.task_id);
+      }
+    }
+    for (const { change, current } of leaseState) {
+      if (canonicalJson(current) === canonicalJson(change.after)) continue;
+      this.ctx.frontierLeases.applySnapshot(
+        change.frontier_item_id,
+        change.after ? detached(change.after) : null,
+      );
+    }
+    return { status: 'applied' };
+  }
+
+  /**
+   * Install complete post-images for the touched tasks. New live tasks are
+   * dispatch-policy checked as one batch and acquire any frontier lease in the
+   * same WAL transaction. Existing tasks are compare-and-swap updated; no
+   * historical runtime/session/playbook ownership is rewritten.
+   */
+  applyAgentCoordinationTaskChanges(
+    reason: string,
+    requested: ReadonlyArray<{ task_id: string; after: AgentTask }>,
+  ): AgentTask[] {
+    this.assertPersistenceWritable();
+    if (!reason.trim()) throw new Error('Agent coordination reason is required.');
+    if (requested.length < 1 || requested.length > 64) {
+      throw new Error('Agent coordination must change 1 through 64 tasks.');
+    }
+    const seen = new Set<string>();
+    const taskChanges: AgentCoordinationTaskChangeV1[] = [];
+    const plannedNewTasks: AgentTask[] = [];
+    const leaseBefore = new Map<string, ReturnType<FrontierLeases['getSnapshot']>>();
+    const leaseAfter = new Map<string, ReturnType<FrontierLeases['getSnapshot']>>();
+
+    for (const item of requested) {
+      if (!item.task_id.trim() || seen.has(item.task_id)) {
+        throw new Error(`Agent coordination contains an invalid or duplicate task_id: ${item.task_id}`);
+      }
+      seen.add(item.task_id);
+      const before = this.ctx.agents.get(item.task_id) ?? null;
+      const after = normalizeAgentTask(detached(item.after), item.task_id);
+      if (after.status === 'running' && !after.heartbeat_at) {
+        after.heartbeat_at = this.ctx.nowIso();
+      }
+      if (!before) {
+        const cap = this.checkDispatchCap(after, plannedNewTasks);
+        if (cap) {
+          const error = new Error(
+            `Dispatch cap exceeded for ${cap.scope} ${cap.key} (${cap.current}/${cap.limit}).`,
+          );
+          Object.assign(error, {
+            code: 'DISPATCH_CAP_EXCEEDED',
+            http_status: 429,
+            details: { ...cap, http_status: 429 },
+          });
+          throw error;
+        }
+        if (!after.frontier_item_id && after.subgraph_node_ids.length > 0) {
+          const targets = new Set(after.subgraph_node_ids);
+          const signature = `${after.archetype ?? ''}|${after.role ?? ''}`;
+          const conflicts = [...this.ctx.agents.values(), ...plannedNewTasks].filter(other =>
+            (other.status === 'running' || other.status === 'pending')
+            && !other.frontier_item_id
+            && `${other.archetype ?? ''}|${other.role ?? ''}` === signature
+            && other.subgraph_node_ids.some(nodeId => targets.has(nodeId)));
+          if (conflicts.length > 0) {
+            const error = new Error(
+              `Agent work overlaps live task ${taskIdOf(conflicts[0]!)} on the same archetype and role.`,
+            );
+            Object.assign(error, {
+              code: 'AGENT_WORK_NODE_CONFLICT',
+              http_status: 409,
+              details: { existing_task_id: taskIdOf(conflicts[0]!), http_status: 409 },
+            });
+            throw error;
+          }
+        }
+        if (after.frontier_item_id) {
+          if (!leaseBefore.has(after.frontier_item_id)) {
+            leaseBefore.set(
+              after.frontier_item_id,
+              this.ctx.frontierLeases.getSnapshot(after.frontier_item_id),
+            );
+          }
+          const oneLeaseDraft = new FrontierLeases();
+          const currentDraft = leaseAfter.has(after.frontier_item_id)
+            ? leaseAfter.get(after.frontier_item_id)!
+            : leaseBefore.get(after.frontier_item_id)!;
+          oneLeaseDraft.applySnapshot(after.frontier_item_id, currentDraft);
+          const acquired = oneLeaseDraft.acquire({
+            frontier_item_id: after.frontier_item_id,
+            task_id: item.task_id,
+            agent_id: agentLabelOf(after),
+            now: this.ctx.nowIso(),
+          });
+          if (!acquired.ok) {
+            const error = new Error(
+              `Frontier item ${after.frontier_item_id} is held by task ${acquired.existing?.task_id}.`,
+            );
+            Object.assign(error, {
+              code: 'FRONTIER_LEASE_CONFLICT',
+              http_status: 409,
+              details: { existing_task_id: acquired.existing?.task_id, http_status: 409 },
+            });
+            throw error;
+          }
+          leaseAfter.set(
+            after.frontier_item_id,
+            oneLeaseDraft.getSnapshot(after.frontier_item_id),
+          );
+        }
+        plannedNewTasks.push(after);
+      }
+      taskChanges.push({
+        task_id: item.task_id,
+        before: before ? detached(before) : null,
+        after: detached(after),
+      });
+    }
+
+    const payload: AgentCoordinationChangePayloadV1 = {
+      payload_version: AGENT_COORDINATION_CHANGE_PAYLOAD_VERSION,
+      operation_id: uuidv4(),
+      occurred_at: this.ctx.nowIso(),
+      reason: reason.trim(),
+      task_changes: taskChanges,
+      lease_changes: [...leaseBefore].map(([frontierItemId, before]) => ({
+        frontier_item_id: frontierItemId,
+        before,
+        after: leaseAfter.get(frontierItemId) ?? before,
+      })),
+    };
+    const validation = validateAgentCoordinationChangePayload(payload);
+    if (!validation.ok) throw new Error(validation.reason);
+    const result = this.ctx.applyCompositeJournaledMutation(
+      'agent_coordination_change',
+      payload as unknown as Record<string, unknown>,
+      () => this.applyAgentCoordinationChangeMutation(payload, false),
+    );
+    if (result.status === 'skipped') {
+      throw new Error(`Agent coordination was rejected: ${result.reason}`);
+    }
+    this.persist();
+    return taskChanges.map(change => detached(change.after!));
+  }
+
+  /** Ensure a durable pending task still owns its frontier item. Pending tasks
+   * have no process to heartbeat while queued, and an expired lease must be
+   * reacquired before the scheduler may launch the task. The no-op task image
+   * makes the lease repair use the same bounded CAS journal record as shaping. */
+  ensurePendingAgentFrontierLease(taskId: string): boolean {
+    this.assertPersistenceWritable();
+    const task = this.ctx.agents.get(taskId);
+    if (!task || task.status !== 'pending' || !task.frontier_item_id) return false;
+    const frontierItemId = task.frontier_item_id;
+    const now = this.ctx.nowIso();
+    const active = this.ctx.frontierLeases.get(frontierItemId, now);
+    if (active) return active.task_id === taskId;
+
+    const before = this.ctx.frontierLeases.getSnapshot(frontierItemId);
+    const leaseDraft = new FrontierLeases();
+    leaseDraft.applySnapshot(frontierItemId, before);
+    const acquired = leaseDraft.acquire({
+      frontier_item_id: frontierItemId,
+      task_id: taskId,
+      agent_id: agentLabelOf(task),
+      now,
+    });
+    if (!acquired.ok) return false;
+    const after = leaseDraft.getSnapshot(frontierItemId);
+    if (!after) return false;
+
+    const taskImage = detached(task);
+    const payload: AgentCoordinationChangePayloadV1 = {
+      payload_version: AGENT_COORDINATION_CHANGE_PAYLOAD_VERSION,
+      operation_id: uuidv4(),
+      occurred_at: now,
+      reason: 'ensure pending agent frontier lease',
+      task_changes: [{
+        task_id: taskId,
+        before: taskImage,
+        after: detached(taskImage),
+      }],
+      lease_changes: [{
+        frontier_item_id: frontierItemId,
+        before,
+        after,
+      }],
+    };
+    const validation = validateAgentCoordinationChangePayload(payload);
+    if (!validation.ok) throw new Error(validation.reason);
+    const result = this.ctx.applyCompositeJournaledMutation(
+      'agent_coordination_change',
+      payload as unknown as Record<string, unknown>,
+      () => this.applyAgentCoordinationChangeMutation(payload, false),
+    );
+    if (result.status === 'skipped') return false;
+    this.persist();
+    return true;
   }
 
   /**
@@ -4469,6 +4968,7 @@ export class GraphEngine {
       );
     }
     this.assertPersistenceWritable();
+    if (this.getAgentWorkDismissalBlocker(taskId)) return false;
     const ok = this.agentMgr.dismiss(taskId);
     if (ok) this.persist();
     return ok;
@@ -5498,6 +5998,9 @@ export class GraphEngine {
       operation.type === 'application_command_change'
       || operation.type === 'command_coordination_change')) {
       delete slices.command_state;
+    }
+    if (draft.operations.some(operation => operation.type === 'agent_coordination_change')) {
+      delete slices.agents;
     }
     const payload: DurableStatePatchV1 | undefined = Object.keys(slices).length > 0
       ? {
@@ -7930,6 +8433,9 @@ export class GraphEngine {
       || operation.type === 'command_coordination_change')) {
       delete boundedStateSlices.command_state;
     }
+    if (captured.operations.some(operation => operation.type === 'agent_coordination_change')) {
+      delete boundedStateSlices.agents;
+    }
     const statePatch: DurableStatePatchV1 = {
       payload_version: 1,
       operation_id: uuidv4(),
@@ -8095,6 +8601,9 @@ export class GraphEngine {
       operation.type === 'application_command_change'
       || operation.type === 'command_coordination_change')) {
       delete boundedConfigSlices.command_state;
+    }
+    if (captured.operations.some(operation => operation.type === 'agent_coordination_change')) {
+      delete boundedConfigSlices.agents;
     }
     const statePatch: DurableStatePatchV1 = {
       payload_version: 1,
@@ -8425,6 +8934,11 @@ export class GraphEngine {
     const item = this.getFrontierItem(frontierItemId);
     if (!item) return null;
     return this.filterFrontier([item]).passed[0] ?? null;
+  }
+
+  getActiveFrontierLease(frontierItemId: string): { task_id: string; agent_id: string } | null {
+    const lease = this.ctx.frontierLeases.get(frontierItemId, this.ctx.nowIso());
+    return lease ? { task_id: lease.task_id, agent_id: lease.agent_id } : null;
   }
 
   getFrontierWeights(): { fan_out: Record<string, number>; noise: Record<string, number> } {
