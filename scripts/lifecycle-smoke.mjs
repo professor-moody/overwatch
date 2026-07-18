@@ -5,6 +5,7 @@ import { createServer } from 'node:net';
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -20,6 +21,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const fixture = mkdtempSync(join(tmpdir(), 'overwatch-lifecycle-smoke-'));
 const lifecycleScript = join(root, 'scripts', 'daemon-lifecycle.mjs');
 const setupScript = join(root, 'scripts', 'setup.mjs');
+const doctorScript = join(root, 'scripts', 'doctor.mjs');
 const sanitizedProcessEnvironment = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith('OVERWATCH_')),
 );
@@ -174,12 +176,18 @@ try {
     OVERWATCH_DASHBOARD_PORT: String(dashboardPort),
     OVERWATCH_DASHBOARD_TOKEN: 'lifecycle-dashboard-token',
   };
-  runNode(setupScript, [
+  const setupResult = runNode(setupScript, [
     '--template', join(root, 'engagement-templates', 'ctf.json'),
     '--name', 'Lifecycle smoke',
     '--id', 'lifecycle-smoke',
     '--cidr', '10.255.255.0/30',
   ], environment);
+  assert(setupResult.stdout.includes('npm run daemon:start'), 'setup omitted the documented daemon start command');
+  assert(setupResult.stdout.includes('npm run doctor'), 'setup omitted the documented doctor command');
+  assert(
+    setupResult.stdout.includes('OVERWATCH_ENGAGEMENT_ACTIVE=1 claude'),
+    'setup omitted the documented engagement-active Claude command',
+  );
   delete environment.OVERWATCH_DASHBOARD_TOKEN;
   const configPath = join(fixture, 'engagement.json');
   const statePath = join(fixture, 'state-lifecycle-smoke.json');
@@ -291,6 +299,24 @@ try {
   assert(firstRuntime.runtime_status?.phase === 'ready', 'runtime did not reach writable READY');
   assert(firstRuntime.runtime_status?.persistence_writable === true, 'runtime is unexpectedly read-only');
   assert(firstRuntime.runtime_build?.runtime_pid === firstRecord.pid, 'managed PID does not match runtime PID');
+  const fakeBin = join(fixture, 'doctor-bin');
+  mkdirSync(fakeBin, { recursive: true });
+  const fakeClaude = join(fakeBin, 'claude');
+  writeFileSync(fakeClaude, `#!/bin/sh
+case "$1" in
+  --version) echo "Claude Code docs-smoke" ;;
+  --help) echo "--strict-mcp-config --setting-sources --no-session-persistence" ;;
+  *) exit 0 ;;
+esac
+`);
+  chmodSync(fakeClaude, 0o755);
+  const doctor = runNode(doctorScript, [], {
+    ...environment,
+    PATH: `${fakeBin}:${environment.PATH || ''}`,
+  });
+  assert(doctor.stdout.includes('PASS Runtime profile'), 'doctor did not validate the managed runtime profile');
+  assert(doctor.stdout.includes('PASS Running daemon engagement'), 'doctor did not validate the running engagement owner');
+  assert(doctor.stdout.includes('PASS Shared daemon'), 'doctor did not validate the shared daemon');
   const token = readFileSync(tokenPath, 'utf8').trim();
   const authenticatedMcp = await fetchChecked('authenticated MCP', `http://127.0.0.1:${mcpPort}/mcp`, {
     headers: { Authorization: `Bearer ${token}` },
