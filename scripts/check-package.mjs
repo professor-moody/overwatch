@@ -40,6 +40,8 @@ const required = [
   'dist/dashboard-next/index.html',
   'scripts/setup.mjs',
   'scripts/doctor.mjs',
+  'scripts/node-runtime.mjs',
+  'scripts/node-runtime.d.mts',
   'scripts/runtime-profile.mjs',
   'scripts/process-identity.mjs',
   'scripts/daemon-lifecycle.mjs',

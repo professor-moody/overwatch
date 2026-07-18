@@ -17,6 +17,7 @@ import {
   processIsAlive,
   processStartIdentityMatches,
 } from './process-identity.mjs';
+import { classifyNodeVersion } from './node-runtime.mjs';
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(process.env.OVERWATCH_DOCTOR_ROOT || sourceRoot);
@@ -173,9 +174,17 @@ function which(cmd) {
   }
 }
 
-const major = Number(process.versions.node.split('.')[0]);
-if (major >= 20) add('pass', 'Node version', process.version);
-else add('fail', 'Node version', `${process.version} is unsupported`, 'Install Node 20 or newer.');
+const nodeRuntime = classifyNodeVersion(process.versions.node);
+if (nodeRuntime.supported) {
+  add('pass', 'Node version', `${process.version} (release-qualified major ${nodeRuntime.major})`);
+} else {
+  add(
+    'fail',
+    'Node version',
+    `${process.version} is not release-qualified; supported majors are ${nodeRuntime.supported_majors.join(', ')}`,
+    `Install Node.js ${nodeRuntime.recommended_major}.`,
+  );
+}
 
 const claudePath = which('claude');
 if (!claudePath) {

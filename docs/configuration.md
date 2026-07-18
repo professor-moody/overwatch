@@ -2,9 +2,19 @@
 
 ## Runtime Prerequisites
 
-Overwatch targets Node.js **>= 20** (matches `package.json#engines`). Older
-runtimes will be rejected by the npm install step. A few capabilities are
-"soft" optional and require system-level packages installed by the operator:
+Overwatch release-qualifies Node.js majors **20, 22, and 24** (matching
+`package.json#engines`); Node 24 is recommended. Other majors are unsupported
+until qualified. In particular, Node 26 remains unqualified because lifecycle
+soak runs showed intermittent behavior. `npm run doctor` fails its runtime
+support check on an unqualified major, while ordinary daemon startup does not
+hard-stop solely on the version.
+
+Adding a future major requires the complete release suite and three consecutive
+lifecycle runs to pass before the package range, doctor classifier, CI matrix,
+and this documentation are expanded together.
+
+A few capabilities are "soft" optional and require system-level packages
+installed by the operator:
 
 - **Interactive PTY sessions** (`open_session` / `send_to_session` with a
   pseudo-terminal): require `node-pty`, which compiles a native binding at
