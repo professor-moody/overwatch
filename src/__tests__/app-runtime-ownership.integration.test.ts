@@ -55,6 +55,61 @@ describe.skipIf(process.platform === 'win32')('application runtime ownership rec
     }
   });
 
+  it('refuses a second runtime owner for the same state even on another port', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'overwatch-app-daemon-owner-'));
+    directories.push(directory);
+    const statePath = join(directory, 'state.json');
+    const configPath = join(directory, 'engagement.json');
+    const engagement = config(`app-daemon-owner-${Date.now()}`);
+    writeFileSync(configPath, JSON.stringify(engagement));
+
+    const first = createOverwatchApp({
+      config: engagement,
+      configPath,
+      stateFilePath: statePath,
+      skillDir: join(process.cwd(), 'skills'),
+      dashboardPort: 0,
+      runtimeOwnership: {
+        transport: 'http',
+        dashboard_url: 'http://127.0.0.1:18384',
+        mcp_url: 'http://127.0.0.1:13000/mcp',
+      },
+    });
+    apps.push(first);
+    const checkpointBefore = first.engine.getPersistenceRecoveryStatus().highest_contiguous_applied_seq;
+
+    expect(() => createOverwatchApp({
+      config: engagement,
+      configPath,
+      stateFilePath: statePath,
+      skillDir: join(process.cwd(), 'skills'),
+      dashboardPort: 0,
+      runtimeOwnership: {
+        transport: 'http',
+        dashboard_url: 'http://127.0.0.1:28384',
+        mcp_url: 'http://127.0.0.1:23000/mcp',
+      },
+    })).toThrow(/already owned by Overwatch PID/);
+    expect(first.engine.getPersistenceRecoveryStatus().highest_contiguous_applied_seq)
+      .toBe(checkpointBefore);
+
+    await shutdownOverwatchApp(first);
+    apps.splice(apps.indexOf(first), 1);
+    const replacement = createOverwatchApp({
+      config: engagement,
+      configPath,
+      stateFilePath: statePath,
+      skillDir: join(process.cwd(), 'skills'),
+      dashboardPort: 0,
+      runtimeOwnership: {
+        transport: 'http',
+        dashboard_url: 'http://127.0.0.1:28384',
+        mcp_url: 'http://127.0.0.1:23000/mcp',
+      },
+    });
+    apps.push(replacement);
+  });
+
   it('reclaims a verified orphan group before createOverwatchApp returns', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'overwatch-app-runtime-'));
     directories.push(directory);

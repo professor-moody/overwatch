@@ -19,12 +19,13 @@ machine-specific paths. The recommended daemon setup creates both safely:
 npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
 ```
 
-That command preserves other MCP entries and always keeps an existing
-`engagement.json` or existing Claude settings; `--force` is retained as a safe
-compatibility alias. If the config is missing beside durable artifacts, setup either
+That command preserves other MCP entries, an existing `engagement.json`, and
+unrelated Claude settings; it replaces only Overwatch-managed hook entries with
+the current checked-in definitions. `--force` is retained as a safe compatibility
+alias. If the config is missing beside durable artifacts, setup either
 wires one unambiguous state for read-only recovery or stops before writing. It
-also writes the shared HTTP MCP credential and creates hook settings when they
-are absent (an existing settings file is preserved). Use the manual
+also writes the shared HTTP MCP credential and converges the managed hook settings
+without removing unrelated entries. Use the manual
 example-copying flow below only when you intentionally want the solo stdio
 compatibility mode or need to merge an existing custom configuration by hand.
 
@@ -37,45 +38,46 @@ The recommended setup uses two local config files:
 | `.mcp.json` | MCP server definitions such as `mcpServers.overwatch` | No |
 | `.claude/settings.json` | Claude Code project settings, including hooks; may also contain `mcpServers` | No |
 
-For a manually configured **solo stdio** checkout:
+For an explicit **solo stdio** checkout:
 
 ```bash
-cp .mcp.example.json .mcp.json
-cp .claude/settings.example.json .claude/settings.json
+npm run setup:stdio
 ```
 
-Then edit `.mcp.json` with your absolute paths. Leave `.claude/settings.json` as hooks-only unless you intentionally keep MCP config there too. Do not use this stdio shape alongside a running daemon; run the default `npm run setup` so terminal Claude connects to the one existing owner.
+Setup writes absolute lifecycle/profile paths into `.mcp.json` and merges the
+managed hooks into `.claude/settings.json`. Do not edit only one side of that
+wiring. Do not use stdio alongside a running daemon; use the default `npm run
+setup` so terminal Claude connects to the one existing owner.
 
 Do **not** assume copying `.claude/settings.example.json` replaces `.mcp.json`. They are different files for different jobs.
 
 ## Manual solo-stdio setup
 
-Use this exact two-file setup only when one Claude session should launch and own
-Overwatch itself:
+Use this mode only when one Claude session should launch and own Overwatch:
 
 ```bash
-cp .mcp.example.json .mcp.json
-cp .claude/settings.example.json .claude/settings.json
+npm run setup:stdio
 ```
 
-Then edit `.mcp.json`:
+Setup publishes the lifecycle-backed shape below with absolute paths:
 
 ```json
 {
   "mcpServers": {
     "overwatch": {
       "command": "node",
-      "args": ["/absolute/path/to/overwatch/dist/index.js"],
+      "args": ["/absolute/path/to/overwatch/scripts/daemon-lifecycle.mjs", "run-stdio"],
       "env": {
-        "OVERWATCH_CONFIG": "/absolute/path/to/overwatch/engagement.json",
-        "OVERWATCH_SKILLS": "/absolute/path/to/overwatch/skills"
+        "OVERWATCH_RUNTIME_PROFILE": "/absolute/path/to/overwatch/.overwatch-runtime/profile.json"
       }
     }
   }
 }
 ```
 
-Only use this alternate shape if your MCP server is configured in `.claude/settings.json` instead of `.mcp.json`:
+Only use this alternate location if your MCP server is configured in
+`.claude/settings.json` instead of `.mcp.json`; copy the exact setup-generated
+entry rather than pointing directly at `dist/index.js`:
 
 ```json
 {
@@ -85,10 +87,9 @@ Only use this alternate shape if your MCP server is configured in `.claude/setti
   "mcpServers": {
     "overwatch": {
       "command": "node",
-      "args": ["/absolute/path/to/overwatch/dist/index.js"],
+      "args": ["/absolute/path/to/overwatch/scripts/daemon-lifecycle.mjs", "run-stdio"],
       "env": {
-        "OVERWATCH_CONFIG": "/absolute/path/to/overwatch/engagement.json",
-        "OVERWATCH_SKILLS": "/absolute/path/to/overwatch/skills"
+        "OVERWATCH_RUNTIME_PROFILE": "/absolute/path/to/overwatch/.overwatch-runtime/profile.json"
       }
     }
   }

@@ -8,6 +8,8 @@ export const BUILD_INFO_FILE = 'dist/build-info.json';
 const INPUT_PATHS = [
   'src',
   'scripts',
+  'skills',
+  'engagement-templates',
   'package.json',
   'package-lock.json',
   'tsconfig.json',

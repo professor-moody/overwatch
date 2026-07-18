@@ -3,6 +3,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
 import type { GraphEngine } from './graph-engine.js';
 import type { SessionManager } from './session-manager.js';
+import type { DaemonLifecyclePhase } from './daemon-instance-lease.js';
 import {
   SessionWebSocketClientEventSchema,
   SessionWebSocketServerEventSchema,
@@ -36,6 +37,7 @@ export class DashboardSessionWebSocketHub {
   readonly server = new WebSocketServer({ noServer: true });
   pollers = new Map<WebSocket, ReturnType<typeof setInterval>>();
   private readonly mutationBoundary: ApplicationCommandService;
+  private runtimePhaseProvider: () => DaemonLifecyclePhase = () => 'ready';
 
   constructor(
     private readonly engine: GraphEngine,
@@ -50,6 +52,16 @@ export class DashboardSessionWebSocketHub {
     this.sessionManager = sessionManager;
   }
 
+  setRuntimePhaseProvider(provider: () => DaemonLifecyclePhase): void {
+    this.runtimePhaseProvider = provider;
+  }
+
+  closeForRuntimeStopping(): void {
+    for (const ws of this.server.clients) {
+      ws.close(4512, 'Overwatch runtime is stopping');
+    }
+  }
+
   handleConnection(
     ws: WebSocket,
     sessionId: string,
@@ -57,6 +69,10 @@ export class DashboardSessionWebSocketHub {
   ): void {
     if (!this.sessionManager) {
       ws.close(4503, 'Session manager not available');
+      return;
+    }
+    if (this.runtimePhaseProvider() !== 'ready') {
+      ws.close(4512, 'Overwatch runtime is not accepting session input');
       return;
     }
 
@@ -152,6 +168,16 @@ export class DashboardSessionWebSocketHub {
           recovery: this.engine.getPersistenceRecoveryStatus(),
         });
         ws.close(4503, 'Persistence is read-only');
+        return;
+      }
+      if (this.runtimePhaseProvider() !== 'ready') {
+        this.send(ws, {
+          type: 'error',
+          op: 'runtime',
+          code: 'RUNTIME_NOT_READY',
+          error: `Overwatch is ${this.runtimePhaseProvider()}; terminal mutations are not accepted.`,
+        });
+        ws.close(4512, 'Overwatch runtime is not accepting session input');
         return;
       }
       const current = this.sessionManager!.getSession(sessionId);

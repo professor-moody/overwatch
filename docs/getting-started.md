@@ -13,7 +13,7 @@ Overwatch is **one engine** — the same graph, tools, and dashboard either way.
 
 | | **stdio** *(solo compatibility)* | **HTTP daemon** *(recommended default)* |
 |---|---|---|
-| Setup/start | `npm run setup:stdio`, then `claude` launches Overwatch | `npm run setup`, then `npm run start:daemon` once |
+| Setup/start | `npm run setup:stdio`, then `claude` launches Overwatch | `npm run setup`, then `npm run daemon:start` once |
 | Lifetime | Lives and dies with that one `claude` session | Long-lived; survives client restarts |
 | Clients | One Claude Code session | Many at once — the dashboard, a terminal `claude`, the [`overwatch` CLI](cli.md), and dispatched sub-agents, all on the *same* engagement |
 | Dashboard | Yes, on `:8384` | Yes, on `:8384` |
@@ -32,9 +32,8 @@ git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install
 npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
-npm run build
+npm run daemon:start
 npm run doctor
-npm run start:daemon
 ```
 
 Requires **Node.js 20+** and the **Claude Code CLI** (`claude`).
@@ -54,11 +53,17 @@ npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
 
 On a fresh checkout this creates a local `engagement.json` from the template,
 fills in the CIDR, adds a fresh `engagement_nonce`, and writes an authenticated
-HTTP `.mcp.json`, `.overwatch-mcp-token`, and `.claude/settings.json`. Leave
-`npm run start:daemon` running, open `http://127.0.0.1:8384`, and start `claude`
-in another terminal. Re-running the default `npm run setup` keeps an existing
+HTTP `.mcp.json`, `.overwatch-mcp-token`, `.overwatch-runtime/profile.json`, and
+`.claude/settings.json`. `npm run daemon:start` returns after the verified
+daemon is ready, so you can open `http://127.0.0.1:8384` and start `claude` in
+the same terminal. Re-running the default `npm run setup` keeps an existing
 `engagement.json`; it only refreshes the shared-client wiring. `--force` does
 not override that safety rule.
+
+Each setup-owned file is published atomically. If setup reports a late local
+wiring write failure, fix the filesystem error and rerun the same setup command;
+it converges the token/profile/client files without replacing engagement data.
+Do not delete config, state, WAL, evidence, or reports to repair client wiring.
 
 If `engagement.json` is missing while state, WAL, snapshots, migration backups,
 evidence, reports, or recovery intents remain, setup does not seed an empty
@@ -150,24 +155,26 @@ file and updates only `mcpServers.overwatch`.
 
 ```bash
 cd /absolute/path/to/overwatch
-npm run start:daemon
+npm run daemon:start
 ```
 
-Leave that terminal running. In a second terminal:
+The command returns only after every configured runtime endpoint reports `READY` (or a truthful
+`RECOVERY READ-ONLY` state). Continue in the same terminal:
 
 ```bash
 cd /absolute/path/to/overwatch
 claude
 ```
 
-Startup verifies that the compiled runtime and dashboard match the current
-checkout. After a pull, a stale or missing build is rebuilt automatically before
-the daemon starts; `npm run doctor` reports the same freshness status without
-changing any files.
+Startup verifies that the compiled runtime, engagement, and state family match
+the current checkout/profile. A stale or missing build is rebuilt only when no
+daemon is live; this prevents an old backend from serving newly replaced
+dashboard assets. `npm run doctor` reports the same identity without changing
+engagement files.
 
-The first pre-start doctor run may warn that the configured daemon is not
-running; that is expected. With the daemon active, run `npm run doctor` again
-from the second terminal to verify its PID/build identity, MCP token, Claude CLI
+If you run doctor before the first start, its daemon-not-running warning is
+expected. With the daemon active, run `npm run doctor`
+to verify its PID/build/state identity, MCP token, Claude CLI
 worker flags, and port ownership.
 
 Terminal Claude connects to the already-running Overwatch engine and reads
@@ -234,17 +241,25 @@ All three returning clean output means you're good.
 
 ### After pulling an update
 
-Stop the old daemon, then use the same predictable refresh path:
+Pull the update, then use the state-preserving lifecycle command:
 
 ```bash
 git pull --ff-only origin main
-npm ci
-npm run build
+npm run upgrade
 npm run doctor
-npm run start:daemon
 ```
 
-This rebuilds dependencies and compiled assets; it does not replace
+For the first update from a version that has no
+`.overwatch-runtime/profile.json`, stop the old foreground/stdio owner and run
+`npm run setup` once before `npm run upgrade`. The managed lifecycle refuses to
+infer writable state without that profile. Setup inventories and preserves the
+existing config, state/WAL/snapshots, evidence, and reports while recording the
+selected paths; it does not reseed the engagement.
+
+`upgrade` first verifies that this is a buildable source checkout with its lock
+file intact. It then verifies and gracefully stops the recorded owner, installs,
+builds, and starts the new daemon. Packaged installations fail before downtime
+and must be updated through the package/source manager that installed them. It does not replace
 `engagement.json`, state/WAL/snapshots, evidence, or reports. Hard-reload the
 dashboard after the new daemon starts. If `doctor` identifies another PID or a
 different build, stop that owner instead of starting a second daemon.
@@ -270,8 +285,30 @@ stable token the daemon will reuse:
 
 ```bash
 cd /absolute/path/to/overwatch
-npm run start:daemon                # alias: npm start -- --http
+npm run daemon:start                # detached; returns after READY
+npm run start:daemon                # foreground equivalent
+npm run daemon:status
 ```
+
+Lifecycle commands are identity-verified against the persisted runtime profile
+and the daemon's state-family lease:
+
+| Command | Behavior |
+|---|---|
+| `npm run daemon:start` | Detached start; exact READY daemon is a successful no-op |
+| `npm run daemon:status` | Shows PID, lifecycle, engagement, state path, endpoints, build match, and recovery state |
+| `npm run daemon:stop` | Requests authenticated graceful shutdown only after PID/start/instance/state identity all match; waits for durable acknowledgement (verified POSIX runtimes retain a SIGTERM compatibility fallback) |
+| `npm run daemon:restart` | Verified stop, freshness build if needed, detached start |
+| `npm run daemon -- logs` | Shows the managed log path and recent output |
+| `npm run start:daemon` | Foreground form for service managers or interactive diagnostics |
+| `npm run upgrade` | Verified stop, `npm ci`, build, and detached restart after you pull |
+
+The lifecycle never runs `git pull` and never rewrites engagement configuration,
+state/WAL/snapshots, evidence, reports, tapes, or migration backups. If stop
+cannot prove the live PID's physical identity, it fails closed and signals
+nothing. Start, stop, restart, and upgrade are serialized by a local lifecycle
+lock. A failed final flush is not reported as a clean stop and blocks automatic
+restart or upgrade until recovery is inspected.
 
 It binds two loopback ports:
 
@@ -285,10 +322,14 @@ Every MCP client gets its own `mcp-session-id`, but they all read and write the 
 ### Point Claude Code at the daemon
 
 If you started with solo stdio mode, switch safely without replacing the
-engagement:
+engagement. First exit the terminal Claude session that owns the stdio runtime;
+setup deliberately refuses to change profiles while that writer is live. Then
+persist the shared profile and start it once:
 
 ```bash
 npm run setup
+npm run daemon:start
+npm run doctor
 ```
 
 ```json
@@ -306,8 +347,14 @@ npm run setup
 The `/mcp` endpoint requires a bearer token by default, even on loopback.
 Setup writes it into the local `.mcp.json` and stores the same value `0600` in
 `.overwatch-mcp-token`; daemon restarts reuse that file automatically. You can
-still provide `OVERWATCH_MCP_TOKEN` explicitly when managing secrets externally;
-in that manual form, use `Bearer ${OVERWATCH_MCP_TOKEN}` in client configuration.
+still provide `OVERWATCH_MCP_TOKEN` explicitly while the daemon is stopped and
+rerun setup; setup publishes that same authority to the token file and client
+configuration so startup can prove they converge.
+
+For a non-loopback dashboard, setup likewise stores the dashboard credential in
+a `0600` token file and records only that file's path in the runtime profile.
+Later `start`, `status`, `stop`, and `upgrade` commands retain remote
+authentication without requiring the original setup shell environment.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -349,6 +396,10 @@ The dashboard is on by default at `http://localhost:8384`. To change the port or
 | `OVERWATCH_DASHBOARD_PORT` | `8384` | Set to `0` to disable |
 | `OVERWATCH_DASHBOARD_TOKEN` | *(none)* | If set, requires `?token=<value>` |
 
+Runtime-profile changes are deliberate: run `npm run daemon:stop`, rerun setup
+with the new variables, then `npm run daemon:start`. Setup refuses to change
+ports or credentials underneath a live state owner.
+
 Full feature list, keyboard shortcuts, and API endpoints in the [Dashboard Guide](dashboard.md).
 
 ### Set up an engagement conversationally (no hand-edited JSON)
@@ -377,8 +428,9 @@ If none of the templates fit, the full schema is in [Configuration](configuratio
     Open `.mcp.json` and confirm:
 
     - The `overwatch` block is present under `mcpServers`.
-    - `args` and `env` use **absolute** paths (not `~` or relative).
-    - You ran `npm run build` so `dist/index.js` exists.
+    - The default daemon entry has an `http://127.0.0.1:<port>/mcp` URL and a Bearer header.
+    - `npm run daemon:status` reports the intended engagement and state path as READY.
+    - For explicit solo stdio only, the entry runs `scripts/daemon-lifecycle.mjs run-stdio` with the absolute runtime-profile path.
 
 ??? failure "Claude hooks don't show up"
     Open `.claude/settings.json` and confirm:
@@ -386,10 +438,10 @@ If none of the templates fit, the full schema is in [Configuration](configuratio
     - It exists in this repo.
     - It contains the `"hooks"` block from `.claude/settings.example.json`.
     - You restarted Claude Code after editing it.
-    - `/hooks` lists `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
+    - `/hooks` lists `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SessionStart`, `PreCompact`, and `Stop`.
 
 ??? failure "Dashboard won't load"
-    - Port conflict? Set `OVERWATCH_DASHBOARD_PORT` to something else.
+    - Port conflict? Stop the verified owner, rerun setup with `OVERWATCH_DASHBOARD_PORT=<port>`, then start it again.
     - Blank page? Open browser console (F12) — the dashboard needs WebGL.
     - WebSocket disconnects? It auto-reconnects every 3s and falls back to HTTP polling. Check for a proxy/firewall blocking WS.
 

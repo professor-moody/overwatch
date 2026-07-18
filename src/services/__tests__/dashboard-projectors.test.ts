@@ -146,6 +146,7 @@ describe('dashboard pure projectors', () => {
       input_sha256: 'a'.repeat(64),
       runtime_pid: 123,
       runtime_started_at: '2026-07-17T00:00:00.000Z',
+      runtime_instance_id: '11111111-1111-4111-8111-111111111111',
     };
     const snapshot = projectDashboardSnapshot(inputState, inputGraph, 3, runtimeBuild);
 

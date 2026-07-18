@@ -51,6 +51,8 @@ export function scriptedCanHandle(engine: GraphEngine, task: AgentTask): boolean
 export class ScriptedAgentRunner {
   private readonly lifecycleCommands: AgentLifecycleCommandService;
   private running = false;
+  /** Queue drains stay disabled until the public runtime readiness boundary. */
+  private activated = false;
   private updateUnsubscribe: (() => void) | null = null;
   /** task IDs currently being processed to avoid double-pickup */
   private processing = new Set<string>();
@@ -59,6 +61,8 @@ export class ScriptedAgentRunner {
    *  must terminate the process group owned by runInstrumentedProcess, not just
    *  stop future queue drains. */
   private abortControllers = new Map<string, AbortController>();
+  /** Scripted processes are part of daemon shutdown ownership, not detached work. */
+  private inFlightTasks = new Set<Promise<void>>();
   // Predicate deciding which tasks this runner should pick up. Defaults to the
   // legacy "scripted-or-unset backend" rule for standalone use; TaskExecution-
   // Service injects a backend-routing-aware predicate so open-ended work goes
@@ -95,21 +99,34 @@ export class ScriptedAgentRunner {
     this.shouldHandle = fn;
   }
 
-  start(): void {
+  start(options: { drain?: boolean } = {}): void {
     if (this.running) return;
     this.running = true;
+    this.activated = options.drain !== false;
     // Subscribe to engine updates to detect newly registered tasks.
     // onUpdate fires after every graph/state mutation, including registerAgent.
     this.updateUnsubscribe = this.engine.onUpdate(() => {
-      if (!this.running) return;
+      if (!this.running || !this.activated) return;
       this.drainQueue();
     });
     // Initial drain in case tasks were registered before start().
-    this.drainQueue();
+    if (options.drain !== false) this.drainQueue();
+  }
+
+  activate(): void {
+    if (!this.running) return;
+    this.activated = true;
+    try {
+      this.drainQueue();
+    } catch (error) {
+      this.activated = false;
+      throw error;
+    }
   }
 
   stop(): void {
     this.running = false;
+    this.activated = false;
     this.updateUnsubscribe?.();
     this.updateUnsubscribe = null;
     for (const timer of this.heartbeatTimers.values()) clearInterval(timer);
@@ -118,8 +135,15 @@ export class ScriptedAgentRunner {
     this.abortControllers.clear();
   }
 
+  /** Wait until every child process aborted by stop() has actually settled. */
+  async waitForIdle(): Promise<void> {
+    while (this.inFlightTasks.size > 0) {
+      await Promise.allSettled([...this.inFlightTasks]);
+    }
+  }
+
   private drainQueue(): void {
-    if (!this.running || !this.engine.isPersistenceWritable()) return;
+    if (!this.running || !this.activated || !this.engine.isPersistenceWritable()) return;
     const tasks = this.engine.getAgentTasks();
     for (const task of tasks) {
       if (task.status !== 'running') continue;
@@ -129,10 +153,15 @@ export class ScriptedAgentRunner {
       if (this.processing.has(task.id)) continue;
       if (!task.frontier_item_id) continue;
       this.processing.add(task.id);
-      this.runTask(task).catch(() => {
+      const execution = this.runTask(task).catch(() => {
         // runTask handles its own error reporting; this is a safety net.
         this.processing.delete(task.id);
       });
+      this.inFlightTasks.add(execution);
+      void execution.then(
+        () => this.inFlightTasks.delete(execution),
+        () => this.inFlightTasks.delete(execution),
+      );
     }
   }
 

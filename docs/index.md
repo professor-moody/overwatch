@@ -49,9 +49,8 @@ git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install
 npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
-npm run build
+npm run daemon:start
 npm run doctor
-npm run start:daemon
 ```
 
 `ctf.json` is the friendliest first-run template — no OPSEC constraints,
@@ -59,8 +58,9 @@ auto-approves everything. For real engagements switch to
 `internal-pentest.json` or `external-assessment.json` — see
 [Configuration](configuration.md).
 
-Leave the daemon running. Open `http://127.0.0.1:8384` and launch `claude` from
-the repo in another terminal. Terminal Claude, the dashboard, the
+The detached daemon remains running after `daemon:start` returns. Open
+`http://127.0.0.1:8384` and launch `claude` from the repo in the same or another
+terminal. Terminal Claude, the dashboard, the
 [`overwatch` CLI](cli.md), and deployed agents share that one runtime; do not
 launch a second stdio server beside it. Dashboard-managed Claude workers use
 isolated per-task MCP configuration and do not inherit the terminal session's

@@ -13,6 +13,7 @@ import { pipeline } from 'stream/promises';
 import { createHash, randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { GraphEngine } from './graph-engine.js';
+import type { DaemonLifecyclePhase } from './daemon-instance-lease.js';
 import {
   ApplicationCommandConflictError,
   ApplicationCommandService,
@@ -163,6 +164,7 @@ import {
   type DashboardOperationId,
   type MatchedDashboardEndpoint,
 } from '../contracts/dashboard-api-v1.js';
+import type { DaemonRuntimeStatus } from './daemon-instance-lease.js';
 
 export interface DashboardStartResult {
   started: boolean;
@@ -283,7 +285,50 @@ export class DashboardServer {
   private readonly playbookRuns: PlaybookRunService;
   private readonly playbookCommands: PlaybookCommandService;
   private readonly runtimeBuild = readRuntimeBuildInfo();
+  private runtimeStatusProvider: (() => DaemonRuntimeStatus) | null = null;
+  private runtimePhaseProvider: () => DaemonLifecyclePhase = () => 'ready';
+  private runtimeStopping = false;
+  private readonly inFlightDurableMutations = new Set<Promise<void>>();
   private readonly dashboardProjections: DashboardProjectionService;
+
+  attachRuntimeStatus(provider: () => DaemonRuntimeStatus): void {
+    this.runtimeStatusProvider = provider;
+  }
+
+  attachRuntimeLifecycle(provider: () => DaemonLifecyclePhase): void {
+    this.runtimePhaseProvider = provider;
+    this.sessionHub.setRuntimePhaseProvider(provider);
+  }
+
+  async beginRuntimeShutdown(): Promise<void> {
+    this.runtimeStopping = true;
+    this.sessionHub.closeForRuntimeStopping();
+    while (this.inFlightDurableMutations.size > 0) {
+      await Promise.allSettled([...this.inFlightDurableMutations]);
+    }
+  }
+
+  private trackDurableMutation(execution: Promise<void>): void {
+    this.inFlightDurableMutations.add(execution);
+    void execution.then(
+      () => this.inFlightDurableMutations.delete(execution),
+      () => this.inFlightDurableMutations.delete(execution),
+    );
+  }
+
+  private rejectMutationWhileStopping(res: ServerResponse): boolean {
+    const phase = this.runtimePhaseProvider();
+    if (!this.runtimeStopping && (phase === 'ready' || phase === 'ready_read_only')) return false;
+    const runtime = this.runtimeStatusProvider?.();
+    this.sendUncontractedJson(res, 503, {
+      error: this.runtimeStopping
+        ? 'Overwatch is stopping; durable mutations are no longer accepted.'
+        : `Overwatch is ${phase}; durable mutations are not accepted until startup is ready.`,
+      code: this.runtimeStopping ? 'RUNTIME_STOPPING' : 'RUNTIME_NOT_READY',
+      ...(runtime ? { runtime_status: runtime } : { phase: this.runtimeStopping ? 'stopping' : phase }),
+    });
+    return true;
+  }
 
   constructor(
     engine: GraphEngine,
@@ -391,7 +436,11 @@ export class DashboardServer {
 
       const websocketRoute = matchDashboardWebSocketPath(pathname);
       if (websocketRoute?.channel === 'session') {
-        if (!this.engine.isPersistenceWritable()) {
+        if (
+          !this.engine.isPersistenceWritable()
+          || (this.runtimePhaseProvider() !== 'ready'
+            && this.runtimePhaseProvider() !== 'ready_read_only')
+        ) {
           socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
           socket.destroy();
           return;
@@ -454,10 +503,9 @@ export class DashboardServer {
         const addr = this.httpServer.address();
         if (addr && typeof addr === 'object') {
           this.port = addr.port;
-          this.host = addr.address;
         }
         this._running = true;
-        console.error(`Dashboard running at http://${this.host}:${this.port}`);
+        console.error(`Dashboard running at ${this.address}`);
         resolve({ started: true });
       });
     });
@@ -705,20 +753,24 @@ export class DashboardServer {
         endpoint: matchedEndpoint.endpoint,
       });
       if (dashboardEndpointMutatesDurableState(matchedEndpoint.endpoint)) {
+        if (this.rejectMutationWhileStopping(res)) return;
         // Authentication and CSRF checks must happen before reserving a
         // durable application command. Individual handlers retain their
         // compatibility checks as a defense-in-depth boundary.
         if (!this.checkMutationAuth(req, res)) return;
-        if (matchedEndpoint.operation_id !== 'resolveConfigDivergence') {
-          void this.dispatchDurableDashboardMutation(
+        this.installResponseContract(matchedEndpoint, res);
+        this.trackDurableMutation(
+          matchedEndpoint.operation_id === 'resolveConfigDivergence'
+            ? this.handleResolveConfigDivergence(req, res)
+            : this.dispatchDurableDashboardMutation(
             matchedEndpoint,
             req,
             res,
             url,
             queryResult.data,
-          );
-          return;
-        }
+          ),
+        );
+        return;
       }
       this.installResponseContract(matchedEndpoint, res);
       this.dispatchApiOperation(matchedEndpoint, req, res, url);
@@ -797,7 +849,12 @@ export class DashboardServer {
       resetFrontierWeights: () => this.handleResetFrontierWeights(req, res),
       getOpsecBudget: () => this.serveOpsecBudget(res),
       getHealth: () => this.serveHealth(res),
-      getRuntime: () => this.sendContractedJson(res, 200, { runtime_build: this.runtimeBuild }),
+      getRuntime: () => this.sendContractedJson(res, 200, {
+        runtime_build: this.runtimeBuild,
+        ...(this.runtimeStatusProvider
+          ? { runtime_status: this.runtimeStatusProvider() }
+          : {}),
+      }),
       listEngagements: () => this.serveEngagements(res),
       createEngagement: () => { void this.handleCreateEngagement(req, res); },
       createEngagementFromTemplate: () => this.handleCreateFromTemplate(req, res),
@@ -880,6 +937,9 @@ export class DashboardServer {
   ): Promise<void> {
     try {
       const body = await this.readJsonBody(req, 256 * 1024);
+      // Admission can race a slow request body. Re-check immediately before
+      // reserving the durable command so shutdown has a closed mutation gate.
+      if (this.rejectMutationWhileStopping(res)) return;
       const requestFingerprint = buildExternalMutationFingerprint({
         operation_id: matched.operation_id,
         path: matched.path_params,
@@ -2195,9 +2255,11 @@ export class DashboardServer {
     }));
   }
 
-  private handleResolveConfigDivergence(req: IncomingMessage, res: ServerResponse): void {
+  private async handleResolveConfigDivergence(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkMutationAuth(req, res)) return;
-    this.readJsonBody(req).then(body => {
+    try {
+      const body = await this.readJsonBody(req);
+      if (this.rejectMutationWhileStopping(res)) return;
       const parsed = ConfigDivergenceResolveRequestSchema.safeParse(body);
       if (!parsed.success) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -2224,10 +2286,10 @@ export class DashboardServer {
       } catch (error) {
         this.respondRecoveryCommandFailure(res, error);
       }
-    }).catch(() => {
+    } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-    });
+    }
   }
 
   private serveHistory(url: string, res: ServerResponse): void {
@@ -2797,7 +2859,10 @@ export class DashboardServer {
   }
 
   get address(): string {
-    return `http://${this.host}:${this.port}`;
+    const host = this.host.includes(':') && !this.host.startsWith('[')
+      ? `[${this.host}]`
+      : this.host;
+    return `http://${host}:${this.port}`;
   }
 
   get boundHost(): string {

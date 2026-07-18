@@ -84,14 +84,16 @@ service stops; another adapter cannot continue against partial memory.
 ### Shared daemon (recommended)
 
 `npm run setup` writes an HTTP MCP client configuration for terminal
-Claude. `npm run start:daemon` starts the MCP endpoint, dashboard/API, task
+Claude. `npm run daemon:start` starts the MCP endpoint, dashboard/API, task
 execution service, and WebSocket hubs around one engine. Dashboard-deployed
 workers receive their own isolated MCP configuration pointing back to this
-daemon.
+daemon. A PID/start-identity-verified process-lifetime lease is acquired for
+the selected state family before graph recovery, independent of endpoint ports.
 
 This is the supported shape when any two of terminal Claude, dashboard, CLI,
-planner, or dispatched agents are used together. The filesystem writer lease
-also rejects an accidental second writer.
+planner, or dispatched agents are used together. The lifetime owner rejects an
+accidental second runtime even when it chooses different ports; lower-level
+writer and migration locks still protect individual filesystem boundaries.
 
 ### Stdio solo fallback
 

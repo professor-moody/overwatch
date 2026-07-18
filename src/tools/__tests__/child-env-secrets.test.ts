@@ -14,10 +14,16 @@ describe('buildChildEnv secret isolation', () => {
     setEnv('OVERWATCH_MCP_TOKEN', 'master-token');
     setEnv('OVERWATCH_DASHBOARD_TOKEN', 'dash-token');
     setEnv('OVERWATCH_CHECKPOINT_SIGNING_KEY', 'signing-key');
+    setEnv('OVERWATCH_DAEMON_MANAGEMENT_NONCE', 'management-nonce');
+    setEnv('OVERWATCH_DAEMON_RECORD', '/tmp/daemon.json');
+    setEnv('OVERWATCH_RUNTIME_PROFILE', '/tmp/profile.json');
     const env = buildChildEnv(undefined);
     expect(env.OVERWATCH_MCP_TOKEN).toBeUndefined();
     expect(env.OVERWATCH_DASHBOARD_TOKEN).toBeUndefined();
     expect(env.OVERWATCH_CHECKPOINT_SIGNING_KEY).toBeUndefined();
+    expect(env.OVERWATCH_DAEMON_MANAGEMENT_NONCE).toBeUndefined();
+    expect(env.OVERWATCH_DAEMON_RECORD).toBeUndefined();
+    expect(env.OVERWATCH_RUNTIME_PROFILE).toBeUndefined();
   });
 
   it('strips a future OVERWATCH_*-prefixed secret-looking var (defensive pattern)', () => {

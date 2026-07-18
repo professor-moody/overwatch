@@ -74,6 +74,28 @@ function requireFirst(args: string[], label: string): string {
 
 interface StateResp { state?: { frontier?: Array<{ type: string }> } }
 
+function readLocalRuntimeProfile(): { config_path?: string; state_file_path?: string } | undefined {
+  const profilePath = resolve(
+    process.env.OVERWATCH_RUNTIME_PROFILE
+      ?? join(process.cwd(), '.overwatch-runtime', 'profile.json'),
+  );
+  if (!existsSync(profilePath)) return undefined;
+  try {
+    const value = JSON.parse(readFileSync(profilePath, 'utf8')) as Record<string, unknown>;
+    if (value.schema_version !== 1) return undefined;
+    return {
+      ...(typeof value.config_path === 'string' ? { config_path: value.config_path } : {}),
+      ...(typeof value.state_file_path === 'string'
+        ? { state_file_path: value.state_file_path }
+        : {}),
+    };
+  } catch (error) {
+    throw new Error(
+      `Runtime profile ${profilePath} is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 export const READ_COMMANDS: Record<string, Command> = {
   state: {
     summary: 'Inspect local persisted-state version and migration readiness',
@@ -83,13 +105,16 @@ export const READ_COMMANDS: Record<string, Command> = {
       if (positional[0] !== 'migrate' || !args.includes('--check')) {
         throw new Error('Expected `state migrate --check`.');
       }
+      const profile = readLocalRuntimeProfile();
       const configFile = resolve(
         flagValue(args, 'config-file')
           ?? process.env.OVERWATCH_CONFIG
+          ?? profile?.config_path
           ?? './engagement.json',
       );
       let stateFile = flagValue(args, 'state-file')
-        ?? process.env.OVERWATCH_STATE_FILE;
+        ?? process.env.OVERWATCH_STATE_FILE
+        ?? profile?.state_file_path;
       if (!stateFile) {
         if (!existsSync(configFile)) {
           throw new Error('Cannot derive the state path because the config file is missing; pass --state-file PATH.');

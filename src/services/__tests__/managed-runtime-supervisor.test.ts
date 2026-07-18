@@ -5,7 +5,10 @@ import { spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { spawnManagedRuntimeSupervisor } from '../managed-runtime-supervisor.js';
+import {
+  buildManagedSupervisorEnv,
+  spawnManagedRuntimeSupervisor,
+} from '../managed-runtime-supervisor.js';
 import { observeProcessIdentity, processIsAlive } from '../process-identity.js';
 
 describe('managed runtime supervisor handshake', () => {
@@ -22,6 +25,42 @@ describe('managed runtime supervisor handshake', () => {
     for (const directory of directories.splice(0)) {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('does not give the durable supervisor daemon control credentials', () => {
+    const env = buildManagedSupervisorEnv('runtime-owner', 750, {
+      PATH: '/usr/bin',
+      HOME: '/home/operator',
+      OVERWATCH_MCP_TOKEN: 'mcp-secret',
+      OVERWATCH_MCP_TOKEN_FILE: '/tmp/mcp-secret',
+      OVERWATCH_DASHBOARD_TOKEN: 'dashboard-secret',
+      OVERWATCH_DAEMON_MANAGED: '1',
+      OVERWATCH_DAEMON_RECORD: '/tmp/daemon.json',
+      OVERWATCH_DAEMON_LOG: '/tmp/daemon.log',
+      OVERWATCH_DAEMON_MANAGEMENT_NONCE: 'management-secret',
+      OVERWATCH_RUNTIME_PROFILE: '/tmp/runtime.json',
+      OVERWATCH_CHECKPOINT_SIGNING_KEY: 'signing-secret',
+      OVERWATCH_FUTURE_SECRET: 'future-secret',
+    });
+
+    expect(env).toMatchObject({
+      PATH: '/usr/bin',
+      HOME: '/home/operator',
+      OVERWATCH_RUNTIME_TOKEN: 'runtime-owner',
+      OVERWATCH_RUNTIME_ACK_TIMEOUT_MS: '750',
+    });
+    for (const denied of [
+      'OVERWATCH_MCP_TOKEN',
+      'OVERWATCH_MCP_TOKEN_FILE',
+      'OVERWATCH_DASHBOARD_TOKEN',
+      'OVERWATCH_DAEMON_MANAGED',
+      'OVERWATCH_DAEMON_RECORD',
+      'OVERWATCH_DAEMON_LOG',
+      'OVERWATCH_DAEMON_MANAGEMENT_NONCE',
+      'OVERWATCH_RUNTIME_PROFILE',
+      'OVERWATCH_CHECKPOINT_SIGNING_KEY',
+      'OVERWATCH_FUTURE_SECRET',
+    ]) expect(env[denied]).toBeUndefined();
   });
 
   it('launches the target only after durable ownership acknowledgement', async () => {

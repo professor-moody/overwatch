@@ -96,6 +96,17 @@ export class TaskExecutionService {
   private updateUnsubscribe: (() => void) | null = null;
   private recoveryResumeTimer: ReturnType<typeof setTimeout> | null = null;
   private recoveryResumeFailures = 0;
+  private activationRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private activationRetryFailures = 0;
+  private activationScheduled = false;
+  /**
+   * Recovery readiness is a two-phase boundary. The app supplies a publisher
+   * that makes the writable runtime public only after this service has prepared
+   * all of its subscriptions/timers without draining durable work. Retain the
+   * publisher across transient preparation/publication failures so the same
+   * bounded retry can finish the boundary later.
+   */
+  private recoveryReadyPublisher: (() => void) | null = null;
 
   /** HTTP endpoint headless children connect to. Unset in stdio mode. */
   private endpoint: HeadlessEndpoint | null = null;
@@ -113,6 +124,7 @@ export class TaskExecutionService {
   private orchestratorSpawnedAt = 0;
   private orchestratorFailures = 0;
   private orchestratorNextSpawnAt = 0;
+  private executionActivated = false;
 
   private maxConcurrentHeadless: number;
   private maxConcurrentPlanners: number;
@@ -179,7 +191,7 @@ export class TaskExecutionService {
     return this.endpoint ? 'headless_mcp' : 'scripted';
   }
 
-  start(): void {
+  start(options: { deferInitialDrain?: boolean } = {}): void {
     this.startRequested = true;
     if (this.running) return;
     if (!this.engine.isPersistenceWritable()) {
@@ -190,6 +202,7 @@ export class TaskExecutionService {
       return;
     }
     this.running = true;
+    this.executionActivated = options.deferInitialDrain !== true;
     let subscribedDuringStart = false;
     try {
       this.startPersistenceGateMonitor();
@@ -197,27 +210,32 @@ export class TaskExecutionService {
       this.scripted.setShouldHandle((task) => (
         this.engine.isPersistenceWritable() && this.resolveBackend(task) === 'scripted'
       ));
-      this.scripted.start();
-      this.watchdog.start();
+      this.scripted.start({ drain: this.executionActivated });
+      if (this.executionActivated) this.watchdog.start();
       if (!this.updateUnsubscribe) {
         subscribedDuringStart = true;
         this.updateUnsubscribe = this.engine.onUpdate(() => {
-          if (!this.running) return;
+          if (!this.running || !this.executionActivated) return;
           if (!this.ensurePersistenceWritable()) return;
           this.drainDirectives();
           this.drainCveResearch();
           this.drainHeadless();
         });
       }
-      this.drainCveResearch();
-      this.drainHeadless();
-      this.reconcileOrchestrator(); // in case the endpoint is already set
+      if (this.executionActivated) {
+        this.drainCveResearch();
+        this.drainHeadless();
+        this.reconcileOrchestrator(); // in case the endpoint is already set
+      }
       this.clearRecoveryResumeRetry();
     } catch (error) {
       // Startup is an all-or-nothing lifecycle boundary. A synchronous drain
       // failure must not leave `running=true` (which would make every future
       // recovery resume a no-op) or leave timers/subscriptions/processes alive.
       this.running = false;
+      this.executionActivated = false;
+      this.activationScheduled = false;
+      this.clearActivationRetry();
       this.stopPersistenceGateMonitor();
       this.scripted.stop();
       this.watchdog.stop();
@@ -237,27 +255,109 @@ export class TaskExecutionService {
     }
   }
 
-  /** Resume a start that was intentionally deferred by read-only recovery. */
-  resumeAfterRecovery(): void {
+  /** Commit the prepared executor after public runtime readiness is durable. */
+  activateAfterRuntimeReady(): void {
+    if (!this.running || this.executionActivated || this.activationScheduled) return;
+    this.activationScheduled = true;
+    // Activation is deliberately scheduled after READY publication. Startup
+    // cannot report false failure because a queue drain found bad work, while
+    // no persisted task can execute during the binding phase.
+    queueMicrotask(() => {
+      this.activationScheduled = false;
+      if (!this.running || this.executionActivated) return;
+      try {
+        this.drainCveResearch();
+        this.drainHeadless();
+        this.reconcileOrchestrator();
+        this.scripted.activate();
+        this.watchdog.start();
+        this.executionActivated = true;
+        this.clearActivationRetry();
+      } catch (error) {
+        this.executionActivated = false;
+        console.error(`[task-execution] post-ready activation failed: ${
+          error instanceof Error ? error.message : String(error)
+        }; retry scheduled`);
+        this.scheduleActivationRetry();
+      }
+    });
+  }
+
+  private scheduleActivationRetry(): void {
+    if (this.activationRetryTimer || !this.running || this.executionActivated) return;
+    const delays = [250, 1_000, 5_000, 30_000] as const;
+    const delay = delays[Math.min(this.activationRetryFailures++, delays.length - 1)];
+    this.activationRetryTimer = setTimeout(() => {
+      this.activationRetryTimer = null;
+      if (!this.running || !this.engine.isPersistenceWritable()) return;
+      this.activateAfterRuntimeReady();
+    }, delay);
+    this.activationRetryTimer.unref?.();
+  }
+
+  private clearActivationRetry(): void {
+    if (this.activationRetryTimer) clearTimeout(this.activationRetryTimer);
+    this.activationRetryTimer = null;
+    this.activationRetryFailures = 0;
+  }
+
+  /**
+   * Resume a start that was intentionally deferred by read-only recovery.
+   *
+   * Preparation deliberately uses `deferInitialDrain`: public READY must be
+   * durable before any recovered task can execute. If either preparation or
+   * readiness publication fails, the publisher is retained and the internal
+   * retry completes the entire boundary. Activation happens only after the
+   * publisher succeeds.
+   */
+  resumeAfterRecovery(publishReady?: () => void): void {
     if (!this.startRequested) return;
+    if (publishReady && !this.recoveryReadyPublisher) {
+      this.recoveryReadyPublisher = publishReady;
+    }
     try {
-      this.start();
+      this.attemptRecoveryResume();
     } catch (error) {
       this.scheduleRecoveryResumeRetry();
       throw error;
     }
   }
 
+  private attemptRecoveryResume(): void {
+    if (!this.running) {
+      this.start({ deferInitialDrain: true });
+    }
+    const publishReady = this.recoveryReadyPublisher;
+    if (publishReady) {
+      publishReady();
+      // Clear only the publisher we actually invoked. This keeps a publisher
+      // installed by a re-entrant recovery signal from being discarded.
+      if (this.recoveryReadyPublisher === publishReady) {
+        this.recoveryReadyPublisher = null;
+      }
+    }
+    this.activateAfterRuntimeReady();
+    this.clearRecoveryResumeRetry();
+  }
+
   private scheduleRecoveryResumeRetry(): void {
-    if (this.recoveryResumeTimer || !this.startRequested || this.running) return;
+    if (
+      this.recoveryResumeTimer
+      || !this.startRequested
+      || (this.running && !this.recoveryReadyPublisher)
+    ) return;
     const delays = [250, 1_000, 5_000, 30_000] as const;
     const failure = this.recoveryResumeFailures++;
     const delay = delays[Math.min(failure, delays.length - 1)];
     this.recoveryResumeTimer = setTimeout(() => {
       this.recoveryResumeTimer = null;
-      if (!this.startRequested || this.running || !this.engine.isPersistenceWritable()) return;
+      if (
+        !this.startRequested
+        || (this.running && !this.recoveryReadyPublisher)
+        || !this.engine.isPersistenceWritable()
+      ) return;
       try {
-        this.start();
+        this.attemptRecoveryResume();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[recovery] task execution retry ${this.recoveryResumeFailures} failed: ${message}`);
@@ -306,6 +406,9 @@ export class TaskExecutionService {
     // Flip the lifecycle flag first.  Exit/error callbacks and re-entrant engine
     // updates observe the frozen state before any signals are delivered.
     this.running = false;
+    this.executionActivated = false;
+    this.activationScheduled = false;
+    this.clearActivationRetry();
     this.stopPersistenceGateMonitor();
     this.scripted.stop();
     this.watchdog.stop();
@@ -426,7 +529,11 @@ export class TaskExecutionService {
   stop(): void {
     this.startRequested = false;
     this.clearRecoveryResumeRetry();
+    this.recoveryReadyPublisher = null;
+    this.clearActivationRetry();
     this.running = false;
+    this.executionActivated = false;
+    this.activationScheduled = false;
     this.stopPersistenceGateMonitor();
     this.scripted.stop();
     this.watchdog.stop();
@@ -445,9 +552,23 @@ export class TaskExecutionService {
    * exiting (SIGTERM→SIGKILL escalation) so none outlive the process.
    */
   async shutdown(): Promise<void> {
+    this.beginShutdown();
+    this.interruptHeadlessTasks('daemon shutdown');
+    await Promise.all([
+      this.scripted.waitForIdle(),
+      this.registry.killAllAndWait(),
+    ]);
+  }
+
+  /** Synchronously close every scheduling gate before transport teardown awaits. */
+  beginShutdown(): void {
     this.startRequested = false;
     this.clearRecoveryResumeRetry();
+    this.recoveryReadyPublisher = null;
+    this.clearActivationRetry();
     this.running = false;
+    this.executionActivated = false;
+    this.activationScheduled = false;
     this.stopPersistenceGateMonitor();
     this.scripted.stop();
     this.watchdog.stop();
@@ -455,8 +576,6 @@ export class TaskExecutionService {
     this.timeoutTimers.clear();
     this.updateUnsubscribe?.();
     this.updateUnsubscribe = null;
-    this.interruptHeadlessTasks('daemon shutdown');
-    await this.registry.killAllAndWait();
   }
 
   /** Exposed for tests so a tick can be forced without waiting on the timer. */
@@ -478,6 +597,7 @@ export class TaskExecutionService {
    */
   isHeadlessAvailable(): boolean {
     return this.running
+      && this.executionActivated
       && this.endpoint !== null
       && this.engine.isPersistenceWritable();
   }

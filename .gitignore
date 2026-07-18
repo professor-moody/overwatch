@@ -39,6 +39,8 @@ src/dashboard-next/tsconfig.tsbuildinfo
 # Local MCP client config — absolute paths are machine-specific.
 .mcp.json
 .overwatch-mcp-token
+.overwatch-dashboard-token
+.overwatch-runtime/
 .claude/settings.json
 .claude/scheduled_tasks.lock
 

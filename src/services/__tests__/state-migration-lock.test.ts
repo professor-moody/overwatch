@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { createHash } from 'crypto';
-import { spawn, type ChildProcess } from 'child_process';
+import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import { once } from 'events';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
@@ -164,6 +164,33 @@ describe('state migration cross-process locking', () => {
     expect(existsSync(stalePath)).toBe(false);
     expect(readdirSync(writerDirectory).filter(name => name.endsWith('.json'))).toEqual([]);
   }, 15_000);
+
+  it.skipIf(process.platform === 'win32')('retains an unprefixed legacy contender owned by a live process', () => {
+    const writerDirectory = `${resolve(stateFilePath)}.writer-lock`;
+    mkdirSync(writerDirectory, { recursive: true });
+    const legacyIdentity = execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], {
+      encoding: 'utf8',
+    }).trim();
+    const identityHash = createHash('sha256').update(legacyIdentity).digest('hex').slice(0, 16);
+    const token = 'e'.repeat(32);
+    const contenderPath = join(
+      writerDirectory,
+      `${process.pid}-v-${identityHash}-${token}.json`,
+    );
+    writeFileSync(contenderPath, JSON.stringify({
+      version: 1,
+      pid: process.pid,
+      process_start_identity: legacyIdentity,
+      token,
+      choosing: false,
+      ticket: 1,
+      created_at: '2026-01-01T00:00:00.000Z',
+    }));
+
+    expect(() => withStateMigrationWriteGuard(stateFilePath, undefined, () => undefined))
+      .toThrow(/state writer lock is already owned/);
+    expect(existsSync(contenderPath)).toBe(true);
+  }, 7_000);
 
   it('reclaims the unique writer contender left by a process killed in its critical section', async () => {
     const script = `

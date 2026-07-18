@@ -113,9 +113,10 @@ const startIdentity = () => {
   }
   try {
     const value = execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], {
-      encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore']
+      encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' }
     }).trim();
-    return value || undefined;
+    return value ? 'posix-lstart-utc:' + value : undefined;
   } catch { return undefined; }
 };
 const processGroupId = () => {
@@ -324,6 +325,35 @@ function terminateUnacknowledgedSupervisor(child: ChildProcess): void {
   try { child.kill('SIGTERM'); } catch { /* already gone */ }
 }
 
+const SUPERVISOR_DENIED_ENV = new Set([
+  'OVERWATCH_MCP_TOKEN',
+  'OVERWATCH_MCP_TOKEN_FILE',
+  'OVERWATCH_DASHBOARD_TOKEN',
+  'OVERWATCH_DAEMON_MANAGED',
+  'OVERWATCH_DAEMON_RECORD',
+  'OVERWATCH_DAEMON_LOG',
+  'OVERWATCH_DAEMON_MANAGEMENT_NONCE',
+  'OVERWATCH_RUNTIME_PROFILE',
+  'OVERWATCH_CHECKPOINT_SIGNING_KEY',
+]);
+const SUPERVISOR_SECRET_ENV = /^OVERWATCH_.*(?:TOKEN|SECRET|SIGNING_KEY|PASSWORD)/i;
+
+/** The durable group leader needs ordinary process environment, never daemon authority. */
+export function buildManagedSupervisorEnv(
+  token: string,
+  acknowledgementTimeoutMs: number,
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined || SUPERVISOR_DENIED_ENV.has(name) || SUPERVISOR_SECRET_ENV.test(name)) continue;
+    environment[name] = value;
+  }
+  environment.OVERWATCH_RUNTIME_TOKEN = token;
+  environment.OVERWATCH_RUNTIME_ACK_TIMEOUT_MS = String(acknowledgementTimeoutMs);
+  return environment;
+}
+
 export function spawnManagedRuntimeSupervisor(
   target: ManagedRuntimeTarget,
   hooks: ManagedRuntimeSupervisorHooks,
@@ -338,11 +368,7 @@ export function spawnManagedRuntimeSupervisor(
     {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       detached: process.platform !== 'win32',
-      env: {
-        ...process.env,
-        OVERWATCH_RUNTIME_TOKEN: token,
-        OVERWATCH_RUNTIME_ACK_TIMEOUT_MS: String(acknowledgementTimeoutMs),
-      },
+      env: buildManagedSupervisorEnv(token, acknowledgementTimeoutMs),
     },
   );
 

@@ -65,6 +65,7 @@ jobs:
       - run: npm run test:source
       - run: npm run test:dashboard-dom
       - run: npm run build
+      - run: npm run test:lifecycle
 
   restart-crash-journeys:
     runs-on: ubuntu-latest
@@ -120,6 +121,7 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run test:integration:http
+      - run: npm run test:lifecycle
 
   audit:
     runs-on: ubuntu-latest

@@ -77,6 +77,10 @@ function entries(path) {
 }
 
 function stateFamilyFromName(name) {
+  // Process-lifetime ownership is operational metadata, not a recoverable
+  // state base. Its filename deliberately follows the selected state path but
+  // must never create a phantom state family during setup/doctor inventory.
+  if (/\.runtime-owner\.json$/.test(name)) return undefined;
   const patterns = [
     /^(state-.+)\.snap-.+\.json$/,
     /^(state-.+)\.journal\.jsonl(?:\..+)?$/,

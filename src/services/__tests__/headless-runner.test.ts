@@ -165,6 +165,14 @@ describe('Headless runner mechanics (injected spawn)', () => {
       CLAUDE_CODE_AGENT: 'parent-agent',
       CLAUDE_CODE_REMOTE: '1',
       CLAUDE_RUNNER_ACTIVITY_FD: '11',
+      OVERWATCH_MCP_TOKEN: 'master-token',
+      OVERWATCH_MCP_TOKEN_FILE: '/tmp/master-token',
+      OVERWATCH_DASHBOARD_TOKEN: 'dashboard-token',
+      OVERWATCH_DAEMON_MANAGED: '1',
+      OVERWATCH_DAEMON_RECORD: '/tmp/daemon.json',
+      OVERWATCH_DAEMON_LOG: '/tmp/daemon.log',
+      OVERWATCH_DAEMON_MANAGEMENT_NONCE: 'management-nonce',
+      OVERWATCH_RUNTIME_PROFILE: '/tmp/profile.json',
       OVERWATCH_TASK_ID: 'parent-task',
     });
 
@@ -194,6 +202,14 @@ describe('Headless runner mechanics (injected spawn)', () => {
       'CLAUDE_CODE_AGENT',
       'CLAUDE_CODE_REMOTE',
       'CLAUDE_RUNNER_ACTIVITY_FD',
+      'OVERWATCH_MCP_TOKEN',
+      'OVERWATCH_MCP_TOKEN_FILE',
+      'OVERWATCH_DASHBOARD_TOKEN',
+      'OVERWATCH_DAEMON_MANAGED',
+      'OVERWATCH_DAEMON_RECORD',
+      'OVERWATCH_DAEMON_LOG',
+      'OVERWATCH_DAEMON_MANAGEMENT_NONCE',
+      'OVERWATCH_RUNTIME_PROFILE',
     ]) {
       expect(env).not.toHaveProperty(denied);
     }
@@ -923,7 +939,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect((engine as any).ctx.updateCallbacks).toHaveLength(baselineListeners + 2);
   });
 
-  it('keeps bounded recovery retries alive until a transient startup failure clears', () => {
+  it('keeps the deferred recovery readiness boundary alive until a transient startup failure clears', async () => {
     vi.useFakeTimers();
     const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
@@ -936,30 +952,119 @@ describe('Headless runner mechanics (injected spawn)', () => {
       }));
       let attempts = 0;
       let allowStart = false;
+      const publishReady = vi.fn();
       svc.setHttpEndpoint({
         url: 'http://127.0.0.1:9/mcp',
-        tokenForTask: () => {
-          attempts += 1;
-          if (!allowStart) throw new Error(`transient config failure ${attempts}`);
-          return 'eventual-token';
-        },
+        tokenForTask: () => 'eventual-token',
       });
+      const realStart = svc.start.bind(svc);
+      vi.spyOn(svc, 'start').mockImplementation(options => {
+        attempts += 1;
+        if (!allowStart) throw new Error(`transient config failure ${attempts}`);
+        realStart(options);
+      });
+      // Model the initial read-only start: it records intent but cannot prepare
+      // the executor until configuration recovery makes persistence writable.
+      (svc as any).startRequested = true;
 
-      expect(() => svc.start()).toThrow(/transient config failure/);
-      expect(() => svc.resumeAfterRecovery()).toThrow(/transient config failure/);
+      expect(() => svc.resumeAfterRecovery(publishReady)).toThrow(/transient config failure/);
       expect((engine as any).ctx.updateCallbacks).toHaveLength(baselineListeners);
       vi.advanceTimersByTime(250);
       vi.advanceTimersByTime(1_000);
       vi.advanceTimersByTime(5_000);
       expect(svc.isHeadlessAvailable()).toBe(false);
-      expect(attempts).toBeGreaterThanOrEqual(5);
+      expect(publishReady).not.toHaveBeenCalled();
+      expect(attempts).toBeGreaterThanOrEqual(4);
       allowStart = true;
       vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
 
       expect(svc.isHeadlessAvailable()).toBe(true);
+      expect(publishReady).toHaveBeenCalledTimes(1);
       expect(engine.getTask('planner-recovery-retry')?.status).toBe('running');
       expect((svc as any).registry.has('planner-recovery-retry')).toBe(true);
       expect((engine as any).ctx.updateCallbacks).toHaveLength(baselineListeners + 2);
+    } finally {
+      stderr.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries readiness publication without activating recovered work early', async () => {
+    vi.useFakeTimers();
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      svc = makeService();
+      engine.registerAgent(headlessTask({
+        id: 'planner-recovery-publication',
+        role: 'planner',
+        status: 'pending',
+      }));
+      engine.registerAgent(headlessTask({
+        id: 'scripted-recovery-publication',
+        backend: 'scripted',
+        frontier_item_id: 'frontier-nonexistent',
+      }));
+      svc.setHttpEndpoint({
+        url: 'http://127.0.0.1:9/mcp',
+        tokenForTask: () => 'eventual-token',
+      });
+      (svc as any).startRequested = true;
+      let allowPublication = false;
+      const successfulPublication = vi.fn();
+      const publishReady = vi.fn(() => {
+        if (!allowPublication) throw new Error('transient readiness publication failure');
+        successfulPublication();
+      });
+
+      expect(() => svc.resumeAfterRecovery(publishReady))
+        .toThrow('transient readiness publication failure');
+      expect(svc.isHeadlessAvailable()).toBe(false);
+      expect((svc as any).registry.has('planner-recovery-publication')).toBe(false);
+      expect(engine.getTask('scripted-recovery-publication')?.status).toBe('running');
+      expect(successfulPublication).not.toHaveBeenCalled();
+
+      allowPublication = true;
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+
+      expect(successfulPublication).toHaveBeenCalledTimes(1);
+      expect(publishReady).toHaveBeenCalledTimes(2);
+      expect(svc.isHeadlessAvailable()).toBe(true);
+      expect((svc as any).registry.has('planner-recovery-publication')).toBe(true);
+      expect(engine.getTask('scripted-recovery-publication')?.status).toBe('completed');
+      vi.advanceTimersByTime(60_000);
+      expect(successfulPublication).toHaveBeenCalledTimes(1);
+    } finally {
+      stderr.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries a transient post-ready activation failure without advertising headless availability', async () => {
+    vi.useFakeTimers();
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      svc = makeService();
+      svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+      svc.start({ deferInitialDrain: true });
+      const realDrain = (svc as any).drainHeadless.bind(svc);
+      let attempts = 0;
+      vi.spyOn(svc as any, 'drainHeadless').mockImplementation(() => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('transient activation drain failure');
+        return realDrain();
+      });
+
+      svc.activateAfterRuntimeReady();
+      await Promise.resolve();
+      expect(svc.isHeadlessAvailable()).toBe(false);
+      expect(attempts).toBe(1);
+
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+      expect(attempts).toBe(2);
+      expect(svc.isHeadlessAvailable()).toBe(true);
     } finally {
       stderr.mockRestore();
       vi.useRealTimers();

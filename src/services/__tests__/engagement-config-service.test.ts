@@ -148,7 +148,10 @@ describe('EngagementConfigService', () => {
       mkdirSync(dir, { recursive: true });
       const token = '00000000000000000000000000000000';
       const contender = join(dir, process.pid + '-' + token + '.json');
-      const processStartIdentity = execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], { encoding: 'utf8' }).trim();
+      const started = execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], {
+        encoding: 'utf8', env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' },
+      }).trim();
+      const processStartIdentity = 'posix-lstart-utc:' + started;
       writeFileSync(contender, JSON.stringify({
         version: 1, pid: process.pid, process_start_identity: processStartIdentity,
         token, choosing: false, ticket: 1,

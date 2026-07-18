@@ -9,11 +9,11 @@
 
 ```mermaid
 flowchart LR
-    subgraph A["Mode A: stdio MCP (default)"]
-        CC1[Claude Code] <-->|stdio| OW1[Overwatch server]
+    subgraph A["Mode A: shared HTTP daemon (default)"]
+        CC1[Claude Code] <-->|HTTP MCP| OW1[Overwatch daemon]
     end
-    subgraph B["Mode B: HTTP MCP"]
-        CC2[Claude Code] <-->|HTTP MCP| OW2[Overwatch server]
+    subgraph B["Mode B: solo stdio compatibility"]
+        CC2[Claude Code] <-->|stdio| OW2[Overwatch server]
     end
     subgraph C["Mode C: CLI adapter"]
         CC3[Claude Code] -->|bash| CLI[ow CLI]
@@ -26,8 +26,8 @@ flowchart LR
 
 | Mode | When to use | Setup |
 |------|-------------|-------|
-| **A. stdio MCP** *(default)* | Claude Code with unrestricted MCP | Nothing extra — see [Quick Start](../getting-started.md) |
-| **B. HTTP MCP** | Server should persist across client restarts; multiple clients | `OVERWATCH_TRANSPORT=http node dist/index.js` |
+| **A. shared HTTP daemon** *(default)* | Terminal Claude, dashboard, CLI, and managed agents share one owner | `npm run setup && npm run daemon:start` |
+| **B. solo stdio compatibility** | One Claude session; no dashboard/CLI workers | `npm run setup:stdio`, then launch Claude |
 | **C. CLI adapter** | MCP blocked by policy / non-MCP client / shell auditability | This page |
 
 The graph, state, and tools are identical across all three. Only the transport differs.
@@ -38,7 +38,8 @@ The graph, state, and tools are identical across all three. Only the transport d
 
 ```bash
 cd /path/to/overwatch
-OVERWATCH_TRANSPORT=http node dist/index.js
+npm run setup
+npm run daemon:start
 ```
 
 Binds to `http://127.0.0.1:3000/mcp`.

@@ -341,6 +341,47 @@ describe('read commands', () => {
     }
   });
 
+  it('state migrate --check uses the same persisted state selection as daemon startup', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'overwatch-cli-state-profile-'));
+    const priorProfile = process.env.OVERWATCH_RUNTIME_PROFILE;
+    try {
+      const configPath = join(directory, 'engagement.json');
+      const statePath = join(directory, 'state-renamed-family.json');
+      const profilePath = join(directory, 'profile.json');
+      const engagement = {
+        id: 'renamed-id',
+        name: 'Profile selection',
+        created_at: '2026-07-16T00:00:00.000Z',
+        scope: { cidrs: [], domains: [], exclusions: [] },
+        objectives: [],
+        opsec: { name: 'pentest', max_noise: 0.7, blacklisted_techniques: [] },
+      };
+      writeFileSync(configPath, JSON.stringify(engagement));
+      writeFileSync(statePath, JSON.stringify({
+        config: engagement,
+        graph: { attributes: {}, nodes: [], edges: [] },
+        journalSnapshotSeq: 0,
+      }));
+      writeFileSync(profilePath, JSON.stringify({
+        schema_version: 1,
+        config_path: configPath,
+        state_file_path: statePath,
+      }));
+      process.env.OVERWATCH_RUNTIME_PROFILE = profilePath;
+
+      const result = await READ_COMMANDS.state.run({
+        client: fakeClient({}),
+        args: ['migrate', '--check'],
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.data).toMatchObject({ state_file: statePath });
+    } finally {
+      if (priorProfile === undefined) delete process.env.OVERWATCH_RUNTIME_PROFILE;
+      else process.env.OVERWATCH_RUNTIME_PROFILE = priorProfile;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('recovery reads the dedicated degraded-safe endpoint', async () => {
     const payload = { recovery: {
       outcome: 'clean', source: 'state', complete: true, writable: true,

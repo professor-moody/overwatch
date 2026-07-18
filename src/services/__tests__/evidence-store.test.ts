@@ -955,13 +955,41 @@ describe('EvidenceStore', () => {
           timestamp: '2026-07-17T00:00:00.000Z',
           evidence_type: 'command_output',
           owner_pid: process.pid,
-          owner_process_start_identity: 'a different process start identity',
+          owner_process_start_identity: process.platform === 'win32'
+            ? 'windows-start-ticks:0'
+            : 'posix-lstart-utc:a different process start identity',
           owner_token: 'older-process-incarnation',
         }));
         const recovered = new EvidenceStore(TEST_STATE);
         expect(recovered.getContent(id)).toBe('reused pid bytes');
         expect(existsSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`))).toBe(false);
       });
+
+      it.skipIf(process.platform === 'win32')(
+        'retains an interrupted stream when a legacy live-owner mismatch is unverifiable',
+        () => {
+          mkdirSync(EVIDENCE_DIR, { recursive: true });
+          const id = '32345678-1234-4123-8123-123456789abc';
+          const temporaryFilename = `.stream-${id}.content.tmp-legacy-owner`;
+          writeFileSync(join(EVIDENCE_DIR, temporaryFilename), 'legacy owner bytes');
+          writeFileSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`), JSON.stringify({
+            intent_version: 1,
+            evidence_id: id,
+            temporary_filename: temporaryFilename,
+            kind: 'content',
+            timestamp: '2026-07-17T00:00:00.000Z',
+            evidence_type: 'command_output',
+            owner_pid: process.pid,
+            owner_process_start_identity: 'a legacy identity that cannot prove reuse',
+            owner_token: 'legacy-owner-incarnation',
+          }));
+
+          const recovered = new EvidenceStore(TEST_STATE);
+          expect(recovered.getContent(id)).toBeNull();
+          expect(existsSync(join(EVIDENCE_DIR, `${id}.stream-intent.json`))).toBe(true);
+          expect(existsSync(join(EVIDENCE_DIR, temporaryFilename))).toBe(true);
+        },
+      );
 
       it('handles a missing evidence directory during rebuild without throwing', () => {
         // Set up an empty evidence dir then corrupt the manifest.

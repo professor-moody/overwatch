@@ -1,5 +1,5 @@
 {
-  "//": "HTTP daemon mode: start Overwatch as a long-lived server, then point clients (primary + headless sub-agents) at its /mcp endpoint. Run the daemon with: OVERWATCH_TRANSPORT=http OVERWATCH_MCP_TOKEN=<token> node dist/index.js --http  (defaults to 127.0.0.1:3000). Stdio mode (.mcp.example.json) remains the solo/no-subagent fallback.",
+  "//": "Reference only. `npm run setup` writes the real URL and token, then `npm run daemon:start` starts the one shared owner. Stdio mode (.mcp.example.json) is the explicit solo/no-subagent fallback.",
   "mcpServers": {
     "overwatch": {
       "type": "http",

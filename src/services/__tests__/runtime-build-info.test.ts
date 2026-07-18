@@ -124,4 +124,15 @@ describe('runtime build identity', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
+
+  it('probes an IPv6 wildcard listener through the IPv6 loopback address', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
+    const portProbe = vi.fn(async () => true);
+    await probeRunningDashboard(8384, fetchImpl as typeof fetch, portProbe, undefined, '::');
+    expect(portProbe).toHaveBeenCalledWith(8384, '::');
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://[::1]:8384/api/runtime',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
 });
