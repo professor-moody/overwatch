@@ -6,6 +6,7 @@ import { join, relative, resolve } from 'node:path';
 
 export interface RuntimeBuildInfo {
   schema_version: number;
+  release_version?: string;
   git_sha?: string | null;
   input_sha256: string;
   input_file_count?: number;
@@ -31,6 +32,17 @@ let cachedFallback: { root: string; sha256: string; fileCount: number } | undefi
 
 function isSha256(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
+
+function readReleaseVersion(root: string): string | undefined {
+  try {
+    const value = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version?: unknown };
+    return typeof value.version === 'string' && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value.version)
+      ? value.version
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function collectFingerprintFiles(root: string, input: string, files: string[]): void {
@@ -83,6 +95,9 @@ export function readRuntimeBuildInfo(options: ReadRuntimeBuildInfoOptions = {}):
       if (!Number.isInteger(parsed.schema_version) || !isSha256(parsed.input_sha256)) continue;
       return {
         schema_version: Number(parsed.schema_version),
+        ...(typeof parsed.release_version === 'string'
+          ? { release_version: parsed.release_version }
+          : {}),
         ...(typeof parsed.git_sha === 'string' || parsed.git_sha === null
           ? { git_sha: parsed.git_sha }
           : {}),
@@ -104,8 +119,10 @@ export function readRuntimeBuildInfo(options: ReadRuntimeBuildInfoOptions = {}):
     ? cachedFallback
     : { root, ...fingerprintRuntimeInputs(root) };
   if (options.fallbackRoot === undefined) cachedFallback = fingerprint;
+  const releaseVersion = readReleaseVersion(root);
   return {
     schema_version: 1,
+    ...(releaseVersion ? { release_version: releaseVersion } : {}),
     input_sha256: fingerprint.sha256,
     input_file_count: fingerprint.fileCount,
     runtime_pid: process.pid,
@@ -172,6 +189,9 @@ export async function probeRunningDashboard(
       running: true,
       runtime_build: {
         schema_version: Number(record.schema_version) || 1,
+        ...(typeof record.release_version === 'string'
+          ? { release_version: record.release_version }
+          : {}),
         ...(typeof record.git_sha === 'string' || record.git_sha === null
           ? { git_sha: record.git_sha }
           : {}),

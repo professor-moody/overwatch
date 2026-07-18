@@ -286,11 +286,6 @@ export class PendingActionQueue {
     return out;
   }
 
-  /** @deprecated Compatibility wrapper for callers that only have a label. */
-  abortByAgent(agentId: string | undefined, reason = 'requesting agent terminated'): ActionResolution[] {
-    return this.abortByTask(undefined, agentId, reason);
-  }
-
   private resolveAction(action_id: string, resolution: ActionResolution): void {
     const action = this.pending.get(action_id);
     if (action) {

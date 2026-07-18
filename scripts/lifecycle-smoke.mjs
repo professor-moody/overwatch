@@ -28,17 +28,25 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function freePort() {
-  const server = createServer();
-  await new Promise((resolveListen, rejectListen) => {
-    server.once('error', rejectListen);
-    server.listen(0, '127.0.0.1', resolveListen);
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('could not reserve a test port');
-  const port = address.port;
-  await new Promise(resolveClose => server.close(resolveClose));
-  return port;
+async function freePorts(count) {
+  const servers = [];
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const server = createServer();
+      await new Promise((resolveListen, rejectListen) => {
+        server.once('error', rejectListen);
+        server.listen(0, '127.0.0.1', resolveListen);
+      });
+      servers.push(server);
+    }
+    return servers.map(server => {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('could not reserve a test port');
+      return address.port;
+    });
+  } finally {
+    await Promise.all(servers.map(server => new Promise(resolveClose => server.close(resolveClose))));
+  }
 }
 
 function runNode(script, args, environment, expectSuccess = true, timeoutMs = 60_000) {
@@ -117,16 +125,40 @@ async function waitFor(label, predicate, timeoutMs = 10_000) {
   throw new Error(`Timed out waiting for ${label}`);
 }
 
+function captureRecoveryFamily(statePath) {
+  const directory = dirname(statePath);
+  const base = basename(statePath, '.json');
+  const paths = [
+    statePath,
+    join(directory, `${base}.journal.jsonl`),
+  ];
+  for (const name of readdirSync(directory)) {
+    if (name.startsWith(`${base}.snap-`) && name.endsWith('.json')) {
+      paths.push(join(directory, name));
+    }
+  }
+  const snapshotDirectory = join(directory, '.snapshots');
+  if (existsSync(snapshotDirectory)) {
+    for (const name of readdirSync(snapshotDirectory)) {
+      if (name.startsWith(`${base}.snap-`) && name.endsWith('.json')) {
+        paths.push(join(snapshotDirectory, name));
+      }
+    }
+  }
+  return JSON.stringify(paths
+    .filter(path => existsSync(path))
+    .sort()
+    .map(path => [path, readFileSync(path).toString('base64')]));
+}
+
 let environment;
 let activeEnvironment;
 let activeStdioWrapper;
 let activeStdioOwnerPid;
+let activeUpgradeWrapper;
 let lifecycleError;
 try {
-  const dashboardPort = await freePort();
-  const mcpPort = await freePort();
-  const conflictingDashboardPort = await freePort();
-  const conflictingMcpPort = await freePort();
+  const [dashboardPort, mcpPort, conflictingDashboardPort, conflictingMcpPort] = await freePorts(4);
   environment = {
     ...sanitizedProcessEnvironment,
     OVERWATCH_SETUP_ROOT: fixture,
@@ -148,6 +180,25 @@ try {
   delete environment.OVERWATCH_DASHBOARD_TOKEN;
   const configPath = join(fixture, 'engagement.json');
   const statePath = join(fixture, 'state-lifecycle-smoke.json');
+  const helperSignalStatePath = join(fixture, 'state-upgrade-helper-signal.json');
+  const helperSignalPromise = runNodeAsync(
+    join(root, 'scripts', 'upgrade-state-lease.mjs'),
+    [helperSignalStatePath],
+    sanitizedProcessEnvironment,
+    child => { activeUpgradeWrapper = child; },
+  );
+  await waitFor(
+    'upgrade state lease helper acquisition',
+    () => existsSync(`${helperSignalStatePath}.migration-lock/owner.json`),
+  );
+  activeUpgradeWrapper.kill('SIGTERM');
+  const helperSignalResult = await helperSignalPromise;
+  activeUpgradeWrapper = undefined;
+  assert(helperSignalResult.status === 143, 'upgrade state lease helper did not exit after SIGTERM');
+  assert(
+    !existsSync(`${helperSignalStatePath}.migration-lock`),
+    'upgrade state lease helper signal exit retained its migration lock',
+  );
   const setupConfig = JSON.parse(readFileSync(configPath, 'utf8'));
   const dashboardAuthorization = `Bearer ${readFileSync(join(fixture, '.overwatch-dashboard-token'), 'utf8').trim()}`;
   const tokenPath = join(fixture, '.overwatch-mcp-token');
@@ -343,6 +394,52 @@ try {
   );
   assert(processIsAlive(firstRecord.pid), 'failed upgrade preflight stopped the live daemon');
 
+  const failingStatePreflight = join(fixture, 'failing-state-preflight.mjs');
+  writeFileSync(failingStatePreflight, 'process.exit(43);\n');
+  const recordBeforeFailedStatePreflight = readFileSync(environment.OVERWATCH_DAEMON_RECORD);
+  const failedStatePreflight = runNode(lifecycleScript, ['upgrade'], {
+    ...environment,
+    OVERWATCH_LIFECYCLE_STATE_PREFLIGHT: failingStatePreflight,
+  }, false);
+  assert(
+    `${failedStatePreflight.stdout}\n${failedStatePreflight.stderr}`.includes(
+      'offline state/WAL migration preflight while the running daemon remains active failed with exit code 43',
+    ),
+    'upgrade did not surface a blocked offline state/WAL preflight',
+  );
+  assert(
+    readFileSync(environment.OVERWATCH_DAEMON_RECORD).equals(recordBeforeFailedStatePreflight),
+    'failed state/WAL preflight changed the live managed record',
+  );
+  assert(processIsAlive(firstRecord.pid), 'failed state/WAL preflight stopped the live daemon');
+
+  const frozenPreflightCounter = join(fixture, 'frozen-state-preflight-count');
+  const failingFrozenStatePreflight = join(fixture, 'failing-frozen-state-preflight.mjs');
+  writeFileSync(failingFrozenStatePreflight, `import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+const counter = process.env.OVERWATCH_LIFECYCLE_STATE_PREFLIGHT_COUNTER;
+const count = existsSync(counter) ? Number(readFileSync(counter, 'utf8')) : 0;
+writeFileSync(counter, String(count + 1));
+process.exit(count === 0 ? 0 : 43);
+`);
+  const failedFrozenStatePreflight = runNode(lifecycleScript, ['upgrade'], {
+    ...environment,
+    OVERWATCH_LIFECYCLE_STATE_PREFLIGHT: failingFrozenStatePreflight,
+    OVERWATCH_LIFECYCLE_STATE_PREFLIGHT_COUNTER: frozenPreflightCounter,
+  }, false);
+  assert(
+    `${failedFrozenStatePreflight.stdout}\n${failedFrozenStatePreflight.stderr}`.includes(
+      'previous compiled runtime was restarted unchanged',
+    ),
+    'a frozen state/WAL preflight failure did not restore the unchanged runtime',
+  );
+  const restoredAfterFrozenPreflight = JSON.parse(readFileSync(environment.OVERWATCH_DAEMON_RECORD, 'utf8'));
+  assert(restoredAfterFrozenPreflight.pid !== firstRecord.pid, 'frozen preflight recovery reused the stopped PID');
+  assert(processIsAlive(restoredAfterFrozenPreflight.pid), 'frozen preflight recovery did not leave a live daemon');
+  assert(
+    readFileSync(configPath).equals(configAfterInitialRecovery),
+    'frozen preflight recovery changed engagement config',
+  );
+
   const failingNpm = join(fixture, 'failing-npm');
   writeFileSync(failingNpm, `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 10.0.0; exit 0; fi
@@ -350,11 +447,35 @@ if [ "$1" = "ci" ] && [ "$2" = "--dry-run" ]; then exit 0; fi
 exit 42
 `);
   chmodSync(failingNpm, 0o755);
-  const failedUpgradeInstall = runNode(lifecycleScript, ['upgrade'], {
+  const upgradeHoldPath = join(fixture, 'upgrade-state-lease-held');
+  const failedUpgradeInstallPromise = runNodeAsync(lifecycleScript, ['upgrade'], {
     ...environment,
     OVERWATCH_LIFECYCLE_NPM: failingNpm,
-  }, false);
+    OVERWATCH_LIFECYCLE_UPGRADE_HOLD_FILE: upgradeHoldPath,
+  }, child => { activeUpgradeWrapper = child; });
+  await waitFor('cross-checkout upgrade state lease', () => existsSync(upgradeHoldPath));
   activeEnvironment = undefined;
+  const recoveryFamilyBeforeCollision = captureRecoveryFamily(statePath);
+  const competingRuntime = runNode(join(root, 'dist', 'index.js'), ['--http'], {
+    ...environment,
+    OVERWATCH_CONFIG: configPath,
+    OVERWATCH_STATE_FILE: statePath,
+    OVERWATCH_HTTP_PORT: String(conflictingMcpPort),
+    OVERWATCH_DASHBOARD_PORT: String(conflictingDashboardPort),
+    OVERWATCH_DAEMON_MANAGED: '0',
+  }, false);
+  const competingRuntimeOutput = `${competingRuntime.stdout}\n${competingRuntime.stderr}`;
+  assert(
+    /migration is owned|writes are blocked/i.test(competingRuntimeOutput),
+    `a second checkout/runtime was not blocked by the frozen upgrade state lease: ${competingRuntimeOutput}`,
+  );
+  assert(
+    captureRecoveryFamily(statePath) === recoveryFamilyBeforeCollision,
+    'a runtime rejected by the frozen upgrade lease changed state, WAL, or snapshot bytes',
+  );
+  rmSync(upgradeHoldPath, { force: true });
+  const failedUpgradeInstall = await failedUpgradeInstallPromise;
+  activeUpgradeWrapper = undefined;
   assert(
     `${failedUpgradeInstall.stdout}\n${failedUpgradeInstall.stderr}`.includes('npm ci failed with exit code 42'),
     'post-stop upgrade install failure was not surfaced',
@@ -471,12 +592,21 @@ exit 42
   activeStdioOwnerPid = undefined;
   assert(!existsSync(`${statePath}.runtime-owner.json`), 'stdio signal shutdown left a durable owner record');
 
-  console.log('Lifecycle smoke passed: convergence guards, concurrent start, failed-child cleanup, detached reuse, upgrade, crash recovery, dashboardless control, stdio signal forwarding, and stop.');
+  console.log('Lifecycle smoke passed: convergence guards, concurrent start, failed-child cleanup, detached reuse, frozen upgrade reservation, cross-runtime collision rejection, upgrade, crash recovery, dashboardless control, stdio signal forwarding, and stop.');
 } catch (error) {
   lifecycleError = error;
   throw error;
 } finally {
   let cleanupError;
+  if (activeUpgradeWrapper) {
+    try {
+      activeUpgradeWrapper.kill('SIGTERM');
+      await waitForProcessExit(activeUpgradeWrapper.pid);
+      activeUpgradeWrapper = undefined;
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
   if (activeStdioWrapper) {
     try {
       activeStdioWrapper.kill('SIGTERM');

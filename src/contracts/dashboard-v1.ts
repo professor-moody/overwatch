@@ -1105,6 +1105,7 @@ export const HealthReportDtoSchema = z.object({
 }).passthrough();
 export const RuntimeBuildInfoDtoSchema = z.object({
   schema_version: z.number().int().positive(),
+  release_version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/).optional(),
   git_sha: z.string().nullable().optional(),
   input_sha256: Sha256Schema,
   input_file_count: z.number().int().nonnegative().optional(),

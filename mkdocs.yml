@@ -193,6 +193,7 @@ nav:
     - Report Redaction: reference/report-redaction.md
     - FAQ: faq.md
   - Project:
+    - Compatibility & Releases: compatibility.md
     - Roadmap: roadmap.md
     - Multi-Agent Roadmap: multi-agent-roadmap.md
     - Bedrock Integration Plan: bedrock-integration-plan.md

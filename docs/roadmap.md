@@ -35,8 +35,8 @@ amplification and operating gaps found while dogfooding it:
 | Crash-safe artifacts and authoritative application commands | Landed; external outputs commit through generation pointers and external mutations replay by idempotency identity. |
 | One-daemon lifecycle and narrow agent/dashboard boundaries | Landed; setup, doctor, start, stop, restart, upgrade, and workspace ownership have explicit state-preserving contracts. |
 | Durable agent handoff/work shaping | Landed; terminal tasks can hand off, split, and merge duplicate work without losing lineage or proof references. |
-| Scale/soak gates | Current release; 50,000-task/collection budgets, mixed restart soak, WebSocket v2 keyed patches, and resource cleanup are required in CI. |
-| Compatibility retirement | Final release slice; remove only documented one-release aliases after upgrade/rollback evidence proves existing engagements remain recoverable. |
+| Scale/soak gates | Landed; 50,000-task/collection budgets, mixed restart soak, WebSocket v2 keyed patches, and resource cleanup are required in CI. |
+| Compatibility release | Landed in 0.2.0; evidenced internal paths are removed, public and persisted shims have a generated retirement ledger, and upgrade checks state/WAL readiness both before and after verified shutdown. |
 
 The original PR1–PR15 train remains the architectural baseline; this follow-on
 does not reopen its product decisions or weaken its recovery invariants.
@@ -46,8 +46,9 @@ does not reopen its product decisions or weaken its recovery invariants.
 - Run one Overwatch daemon for an engagement. MCP, the dashboard, the terminal
   CLI, and managed headless agents are adapters over the same application
   commands and durable ownership records.
-- `lean` is the default sub-agent prompt. Set
-  `OVERWATCH_PROMPT_VARIANT=control` for the one-release rollback variant.
+- `lean` is the default sub-agent prompt. Version 0.2.x retains
+  `OVERWATCH_PROMPT_VARIANT=control`; its 0.3.0 removal gate is recorded in the
+  [compatibility ledger](compatibility.md#subagent-control-prompt).
 - Durable state is versioned and journaled. Unknown or incomplete recovery and
   unexplained config divergence fail into explicit read-only recovery rather
   than silently reseeding state.

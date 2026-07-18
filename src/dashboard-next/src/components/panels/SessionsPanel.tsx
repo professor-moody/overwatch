@@ -857,7 +857,7 @@ function SessionRow({
   onDetach: () => void;
   onNavigateAgent?: (agentId: string) => void;
 }) {
-  const ownerAgent = session.agent_id || session.claimed_by;
+  const ownerAgent = session.claimed_by || session.agent_id;
   return (
     <div
       role="button"
@@ -899,7 +899,7 @@ function SessionRow({
           <div className="mt-1 flex gap-1 flex-wrap">
             {session.target_node && <span className="text-[10px] font-mono text-accent truncate max-w-32">{session.target_node}</span>}
             {ownerAgent && (onNavigateAgent
-              ? <button onClick={e => { e.stopPropagation(); onNavigateAgent(session.agent_id || ownerAgent); }} className="text-[10px] text-accent hover:underline truncate max-w-32" title="View owning agent in the Operator console">{ownerAgent}</button>
+              ? <button onClick={e => { e.stopPropagation(); onNavigateAgent(ownerAgent); }} className="text-[10px] text-accent hover:underline truncate max-w-32" title="View owning agent in the Operator console">{ownerAgent}</button>
               : <span className="text-[10px] text-muted-foreground truncate max-w-32">{ownerAgent}</span>
             )}
           </div>

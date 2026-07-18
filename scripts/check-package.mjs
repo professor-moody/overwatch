@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 const forbidden = [
   /^package\/\.research_logs\//,
@@ -28,6 +29,11 @@ try {
 }
 
 const entries = JSON.parse(packed);
+const packageVersion = JSON.parse(readFileSync('package.json', 'utf8')).version;
+if (entries?.[0]?.version !== packageVersion) {
+  console.error('npm package version does not match package.json');
+  process.exit(1);
+}
 const files = entries?.[0]?.files?.map(f => f.path) ?? [];
 const required = [
   'dist/index.js',
@@ -37,8 +43,13 @@ const required = [
   'scripts/runtime-profile.mjs',
   'scripts/process-identity.mjs',
   'scripts/daemon-lifecycle.mjs',
+  'scripts/upgrade-state-lease.mjs',
+  'scripts/check-release.mjs',
   'scripts/ensure-fresh-build.mjs',
   'engagement-templates/ctf.json',
+  'CHANGELOG.md',
+  'docs/compatibility.md',
+  'docs/reference/compatibility-manifest.json',
 ];
 const bad = [];
 for (const file of files) {

@@ -28,6 +28,7 @@ git log --date=short --pretty=format:'| `%h` | %ad | AREA | %s | RESULT |' --max
 
 | Commit | Date | Area | Work Step | Operator-Visible Result |
 |--------|------|------|-----------|-------------------------|
+| 0.2.0 release | 2026-07-18 | Compatibility/release | Established the first explicit version boundary, generated an evidence-linked retirement ledger, retired two internal shims, and added live plus frozen state/WAL upgrade checks. | Operators can pull and upgrade the shared daemon without guessing whether a legacy reader is safe to delete; future removals now require N-1 and rollback evidence. |
 | PR10 release | 2026-07-18 | Scale and soak | Added durable 50,000-task gates, linear WebSocket state patches, indexed recovery, mixed restart/snapshot soak, and complete dashboard lifecycle checks. | Large engagements keep heartbeat and dashboard updates bounded, restart without losing coordination truth, and fail CI on scale or resource regressions. |
 | `7b97f68` | 2026-07-18 | Agent work shaping | Added durable handoff, split, duplicate detection, and canonical merge workflows. | Completed work can move to a specialist without losing lineage, evidence references, or exact task identity. |
 | `c99062a` | 2026-07-17 | Agent architecture | Established narrow agent workspace and command boundaries. | Agent lifecycle, reads, mutations, and dashboard projection have explicit owners instead of sharing the graph-engine surface implicitly. |

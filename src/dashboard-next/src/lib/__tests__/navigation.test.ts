@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildPanelPath, isPanelId, parseHash } from '../../hooks/useNavigation';
 
 describe('dashboard navigation helpers', () => {
-  it('parses legacy hash deep links for route redirects', () => {
+  it('redirects legacy hash bookmarks during the 0.2.x compatibility window', () => {
     expect(parseHash('#panel=frontier&item=host-1')).toEqual({
       panel: 'frontier',
       item: 'host-1',

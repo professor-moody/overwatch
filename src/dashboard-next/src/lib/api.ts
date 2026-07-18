@@ -184,13 +184,19 @@ export async function getState(signal?: AbortSignal): Promise<{
   state: EngagementState;
   graph: RawGraphDto;
   history_count: number;
-  runtime_build?: RuntimeBuildInfoDto;
+  state_revision?: number;
+  runtime_build: RuntimeBuildInfoDto;
 }> {
   const response = await request('getState', { signal });
+  if (response.runtime_build === undefined) {
+    throw new Error('The dashboard state response is missing current runtime identity. Run `npm run upgrade`.');
+  }
   return {
     ...response,
     state: response.state as unknown as EngagementState,
     graph: RawGraphDtoSchema.parse(response.graph),
+    state_revision: response.state_revision,
+    runtime_build: response.runtime_build,
   };
 }
 

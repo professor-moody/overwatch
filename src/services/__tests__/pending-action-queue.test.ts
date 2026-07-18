@@ -634,7 +634,7 @@ describe('PendingActionQueue', () => {
       const pb = queue.submit(makeSubmitPayload({ action_id: 'b-survives', agent_id: 'agent-live' }));
       expect(queue.getPendingCount()).toBe(2);
 
-      const aborted = queue.abortByAgent('agent-dead', 'requesting agent terminated');
+      const aborted = queue.abortByTask(undefined, 'agent-dead', 'requesting agent terminated');
       expect(aborted).toHaveLength(1);
       expect(aborted[0].action_id).toBe('a-doomed');
       expect(aborted[0].status).toBe('aborted');
@@ -676,7 +676,7 @@ describe('PendingActionQueue', () => {
       const { queue } = makeQueue({ approval_mode: 'approve-all', approval_timeout_ms: 5000 });
       const p = queue.submit(makeSubmitPayload({ action_id: 'a-race', agent_id: 'agent-x' }));
 
-      queue.abortByAgent('agent-x');
+      queue.abortByTask(undefined, 'agent-x');
       const resolution = await p;
       expect(resolution.status).toBe('aborted');
 
@@ -690,8 +690,8 @@ describe('PendingActionQueue', () => {
     it('no-ops for a falsy agentId (never sweeps up agent_id-less primary actions)', () => {
       const { queue } = makeQueue({ approval_mode: 'approve-all', approval_timeout_ms: 60000 });
       queue.submit(makeSubmitPayload({ action_id: 'no-agent' })); // agent_id undefined
-      expect(queue.abortByAgent(undefined)).toEqual([]);
-      expect(queue.abortByAgent('')).toEqual([]);
+      expect(queue.abortByTask(undefined)).toEqual([]);
+      expect(queue.abortByTask(undefined, '')).toEqual([]);
       expect(queue.getPendingCount()).toBe(1);
       queue.dispose();
     });

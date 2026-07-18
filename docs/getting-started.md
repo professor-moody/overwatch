@@ -257,8 +257,18 @@ existing config, state/WAL/snapshots, evidence, and reports while recording the
 selected paths; it does not reseed the engagement.
 
 `upgrade` first verifies that this is a buildable source checkout with its lock
-file intact. It then verifies and gracefully stops the recorded owner, installs,
-builds, and starts the new daemon. Packaged installations fail before downtime
+file intact and checks migration readiness while the daemon stays available.
+It then verifies and gracefully stops the recorded owner and repeats the
+state/WAL check against the frozen file family. Only a successful second check
+permits install/build. A cross-process state-family reservation remains held
+through install/build; the replacement daemon publishes durable runtime
+ownership before that reservation is released. A second checkout or direct
+runtime therefore cannot write the engagement during the upgrade gap. If the
+frozen check fails, the reservation is released and the lifecycle attempts to
+restart the unchanged compiled daemon. A competing physical owner in that
+legacy-runtime handoff window makes restart fail closed; it never authorizes a
+second writer or modifies engagement data.
+Packaged installations fail before downtime
 and must be updated through the package/source manager that installed them. It does not replace
 `engagement.json`, state/WAL/snapshots, evidence, or reports. Hard-reload the
 dashboard after the new daemon starts. If `doctor` identifies another PID or a
@@ -301,9 +311,19 @@ and the daemon's state-family lease:
 | `npm run daemon:restart` | Verified stop, freshness build if needed, detached start |
 | `npm run daemon -- logs` | Shows the managed log path and recent output |
 | `npm run start:daemon` | Foreground form for service managers or interactive diagnostics |
-| `npm run upgrade` | Verified stop, `npm ci`, build, and detached restart after you pull |
+| `npm run upgrade` | Dependency/live state preflight, verified stop, authoritative frozen state/WAL preflight, `npm ci`, build, and detached restart after you pull |
 
-The lifecycle never runs `git pull` and never rewrites engagement configuration,
+The first upgrade preflight runs before downtime; a blocked early check leaves
+the current daemon running. The authoritative frozen check runs after stop and,
+if blocked, attempts to restart the unchanged compiled daemon before any
+install/build. A competing physical owner can make that availability recovery
+fail closed, but cannot become a second writer.
+After that check passes, a cross-process state-family reservation remains held
+through dependency installation and build. Startup hands the reservation to
+the replacement runtime by publishing the new durable owner before release;
+competing checkouts and direct runtimes fail closed during this interval.
+The lifecycle never runs `git pull`
+and never rewrites engagement configuration,
 state/WAL/snapshots, evidence, reports, tapes, or migration backups. If stop
 cannot prove the live PID's physical identity, it fails closed and signals
 nothing. Start, stop, restart, and upgrade are serialized by a local lifecycle
@@ -443,7 +463,7 @@ If none of the templates fit, the full schema is in [Configuration](configuratio
 ??? failure "Dashboard won't load"
     - Port conflict? Stop the verified owner, rerun setup with `OVERWATCH_DASHBOARD_PORT=<port>`, then start it again.
     - Blank page? Open browser console (F12) — the dashboard needs WebGL.
-    - WebSocket disconnects? It auto-reconnects every 3s and falls back to HTTP polling. Check for a proxy/firewall blocking WS.
+    - WebSocket disconnects? It reconnects with bounded 1/2/4/8/16/30-second backoff and falls back to HTTP polling. Check for a proxy/firewall blocking WS.
 
 ??? failure "Corrupted state file"
     Do not delete or rename the primary state, WAL, `.snapshots/`, config

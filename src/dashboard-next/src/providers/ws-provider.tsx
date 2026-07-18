@@ -56,6 +56,16 @@ export function WsProvider({ children }: { children: ReactNode }) {
     const handleMessage = (raw: unknown, generation: number, controller: GenerationSocketController) => {
       try {
         const msg: WsMessage = MainWebSocketEventSchema.parse(JSON.parse(String(raw)));
+        if (
+          (msg.type === 'full_state' || msg.type === 'graph_update' || msg.type === 'state_refresh')
+          && msg.contract_version !== 2
+        ) {
+          setVersionMismatch('This dashboard requires main WebSocket contract v2. Run `npm run upgrade` to start the matching daemon.');
+          controller.stop();
+          setConnected(false);
+          store.getState().setConnected(false);
+          return;
+        }
         const s = store.getState();
         const toast = useToastStore.getState().addToast;
 
@@ -84,11 +94,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
         switch (msg.type) {
           case 'graph_update': {
             const data = msg.data as unknown as GraphUpdateData;
-            const prevAgents = s.agents;
             s.applyGraphUpdate(data);
-            // Contract v2 graph deltas contain no roster. Avoid scanning the
-            // entire fleet for an event that cannot carry lifecycle changes.
-            if (data.state?.agents) notifyAgentCompletions(prevAgents, data.state.agents);
             break;
           }
           case 'state_refresh': {
@@ -97,7 +103,6 @@ export function WsProvider({ children }: { children: ReactNode }) {
             s.applyStateRefresh(data);
             const candidates = data.patch?.agents?.replace
               ?? data.patch?.agents?.upsert
-              ?? data.state?.agents
               ?? [];
             notifyAgentCompletions(prevAgents, candidates);
             break;
@@ -175,7 +180,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
       try {
         const data = await api.getState(ticket.controller.signal);
         if (!active || !fallbackPoll.isCurrent(ticket) || controller.isSynchronized()) return;
-        const compatibility = compareDashboardBuilds(data.runtime_build?.input_sha256);
+        const compatibility = compareDashboardBuilds(data.runtime_build.input_sha256);
         if (!compatibility.compatible) {
           setVersionMismatch(compatibility.message ?? 'Dashboard and server builds do not match.');
           controller.stop();

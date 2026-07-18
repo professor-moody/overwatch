@@ -1,0 +1,251 @@
+{
+  "manifest_version": 1,
+  "release_version": "0.2.0",
+  "entries": [
+    {
+      "id": "agent-identity-aliases",
+      "surface": "wire",
+      "status": "retained",
+      "compatibility": "`id`/`agent_id` task fields and legacy label input",
+      "canonical": "`task_id` and `agent_label`",
+      "reason": "Existing commands, dashboards, and V1 durable relationships may still contain the legacy identity fields.",
+      "removal_not_before": "0.3.0",
+      "retirement_evidence": [
+        "N-1 HTTP/MCP/dashboard interoperability passes",
+        "saved-state scan proves every relationship has canonical task identity",
+        "ambiguous legacy labels remain recoverable without guessing"
+      ]
+    },
+    {
+      "id": "agent-identity-v1-fields",
+      "surface": "persistence",
+      "status": "migration_required",
+      "compatibility": "legacy agent identity fields stored in PersistedStateV1 relationships",
+      "canonical": "a future versioned state migration to canonical task identity",
+      "reason": "Persisted V1 records cannot be rewritten or discarded merely because current wire DTOs also expose canonical identity.",
+      "retirement_evidence": [
+        "a newer persisted-state version has an explicit V1 reader and migration",
+        "ambiguous legacy labels remain inspectable without guessed linkage",
+        "copied-engagement migration and rollback fixtures pass"
+      ]
+    },
+    {
+      "id": "agent-work-v1-fallback",
+      "surface": "persistence",
+      "status": "migration_required",
+      "compatibility": "PersistedStateV1 agent tasks without explicit `work` metadata",
+      "canonical": "versioned `AgentWorkMetadataV1` attached to every task",
+      "reason": "Tasks written before work shaping derive a detached signature/root view so handoff, split, and duplicate detection remain truthful after restart.",
+      "retirement_evidence": [
+        "a newer persisted-state version has an explicit V1 task-work migration",
+        "legacy derivation remains deterministic and does not mutate recovered state",
+        "V1 validation continues accepting the historical absence until migration"
+      ],
+      "evidence_checks": [
+        {
+          "id": "legacy-agent-work-derivation",
+          "claim": "legacy derivation remains deterministic and does not mutate recovered state",
+          "path": "src/services/__tests__/agent-work.test.ts",
+          "contains": "derives detached metadata for legacy tasks without mutating them"
+        },
+        {
+          "id": "legacy-agent-work-v1-validation",
+          "claim": "V1 validation continues accepting the historical absence until migration",
+          "path": "src/services/__tests__/agent-work.test.ts",
+          "contains": "validates declared work metadata while retaining legacy absence"
+        }
+      ]
+    },
+    {
+      "id": "coordination-owner-aliases",
+      "surface": "persistence",
+      "status": "retained",
+      "compatibility": "legacy owner/source fields in approvals, questions, and proposed plans",
+      "canonical": "`owner_task_id` and `owner_agent_label`",
+      "reason": "Recovered V1 coordination records can predate canonical task ownership.",
+      "retirement_evidence": [
+        "V1 fixture migration rewrites every unambiguous owner",
+        "ambiguous owners surface a warning and remain inspectable"
+      ]
+    },
+    {
+      "id": "parser-response-aliases",
+      "surface": "wire",
+      "status": "retained",
+      "compatibility": "`parse_status: \"no_parser\"` and `parser_exception`",
+      "canonical": "`parse_outcome` and `error`",
+      "reason": "Older MCP and dashboard consumers still read the response aliases.",
+      "removal_not_before": "0.3.0",
+      "retirement_evidence": [
+        "all in-repo consumers use canonical parse outcomes",
+        "N-1 response-contract fixture passes without the aliases"
+      ]
+    },
+    {
+      "id": "playbook-projection-aliases",
+      "surface": "wire",
+      "status": "retained",
+      "compatibility": "credential expansion stamps and AWS `principal` response field",
+      "canonical": "durable playbook runs and `bindings.principal_name`",
+      "reason": "The fields are read-only projections used by clients from before durable playbook runs.",
+      "removal_not_before": "0.3.0",
+      "retirement_evidence": [
+        "N-1 playbook client fixtures consume only durable run state",
+        "schema usage proves the AWS principal alias has no remaining consumer"
+      ]
+    },
+    {
+      "id": "dashboard-http-v1",
+      "surface": "wire",
+      "status": "retained",
+      "compatibility": "dashboard HTTP compatibility contract v1",
+      "canonical": "the current stable endpoint and envelope registry",
+      "reason": "Compatibility v1 is the current public HTTP contract, not an expired shim."
+    },
+    {
+      "id": "dashboard-websocket-v1",
+      "surface": "wire",
+      "status": "retained",
+      "compatibility": "full-state main WebSocket envelopes when no contract is selected",
+      "canonical": "main WebSocket contract v2 keyed patches",
+      "reason": "Older dashboards and external clients still negotiate the default v1 channel; the bundled dashboard uses v2 only.",
+      "removal_not_before": "0.3.0",
+      "retirement_evidence": [
+        "one released minor defaults bundled clients to v2",
+        "N-1 dashboard behavior is covered by an explicit unsupported-version diagnostic"
+      ]
+    },
+    {
+      "id": "state-v0-journal-v1-readers",
+      "surface": "persistence",
+      "status": "migration_required",
+      "compatibility": "absent-version state V0 and primitive journal V1 readers",
+      "canonical": "PersistedStateV1 and transaction journal V2",
+      "reason": "These readers are the only non-destructive path from historical engagements to the current format.",
+      "retirement_evidence": [
+        "a later binary retains immutable verification for historical migration-backup manifests",
+        "copied engagement inventory finds no unmigrated V0/V1 state family",
+        "N-1 backup restore and re-upgrade drill passes"
+      ]
+    },
+    {
+      "id": "legacy-playbook-placeholders",
+      "surface": "persistence",
+      "status": "migration_required",
+      "compatibility": "schema-less playbook run placeholders recovered from legacy state",
+      "canonical": "versioned durable PlaybookRun records and explicit new-run replacement",
+      "reason": "Historical placeholders are intentionally inert but must remain readable and visible until a versioned migration accounts for them.",
+      "retirement_evidence": [
+        "a state-version migration preserves or explicitly replaces every placeholder",
+        "legacy placeholders remain inspectable and cannot execute accidentally",
+        "copied-engagement inventory finds no unaccounted placeholder records"
+      ]
+    },
+    {
+      "id": "session-v1-rollback-lifecycle",
+      "surface": "persistence",
+      "status": "retained",
+      "compatibility": "conservative V1 `closed`/`error` lifecycle plus additive recovery metadata",
+      "canonical": "`resume_available` and `interrupted` runtime lifecycle",
+      "reason": "The preceding binary must be able to open a restored migration backup without classifying V1 state as corrupt.",
+      "retirement_evidence": [
+        "a new persisted-state version has a V1 reader and migrator",
+        "older-binary restore succeeds from a checksummed migration backup"
+      ]
+    },
+    {
+      "id": "subagent-control-prompt",
+      "surface": "runtime",
+      "status": "retained",
+      "compatibility": "`OVERWATCH_PROMPT_VARIANT=control` rollback selection",
+      "canonical": "the context-first `lean` sub-agent prompt",
+      "reason": "Version 0.2.0 establishes the first explicit release boundary for the documented one-release rollback.",
+      "removal_not_before": "0.3.0",
+      "retirement_evidence": [
+        "0.2.x real-model and deterministic prompt gates remain green",
+        "release notes announce removal of the runtime rollback selector"
+      ]
+    },
+    {
+      "id": "subagent-isolation-config",
+      "surface": "configuration",
+      "status": "retained",
+      "compatibility": "`subagent_isolation` from the Node IPC worker scaffold",
+      "canonical": "managed-daemon worker runtime settings",
+      "reason": "Existing engagement configuration files may still contain the validated field.",
+      "retirement_evidence": [
+        "configuration migration preserves the selected runtime behavior",
+        "N-1 configuration fixture upgrades without manual editing"
+      ]
+    },
+    {
+      "id": "dashboard-hash-deep-links",
+      "surface": "dashboard",
+      "status": "retained",
+      "compatibility": "`#panel=...` dashboard navigation",
+      "canonical": "route and query-string deep links",
+      "reason": "Existing bookmarks are not observable from repository usage, so the first explicit release retains the redirect.",
+      "removal_not_before": "0.3.0",
+      "retirement_evidence": [
+        "all in-repo navigation producers use route paths",
+        "route deep-link journeys cover the supported replacement",
+        "release notes announce the compatibility redirect removal"
+      ]
+    },
+    {
+      "id": "dashboard-v1-state-consumer",
+      "surface": "dashboard",
+      "status": "retired",
+      "compatibility": "bundled-dashboard consumption of WebSocket v1 full-state updates",
+      "canonical": "WebSocket v2 full base plus revisioned keyed patches",
+      "reason": "The bundled dashboard explicitly negotiates contract v2; only the server keeps v1 for older external clients.",
+      "retired_in": "0.2.0",
+      "retirement_evidence": [
+        "the bundled client rejects v1 state-channel events",
+        "server dual-contract tests retain v1 external-client coverage"
+      ],
+      "evidence_checks": [
+        {
+          "id": "bundled-dashboard-rejects-v1-state",
+          "claim": "the bundled client rejects v1 state-channel events",
+          "path": "src/dashboard-next/src/providers/__tests__/ws-provider.dom.test.tsx",
+          "contains": "rejects WebSocket v1 state envelopes on the bundled v2 client"
+        },
+        {
+          "id": "server-retains-dual-websocket-contracts",
+          "claim": "server dual-contract tests retain v1 external-client coverage",
+          "path": "src/services/__tests__/dashboard-server.test.ts",
+          "contains": "keeps v1 websocket envelopes intact while v2 receives bounded state patches"
+        }
+      ]
+    },
+    {
+      "id": "pending-action-label-wrapper",
+      "surface": "runtime",
+      "status": "retired",
+      "compatibility": "internal `PendingActionQueue.abortByAgent()` label-only wrapper",
+      "canonical": "`abortByTask(task_id, legacy_label)`",
+      "reason": "No production caller used the wrapper; canonical task ownership has been required at the queue boundary.",
+      "retired_in": "0.2.0",
+      "retirement_evidence": [
+        "production call graph contains no wrapper caller",
+        "queue tests cover canonical and legacy-record abort behavior through `abortByTask`"
+      ],
+      "evidence_checks": [
+        {
+          "id": "pending-wrapper-production-call-graph",
+          "claim": "production call graph contains no wrapper caller",
+          "path": "src/services/__tests__/compatibility-release.test.ts",
+          "contains": "has no production call to the retired abortByAgent wrapper"
+        },
+        {
+          "id": "pending-abort-canonical-task-isolation",
+          "claim": "queue tests cover canonical and legacy-record abort behavior through `abortByTask`",
+          "path": "src/services/__tests__/pending-action-queue.test.ts",
+          "contains": "abortByTask isolates duplicate labels by canonical task_id"
+        }
+      ]
+    }
+  ],
+  "manifest_sha256": "887158f6634243c98b5663b5ea2f3922ec4d71a37859aabccb818c9efa587788"
+}

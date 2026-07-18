@@ -90,6 +90,28 @@ describe('PlaybookRunService', () => {
     engines.splice(engines.indexOf(engine), 1);
   }
 
+  it('preserves legacy playbook placeholders as inert recovery records across restart', () => {
+    const firstEngine = openEngine();
+    firstEngine.setPlaybookRuns([{
+      run_id: 'legacy-placeholder',
+      legacy_note: 'reserved before durable playbook producers existed',
+    }]);
+    closeEngine(firstEngine);
+
+    const service = new PlaybookRunService(openEngine());
+    expect(service.list()).toEqual([{
+      run_id: 'legacy-placeholder',
+      legacy_note: 'reserved before durable playbook producers existed',
+    }]);
+    try {
+      service.getDurable('legacy-placeholder');
+      throw new Error('legacy placeholder unexpectedly became executable');
+    } catch (error) {
+      expect(error).toBeInstanceOf(PlaybookRunError);
+      expect(error).toMatchObject({ code: 'PLAYBOOK_LEGACY_RECORD', http_status: 409 });
+    }
+  });
+
   it('resumes the matching open run and appends immutable plan revisions', () => {
     const engine = openEngine();
     const service = new PlaybookRunService(engine);

@@ -23,7 +23,7 @@ const transport = process.env.OVERWATCH_TRANSPORT
 function describeBuild(build: RuntimeBuildInfo | undefined): string {
   if (!build) return 'unknown legacy build';
   const revision = build.git_sha?.slice(0, 8) || build.input_sha256.slice(0, 12);
-  return `${revision} (PID ${build.runtime_pid || 'unknown'})`;
+  return `${build.release_version ? `v${build.release_version} ` : ''}${revision} (PID ${build.runtime_pid || 'unknown'})`;
 }
 
 // ============================================================
