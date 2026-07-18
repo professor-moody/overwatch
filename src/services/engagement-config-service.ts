@@ -12,7 +12,6 @@ import {
   writeFileSync,
 } from 'fs';
 import { createHash, randomBytes } from 'crypto';
-import { execFileSync } from 'child_process';
 import { basename, dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 import type { ConfigIntentConflict, ConfigRecoveryStatus, EngagementConfig } from '../types.js';
@@ -20,6 +19,11 @@ import { engagementConfigSchema } from '../types.js';
 import type { PersistedApplicationCommandV1 } from './persisted-state.js';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
 import { parseJsonBytes } from './durable-json.js';
+import {
+  processIsAlive,
+  processStartIdentityMatches,
+  readProcessStartIdentity,
+} from './process-identity.js';
 
 export type ConfigResolutionMode = 'use_file' | 'use_state';
 
@@ -196,16 +200,6 @@ function codedError(message: string, code: string): Error {
   return error;
 }
 
-function processIsAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
-}
-
 interface DurableWriteContender {
   version: 1;
   pid: number;
@@ -215,21 +209,7 @@ interface DurableWriteContender {
   ticket?: number;
 }
 
-function processStartIdentity(pid: number): string | undefined {
-  if (!Number.isSafeInteger(pid) || pid <= 0 || process.platform === 'win32') return undefined;
-  try {
-    const started = execFileSync(
-      'ps',
-      ['-o', 'lstart=', '-p', String(pid)],
-      { encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'] },
-    ).trim();
-    return started.length > 0 ? started : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-const durableWriteProcessStartIdentity = processStartIdentity(process.pid)
+const durableWriteProcessStartIdentity = readProcessStartIdentity(process.pid)
   ?? `unverifiable-current-process-${randomBytes(16).toString('hex')}`;
 
 function writeJsonFileDurableUnlocked(path: string, value: unknown): void {
@@ -315,11 +295,16 @@ function acquireDurableWriteLock(path: string): () => void {
         ? undefined
         : pid === process.pid
           ? durableWriteProcessStartIdentity
-          : processStartIdentity(pid);
+          : readProcessStartIdentity(pid);
+      const recordedIdentityMatches = pid !== undefined && record
+        ? pid === process.pid
+          ? record.process_start_identity === durableWriteProcessStartIdentity
+          : processStartIdentityMatches(pid, record.process_start_identity)
+        : undefined;
       const ownerStillMatches = pid !== undefined && processIsAlive(pid) && (
         !record
         || observedStartIdentity === undefined
-        || observedStartIdentity === record.process_start_identity
+        || recordedIdentityMatches !== false
       );
       if (pid !== undefined && !ownerStillMatches) {
         try {

@@ -231,9 +231,8 @@ You can:
 - Check that `OVERWATCH_DASHBOARD_PORT` is not `0` (disabled).
 - Verify the port is not owned by another process. Overwatch deliberately
   refuses to start a second runtime owner.
-- After a pull, stop the old daemon, reinstall dependencies, build, run
-  `npm run doctor`, start `npm run start:daemon` once, then hard-reload the
-  browser.
+- After a pull, run `npm run upgrade`, then `npm run doctor` and hard-reload the
+  browser. Upgrade validates before downtime and preserves engagement artifacts.
 - If a recovery banner reports read-only mode, inspect `overwatch recovery`.
   Do not delete engagement state; reconcile only with the exact hashes and
   allowed mode shown by the service.

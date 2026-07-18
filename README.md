@@ -11,9 +11,8 @@ git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install
 npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
-npm run build
+npm run daemon:start
 npm run doctor
-npm run start:daemon
 ```
 
 > **Note:** `node-pty` is an optional native dependency used for local PTY sessions. It requires native build tools (Python 3, C++ compiler). If it fails to install, the rest of Overwatch works normally — only `local_pty` sessions will be unavailable.
@@ -29,9 +28,10 @@ or restore the intended state. The live graph normally persists to
 `state-<engagement-id>.json` beside the config unless `OVERWATCH_STATE_FILE` is
 set.
 
-The pre-start `npm run doctor` may warn that the shared daemon is not running
-yet; that is expected on a first launch. Leave `npm run start:daemon` running,
-open `http://127.0.0.1:8384`, and run `claude` in another terminal. You can run
+If you run `npm run doctor` before the first start, its warning that the daemon
+is not running is expected. `npm run daemon:start` starts the
+verified daemon in the background, so the same terminal remains free. Open
+`http://127.0.0.1:8384`, then run `claude` or the CLI there. You can run
 `npm run doctor` again there to verify the live daemon and local build match.
 
 There is exactly **one Overwatch runtime owner**. Terminal Claude connects to
@@ -43,35 +43,45 @@ Claude's user settings only for authentication. This lets you keep using Claude
 interactively in your terminal while the dashboard deploys agents, without
 starting a second engine or mixing their sessions.
 
-After later pulls, `npm run start:daemon` checks whether the compiled runtime
-matches the checkout and rebuilds it automatically when needed, so an old
-dashboard or planner cannot silently start from stale `dist` files. If the
+After later pulls, `npm run upgrade` stops the identity-verified daemon,
+installs the locked dependencies, rebuilds, and restarts without changing the
+engagement. A normal start rebuilds stale output only when no daemon is live,
+so an old dashboard or planner cannot silently run against replaced assets. If the
 dashboard says **Disconnected**, a planner exits unexpectedly, or `doctor`
 reports a build mismatch, stop the old daemon, rebuild, run `npm run doctor`,
 start the daemon once, and hard-reload the browser.
+
+If this checkout predates the persisted runtime profile
+(`.overwatch-runtime/profile.json` is absent), stop the old foreground/stdio
+owner first and run `npm run setup` once before using `npm run upgrade`.
+Lifecycle commands intentionally refuse to guess which engagement state is
+writable. That one-time setup preserves existing config, state, WAL, evidence,
+and reports while recording their selected paths.
 
 For the solo Claude-only compatibility mode, run `npm run setup:stdio` (or
 `npm run setup -- --stdio`). That configuration lets one Claude session launch
 and own Overwatch itself.
 
-If you create a solo stdio config manually, `.mcp.json` should use absolute paths:
+`npm run setup:stdio` writes the runtime profile and lifecycle-backed `.mcp.json`
+entry together. If you must inspect or reproduce that entry manually, it uses
+absolute paths and still goes through the ownership gate:
 
 ```json
 {
   "mcpServers": {
     "overwatch": {
       "command": "node",
-      "args": ["<path-to-overwatch>/dist/index.js"],
+      "args": ["<path-to-overwatch>/scripts/daemon-lifecycle.mjs", "run-stdio"],
       "env": {
-        "OVERWATCH_CONFIG": "<path-to-engagement.json>",
-        "OVERWATCH_SKILLS": "<path-to-overwatch>/skills"
+        "OVERWATCH_RUNTIME_PROFILE": "<path-to-overwatch>/.overwatch-runtime/profile.json"
       }
     }
   }
 }
 ```
 
-Then run `claude`. `.claude/settings.json` enables hooks that keep Claude using
+Do not hand-edit one side of this pair; rerun `npm run setup:stdio` to reconcile
+it. Then run `claude`. `.claude/settings.json` enables hooks that keep Claude using
 Overwatch instead of drifting into raw target-facing Bash. See the full
 [Getting Started](https://professor-moody.github.io/overwatch/getting-started/)
 guide.
@@ -80,14 +90,12 @@ After pulling an update, the stable refresh path is:
 
 ```bash
 git pull --ff-only origin main
-npm ci
-npm run build
+npm run upgrade
 npm run doctor
-npm run start:daemon
 ```
 
-Stop the previous daemon before the last command. This does not replace
-`engagement.json`, its state/WAL, evidence, or reports.
+The upgrade command performs the verified stop/install/build/start sequence. It
+does not replace `engagement.json`, its state/WAL, evidence, or reports.
 
 ## Documentation
 

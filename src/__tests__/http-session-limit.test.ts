@@ -37,7 +37,12 @@ describe.skipIf(!supportsLocalListen)('HTTP session limit', () => {
     });
 
     // Start with maxSessions=2 for fast testing
-    await startHttpApp(app, { port: 0, host: '127.0.0.1', maxSessions: 2 });
+    await startHttpApp(app, {
+      port: 0,
+      host: '127.0.0.1',
+      maxSessions: 2,
+      sessionIdleMs: 50,
+    });
 
     const addr = app.httpServer?.address();
     if (!addr || typeof addr === 'string') throw new Error('Failed to get HTTP server address');
@@ -82,6 +87,18 @@ describe.skipIf(!supportsLocalListen)('HTTP session limit', () => {
     });
     expect(res2.status).toBe(200);
 
+    const sessionId = res1.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+    const sseAbort = new AbortController();
+    const sse = await fetch(`${baseUrl}/mcp`, {
+      headers: {
+        Accept: 'text/event-stream',
+        'mcp-session-id': sessionId!,
+      },
+      signal: sseAbort.signal,
+    });
+    expect(sse.status).toBe(200);
+
     // Third session should be rejected
     const res3 = await fetch(`${baseUrl}/mcp`, {
       method: 'POST',
@@ -92,5 +109,22 @@ describe.skipIf(!supportsLocalListen)('HTTP session limit', () => {
 
     const body = await res3.json();
     expect(body.error.message).toContain('Too many active sessions');
+
+    // Abandoned clients no longer consume the daemon's hard session capacity
+    // forever. The reaper only closes records with no active response/SSE.
+    await new Promise(resolveWait => setTimeout(resolveWait, 150));
+    const res4 = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(initBody),
+    });
+    expect(res4.status).toBe(200);
+    const res5 = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(initBody),
+    });
+    expect(res5.status).toBe(503);
+    sseAbort.abort();
   });
 });

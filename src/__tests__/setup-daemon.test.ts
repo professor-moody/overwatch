@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -10,12 +11,16 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const repository = resolve('.');
 const setupScript = join(repository, 'scripts', 'setup.mjs');
+const doctorScript = join(repository, 'scripts', 'doctor.mjs');
 const template = join(repository, 'engagement-templates', 'ctf.json');
+const sanitizedProcessEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith('OVERWATCH_')),
+);
 function engagementConfig(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
@@ -97,7 +102,7 @@ describe('daemon setup', () => {
     ], {
       cwd: repository,
       env: {
-        ...process.env,
+        ...sanitizedProcessEnv,
         OVERWATCH_SETUP_ROOT: directory,
         OVERWATCH_HTTP_PORT: '3210',
       },
@@ -120,6 +125,19 @@ describe('daemon setup', () => {
     expect(authorization).toBe(`Bearer ${token}`);
     expect(statSync(join(directory, '.mcp.json')).mode & 0o777).toBe(0o600);
     expect(statSync(join(directory, '.overwatch-mcp-token')).mode & 0o777).toBe(0o600);
+    const profilePath = join(directory, '.overwatch-runtime', 'profile.json');
+    const profile = JSON.parse(readFileSync(profilePath, 'utf8'));
+    expect(profile).toMatchObject({
+      schema_version: 1,
+      mode: 'daemon',
+      config_path: join(directory, 'engagement.json'),
+      state_file_path: join(directory, 'state-existing-engagement.json'),
+      mcp_token_file: join(directory, '.overwatch-mcp-token'),
+      mcp_config_path: join(directory, '.mcp.json'),
+      http_port: 3210,
+      dashboard_port: 8384,
+    });
+    expect(statSync(profilePath).mode & 0o777).toBe(0o600);
   });
 
   it('uses shared-daemon wiring by default', () => {
@@ -131,7 +149,7 @@ describe('daemon setup', () => {
     ], {
       cwd: repository,
       env: {
-        ...process.env,
+        ...sanitizedProcessEnv,
         OVERWATCH_SETUP_ROOT: directory,
       },
       stdio: 'pipe',
@@ -144,6 +162,144 @@ describe('daemon setup', () => {
     });
     expect(readFileSync(join(directory, '.overwatch-mcp-token'), 'utf8'))
       .toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.parse(readFileSync(
+      join(directory, '.overwatch-runtime', 'profile.json'),
+      'utf8',
+    ))).toMatchObject({
+      mode: 'daemon',
+      config_path: join(directory, 'engagement.json'),
+      state_file_path: expect.stringContaining('state-'),
+    });
+  });
+
+  it('doctor reports a malformed runtime profile without a raw module crash', () => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-doctor-invalid-profile-'));
+    const profileDirectory = join(directory, '.overwatch-runtime');
+    mkdirSync(profileDirectory);
+    writeFileSync(join(profileDirectory, 'profile.json'), '{broken json');
+
+    const result = spawnSync(process.execPath, [doctorScript], {
+      cwd: repository,
+      env: { ...sanitizedProcessEnv, OVERWATCH_DOCTOR_ROOT: directory },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('FAIL Runtime profile');
+    expect(result.stdout).toContain('Run `npm run setup` to repair local wiring');
+    expect(result.stderr).not.toContain('node:internal/modules/run_main');
+  });
+
+  it('doctor diagnoses a conflicting inherited runtime override', () => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-doctor-profile-conflict-'));
+    execFileSync(process.execPath, [setupScript, '--daemon', '--template', template], {
+      cwd: repository,
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
+      stdio: 'pipe',
+    });
+
+    const result = spawnSync(process.execPath, [doctorScript], {
+      cwd: repository,
+      env: {
+        ...sanitizedProcessEnv,
+        OVERWATCH_DOCTOR_ROOT: directory,
+        OVERWATCH_CONFIG: join(directory, 'different-engagement.json'),
+      },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('FAIL Runtime profile');
+    expect(result.stdout).toContain('OVERWATCH_CONFIG conflicts with the persisted runtime profile');
+  });
+
+  it('retains external config/state, custom ports, and remote token authority on a plain rerun', () => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-profile-rerun-'));
+    const setupRoot = join(directory, 'checkout');
+    const external = join(directory, 'operator-state');
+    mkdirSync(setupRoot);
+    mkdirSync(external);
+    const configPath = join(external, 'custom-engagement.json');
+    const statePath = join(external, 'custom-state.json');
+    writeFileSync(configPath, `${JSON.stringify(engagementConfig('external-profile'))}\n`);
+    writeFileSync(statePath, durableState('external-profile', 'preserve'));
+
+    const firstEnvironment = {
+      ...sanitizedProcessEnv,
+      OVERWATCH_SETUP_ROOT: setupRoot,
+      OVERWATCH_CONFIG: configPath,
+      OVERWATCH_STATE_FILE: statePath,
+      OVERWATCH_HTTP_HOST: '0.0.0.0',
+      OVERWATCH_HTTP_PORT: '43210',
+      OVERWATCH_DASHBOARD_HOST: '0.0.0.0',
+      OVERWATCH_DASHBOARD_PORT: '43211',
+      OVERWATCH_DASHBOARD_TOKEN: 'remote-dashboard-authority',
+    };
+    execFileSync(process.execPath, [setupScript, '--template', template], {
+      cwd: repository,
+      env: firstEnvironment,
+      stdio: 'pipe',
+    });
+    const profilePath = join(setupRoot, '.overwatch-runtime', 'profile.json');
+    const firstProfile = JSON.parse(readFileSync(profilePath, 'utf8'));
+    const firstConfig = readFileSync(configPath);
+    const firstState = readFileSync(statePath);
+
+    execFileSync(process.execPath, [setupScript, '--template', template], {
+      cwd: repository,
+      env: {
+        ...sanitizedProcessEnv,
+        OVERWATCH_SETUP_ROOT: setupRoot,
+      },
+      stdio: 'pipe',
+    });
+
+    const secondProfile = JSON.parse(readFileSync(profilePath, 'utf8'));
+    expect(secondProfile).toMatchObject({
+      config_path: configPath,
+      state_file_path: statePath,
+      http_host: '0.0.0.0',
+      http_port: 43210,
+      dashboard_host: '0.0.0.0',
+      dashboard_port: 43211,
+      dashboard_token_file: firstProfile.dashboard_token_file,
+    });
+    expect(readFileSync(secondProfile.dashboard_token_file, 'utf8'))
+      .toBe('remote-dashboard-authority');
+    expect(readFileSync(configPath)).toEqual(firstConfig);
+    expect(readFileSync(statePath)).toEqual(firstState);
+    expect(JSON.parse(readFileSync(join(setupRoot, '.mcp.json'), 'utf8'))
+      .mcpServers.overwatch.url).toBe('http://127.0.0.1:43210/mcp');
+  });
+
+  it('replaces reordered legacy managed hooks instead of duplicating them', () => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-hook-upgrade-'));
+    execFileSync(process.execPath, [setupScript, '--template', template], {
+      cwd: repository,
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
+      stdio: 'pipe',
+    });
+    const settingsPath = join(directory, '.claude', 'settings.json');
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    const managed = settings.hooks.PreToolUse[0];
+    settings.hooks.PreToolUse.unshift({
+      hooks: managed.hooks.map((hook: Record<string, unknown>) => ({
+        args: hook.args,
+        command: hook.command,
+        type: hook.type,
+      })),
+      matcher: managed.matcher,
+    });
+    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+
+    execFileSync(process.execPath, [setupScript, '--template', template], {
+      cwd: repository,
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
+      stdio: 'pipe',
+    });
+    const repaired = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    expect(repaired.hooks.PreToolUse).toHaveLength(2);
+    expect(JSON.stringify(repaired).match(/overwatch-bash-guard\.mjs/g)).toHaveLength(1);
   });
 
   it('retains an explicit private stdio compatibility mode', () => {
@@ -156,7 +312,7 @@ describe('daemon setup', () => {
     ], {
       cwd: repository,
       env: {
-        ...process.env,
+        ...sanitizedProcessEnv,
         OVERWATCH_SETUP_ROOT: directory,
       },
       stdio: 'pipe',
@@ -165,12 +321,38 @@ describe('daemon setup', () => {
     const mcp = JSON.parse(readFileSync(join(directory, '.mcp.json'), 'utf8'));
     expect(mcp.mcpServers.overwatch).toMatchObject({
       command: 'node',
-      args: [join(directory, 'dist', 'index.js')],
+      args: [join(repository, 'scripts', 'daemon-lifecycle.mjs'), 'run-stdio'],
+      env: {
+        OVERWATCH_RUNTIME_PROFILE: join(directory, '.overwatch-runtime', 'profile.json'),
+      },
     });
     expect(() => readFileSync(join(directory, '.overwatch-mcp-token'), 'utf8')).toThrow();
   });
 
-  it('switches daemon to stdio and back without changing engagement or user settings', () => {
+  it('refuses a private stdio writer until setup has published its runtime profile', () => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-stdio-no-profile-'));
+    const runtimeDirectory = join(directory, '.overwatch-runtime');
+    const result = spawnSync(process.execPath, [
+      join(repository, 'scripts', 'daemon-lifecycle.mjs'),
+      'run-stdio',
+    ], {
+      cwd: repository,
+      env: {
+        ...sanitizedProcessEnv,
+        OVERWATCH_RUNTIME_PROFILE: join(runtimeDirectory, 'profile.json'),
+        OVERWATCH_DAEMON_RECORD: join(runtimeDirectory, 'daemon.json'),
+        OVERWATCH_DAEMON_LOG: join(runtimeDirectory, 'daemon.log'),
+      },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('persisted runtime profile');
+    expect(result.stderr).toContain('Run `npm run setup`');
+    expect(existsSync(join(runtimeDirectory, 'profile.json'))).toBe(false);
+  });
+
+  it('switches daemon to stdio and back while merging hooks without duplicating user settings', () => {
     directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-roundtrip-'));
     const engagementText = `${JSON.stringify({
       id: 'preserved-roundtrip',
@@ -200,7 +382,7 @@ describe('daemon setup', () => {
     ], {
       cwd: repository,
       env: {
-        ...process.env,
+        ...sanitizedProcessEnv,
         OVERWATCH_SETUP_ROOT: directory,
         OVERWATCH_MCP_TOKEN: '',
       },
@@ -208,19 +390,30 @@ describe('daemon setup', () => {
     });
 
     runSetup([]);
+    const settingsAfterFirstSetup = readFileSync(join(directory, '.claude', 'settings.json'), 'utf8');
     runSetup(['--stdio']);
     expect(readFileSync(join(directory, 'engagement.json'), 'utf8')).toBe(engagementText);
-    expect(readFileSync(join(directory, '.claude', 'settings.json'), 'utf8')).toBe(settingsText);
+    expect(readFileSync(join(directory, '.claude', 'settings.json'), 'utf8')).toBe(settingsAfterFirstSetup);
+    const settings = JSON.parse(settingsAfterFirstSetup);
+    expect(settings.permissions).toEqual({ allow: ['mcp__other__read'] });
+    expect(settings.hooks.SessionStart).toContainEqual(
+      expect.objectContaining({ hooks: [expect.objectContaining({ command: 'custom-hook' })] }),
+    );
+    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
+    expect(settings.hooks.PreToolUse).toHaveLength(2);
+    expect(settings.hooks.PostToolUse).toHaveLength(2);
+    expect(settings.hooks.PreCompact).toHaveLength(1);
+    expect(settings.hooks.Stop).toHaveLength(1);
     let mcp = JSON.parse(readFileSync(join(directory, '.mcp.json'), 'utf8'));
     expect(mcp.mcpServers.other).toBeDefined();
     expect(mcp.mcpServers.overwatch).toMatchObject({
       command: 'node',
-      args: [join(directory, 'dist', 'index.js')],
+      args: [join(repository, 'scripts', 'daemon-lifecycle.mjs'), 'run-stdio'],
     });
 
     runSetup([]);
     expect(readFileSync(join(directory, 'engagement.json'), 'utf8')).toBe(engagementText);
-    expect(readFileSync(join(directory, '.claude', 'settings.json'), 'utf8')).toBe(settingsText);
+    expect(readFileSync(join(directory, '.claude', 'settings.json'), 'utf8')).toBe(settingsAfterFirstSetup);
     mcp = JSON.parse(readFileSync(join(directory, '.mcp.json'), 'utf8'));
     expect(mcp.mcpServers.other).toBeDefined();
     expect(mcp.mcpServers.overwatch).toMatchObject({
@@ -235,7 +428,7 @@ describe('daemon setup', () => {
     execFileSync(process.execPath, [setupScript, '--template', template], {
       cwd: repository,
       env: {
-        ...process.env,
+        ...sanitizedProcessEnv,
         OVERWATCH_SETUP_ROOT: directory,
         OVERWATCH_MCP_TOKEN: token,
       },
@@ -258,7 +451,7 @@ describe('daemon setup', () => {
     ], {
       cwd: repository,
       env: {
-        ...process.env,
+        ...sanitizedProcessEnv,
         OVERWATCH_SETUP_ROOT: directory,
       },
       encoding: 'utf8',
@@ -266,6 +459,31 @@ describe('daemon setup', () => {
 
     expect(output).toContain('Bearer <redacted>');
     expect(output).not.toMatch(/Bearer [a-f0-9]{64}/);
+    expect(readdirSync(directory)).toEqual([]);
+  });
+
+  it('refuses malformed Claude settings before publishing any client wiring', () => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-invalid-settings-'));
+    const engagementText = `${JSON.stringify(engagementConfig('invalid-settings'))}\n`;
+    const stateText = durableState('invalid-settings', 'preserved');
+    writeFileSync(join(directory, 'engagement.json'), engagementText);
+    writeFileSync(join(directory, 'state-invalid-settings.json'), stateText);
+    mkdirSync(join(directory, '.claude'));
+    writeFileSync(join(directory, '.claude', 'settings.json'), '{ malformed settings');
+
+    const result = spawnSync(process.execPath, [setupScript, '--template', template], {
+      cwd: repository,
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Refusing partial setup');
+    expect(readFileSync(join(directory, 'engagement.json'), 'utf8')).toBe(engagementText);
+    expect(readFileSync(join(directory, 'state-invalid-settings.json'), 'utf8')).toBe(stateText);
+    expect(existsSync(join(directory, '.mcp.json'))).toBe(false);
+    expect(existsSync(join(directory, '.overwatch-mcp-token'))).toBe(false);
+    expect(existsSync(join(directory, '.overwatch-runtime'))).toBe(false);
   });
 
   it('keeps empty-scope first-run guidance safe for durable engagement state', () => {
@@ -277,7 +495,7 @@ describe('daemon setup', () => {
     ], {
       cwd: repository,
       env: {
-        ...process.env,
+        ...sanitizedProcessEnv,
         OVERWATCH_SETUP_ROOT: directory,
         OVERWATCH_MCP_TOKEN: '',
       },
@@ -303,24 +521,29 @@ describe('daemon setup', () => {
 
     execFileSync(process.execPath, [setupScript, '--force', '--template', template], {
       cwd: repository,
-      env: { ...process.env, OVERWATCH_SETUP_ROOT: directory },
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
       stdio: 'pipe',
     });
 
     expect(readFileSync(join(directory, 'engagement.json'), 'utf8')).toBe(engagementText);
     expect(readFileSync(join(directory, 'state-force-safe.json'), 'utf8')).toBe(stateText);
-    expect(readFileSync(join(directory, '.claude', 'settings.json'), 'utf8')).toBe(settingsText);
+    const mergedSettings = JSON.parse(readFileSync(join(directory, '.claude', 'settings.json'), 'utf8'));
+    expect(mergedSettings.permissions).toEqual({ allow: ['custom-user-setting'] });
+    expect(mergedSettings.hooks.UserPromptSubmit).toHaveLength(1);
   });
 
   it('configures recovery wiring without creating a competing config', () => {
     directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-recovery-'));
     const statePath = join(directory, 'state-recovery.json');
     const stateText = `${durableState('recovery', 'preserved')}\n`;
+    const ownerPath = `${statePath}.runtime-owner.json`;
+    const ownerBytes = Buffer.from('{"operational":"preserve"}\n');
     writeFileSync(statePath, stateText);
+    writeFileSync(ownerPath, ownerBytes);
 
     const output = execFileSync(process.execPath, [setupScript, '--template', template], {
       cwd: repository,
-      env: { ...process.env, OVERWATCH_SETUP_ROOT: directory },
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
       encoding: 'utf8',
     });
 
@@ -328,7 +551,15 @@ describe('daemon setup', () => {
     expect(output).toContain(`OVERWATCH_STATE_FILE=${JSON.stringify(statePath)}`);
     expect(existsSync(join(directory, 'engagement.json'))).toBe(false);
     expect(readFileSync(statePath, 'utf8')).toBe(stateText);
+    expect(readFileSync(ownerPath)).toEqual(ownerBytes);
     expect(existsSync(join(directory, '.mcp.json'))).toBe(true);
+    expect(JSON.parse(readFileSync(
+      join(directory, '.overwatch-runtime', 'profile.json'),
+      'utf8',
+    ))).toMatchObject({
+      config_path: join(directory, 'engagement.json'),
+      state_file_path: statePath,
+    });
   });
 
   it.each(blockedSetupCases)('refuses %s before writing any setup file', (_label, arrange) => {
@@ -340,7 +571,7 @@ describe('daemon setup', () => {
 
     const result = spawnSync(process.execPath, [setupScript, '--force', '--template', template], {
       cwd: repository,
-      env: { ...process.env, OVERWATCH_SETUP_ROOT: directory },
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
       encoding: 'utf8',
     });
 
@@ -365,7 +596,7 @@ describe('daemon setup', () => {
 
     const output = execFileSync(process.execPath, [setupScript, '--template', template], {
       cwd: repository,
-      env: { ...process.env, OVERWATCH_SETUP_ROOT: directory },
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
       encoding: 'utf8',
     });
 
@@ -386,7 +617,7 @@ describe('daemon setup', () => {
     const output = execFileSync(process.execPath, [setupScript, '--template', template], {
       cwd: repository,
       env: {
-        ...process.env,
+        ...sanitizedProcessEnv,
         OVERWATCH_SETUP_ROOT: directory,
         OVERWATCH_STATE_FILE: selectedPath,
       },
@@ -414,7 +645,7 @@ describe('daemon setup', () => {
 
     const result = spawnSync(process.execPath, [setupScript, '--template', template], {
       cwd: repository,
-      env: { ...process.env, OVERWATCH_SETUP_ROOT: directory },
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
       encoding: 'utf8',
     });
 
@@ -440,12 +671,15 @@ describe('daemon setup', () => {
 
     const output = execFileSync(process.execPath, [setupScript, '--stdio', '--template', template], {
       cwd: repository,
-      env: { ...process.env, OVERWATCH_SETUP_ROOT: directory },
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
       encoding: 'utf8',
     });
 
-    const mcp = JSON.parse(readFileSync(join(directory, '.mcp.json'), 'utf8'));
-    expect(mcp.mcpServers.overwatch.env.OVERWATCH_STATE_FILE).toBe(statePath);
+    const profile = JSON.parse(readFileSync(
+      join(directory, '.overwatch-runtime', 'profile.json'),
+      'utf8',
+    ));
+    expect(profile.state_file_path).toBe(statePath);
     expect(output).toContain('active config and durable state have different semantics');
     expect(readFileSync(configPath)).toEqual(configBytes);
   });
@@ -465,7 +699,7 @@ describe('daemon setup', () => {
 
     const output = execFileSync(process.execPath, [setupScript, '--template', template], {
       cwd: repository,
-      env: { ...process.env, OVERWATCH_SETUP_ROOT: directory },
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
       encoding: 'utf8',
     });
 
@@ -490,12 +724,15 @@ describe('daemon setup', () => {
 
     const output = execFileSync(process.execPath, [setupScript, '--stdio', '--template', template], {
       cwd: repository,
-      env: { ...process.env, OVERWATCH_SETUP_ROOT: directory },
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
       encoding: 'utf8',
     });
 
-    const mcp = JSON.parse(readFileSync(join(directory, '.mcp.json'), 'utf8'));
-    expect(mcp.mcpServers.overwatch.env.OVERWATCH_STATE_FILE).toBe(statePath);
+    const profile = JSON.parse(readFileSync(
+      join(directory, '.overwatch-runtime', 'profile.json'),
+      'utf8',
+    ));
+    expect(profile.state_file_path).toBe(statePath);
     expect(output).toContain('retained bases do not establish one configuration authority (legacy_unverified)');
     expect(output).toContain('startup will remain recovery/read-only');
     expect(output).not.toContain('active config and durable state have different semantics');
@@ -513,7 +750,7 @@ describe('daemon setup', () => {
     const output = execFileSync(process.execPath, [setupScript, '--stdio', '--template', template], {
       cwd: repository,
       env: {
-        ...process.env,
+        ...sanitizedProcessEnv,
         OVERWATCH_SETUP_ROOT: directory,
         OVERWATCH_CONFIG: externalConfig,
       },
@@ -521,13 +758,20 @@ describe('daemon setup', () => {
     });
 
     const mcp = JSON.parse(readFileSync(join(directory, '.mcp.json'), 'utf8'));
-    expect(mcp.mcpServers.overwatch.env).toMatchObject({
-      OVERWATCH_CONFIG: externalConfig,
-      OVERWATCH_STATE_FILE: externalState,
+    expect(mcp.mcpServers.overwatch.env).toEqual({
+      OVERWATCH_RUNTIME_PROFILE: join(directory, '.overwatch-runtime', 'profile.json'),
     });
     expect(output).toContain(
       `OVERWATCH_CONFIG=${JSON.stringify(externalConfig)} OVERWATCH_STATE_FILE=${JSON.stringify(externalState)} npm run doctor`,
     );
+    expect(JSON.parse(readFileSync(
+      join(directory, '.overwatch-runtime', 'profile.json'),
+      'utf8',
+    ))).toMatchObject({
+      config_path: externalConfig,
+      state_file_path: externalState,
+      mcp_token_file: join(directory, '.overwatch-mcp-token'),
+    });
     expect(existsSync(externalConfig)).toBe(false);
     expect(existsSync(join(directory, 'engagement.json'))).toBe(false);
   });
@@ -542,13 +786,191 @@ describe('daemon setup', () => {
 
     const output = execFileSync(process.execPath, [setupScript, '--template', template], {
       cwd: repository,
-      env: { ...process.env, OVERWATCH_SETUP_ROOT: directory },
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
       encoding: 'utf8',
     });
 
     expect(output).toContain(`recovery wiring configured for preserved state ${statePath}`);
     expect(output).toContain('invalid engagement.json was preserved byte-for-byte');
     expect(readFileSync(configPath)).toEqual(configBytes);
+  });
+
+  it('does not regenerate a missing MCP token while a runtime owner is live', () => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-live-token-'));
+    execFileSync(process.execPath, [setupScript, '--daemon', '--template', template], {
+      cwd: repository,
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
+      stdio: 'pipe',
+    });
+    const tokenPath = join(directory, '.overwatch-mcp-token');
+    const profilePath = join(directory, '.overwatch-runtime', 'profile.json');
+    const daemonPath = join(directory, '.overwatch-runtime', 'daemon.json');
+    const mcpPath = join(directory, '.mcp.json');
+    const configPath = join(directory, 'engagement.json');
+    const profileBefore = readFileSync(profilePath);
+    const mcpBefore = readFileSync(mcpPath);
+    const configBefore = readFileSync(configPath);
+    rmSync(tokenPath);
+    writeFileSync(daemonPath, `${JSON.stringify({
+      version: 1,
+      pid: process.pid,
+      command: 'test-live-owner',
+    })}\n`);
+
+    const result = spawnSync(process.execPath, [setupScript, '--daemon', '--template', template], {
+      cwd: repository,
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Refusing to change runtime profile or credentials while Overwatch PID');
+    expect(existsSync(tokenPath)).toBe(false);
+    expect(readFileSync(profilePath)).toEqual(profileBefore);
+    expect(readFileSync(mcpPath)).toEqual(mcpBefore);
+    expect(readFileSync(configPath)).toEqual(configBefore);
+  });
+
+  it('does not adopt a changed nonempty token while the live daemon retains another authority', () => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-live-token-drift-'));
+    execFileSync(process.execPath, [setupScript, '--daemon', '--template', template], {
+      cwd: repository,
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
+      stdio: 'pipe',
+    });
+    const tokenPath = join(directory, '.overwatch-mcp-token');
+    const daemonPath = join(directory, '.overwatch-runtime', 'daemon.json');
+    const profilePath = join(directory, '.overwatch-runtime', 'profile.json');
+    const mcpPath = join(directory, '.mcp.json');
+    const originalToken = readFileSync(tokenPath, 'utf8').trim();
+    const profileBefore = readFileSync(profilePath);
+    const mcpBefore = readFileSync(mcpPath);
+    writeFileSync(tokenPath, 'changed-while-live');
+    const changedTokenBytes = readFileSync(tokenPath);
+    writeFileSync(daemonPath, `${JSON.stringify({
+      version: 1,
+      pid: process.pid,
+      command: 'test-live-owner',
+      mcp_token_sha256: createHash('sha256').update(originalToken).digest('hex'),
+    })}\n`);
+
+    const result = spawnSync(process.execPath, [setupScript, '--daemon', '--template', template], {
+      cwd: repository,
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Refusing to change runtime profile or credentials while Overwatch PID');
+    expect(readFileSync(tokenPath)).toEqual(changedTokenBytes);
+    expect(readFileSync(profilePath)).toEqual(profileBefore);
+    expect(readFileSync(mcpPath)).toEqual(mcpBefore);
+  });
+
+  it.each([
+    ['runtime profile', 'OVERWATCH_RUNTIME_PROFILE'],
+    ['managed daemon record', 'OVERWATCH_DAEMON_RECORD'],
+    ['managed daemon log', 'OVERWATCH_DAEMON_LOG'],
+  ])('rejects a %s path that aliases engagement.json before writing anything', (_label, variable) => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-path-collision-'));
+    const engagementPath = join(directory, 'engagement.json');
+    const result = spawnSync(process.execPath, [setupScript, '--daemon', '--template', template], {
+      cwd: repository,
+      env: {
+        ...sanitizedProcessEnv,
+        OVERWATCH_SETUP_ROOT: directory,
+        [variable]: engagementPath,
+      },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/Runtime path collision|runtime profile .* is invalid/i);
+    expect(readdirSync(directory)).toEqual([]);
+  });
+
+  it.each([
+    ['.snapshots', '.snapshots'],
+    ['engagements', 'engagements'],
+  ])('rejects an operational path inside the durable %s directory', (label, directoryName) => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-snapshot-collision-'));
+    const configPath = join(directory, 'engagement.json');
+    const statePath = join(directory, 'state-preserved.json');
+    const snapshotDirectory = join(directory, directoryName);
+    writeFileSync(configPath, `${JSON.stringify(engagementConfig('preserved'))}\n`);
+    writeFileSync(statePath, durableState('preserved', 'do-not-change'));
+    const configBefore = readFileSync(configPath);
+    const stateBefore = readFileSync(statePath);
+
+    const result = spawnSync(process.execPath, [setupScript, '--daemon', '--template', template], {
+      cwd: repository,
+      env: {
+        ...sanitizedProcessEnv,
+        OVERWATCH_SETUP_ROOT: directory,
+        OVERWATCH_STATE_FILE: statePath,
+        OVERWATCH_DAEMON_LOG: join(snapshotDirectory, 'daemon.log'),
+      },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`inside the protected ${label} artifact directory`);
+    expect(readFileSync(configPath)).toEqual(configBefore);
+    expect(readFileSync(statePath)).toEqual(stateBefore);
+    expect(existsSync(snapshotDirectory)).toBe(false);
+  });
+
+  it.each([
+    ['config write intent', (statePath: string) => `${join(dirname(statePath), 'engagement.json')}.write-intent.json`],
+    ['config intent conflict', (statePath: string) => `${join(dirname(statePath), 'engagement.json')}.write-intent.json.conflict-deadbeef`],
+    ['config intent temporary file', (statePath: string) => `${join(dirname(statePath), 'engagement.json')}.write-intent.json.tmp-deadbeef`],
+    ['config temporary file', (statePath: string) => `${join(dirname(statePath), 'engagement.json')}.overwatch-deadbeef`],
+    ['rollback intent', (statePath: string) => `${statePath}.rollback-intent.json`],
+    ['migration intent', (statePath: string) => `${statePath}.migration-intent.json`],
+    ['state temporary file', (statePath: string) => `${statePath}.tmp-deadbeef`],
+    ['legacy root snapshot', (statePath: string) => `${statePath.replace(/\.json$/, '')}.snap-deadbeef.json`],
+    ['journal quarantine', (statePath: string) => `${statePath.replace(/\.json$/, '')}.journal.jsonl.quarantine-deadbeef.jsonl`],
+  ])('preserves a %s when a runtime log override aliases it', (_label, sidecarPath) => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-sidecar-collision-'));
+    const configPath = join(directory, 'engagement.json');
+    const statePath = join(directory, 'state-preserved.json');
+    const sidecar = sidecarPath(statePath);
+    writeFileSync(configPath, `${JSON.stringify(engagementConfig('preserved'))}\n`);
+    writeFileSync(statePath, durableState('preserved', 'do-not-change'));
+    writeFileSync(sidecar, 'preserve recovery authority\n');
+    const before = readFileSync(sidecar);
+
+    const result = spawnSync(process.execPath, [setupScript, '--daemon', '--template', template], {
+      cwd: repository,
+      env: {
+        ...sanitizedProcessEnv,
+        OVERWATCH_SETUP_ROOT: directory,
+        OVERWATCH_STATE_FILE: statePath,
+        OVERWATCH_DAEMON_LOG: sidecar,
+      },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Runtime path collision');
+    expect(readFileSync(sidecar)).toEqual(before);
+  });
+
+  it.skipIf(process.platform !== 'darwin')('rejects a fresh case-only operational alias on macOS', () => {
+    directory = mkdtempSync(join(tmpdir(), 'overwatch-setup-case-alias-'));
+    const result = spawnSync(process.execPath, [setupScript, '--daemon', '--template', template], {
+      cwd: repository,
+      env: {
+        ...sanitizedProcessEnv,
+        OVERWATCH_SETUP_ROOT: directory,
+        OVERWATCH_DAEMON_LOG: join(directory, 'ENGAGEMENT.JSON'),
+      },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Runtime path collision');
+    expect(readdirSync(directory)).toEqual([]);
   });
 
   it('preserves an unreadable existing config and exits before writing client wiring', () => {
@@ -559,7 +981,7 @@ describe('daemon setup', () => {
 
     const result = spawnSync(process.execPath, [setupScript, '--force', '--template', template], {
       cwd: repository,
-      env: { ...process.env, OVERWATCH_SETUP_ROOT: directory },
+      env: { ...sanitizedProcessEnv, OVERWATCH_SETUP_ROOT: directory },
       encoding: 'utf8',
     });
 

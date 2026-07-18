@@ -15,11 +15,15 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'fs';
-import { execFileSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
 import { dirname, join, resolve } from 'path';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
 import { parseJsonBytes } from './durable-json.js';
+import {
+  processIsAlive as runtimeProcessIsAlive,
+  readProcessStartIdentity,
+  processStartIdentityMatches,
+} from './process-identity.js';
 
 interface ProcessOwnerIdentity {
   pid: number;
@@ -80,32 +84,14 @@ function processIdentityHash(identity: string): string {
   return createHash('sha256').update(identity).digest('hex').slice(0, 16);
 }
 
-function processStartIdentity(pid: number): string | undefined {
-  if (!Number.isSafeInteger(pid) || pid <= 0 || process.platform === 'win32') return undefined;
-  try {
-    const started = execFileSync(
-      'ps',
-      ['-o', 'lstart=', '-p', String(pid)],
-      { encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'] },
-    ).trim();
-    return started || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function processIsAlive(owner: ProcessOwnerIdentity): boolean {
-  try {
-    process.kill(owner.pid, 0);
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
-  const observed = processStartIdentity(owner.pid);
+  if (!runtimeProcessIsAlive(owner.pid)) return false;
+  const matches = processStartIdentityMatches(owner.pid, owner.process_start_identity);
   // If this platform cannot provide a start identity, a live PID remains
   // authoritative rather than risking removal of another writer's lease.
-  return observed === undefined
+  return matches === undefined
     || owner.process_start_identity.startsWith('unverifiable-current-process-')
-    || observed === owner.process_start_identity;
+    || matches;
 }
 
 export function stateMigrationLockDirectory(stateFilePath: string): string {
@@ -237,10 +223,14 @@ function listLiveWriterContenders(directory: string): ListedWriterContender[] {
           } catch (error) {
             return (error as NodeJS.ErrnoException).code !== 'ESRCH';
           }
-          const observed = processStartIdentity(named.pid);
+          const observed = readProcessStartIdentity(named.pid);
           return !named.process_start_identity_verifiable
             || observed === undefined
-            || processIdentityHash(observed) === named.process_start_identity_hash;
+            || processIdentityHash(observed) === named.process_start_identity_hash
+            // A legacy contender without a readable record contains only a
+            // locale-sensitive hash. A live PID must remain authoritative when
+            // that old hash cannot be reconstructed safely.
+            || runtimeProcessIsAlive(named.pid);
         })();
     if (!alive) {
       removeWriterContender(path, directory);
@@ -281,7 +271,7 @@ function acquireStateWriterMutex(stateFilePath: string): () => void {
   const lockDirectory = stateWriterLockDirectory(absoluteStatePath);
   mkdirDurable(lockDirectory);
   const token = randomUUID().replaceAll('-', '');
-  const observedProcessIdentity = processStartIdentity(process.pid);
+  const observedProcessIdentity = readProcessStartIdentity(process.pid);
   const processIdentity = observedProcessIdentity
     ?? `unverifiable-current-process-${token}`;
   const contenderName =
@@ -504,7 +494,7 @@ export function acquireStateMigrationLease(
   const owner: MigrationLeaseOwnerV1 = {
     version: 1,
     pid: process.pid,
-    process_start_identity: processStartIdentity(process.pid)
+    process_start_identity: readProcessStartIdentity(process.pid)
       ?? `unverifiable-current-process-${token}`,
     token,
     created_at: new Date().toISOString(),

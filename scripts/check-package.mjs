@@ -29,6 +29,17 @@ try {
 
 const entries = JSON.parse(packed);
 const files = entries?.[0]?.files?.map(f => f.path) ?? [];
+const required = [
+  'dist/index.js',
+  'dist/dashboard-next/index.html',
+  'scripts/setup.mjs',
+  'scripts/doctor.mjs',
+  'scripts/runtime-profile.mjs',
+  'scripts/process-identity.mjs',
+  'scripts/daemon-lifecycle.mjs',
+  'scripts/ensure-fresh-build.mjs',
+  'engagement-templates/ctf.json',
+];
 const bad = [];
 for (const file of files) {
   const packagePath = `package/${file}`;
@@ -38,6 +49,13 @@ for (const file of files) {
 if (bad.length > 0) {
   console.error('npm package contains forbidden files:');
   for (const file of bad) console.error(`  - ${file}`);
+  process.exit(1);
+}
+
+const missing = required.filter(file => !files.includes(file));
+if (missing.length > 0) {
+  console.error('npm package is missing required runtime files:');
+  for (const file of missing) console.error(`  - ${file}`);
   process.exit(1);
 }
 

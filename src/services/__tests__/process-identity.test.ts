@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { spawn } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import {
+  readProcessStartIdentity,
+  processStartIdentityMatches,
   readProcessOwnershipToken,
   signalVerifiedRuntimeProcess,
   verifyRuntimeProcessIdentity,
@@ -26,6 +28,51 @@ function observer(input: {
 }
 
 describe('runtime process identity', () => {
+  it.skipIf(process.platform === 'win32')('uses the same start identity across caller time zones', () => {
+    const prior = process.env.TZ;
+    try {
+      process.env.TZ = 'America/Los_Angeles';
+      const pacific = readProcessStartIdentity(process.pid);
+      process.env.TZ = 'UTC';
+      const utc = readProcessStartIdentity(process.pid);
+      expect(pacific).toMatch(/^posix-lstart-utc:/);
+      expect(utc).toBe(pacific);
+    } finally {
+      if (prior === undefined) delete process.env.TZ;
+      else process.env.TZ = prior;
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('recognizes the unprefixed live-owner identity written by older versions', () => {
+    const legacy = execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], {
+      encoding: 'utf8',
+    }).trim();
+    expect(legacy).not.toContain('posix-lstart-utc:');
+    expect(processStartIdentityMatches(process.pid, legacy)).toBe(true);
+  });
+
+  it('retains an unverifiable live-owner marker instead of treating it as stale', () => {
+    expect(processStartIdentityMatches(
+      process.pid,
+      'unverifiable-current-process-legacy-owner',
+    )).toBeUndefined();
+  });
+
+  it.skipIf(process.platform === 'win32')('fails closed when a legacy identity changes with the caller time zone', () => {
+    const prior = process.env.TZ;
+    try {
+      process.env.TZ = 'America/Chicago';
+      const legacy = execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], {
+        encoding: 'utf8',
+      }).trim();
+      process.env.TZ = 'UTC';
+      expect(processStartIdentityMatches(process.pid, legacy)).not.toBe(false);
+    } finally {
+      if (prior === undefined) delete process.env.TZ;
+      else process.env.TZ = prior;
+    }
+  });
+
   it('reads an ownership token from the command line when it is not in the environment', async () => {
     const token = '77777777-7777-4777-8777-777777777777';
     const child = spawn(

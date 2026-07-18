@@ -7,7 +7,8 @@ For current development direction, see the [Roadmap](roadmap.md). For a commit-b
 ```bash
 npm run build    # Compile TypeScript + copy dashboard assets
 npm run dev      # Watch mode (tsc --watch)
-npm start        # Run server (stdio)
+npm start        # Run the shared HTTP daemon in the foreground
+npm run start:stdio  # Explicit private/compatibility stdio runtime
 npm run start:daemon # Run the shared Streamable HTTP daemon
 npm test         # Run fast source-level tests
 npm run test:integration:stdio   # Fresh-build stdio integration suite

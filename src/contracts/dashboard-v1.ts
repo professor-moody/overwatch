@@ -958,6 +958,7 @@ export const RuntimeBuildInfoDtoSchema = z.object({
   built_at: z.string().optional(),
   runtime_pid: z.number().int().nonnegative(),
   runtime_started_at: z.string(),
+  runtime_instance_id: z.string().uuid().optional(),
 }).passthrough();
 export type RuntimeBuildInfoDto = z.infer<typeof RuntimeBuildInfoDtoSchema>;
 export const HealthDtoSchema = z.object({

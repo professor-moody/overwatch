@@ -315,7 +315,7 @@ at the same time without becoming competing state owners.
 `subagent_isolation` remains accepted for compatibility with the older Node IPC
 scaffold in `subagent-ipc.ts`; it is not the selector for the current managed
 Claude worker backend. Use daemon mode (`npm run setup`, then `npm run
-start:daemon`) for dashboard deployment.
+daemon:start`) for dashboard deployment.
 
 #### Choosing a Profile
 

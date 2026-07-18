@@ -99,6 +99,13 @@ import { setTelemetry, getTelemetry } from './tools/error-boundary.js';
 import { InProcessTapeController, type TapeStartSource } from './services/in-process-tape.js';
 import { reconcileRuntimeOwnershipOnStartup } from './services/runtime-ownership-recovery.js';
 import {
+  acquireDaemonInstanceLease,
+  type DaemonLifecyclePhase,
+  type DaemonInstanceLease,
+} from './services/daemon-instance-lease.js';
+import { readRuntimeBuildInfo } from './services/runtime-build-info.js';
+import { publishManagedDaemonReady } from './services/managed-daemon-record.js';
+import {
   ApplicationCommandService,
   withApplicationCommandInvocation,
 } from './services/application-command-service.js';
@@ -366,6 +373,7 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
       'isPersistenceWritable' | 'getPersistenceRecoveryStatus'
     > & Partial<Pick<GraphEngine, 'resolveAgentTaskReference'>>,
     private readonly authenticatedActorTaskId: string | null = null,
+    private readonly runtimePhase?: () => DaemonLifecyclePhase,
   ) {
     if (persistenceGate instanceof GraphEngine) {
       this.mutationBoundary = new ExternalMutationCommandService(persistenceGate);
@@ -398,6 +406,20 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
     const descriptor = buildToolDescriptor(name, effectiveConfig);
     this.entries.push(descriptor);
     const wrapped = (async (...args: unknown[]) => {
+      const phase = this.runtimePhase?.();
+      if (phase && phase !== 'ready' && phase !== 'ready_read_only') {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: `Overwatch is ${phase}; MCP commands are not accepted until the runtime is ready.`,
+              code: 'RUNTIME_NOT_READY',
+              phase,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
       const input = args[0];
       const inputRecord = input && typeof input === 'object'
         ? input as Record<string, unknown>
@@ -576,6 +598,13 @@ export type OverwatchApp = {
   httpServer?: Server;
   /** Removes terminal-worker credential/session observers and clears secrets. */
   mcpCredentialCleanup?: () => void;
+  /** Process-lifetime ownership of the selected durable state family. */
+  runtimeLease?: DaemonInstanceLease;
+  /** Transport readiness exists even for embedded runtimes without a disk lease. */
+  runtimeLifecycle: { phase: DaemonLifecyclePhase };
+  runtimeBuild?: ReturnType<typeof readRuntimeBuildInfo>;
+  /** Entrypoint-owned graceful stop hook used only by the authenticated managed lifecycle. */
+  requestManagedShutdown?: () => void;
 };
 
 export type CreateOverwatchAppOptions = {
@@ -587,6 +616,12 @@ export type CreateOverwatchAppOptions = {
   /** Forwarded to TaskExecutionService — lets the eval harness set the headless
    *  claude binary / model (extraArgs) / max-turns / log dir for sub-agents. */
   taskExecution?: TaskExecutionServiceOptions;
+  /** Enabled by the executable entrypoint. Embedded/test apps remain opt-in. */
+  runtimeOwnership?: {
+    transport: 'http' | 'stdio';
+    dashboard_url?: string;
+    mcp_url?: string;
+  };
 };
 
 export function loadConfig(configPath: string = process.env.OVERWATCH_CONFIG || './engagement.json'): EngagementConfig {
@@ -656,7 +691,10 @@ function discoverRecoveryStateFile(
   let names: string[];
   try {
     const directoryNames = readdirSync(directory);
-    const rootNames = directoryNames.filter(name => /^state-.+\.json$/.test(name) && !name.includes('.snap-'));
+    const rootNames = directoryNames.filter(name =>
+      /^state-.+\.json$/.test(name)
+      && !name.includes('.snap-')
+      && !name.endsWith('.runtime-owner.json'));
     const legacySnapshotBases = directoryNames.flatMap(name => {
       const match = /^(state-.+)\.snap-.+\.json$/.exec(name);
       return match ? [`${match[1]}.json`] : [];
@@ -755,7 +793,7 @@ function readDirectoryIfPresent(path: string): string[] {
 function hasAnyStateFamilyBeside(configPath: string): boolean {
   const directory = dirname(configPath);
   if (readDirectoryIfPresent(directory).some(name =>
-    /^state-.+\.json$/.test(name)
+    (/^state-.+\.json$/.test(name) && !name.endsWith('.runtime-owner.json'))
     || /^state-.+\.journal\.jsonl(?:\..+)?$/.test(name)
     || /^state-.+\.json\.(?:rollback-intent|migration-intent)\.json$/.test(name)
     || /^state-.+\.json\.(?:writer-lock|migration-lock)$/.test(name)
@@ -769,7 +807,7 @@ function hasAnyStateArtifactsBeside(configPath: string): boolean {
   const directory = dirname(configPath);
   const configName = basename(configPath);
   if (readDirectoryIfPresent(directory).some(name =>
-      /^state-.+\.json$/.test(name)
+      (/^state-.+\.json$/.test(name) && !name.endsWith('.runtime-owner.json'))
       || /^state-.+\.journal\.jsonl(?:\..+)?$/.test(name)
       || /^state-.+\.json\.(?:rollback-intent|migration-intent)\.json$/.test(name)
       || /^state-.+\.json\.(?:writer-lock|migration-lock)$/.test(name)
@@ -799,6 +837,7 @@ export function registerAllTools(
     engagementManager: EngagementManager;
     getDashboardStatus: DashboardStatusProvider;
     authenticatedActorTaskId?: string | null;
+    runtimePhase?: () => DaemonLifecyclePhase;
   },
 ): ToolDescriptor[] {
   // Initialize shared telemetry (idempotent — first caller wins)
@@ -810,6 +849,7 @@ export function registerAllTools(
     server as McpServer,
     deps.engine,
     deps.authenticatedActorTaskId ?? null,
+    deps.runtimePhase,
   );
   const s = registrar as unknown as McpServer;
 
@@ -949,28 +989,62 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     }
   }
 
+  const defaultStateFilePath = join(dirname(resolvedConfigPath), `state-${config.id}.json`);
+  const stateFilePath = explicitStateFilePath || recoveredStateFilePath || defaultStateFilePath;
+  const runtimeBuild = options.runtimeOwnership ? readRuntimeBuildInfo() : undefined;
+  const runtimeLease = options.runtimeOwnership && runtimeBuild
+    ? acquireDaemonInstanceLease({
+        state_file: stateFilePath,
+        config_file: resolvedConfigPath,
+        engagement_id: config.id,
+        transport: options.runtimeOwnership.transport,
+        build_input_sha256: runtimeBuild.input_sha256,
+        git_sha: runtimeBuild.git_sha,
+        dashboard_url: options.runtimeOwnership.dashboard_url,
+        mcp_url: options.runtimeOwnership.mcp_url,
+      })
+    : undefined;
+  const runtimeLifecycle: { phase: DaemonLifecyclePhase } = { phase: 'recovering' };
+  let partialEngine: GraphEngine | undefined;
+  let partialProcessTracker: ProcessTracker | undefined;
+  let partialProcessTrackerUnsubscribe: (() => void) | undefined;
+  let partialSessionManager: SessionManager | undefined;
+
+  try {
   // Bootstrap is an explicit request to create a new active engagement. Make
   // the file real before enabling managed write-through so a fresh bootstrap
   // cannot immediately classify its own absent file as divergence. This write
-  // is deferred until durable-state discovery proves the path genuinely fresh.
+  // is deferred until durable-state discovery proves the path genuinely fresh
+  // and the process-lifetime state owner is held.
   if (!options.config && bootstrapConfigPending && !existsSync(resolvedConfigPath)) {
-    const bootstrapStatePath = explicitStateFilePath
-      || join(dirname(resolvedConfigPath), `state-${config.id}.json`);
     config = withConfigMetadata(config, config.config_revision ?? 1);
     withStateMigrationWriteGuard(
-      bootstrapStatePath,
+      stateFilePath,
       undefined,
       () => writeJsonAtomicDurable(resolvedConfigPath, config),
     );
   }
-
-  const defaultStateFilePath = join(dirname(resolvedConfigPath), `state-${config.id}.json`);
-  const stateFilePath = explicitStateFilePath || recoveredStateFilePath || defaultStateFilePath;
   // Tests and embedded callers often inject an in-memory config without
   // intending to create ./engagement.json. A loaded file (or an explicitly
   // supplied configPath) opts into revisioned write-through ownership.
   const managedConfigPath = options.config && !options.configPath ? undefined : resolvedConfigPath;
   const engine = new GraphEngine(config, stateFilePath, managedConfigPath);
+  partialEngine = engine;
+  const runtimeStatus = () => {
+    const recovery = engine.getPersistenceRecoveryStatus();
+    const persisted = runtimeLease?.getStatus();
+    const publiclyWritable = runtimeLifecycle.phase === 'ready' && engine.isPersistenceWritable();
+    return persisted
+      ? {
+          ...persisted,
+          phase: runtimeLifecycle.phase,
+          persistence_writable: publiclyWritable,
+          ...(!publiclyWritable && (recovery.reason || recovery.last_persistence_error)
+            ? { recovery_reason: recovery.reason ?? recovery.last_persistence_error }
+            : {}),
+        }
+      : undefined;
+  };
   const applicationCommands = new ApplicationCommandService(engine);
   applicationCommands.recoverInterruptedCommands();
   const authoritativeConfig = engine.getConfig();
@@ -1001,6 +1075,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   const processTracker = savedProcesses.length > 0
     ? ProcessTracker.deserialize(savedProcesses)
     : new ProcessTracker();
+  partialProcessTracker = processTracker;
   processTracker.setMutationGuard(() => engine.assertPersistenceWritable());
 
   // Reconcile tracked process liveness on startup — dead PIDs are marked completed
@@ -1012,11 +1087,13 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     if (!engine.isPersistenceWritable()) return;
     engine.setTrackedProcesses(processTracker.serialize());
   });
+  partialProcessTrackerUnsubscribe = processTrackerUnsubscribe;
   if (processStatusesChangedOnStartup) {
     engine.reconcileTrackedProcessesOnStartup(processTracker.serialize());
   }
 
   const sessionManager = new SessionManager(engine);
+  partialSessionManager = sessionManager;
   sessionManager.registerAdapter(new LocalPtyAdapter());
   sessionManager.registerAdapter(new SshAdapter());
   sessionManager.registerAdapter(new SocketAdapter());
@@ -1050,6 +1127,8 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   if (dashboard) {
     dashboard.attachTape(tape);
     dashboard.attachSkills(skills);
+    dashboard.attachRuntimeLifecycle(() => runtimeLifecycle.phase);
+    if (runtimeLease) dashboard.attachRuntimeStatus(() => runtimeStatus()!);
   }
 
   // File-backed engagement manager for the create_engagement / list_engagements
@@ -1098,6 +1177,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
       running: dashboard?.running ?? false,
       address: dashboard?.address,
     }),
+    runtimePhase: () => runtimeLifecycle.phase,
   });
   if (dashboard) {
     dashboard.attachMcpTools(registeredTools);
@@ -1121,12 +1201,37 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     // the temporary recovery write allowance as an open execution gate.
     queueMicrotask(() => {
       if (!engine.isPersistenceWritable()) return;
+      // Config recovery opens the engine before executor preparation and the
+      // durable READY publication complete. Close every public mutation gate
+      // for that boundary; a transient retry must never expose a half-resumed
+      // writable runtime under the prior ready_read_only phase.
+      runtimeLifecycle.phase = 'binding';
       try {
-        taskExecution.resumeAfterRecovery();
+        taskExecution.resumeAfterRecovery(() => {
+          const leaseStatus = runtimeLease?.getStatus();
+          if (leaseStatus && leaseStatus.phase !== 'ready') {
+            runtimeLease?.update({
+              phase: 'ready',
+              persistence_writable: true,
+              recovery_reason: null,
+            });
+          }
+          publishManagedDaemonReady({
+            runtimeLease,
+            runtimeBuild,
+            phase: 'ready',
+            ...(dashboard?.address ? { dashboard_url: dashboard.address } : {}),
+            ...(leaseStatus?.mcp_url
+              ? { mcp_url: leaseStatus.mcp_url }
+              : {}),
+          });
+          runtimeLifecycle.phase = 'ready';
+        });
       } catch (error) {
         // TaskExecutionService owns an indefinite bounded retry (250ms → 30s).
         // This catch prevents an uncaught recovery microtask from crashing the
-        // daemon while preserving a visible diagnostic for the first failure.
+        // daemon while preserving a closed public binding phase
+        // until executor preparation and READY publication both succeed.
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[recovery] task execution resume failed; retry scheduled: ${message}`);
       }
@@ -1134,6 +1239,17 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   });
   // Let the dashboard's cancel endpoint kill headless sub-agent processes.
   dashboard?.attachTaskExecution(taskExecution);
+  if (runtimeLease) {
+    const recovery = engine.getPersistenceRecoveryStatus();
+    runtimeLease.update({
+      phase: 'binding',
+      persistence_writable: engine.isPersistenceWritable(),
+      recovery_reason: engine.isPersistenceWritable()
+        ? null
+        : recovery.reason ?? recovery.last_persistence_error ?? recovery.outcome,
+    });
+  }
+  runtimeLifecycle.phase = 'binding';
 
   return {
     get config() { return engine.getConfig(); },
@@ -1151,26 +1267,76 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     telemetry: getTelemetry()!,
     tape,
     registeredTools,
+    runtimeLease,
+    runtimeLifecycle,
+    runtimeBuild,
   };
+  } catch (error) {
+    try { partialSessionManager?.beginShutdown(); } catch { /* continue unwinding */ }
+    try { partialProcessTrackerUnsubscribe?.(); } catch { /* continue unwinding */ }
+    try { partialProcessTracker?.setMutationGuard(undefined); } catch { /* continue unwinding */ }
+    try { partialEngine?.setRollbackCoordinator(undefined); } catch { /* continue unwinding */ }
+    try { partialEngine?.dispose(); } catch { /* continue unwinding */ }
+    try { runtimeLease?.release(); } catch (releaseError) {
+      console.error(
+        `[runtime-owner] startup failed and lease cleanup also failed: ${
+          releaseError instanceof Error ? releaseError.message : String(releaseError)
+        }`,
+      );
+    }
+    throw error;
+  }
 }
 
 export async function startStdioApp(app: OverwatchApp): Promise<void> {
-  if (app.dashboard) {
-    const dashboard = await app.dashboard.start();
-    if (!dashboard.started) {
-      throw new Error(`Dashboard ownership could not be acquired: ${dashboard.error || 'unknown error'}`);
+  try {
+    if (app.dashboard) {
+      const dashboard = await app.dashboard.start();
+      if (!dashboard.started) {
+        throw new Error(`Dashboard ownership could not be acquired: ${dashboard.error || 'unknown error'}`);
+      }
     }
+    const baseTransport = new StdioServerTransport();
+    // Wrap unconditionally so the dashboard can flip recording on/off without
+    // restarting the transport.
+    const transport = app.tape.wrapTransport(baseTransport);
+    await app.server.connect(transport);
+    maybeAutoEnableTape(app);
+    app.taskExecution.start({ deferInitialDrain: true });
+    markRuntimeReady(app);
+    app.taskExecution.activateAfterRuntimeReady();
+    console.error('Overwatch MCP server running on stdio');
+  } catch (error) {
+    await shutdownOverwatchApp(app).catch(() => { /* preserve the startup cause */ });
+    throw error;
   }
-  app.taskExecution.start();
+}
 
-  maybeAutoEnableTape(app);
-
-  const baseTransport = new StdioServerTransport();
-  // Wrap unconditionally so the dashboard can flip recording on/off without
-  // restarting the transport.
-  const transport = app.tape.wrapTransport(baseTransport);
-  await app.server.connect(transport);
-  console.error('Overwatch MCP server running on stdio');
+function markRuntimeReady(app: OverwatchApp): void {
+  const writable = app.engine.isPersistenceWritable();
+  const recovery = app.engine.getPersistenceRecoveryStatus();
+  const phase = writable ? 'ready' : 'ready_read_only';
+  app.runtimeLease?.update({
+    phase,
+    persistence_writable: writable,
+    recovery_reason: writable
+      ? null
+      : recovery.reason ?? recovery.last_persistence_error ?? recovery.outcome,
+    ...(app.dashboard?.address ? { dashboard_url: app.dashboard.address } : {}),
+  });
+  app.runtimeLifecycle.phase = phase;
+  // Management publication is the final fallible startup commit. The launcher
+  // requires both API readiness and this exact record, so a publication error
+  // cannot become a false successful start.
+  publishManagedDaemonReady({
+    runtimeLease: app.runtimeLease,
+    runtimeBuild: app.runtimeBuild,
+    phase,
+    ...(app.dashboard?.address ? { dashboard_url: app.dashboard.address } : {}),
+    ...(app.runtimeLease?.getStatus().mcp_url
+      ? { mcp_url: app.runtimeLease.getStatus().mcp_url }
+      : {}),
+  });
 }
 
 /**
@@ -1196,6 +1362,7 @@ export function maybeAutoEnableTape(app: OverwatchApp): void {
 }
 
 export const MAX_HTTP_SESSIONS = 50;
+export const DEFAULT_MCP_SESSION_IDLE_MS = 30 * 60_000;
 
 // Default fallback when no engagement-specific approval timeout is configured.
 // Mirrors DEFAULT_TIMEOUT_MS in pending-action-queue.ts.
@@ -1204,6 +1371,13 @@ export const DEFAULT_APPROVAL_TIMEOUT_MS = 300_000; // 5 minutes
 // default requestTimeout (~5 min) tears down the connection mid-approval and
 // orphans the pending action. We add headroom on top of the approval timeout.
 export const MCP_REQUEST_TIMEOUT_MARGIN_MS = 60_000; // 1 minute
+
+export function connectableHttpHost(host: string): string {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === '0.0.0.0') return '127.0.0.1';
+  if (normalized === '::' || normalized === '[::]') return '[::1]';
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+}
 
 export function resolveMcpTokenPath(): string {
   const configured = process.env.OVERWATCH_MCP_TOKEN_FILE;
@@ -1216,16 +1390,31 @@ export type StartHttpAppOptions = {
   port?: number;
   host?: string;
   maxSessions?: number;
+  sessionIdleMs?: number;
 };
 
 export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptions = {}): Promise<Express> {
   const port = options.port ?? parseInt(process.env.OVERWATCH_HTTP_PORT || '3000', 10);
   const host = options.host ?? process.env.OVERWATCH_HTTP_HOST ?? '127.0.0.1';
-
-  maybeAutoEnableTape(app);
+  try {
 
   const expressApp = createMcpExpressApp({ host });
   const taskCredentials = new McpTaskCredentialAuthority();
+
+  // The listener may bind before the dashboard is ready so startup can reserve
+  // both ports transactionally. Until the lifecycle reaches READY, no MCP
+  // request may observe or mutate the half-started runtime.
+  expressApp.use('/mcp', (_req, res, next) => {
+    const phase = app.runtimeLifecycle.phase;
+    if (phase !== 'ready' && phase !== 'ready_read_only') {
+      res.status(503).json({
+        error: `Overwatch is ${phase}; MCP is not ready yet.`,
+        code: 'RUNTIME_NOT_READY',
+      });
+      return;
+    }
+    next();
+  });
 
   // Guard /mcp with bearer-token auth before any route handlers run. The HTTP
   // daemon exposes the full Overwatch tool surface — including target-facing
@@ -1266,15 +1455,64 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
       ? `[overwatch] /mcp auth required — using the stable token at ${tokenPath} (sha256:${fingerprint}…).`
       : `[overwatch] /mcp auth required — using an in-memory token for this run (sha256:${fingerprint}…).`);
   }
-  expressApp.use('/mcp', createMcpAuthMiddleware({
+  const mcpAuth = createMcpAuthMiddleware({
     host,
     requireToken: requireMcpToken,
     resolveTaskToken: token => taskCredentials.resolve(token),
-  }));
+  });
+  expressApp.use(['/mcp', '/api/runtime', '/api/runtime/shutdown'], mcpAuth);
+  expressApp.get('/api/runtime', (_req, res) => {
+    const persisted = app.runtimeLease?.getStatus();
+    if (!persisted || !app.runtimeBuild) {
+      res.status(503).json({ error: 'Runtime identity is not available', code: 'RUNTIME_IDENTITY_UNAVAILABLE' });
+      return;
+    }
+    const recovery = app.engine.getPersistenceRecoveryStatus();
+    const publiclyWritable = app.runtimeLifecycle.phase === 'ready'
+      && app.engine.isPersistenceWritable();
+    res.json({
+      runtime_build: app.runtimeBuild,
+      runtime_status: {
+        ...persisted,
+        phase: app.runtimeLifecycle.phase,
+        persistence_writable: publiclyWritable,
+        ...(!publiclyWritable && (recovery.reason || recovery.last_persistence_error)
+          ? { recovery_reason: recovery.reason ?? recovery.last_persistence_error }
+          : {}),
+      },
+    });
+  });
+  expressApp.post('/api/runtime/shutdown', (req, res) => {
+    const expectedNonce = process.env.OVERWATCH_DAEMON_MANAGEMENT_NONCE;
+    if (process.env.OVERWATCH_DAEMON_MANAGED !== '1' || !expectedNonce) {
+      res.status(404).json({ error: 'Managed shutdown is not available', code: 'MANAGED_SHUTDOWN_UNAVAILABLE' });
+      return;
+    }
+    const masterToken = process.env.OVERWATCH_MCP_TOKEN;
+    if (!masterToken || req.header('authorization') !== `Bearer ${masterToken}`) {
+      res.status(403).json({
+        error: 'Managed shutdown requires the operator MCP credential',
+        code: 'MANAGED_SHUTDOWN_OPERATOR_CREDENTIAL_REQUIRED',
+      });
+      return;
+    }
+    if (req.header('x-overwatch-management-nonce') !== expectedNonce) {
+      res.status(403).json({ error: 'Managed shutdown identity mismatch', code: 'MANAGED_SHUTDOWN_IDENTITY_MISMATCH' });
+      return;
+    }
+    if (!app.requestManagedShutdown) {
+      res.status(503).json({ error: 'Managed shutdown is not ready', code: 'MANAGED_SHUTDOWN_NOT_READY' });
+      return;
+    }
+    res.status(202).json({ accepted: true });
+    setImmediate(() => app.requestManagedShutdown?.());
+  });
 
   const transports: Record<string, StreamableHTTPServerTransport> = {};
   const transportActors: Record<string, string | null> = {};
+  const transportActivity: Record<string, { last_activity_at: number; active_requests: number }> = {};
   app.httpTransports = transports;
+  let pendingSessionInitializations = 0;
   let credentialCleanupTimer: ReturnType<typeof setTimeout> | null = null;
   let credentialCleanupClosed = false;
   const revokeTerminalWorkerCredentials = (): void => {
@@ -1294,6 +1532,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
       const transport = transports[sessionId];
       delete transports[sessionId];
       delete transportActors[sessionId];
+      delete transportActivity[sessionId];
       void transport?.close().catch(() => { /* terminal worker cleanup is best-effort */ });
     }
   };
@@ -1305,9 +1544,59 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
     credentialCleanupTimer = setTimeout(revokeTerminalWorkerCredentials, 0);
     credentialCleanupTimer.unref?.();
   });
+  const configuredSessionIdleMs = options.sessionIdleMs
+    ?? Number(process.env.OVERWATCH_MCP_SESSION_IDLE_MS || DEFAULT_MCP_SESSION_IDLE_MS);
+  const sessionIdleMs = Number.isFinite(configuredSessionIdleMs) && configuredSessionIdleMs > 0
+    ? (options.sessionIdleMs === undefined
+        ? Math.max(10_000, configuredSessionIdleMs)
+        : configuredSessionIdleMs)
+    : DEFAULT_MCP_SESSION_IDLE_MS;
+  const closeSession = (sessionId: string): void => {
+    const transport = transports[sessionId];
+    delete transports[sessionId];
+    delete transportActors[sessionId];
+    delete transportActivity[sessionId];
+    void transport?.close().catch(() => { /* idle/session cleanup is best-effort */ });
+  };
+  const reapIdleSessions = (): number => {
+    const cutoff = Date.now() - sessionIdleMs;
+    let reaped = 0;
+    for (const [sessionId, activity] of Object.entries(transportActivity)) {
+      if (activity.active_requests > 0 || activity.last_activity_at > cutoff) continue;
+      closeSession(sessionId);
+      reaped++;
+    }
+    return reaped;
+  };
+  const sessionReaper = setInterval(
+    reapIdleSessions,
+    Math.max(
+      options.sessionIdleMs === undefined ? 5_000 : 10,
+      Math.min(30_000, Math.floor(sessionIdleMs / 2)),
+    ),
+  );
+  sessionReaper.unref?.();
+  const trackResponse = (sessionId: string, res: Response): void => {
+    const activity = transportActivity[sessionId];
+    if (!activity) return;
+    activity.last_activity_at = Date.now();
+    activity.active_requests++;
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      const current = transportActivity[sessionId];
+      if (!current) return;
+      current.active_requests = Math.max(0, current.active_requests - 1);
+      current.last_activity_at = Date.now();
+    };
+    res.once('finish', finish);
+    res.once('close', finish);
+  };
   app.mcpCredentialCleanup = () => {
     if (credentialCleanupClosed) return;
     credentialCleanupClosed = true;
+    clearInterval(sessionReaper);
     credentialUpdateUnsubscribe();
     if (credentialCleanupTimer) clearTimeout(credentialCleanupTimer);
     credentialCleanupTimer = null;
@@ -1333,6 +1622,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
         address: app.dashboard?.address,
       }),
       authenticatedActorTaskId,
+      runtimePhase: () => app.runtimeLifecycle.phase,
     });
     return server;
   }
@@ -1347,13 +1637,15 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
         res.status(401).json({ error: 'MCP session credential does not match its authenticated owner' });
         return;
       }
+      trackResponse(sessionId, res);
       await transports[sessionId].handleRequest(req, res, req.body);
       return;
     }
 
     if (!sessionId && isInitializeRequest(req.body)) {
       const maxSessions = options.maxSessions ?? MAX_HTTP_SESSIONS;
-      if (Object.keys(transports).length >= maxSessions) {
+      reapIdleSessions();
+      if (Object.keys(transports).length + pendingSessionInitializations >= maxSessions) {
         res.status(503).json({
           jsonrpc: '2.0',
           error: { code: -32000, message: `Too many active sessions (limit: ${maxSessions}). Close existing sessions before opening new ones.` },
@@ -1361,15 +1653,26 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
         });
         return;
       }
+      pendingSessionInitializations++;
+      let pendingReservationHeld = true;
       const baseTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid: string) => {
+          // Convert the pending reservation into the active transport slot at
+          // the exact initialization boundary. Keeping both until the request
+          // finishes temporarily double-counts a valid session.
+          if (pendingReservationHeld) {
+            pendingSessionInitializations = Math.max(0, pendingSessionInitializations - 1);
+            pendingReservationHeld = false;
+          }
           // Store the *base* transport — handleRequest() is HTTP-specific
           // and lives on StreamableHTTPServerTransport, not on the generic
           // wrapper. The wrapper is only used for the MCP Server connect
           // path so its send/recv hooks can mirror frames into the tape.
           transports[sid] = baseTransport;
           transportActors[sid] = actorTaskId;
+          transportActivity[sid] = { last_activity_at: Date.now(), active_requests: 0 };
+          trackResponse(sid, res);
         },
       });
       baseTransport.onclose = () => {
@@ -1377,12 +1680,20 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
         if (sid) {
           delete transports[sid];
           delete transportActors[sid];
+          delete transportActivity[sid];
         }
       };
       const wrappedTransport = app.tape.wrapTransport(baseTransport);
       const server = createSessionServer(actorTaskId);
-      await server.connect(wrappedTransport);
-      await baseTransport.handleRequest(req, res, req.body);
+      try {
+        await server.connect(wrappedTransport);
+        await baseTransport.handleRequest(req, res, req.body);
+      } finally {
+        if (pendingReservationHeld) {
+          pendingSessionInitializations = Math.max(0, pendingSessionInitializations - 1);
+          pendingReservationHeld = false;
+        }
+      }
       return;
     }
 
@@ -1404,6 +1715,10 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
       res.status(401).json({ error: 'MCP session credential does not match its authenticated owner' });
       return;
     }
+    // A live SSE response is the session's server-to-client connection. Keep
+    // it active until finish/close; an actually abandoned client closes the
+    // response and then becomes eligible for idle reaping.
+    trackResponse(sessionId, res);
     await transports[sessionId].handleRequest(req, res);
   });
 
@@ -1418,17 +1733,9 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
       res.status(401).json({ error: 'MCP session credential does not match its authenticated owner' });
       return;
     }
+    trackResponse(sessionId, res);
     await transports[sessionId].handleRequest(req, res);
   });
-
-  // Start dashboard (on its own port as before)
-  if (app.dashboard) {
-    const dashboard = await app.dashboard.start();
-    if (!dashboard.started) {
-      throw new Error(`Dashboard ownership could not be acquired: ${dashboard.error || 'unknown error'}`);
-    }
-  }
-  app.taskExecution.start();
 
   // Start HTTP server — use http.createServer so server.address() is
   // reliable even with ephemeral port 0.
@@ -1452,40 +1759,112 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
 
   app.httpServer = server;
 
-  return new Promise<Express>((resolve, reject) => {
-    server.on('error', (err: Error) => reject(err));
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
     server.listen(port, host, () => {
-      const addr = server.address();
-      const boundPort = (addr && typeof addr === 'object') ? addr.port : port;
-      // Tell the task-execution service where headless sub-agents should connect.
-      // This enables the headless_mcp backend (only available in daemon mode).
-      app.taskExecution.setHttpEndpoint({
-        url: `http://${host}:${boundPort}/mcp`,
-        tokenForTask: taskId => taskCredentials.issue(taskId),
-      });
-      console.error(`Overwatch MCP HTTP transport at http://${host}:${boundPort}/mcp`);
-      if (app.dashboard?.running) {
-        console.error(`Dashboard at ${app.dashboard.address}`);
+      server.removeListener('error', reject);
+      try {
+        const addr = server.address();
+        const boundPort = (addr && typeof addr === 'object') ? addr.port : port;
+        // Tell the task-execution service where headless sub-agents should connect.
+        // This enables the headless_mcp backend (only available in daemon mode).
+        app.taskExecution.setHttpEndpoint({
+          url: `http://${connectableHttpHost(host)}:${boundPort}/mcp`,
+          tokenForTask: taskId => taskCredentials.issue(taskId),
+        });
+        app.runtimeLease?.update({
+          mcp_url: `http://${connectableHttpHost(host)}:${boundPort}/mcp`,
+        });
+        resolve();
+      } catch (error) {
+        // Listener finalization is part of the startup transaction. Rejecting
+        // here lets the outer startup catch close the now-bound socket and
+        // release runtime ownership instead of surfacing an uncaught callback.
+        reject(error);
       }
-      resolve(expressApp);
     });
   });
+
+  // Bind every public listener before starting tape/workers or reporting READY.
+  // A later failure is unwound by the entrypoint's centralized shutdown path.
+  if (app.dashboard) {
+    const dashboard = await app.dashboard.start();
+    if (!dashboard.started) {
+      throw new Error(`Dashboard ownership could not be acquired: ${dashboard.error || 'unknown error'}`);
+    }
+  }
+  maybeAutoEnableTape(app);
+  app.taskExecution.start({ deferInitialDrain: true });
+  markRuntimeReady(app);
+  app.taskExecution.activateAfterRuntimeReady();
+
+  const addr = server.address();
+  const boundPort = (addr && typeof addr === 'object') ? addr.port : port;
+  console.error(`Overwatch MCP HTTP transport at http://${connectableHttpHost(host)}:${boundPort}/mcp`);
+  if (app.dashboard?.running) console.error(`Dashboard at ${app.dashboard.address}`);
+  return expressApp;
+  } catch (error) {
+    await shutdownOverwatchApp(app).catch(() => { /* preserve the startup cause */ });
+    throw error;
+  }
 }
 
-export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
+async function performShutdownOverwatchApp(app: OverwatchApp): Promise<void> {
   let firstError: unknown;
+  const shutdownDeadline = Date.now() + 18_000;
   const capture = (error: unknown): void => {
     if (firstError === undefined) firstError = error;
   };
   const cleanup = async (operation: () => unknown | Promise<unknown>): Promise<void> => {
-    try { await operation(); } catch (error) { capture(error); }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const remaining = Math.max(1, shutdownDeadline - Date.now());
+      await Promise.race([
+        Promise.resolve().then(operation),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('runtime cleanup exceeded the shared shutdown deadline')),
+            remaining,
+          );
+          timer.unref?.();
+        }),
+      ]);
+    } catch (error) {
+      capture(error);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   };
 
   try {
-    // Stop agent-task execution and AWAIT headless children exiting (SIGTERM→
-    // SIGKILL) so none outlive the daemon. Every later cleanup still runs if a
-    // component reports an error.
-    await cleanup(() => app.taskExecution.shutdown());
+    if (app.runtimeLifecycle) app.runtimeLifecycle.phase = 'stopping';
+    try {
+      app.runtimeLease?.update({
+        phase: 'stopping',
+        persistence_writable: false,
+      });
+    } catch (error) {
+      capture(error);
+    }
+    // Close task scheduling synchronously before awaiting any transport or
+    // dashboard cleanup. Existing child termination remains awaited below.
+    // Partial app fixtures and one-release embedders may not yet expose the
+    // new synchronous quiesce hook. The built-in service always does.
+    try { app.taskExecution.beginShutdown?.(); } catch (error) { capture(error); }
+    await cleanup(() => app.dashboard?.beginRuntimeShutdown?.());
+
+    // Stop accepting HTTP work immediately. The close callback is awaited only
+    // after protocol transports have received cancellation, so keep-alive/SSE
+    // sockets cannot admit work while worker shutdown is in progress.
+    const httpClosePromise = app.httpServer
+      ? new Promise<void>((resolveClose, rejectClose) => {
+          app.httpServer!.close(error => {
+            const code = (error as NodeJS.ErrnoException | undefined)?.code;
+            if (!error || code === 'ERR_SERVER_NOT_RUNNING') resolveClose();
+            else rejectClose(error);
+          });
+        })
+      : undefined;
     await cleanup(() => app.mcpCredentialCleanup?.());
 
     // Close HTTP transport sessions. In-flight requests receive cancellation
@@ -1497,15 +1876,19 @@ export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
         delete app.httpTransports[sid];
       }
     }
-    if (app.httpServer) {
-      await cleanup(() => new Promise<void>((resolve, reject) => {
-        app.httpServer!.close(error => error ? reject(error) : resolve());
-      }));
-    }
+    const forceClose = (app.httpServer as Server & { closeAllConnections?: () => void } | undefined)
+      ?.closeAllConnections;
+    await cleanup(() => forceClose?.call(app.httpServer));
+    if (httpClosePromise) await cleanup(() => httpClosePromise);
+
+    // Stop agent-task execution and AWAIT headless children exiting (SIGTERM→
+    // SIGKILL) so none outlive the daemon. Every later cleanup still runs if a
+    // component reports an error.
+    await cleanup(() => app.taskExecution.shutdown());
     // Stop the idle reaper before the first shutdown descriptor read/write so
     // maintenance cannot race the final durable session projection.
     if (typeof app.sessionManager.beginShutdown === 'function') {
-      app.sessionManager.beginShutdown();
+      await cleanup(() => app.sessionManager.beginShutdown());
     }
     if (app.engine.isPersistenceWritable()) {
       await cleanup(() => {
@@ -1543,9 +1926,29 @@ export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
     try { app.processTracker.setMutationGuard(undefined); } catch (error) { capture(error); }
     try { app.engine.setRollbackCoordinator(undefined); } catch (error) { capture(error); }
     try { app.engine.dispose(); } catch (error) { capture(error); }
+    if (firstError === undefined) {
+      try { app.runtimeLease?.release(); } catch (error) { capture(error); }
+    } else {
+      // A cleanup operation may still own a process/socket callback even after
+      // its deadline. Retain the process-lifetime owner until this PID exits;
+      // the next startup can reclaim it only after proving the process dead.
+      try {
+        app.runtimeLease?.update({ phase: 'failed', persistence_writable: false });
+      } catch { /* the original cleanup failure remains authoritative */ }
+    }
   }
 
   if (firstError !== undefined) throw firstError;
+}
+
+const shutdownPromises = new WeakMap<OverwatchApp, Promise<void>>();
+
+export function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
+  const existing = shutdownPromises.get(app);
+  if (existing) return existing;
+  const pending = performShutdownOverwatchApp(app);
+  shutdownPromises.set(app, pending);
+  return pending;
 }
 
 export function createAppOrExit(options: CreateOverwatchAppOptions = {}): OverwatchApp {

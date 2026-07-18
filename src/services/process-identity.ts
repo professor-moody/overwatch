@@ -34,11 +34,19 @@ export function processIsAlive(pid: number): boolean {
       const state = execFileSync(
         'ps',
         ['-o', 'stat=', '-p', String(pid)],
-        { encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'] },
+        {
+          encoding: 'utf8',
+          timeout: 1_000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+          env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' },
+        },
       ).trim();
       return state.length > 0 && !state.startsWith('Z');
     } catch {
-      return false;
+      // signal 0 already established that this PID may exist. If inspection is
+      // unavailable, retain ownership authority instead of admitting a second
+      // writer on an unverifiable process.
+      return true;
     }
   } catch (error) {
     return (error as NodeJS.ErrnoException).code !== 'ESRCH';
@@ -68,9 +76,44 @@ export function readProcessStartIdentity(pid: number): string | undefined {
     const started = execFileSync(
       'ps',
       ['-o', 'lstart=', '-p', String(pid)],
+      {
+        encoding: 'utf8',
+        timeout: 1_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' },
+      },
+    ).trim();
+    return started ? `posix-lstart-utc:${started}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Compare current stable identities while retaining compatibility with the
+ * unprefixed, locale-sensitive POSIX `ps lstart` values written by older
+ * Overwatch versions. Undefined means the live PID could not be inspected and
+ * callers must retain its authority rather than reclaiming it.
+ */
+export function processStartIdentityMatches(
+  pid: number,
+  expected: string,
+): boolean | undefined {
+  const observed = readProcessStartIdentity(pid);
+  if (observed === undefined) return undefined;
+  if (observed === expected) return true;
+  if (expected.startsWith('unverifiable-current-process-')) return undefined;
+  if (process.platform === 'win32' || expected.startsWith('posix-lstart-utc:')) return false;
+  try {
+    const legacy = execFileSync(
+      'ps',
+      ['-o', 'lstart=', '-p', String(pid)],
       { encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'] },
     ).trim();
-    return started || undefined;
+    // A legacy identity is locale/time-zone sensitive. An exact match proves
+    // ownership, but a mismatch cannot safely prove PID reuse after the caller
+    // environment changes; retain the live process authority fail-closed.
+    return legacy === expected ? true : undefined;
   } catch {
     return undefined;
   }
@@ -177,9 +220,15 @@ export function verifyRuntimeProcessIdentity(
       return { status: 'pid_reused', observed };
     }
   }
-  if (run.process_start_identity !== observed.process_start_identity) {
+  const startIdentityMatches = observed.process_start_identity === run.process_start_identity
+    ? true
+    : observer === defaultProcessIdentityObserver
+      ? processStartIdentityMatches(run.pid, run.process_start_identity)
+      : false;
+  if (startIdentityMatches === false) {
     return { status: 'pid_reused', observed };
   }
+  if (startIdentityMatches === undefined) return { status: 'unverifiable', observed };
   if (run.signal_scope === 'process_group' && process.platform !== 'win32') {
     if (
       !positiveSafeInteger(run.process_group_id)

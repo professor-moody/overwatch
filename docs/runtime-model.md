@@ -17,7 +17,7 @@ separate copies that later need to be merged.
 The supported shapes are deliberately distinct:
 
 - **Shared daemon (recommended and default):** `npm run setup`, then
-  `npm run start:daemon`. The generated `.mcp.json` points terminal Claude at
+  `npm run daemon:start`. The generated `.mcp.json` points terminal Claude at
   the daemon's HTTP MCP endpoint. The dashboard and CLI use the same daemon's
   HTTP/WebSocket API, and dispatched agents connect back to its MCP endpoint.
 - **Stdio (solo fallback):** `npm run setup:stdio` configures one Claude session
@@ -25,7 +25,8 @@ The supported shapes are deliberately distinct:
   process. Do not also start a daemon for the same engagement; that would be a
   second writer rather than another view of the same runtime.
 
-The state writer lease rejects competing processes, but the right operating
+The process-lifetime state-family lease rejects competing processes before
+graph recovery, while writer/migration locks protect each filesystem boundary. The right operating
 model is still one daemon—not one Overwatch process per terminal or browser.
 See [Getting Started](getting-started.md) for the exact commands and `doctor`
 checks.

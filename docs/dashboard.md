@@ -10,12 +10,11 @@ recommended startup is one shared daemon:
 
 ```bash
 npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
-npm run build
+npm run daemon:start
 npm run doctor
-npm run start:daemon
 ```
 
-Leave that command running. Do not start a second Overwatch process for the
+The managed daemon runs in the background. Do not start a second Overwatch process for the
 browser; terminal Claude, the dashboard, the CLI, and managed agents all attach
 to this owner. Re-running setup refreshes client wiring but never replaces an
 existing engagement. If its config is missing beside retained state or other
@@ -26,17 +25,34 @@ recovery instead of creating a competing empty engagement.
 http://localhost:8384
 ```
 
-To disable the dashboard, set the port to `0`:
+To disable the dashboard persistently, update the runtime profile through setup:
 
 ```bash
-OVERWATCH_DASHBOARD_PORT=0
+npm run daemon:stop
+OVERWATCH_DASHBOARD_PORT=0 npm run setup
+npm run daemon:start
 ```
+
+Lifecycle identity remains available on the authenticated MCP HTTP listener, so
+`daemon:status`, `daemon:stop`, and `daemon:restart` continue to work without a
+dashboard listener.
 
 ### Remote token mode
 
 Loopback access needs no dashboard token. When binding the dashboard to a
 non-loopback host, set `OVERWATCH_DASHBOARD_TOKEN` and enter through a URL such
 as `https://ops.example.test/?token=<token>`.
+
+Run setup with the host and token once. Setup stores the token in a private
+`0600` file and the runtime profile retains that file path for later lifecycle
+commands:
+
+```bash
+npm run daemon:stop
+OVERWATCH_DASHBOARD_HOST=0.0.0.0 \
+OVERWATCH_DASHBOARD_TOKEN='<strong-random-token>' npm run setup
+npm run daemon:start
+```
 
 The browser captures the landing token in `sessionStorage` under
 `overwatch.dashboard.token`, removes every `token` query parameter from the

@@ -4,7 +4,14 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
-import { createOverwatchApp, registerAllTools, shutdownOverwatchApp, ToolRegistrar, type OverwatchApp } from '../app.js';
+import {
+  connectableHttpHost,
+  createOverwatchApp,
+  registerAllTools,
+  shutdownOverwatchApp,
+  ToolRegistrar,
+  type OverwatchApp,
+} from '../app.js';
 import { InProcessTapeController } from '../services/in-process-tape.js';
 import { EngagementManager } from '../services/engagement-manager.js';
 import { GraphEngine } from '../services/graph-engine.js';
@@ -25,6 +32,18 @@ const completeAnnotations = (readOnlyHint: boolean) => ({
   destructiveHint: false,
   idempotentHint: false,
   openWorldHint: false,
+});
+
+describe('runtime endpoint formatting', () => {
+  it.each([
+    ['0.0.0.0', '127.0.0.1'],
+    ['::', '[::1]'],
+    ['[::]', '[::1]'],
+    ['::1', '[::1]'],
+    ['localhost', 'localhost'],
+  ])('publishes %s as the connectable host %s', (input, expected) => {
+    expect(connectableHttpHost(input)).toBe(expected);
+  });
 });
 
 function recoveryConfig(): EngagementConfig {
@@ -95,6 +114,47 @@ const incompleteBootstrapArtifactCases: Array<[
 ];
 
 describe('app bootstrap', () => {
+  it('gates every MCP tool until transport startup reaches ready', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    const fakeServer = {
+      registerTool(name: string, _config: unknown, callback: (...args: unknown[]) => Promise<unknown>) {
+        handlers.set(name, callback);
+        return { enable() {}, disable() {}, enabled: true };
+      },
+    };
+    let phase: 'binding' | 'ready' | 'stopping' = 'binding';
+    let calls = 0;
+    const registrar = new ToolRegistrar(
+      fakeServer as never,
+      undefined,
+      null,
+      () => phase,
+    );
+    registrar.registerTool('get_history', {
+      description: 'read probe',
+      annotations: completeAnnotations(true),
+    }, async () => {
+      calls++;
+      return { content: [{ type: 'text' as const, text: 'ready' }] };
+    });
+
+    const binding = await handlers.get('get_history')!({});
+    expect(binding).toMatchObject({ isError: true });
+    expect(JSON.stringify(binding)).toContain('RUNTIME_NOT_READY');
+    expect(calls).toBe(0);
+
+    phase = 'ready';
+    expect(await handlers.get('get_history')!({})).toMatchObject({
+      content: [{ text: 'ready' }],
+    });
+    expect(calls).toBe(1);
+
+    phase = 'stopping';
+    expect(JSON.stringify(await handlers.get('get_history')!({})))
+      .toContain('RUNTIME_NOT_READY');
+    expect(calls).toBe(1);
+  });
+
   it('binds MCP session credentials to canonical task actors without trusting body aliases', async () => {
     const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
     const terminalHandlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
@@ -219,11 +279,42 @@ describe('app bootstrap', () => {
       expect(() => app!.engine.getState()).not.toThrow();
       expect(() => (app!.dashboard as any).buildFrontendState()).not.toThrow();
 
+      // Model a bound read-only runtime whose executor recorded its deferred
+      // start intent. The first recovery preparation fails transiently; the
+      // service-owned retry must finish READY publication before activation.
+      app.taskExecution.start({ deferInitialDrain: true });
+      app.runtimeLifecycle.phase = 'ready_read_only';
+      const runtimePhase = () => app!.runtimeLifecycle.phase;
+      const realTaskStart = app.taskExecution.start.bind(app.taskExecution);
+      let recoveryPreparationAttempts = 0;
+      vi.spyOn(app.taskExecution, 'start').mockImplementation(options => {
+        recoveryPreparationAttempts += 1;
+        if (recoveryPreparationAttempts === 1) {
+          throw new Error('transient recovered executor preparation failure');
+        }
+        realTaskStart(options);
+      });
+      const activateRecoveredExecution = vi.spyOn(
+        app.taskExecution,
+        'activateAfterRuntimeReady',
+      );
+      const recoveryError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
       app.engine.resolveConfigDivergence({
         mode: 'use_state',
         expected_file_hash: recovery.file_hash!,
         expected_state_hash: recovery.state_hash!,
       });
+      await Promise.resolve();
+      expect(runtimePhase()).toBe('binding');
+      expect(activateRecoveredExecution).not.toHaveBeenCalled();
+      for (let attempt = 0; attempt < 20 && runtimePhase() !== 'ready'; attempt++) {
+        await new Promise(resolveWait => setTimeout(resolveWait, 25));
+      }
+      recoveryError.mockRestore();
+      expect(recoveryPreparationAttempts).toBeGreaterThanOrEqual(2);
+      expect(runtimePhase()).toBe('ready');
+      expect(activateRecoveredExecution).toHaveBeenCalledTimes(1);
       expect(existsSync(configPath)).toBe(true);
       expect(app.engine.isPersistenceWritable()).toBe(true);
       const resumedRuntime = await app.sessionManager.create({
@@ -1839,6 +1930,8 @@ describe('app bootstrap', () => {
     const setTrackedProcesses = vi.fn();
     const persist = vi.fn();
     const flushNow = vi.fn();
+    const leaseUpdate = vi.fn();
+    const leaseRelease = vi.fn();
     const httpServerClose = vi.fn((callback: (error?: Error) => void) => callback());
 
     const app = {
@@ -1848,12 +1941,15 @@ describe('app bootstrap', () => {
       sessionManager: { shutdown: sessionShutdown },
       dashboard: { stop: dashboardStop },
       tape: { disable: tapeDisable },
-      processTracker: { serialize: vi.fn(() => []) },
+      runtimeLifecycle: { phase: 'ready' },
+      runtimeLease: { update: leaseUpdate, release: leaseRelease },
+      processTracker: { serialize: vi.fn(() => []), setMutationGuard: vi.fn() },
       engine: {
         isPersistenceWritable: () => false,
         setTrackedProcesses,
         persist,
         flushNow,
+        setRollbackCoordinator: vi.fn(),
         dispose,
       },
     } as unknown as OverwatchApp;
@@ -1869,6 +1965,15 @@ describe('app bootstrap', () => {
     expect(persist).not.toHaveBeenCalled();
     expect(flushNow).not.toHaveBeenCalled();
     expect(dispose).toHaveBeenCalledOnce();
+    expect(leaseUpdate).toHaveBeenNthCalledWith(1, {
+      phase: 'stopping',
+      persistence_writable: false,
+    });
+    expect(leaseUpdate).toHaveBeenLastCalledWith({
+      phase: 'failed',
+      persistence_writable: false,
+    });
+    expect(leaseRelease).not.toHaveBeenCalled();
   });
 
   it('continues runtime cleanup when pre-shutdown session persistence fails', async () => {

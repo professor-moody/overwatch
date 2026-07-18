@@ -28,7 +28,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createHash, type Hash } from 'crypto';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
 import { withStateMigrationWriteGuard } from './state-migration-lock.js';
-import { readProcessStartIdentity } from './process-identity.js';
+import { processStartIdentityMatches, readProcessStartIdentity } from './process-identity.js';
 
 // Defense-in-depth: reject evidence IDs with path traversal components
 function sanitizeEvidenceId(id: string): string {
@@ -216,8 +216,8 @@ function processMayStillBeAlive(pid: number, expectedStartIdentity?: string): bo
     if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
   }
   if (!expectedStartIdentity) return true;
-  const observed = readProcessStartIdentity(pid);
-  return observed === undefined || observed === expectedStartIdentity;
+  const matches = processStartIdentityMatches(pid, expectedStartIdentity);
+  return matches === undefined || matches;
 }
 
 function descriptorRecord(record: EvidenceRecord): EvidenceRecord {

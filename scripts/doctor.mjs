@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, parse, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspectBuildFreshness } from './build-fingerprint.mjs';
 import {
@@ -11,10 +12,23 @@ import {
   summarizeArtifacts,
   validateEngagementConfigShape,
 } from './engagement-artifacts.mjs';
+import { runtimeEnvironment, runtimeProfilePath } from './runtime-profile.mjs';
+import {
+  processIsAlive,
+  processStartIdentityMatches,
+} from './process-identity.mjs';
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(process.env.OVERWATCH_DOCTOR_ROOT || sourceRoot);
 const checks = [];
+let runtimeEnv = { ...process.env };
+let runtimeProfile = null;
+let runtimeProfileError;
+try {
+  ({ environment: runtimeEnv, profile: runtimeProfile } = runtimeEnvironment(root));
+} catch (error) {
+  runtimeProfileError = error instanceof Error ? error.message : String(error);
+}
 
 function add(status, label, detail, fix) {
   checks.push({ status, label, detail, fix });
@@ -26,6 +40,30 @@ function readJson(path) {
 
 function statusRank(status) {
   return status === 'fail' ? 2 : status === 'warn' ? 1 : 0;
+}
+
+if (runtimeProfileError) {
+  add(
+    'fail',
+    'Runtime profile',
+    runtimeProfileError,
+    'Stop the verified owner if one is live, remove conflicting transient OVERWATCH_* overrides, then run npm run setup. Engagement artifacts are preserved.',
+  );
+}
+
+function pathIdentity(path) {
+  let candidate = resolve(path);
+  const suffix = [];
+  while (!existsSync(candidate)) {
+    const parent = dirname(candidate);
+    if (parent === candidate || candidate === parse(candidate).root) break;
+    suffix.unshift(basename(candidate));
+    candidate = parent;
+  }
+  const canonical = suffix.length > 0
+    ? join(existsSync(candidate) ? realpathSync.native(candidate) : candidate, ...suffix)
+    : existsSync(candidate) ? realpathSync.native(candidate) : candidate;
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 async function isPortFree(port, host) {
@@ -41,7 +79,8 @@ async function isPortFree(port, host) {
 
 function dashboardProbeHost(host) {
   const normalized = host.trim().toLowerCase();
-  if (normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]') return '127.0.0.1';
+  if (normalized === '0.0.0.0') return '127.0.0.1';
+  if (normalized === '::' || normalized === '[::]') return '[::1]';
   return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
 }
 
@@ -95,6 +134,27 @@ async function probeMcp(config) {
       detail: `${config.url} is not reachable`,
       error,
     };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeMcpRuntime(config) {
+  if (!config || typeof config.url !== 'string') return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    const base = new URL(config.url);
+    base.pathname = '/api/runtime';
+    base.search = '';
+    const response = await fetch(base, {
+      headers: config.headers || {},
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
   } finally {
     clearTimeout(timer);
   }
@@ -179,7 +239,7 @@ if (buildFreshness.fresh) {
   }
 }
 
-const mcpPath = join(root, '.mcp.json');
+const mcpPath = runtimeProfile?.mcp_config_path || join(root, '.mcp.json');
 const claudeSettingsPath = join(root, '.claude', 'settings.json');
 let mcpMode = 'missing';
 let overwatchMcpConfig = null;
@@ -209,23 +269,99 @@ if (existsSync(mcpPath)) {
 if (existsSync(claudeSettingsPath)) add('pass', 'Claude hooks config', claudeSettingsPath);
 else add('warn', 'Claude hooks config', '.claude/settings.json is missing', 'Run: npm run setup');
 
-for (const hook of [
+const managedHookPaths = [
   '.claude/hooks/overwatch-user-context.mjs',
   '.claude/hooks/overwatch-bash-guard.mjs',
+  '.claude/hooks/overwatch-task-guard.mjs',
   '.claude/hooks/overwatch-post-bash.mjs',
+  '.claude/hooks/overwatch-write-fetch-nudge.mjs',
+  '.claude/hooks/overwatch-session-bootstrap.mjs',
   '.claude/hooks/overwatch-stop-check.mjs',
-]) {
+  '.claude/hooks/overwatch-hook-lib.mjs',
+];
+for (const hook of managedHookPaths) {
   const path = join(root, hook);
   if (existsSync(path)) add('pass', `Hook ${hook.split('/').pop()}`, path);
   else add('warn', `Hook ${hook.split('/').pop()}`, `${hook} is missing`, 'Restore hooks from the repository or reinstall.');
 }
+if (existsSync(claudeSettingsPath)) {
+  try {
+    const settingsText = JSON.stringify(readJson(claudeSettingsPath));
+    const requiredCommands = managedHookPaths
+      .filter(path => !path.endsWith('overwatch-hook-lib.mjs'))
+      .map(path => path.split('/').pop());
+    const missing = requiredCommands.filter(name => !settingsText.includes(name));
+    if (missing.length === 0) {
+      add('pass', 'Claude hook wiring', 'all managed hook commands are configured');
+    } else {
+      add(
+        'fail',
+        'Claude hook wiring',
+        `settings are missing ${missing.join(', ')}`,
+        'Run: npm run setup  (merges managed hooks and preserves unrelated settings).',
+      );
+    }
+  } catch {
+    add('fail', 'Claude hook wiring', '.claude/settings.json is not valid JSON', 'Repair it, then run: npm run setup');
+  }
+}
 
-let configPath = process.env.OVERWATCH_CONFIG || join(root, 'engagement.json');
+if (runtimeProfile) {
+  add(
+    'pass',
+    'Runtime profile',
+    `${runtimeProfilePath(root)} → ${runtimeProfile.config_path}${
+      runtimeProfile.state_file_path ? ` / ${runtimeProfile.state_file_path}` : ''
+    }`,
+  );
+  const expectedMcpMode = runtimeProfile.mode === 'daemon' ? 'http' : 'stdio';
+  let convergenceProblem;
+  if (mcpMode !== expectedMcpMode) {
+    convergenceProblem = `${runtimeProfile.mode} profile conflicts with ${mcpMode} .mcp.json wiring`;
+  } else if (runtimeProfile.mode === 'daemon') {
+    const expectedHost = dashboardProbeHost(runtimeProfile.http_host);
+    const expectedUrl = `http://${expectedHost}:${runtimeProfile.http_port}/mcp`;
+    let token;
+    try { token = readFileSync(runtimeProfile.mcp_token_file, 'utf8').trim(); } catch { token = ''; }
+    let configuredUrl;
+    try { configuredUrl = new URL(overwatchMcpConfig?.url).toString(); } catch { configuredUrl = ''; }
+    if (!token) convergenceProblem = `MCP token file ${runtimeProfile.mcp_token_file} is missing or empty`;
+    else if (configuredUrl !== new URL(expectedUrl).toString()) {
+      convergenceProblem = `MCP URL ${overwatchMcpConfig?.url || 'missing'} differs from profile endpoint ${expectedUrl}`;
+    } else if (overwatchMcpConfig?.headers?.Authorization !== `Bearer ${token}`) {
+      convergenceProblem = 'MCP Bearer authority differs from the runtime profile token file';
+    }
+  } else {
+    const args = overwatchMcpConfig?.args;
+    if (
+      overwatchMcpConfig?.command !== 'node'
+      || !Array.isArray(args)
+      || args.at(-1) !== 'run-stdio'
+      || overwatchMcpConfig?.env?.OVERWATCH_RUNTIME_PROFILE !== runtimeProfilePath(root)
+    ) {
+      convergenceProblem = 'stdio MCP wiring bypasses the lifecycle runner or selects another runtime profile';
+    }
+  }
+  if (!convergenceProblem) {
+    add('pass', 'Runtime/MCP convergence', `${runtimeProfile.mode} profile, endpoint, and credentials match .mcp.json`);
+  } else {
+    add(
+      'fail',
+      'Runtime/MCP convergence',
+      convergenceProblem,
+      'Run: npm run setup  (publishes one matching profile and MCP entry).',
+    );
+  }
+} else {
+  add('warn', 'Runtime profile', 'not configured', 'Run: npm run setup');
+}
+
+let configPath = runtimeEnv.OVERWATCH_CONFIG || join(root, 'engagement.json');
 let config = null;
 let artifactInventory;
 let configProblem;
 try {
-  if (!process.env.OVERWATCH_CONFIG && existsSync(mcpPath)) {
+  if (!runtimeEnv.OVERWATCH_CONFIG && existsSync(mcpPath)) {
     const mcp = readJson(mcpPath);
     const configured = mcp?.mcpServers?.overwatch?.env?.OVERWATCH_CONFIG;
     if (configured) configPath = configured;
@@ -252,7 +388,7 @@ if (!configProblem) {
 try {
   artifactInventory = inventoryEngagementArtifacts(root, {
     configPath,
-    explicitStateFile: process.env.OVERWATCH_STATE_FILE,
+    explicitStateFile: runtimeEnv.OVERWATCH_STATE_FILE,
   });
 } catch (inventoryError) {
   add(
@@ -348,13 +484,49 @@ if (artifactInventory?.artifacts.length > 0) {
   );
 }
 
-const dashboardPort = Number(process.env.OVERWATCH_DASHBOARD_PORT || '8384');
-const dashboardHost = process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
+const dashboardPort = Number(runtimeEnv.OVERWATCH_DASHBOARD_PORT || '8384');
+const dashboardHost = runtimeEnv.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
+let liveStateOwner;
+if (runtimeProfile?.state_file_path) {
+  const ownerPath = `${resolve(runtimeProfile.state_file_path)}.runtime-owner.json`;
+  if (existsSync(ownerPath)) {
+    try {
+      const owner = readJson(ownerPath);
+      if (processIsAlive(owner.pid)) {
+        const matches = typeof owner.process_start_identity === 'string'
+          ? processStartIdentityMatches(owner.pid, owner.process_start_identity)
+          : undefined;
+        if (matches === undefined || typeof owner.process_start_identity !== 'string') {
+          add(
+            'fail',
+            'Runtime state owner',
+            `live PID ${owner.pid} has an unverifiable owner record at ${ownerPath}`,
+            'Do not start or signal another runtime; inspect the owner process and record manually.',
+          );
+        } else if (matches) {
+          liveStateOwner = owner;
+        } else {
+          add('warn', 'Runtime state owner', `${ownerPath} refers to a reused/dead process identity`);
+        }
+      }
+    } catch (error) {
+      add(
+        'fail',
+        'Runtime state owner',
+        `${ownerPath} is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+        'Do not start another writer until the owner record is understood.',
+      );
+    }
+  }
+}
 if (Number.isFinite(dashboardPort)) {
-  const free = await isPortFree(dashboardPort, dashboardHost);
-  const dashboardToken = process.env.OVERWATCH_DASHBOARD_TOKEN;
+  const dashboardDisabled = dashboardPort === 0;
+  const free = dashboardDisabled ? true : await isPortFree(dashboardPort, dashboardHost);
+  const dashboardToken = runtimeEnv.OVERWATCH_DASHBOARD_TOKEN;
   const authorization = dashboardToken ? `Bearer ${dashboardToken}` : undefined;
-  const runningDashboard = !free ? await probeDashboard(dashboardPort, authorization, dashboardHost) : null;
+  const runningDashboard = dashboardDisabled
+    ? await probeMcpRuntime(overwatchMcpConfig)
+    : !free ? await probeDashboard(dashboardPort, authorization, dashboardHost) : null;
   const mcpProbe = mcpMode === 'http'
     ? await probeMcp(overwatchMcpConfig)
     : undefined;
@@ -374,7 +546,7 @@ if (Number.isFinite(dashboardPort)) {
           'fail',
           'Running daemon build',
           `${String(daemonBuild.git_sha || daemonHash).slice(0, 12)} (PID ${daemonBuild.runtime_pid || 'unknown'}) does not match local ${String(buildFreshness.info?.git_sha || localHash).slice(0, 12)}`,
-          'Stop the old daemon, run npm run start:daemon, then reload the dashboard tab.',
+          'Run npm run upgrade (or npm run daemon:restart after an intentional local rebuild), then reload the dashboard tab.',
         );
       }
     } else if (!daemonBuild) {
@@ -382,7 +554,7 @@ if (Number.isFinite(dashboardPort)) {
         'fail',
         'Running daemon build',
         'the running dashboard does not expose build identity and is older than this checkout',
-        'Stop the old daemon, run npm run start:daemon, then reload the dashboard tab.',
+        'Stop the old owner from its original checkout, then run npm run daemon:start and reload the dashboard tab.',
       );
     } else {
       add(
@@ -392,8 +564,58 @@ if (Number.isFinite(dashboardPort)) {
         'Run npm run build, then rerun npm run doctor.',
       );
     }
+    const runtimeStatus = runningDashboard.runtime_status;
+    if (liveStateOwner) {
+      if (runningDashboard.runtime_build?.runtime_pid === liveStateOwner.pid) {
+        add(
+          'pass',
+          'Runtime state owner',
+          `PID ${liveStateOwner.pid} owns the selected state and matches the runtime API`,
+        );
+      } else {
+        add(
+          'fail',
+          'Runtime state owner',
+          `PID ${liveStateOwner.pid} owns the selected state but the runtime API reports PID ${runningDashboard.runtime_build?.runtime_pid || 'unknown'}`,
+          'Do not start or stop another runtime until the ownership conflict is resolved.',
+        );
+      }
+    }
+    if (runtimeProfile?.state_file_path && runtimeStatus) {
+      const configMatches = runtimeStatus.config_identity_sha256 === pathIdentity(runtimeProfile.config_path);
+      const stateMatches = runtimeStatus.state_identity_sha256 === pathIdentity(runtimeProfile.state_file_path);
+      if (configMatches && stateMatches) {
+        add(
+          'pass',
+          'Running daemon engagement',
+          `${runtimeStatus.engagement_id || 'unknown'} owns the configured config/state family (${runtimeStatus.phase || 'unknown phase'})`,
+        );
+      } else {
+        add(
+          'fail',
+          'Running daemon engagement',
+          'the listening daemon build is identifiable but it owns a different config or durable state family',
+          'Use the owning checkout/profile to stop it; do not start another writer against this state.',
+        );
+      }
+    } else if (runtimeProfile?.state_file_path) {
+      add(
+        'fail',
+        'Running daemon engagement',
+        'the daemon does not expose state-family lifecycle identity and is older than this checkout',
+        'Stop it from its original terminal before starting the current build.',
+      );
+    }
   }
-  if (!free && !runningDashboard) {
+  if (liveStateOwner && !runningDashboard) {
+    add(
+      'fail',
+      'Runtime state owner',
+      `Overwatch PID ${liveStateOwner.pid} owns the selected state (${liveStateOwner.transport || 'unknown transport'}, ${liveStateOwner.phase || 'unknown phase'}) but no matching runtime API is reachable`,
+      'The runtime is not stopped. Inspect its terminal/log and stop that exact owner before starting another writer.',
+    );
+  }
+  if (!dashboardDisabled && !free && !runningDashboard) {
     add(
       'fail',
       'Dashboard port ownership',
@@ -415,7 +637,7 @@ if (Number.isFinite(dashboardPort)) {
       'warn',
       'MCP daemon endpoint',
       mcpProbe.detail,
-      'Run: npm run start:daemon',
+      'Run: npm run daemon:start',
     );
   } else if (mcpProbe?.status === 'invalid') {
     add('fail', 'MCP daemon endpoint', mcpProbe.detail, 'Run: npm run setup');
@@ -442,8 +664,10 @@ if (Number.isFinite(dashboardPort)) {
     add(
       'warn',
       'Shared daemon',
-      `not running on 127.0.0.1:${dashboardPort}`,
-      'Run: npm run start:daemon',
+      dashboardDisabled
+        ? 'not running at the configured MCP runtime endpoint (dashboard disabled)'
+        : `not running on ${dashboardHost}:${dashboardPort}`,
+      'Run: npm run daemon:start',
     );
   } else if (free) {
     add('pass', 'Dashboard port', `127.0.0.1:${dashboardPort} is free`);

@@ -48,6 +48,10 @@ Seeded credentials:
 
 ## 2. Start the MCP server pointed at the smoke engagement
 
+This is an isolated developer fixture, not the supported operator lifecycle.
+Stop any managed daemon first; the raw entrypoint below is intentionally
+unmanaged so the fixture can select temporary config/state directly.
+
 ```bash
 OVERWATCH_CONFIG=smoke-engagement/config.json \
   OVERWATCH_STATE_FILE=smoke-engagement/state.json \

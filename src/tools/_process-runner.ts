@@ -544,7 +544,13 @@ const ENV_DENYLIST = new Set<string>([
   // tool surface), the dashboard token, or the Ed25519 checkpoint signing key that
   // backs the activity-chain tamper-evidence.
   'OVERWATCH_MCP_TOKEN',
+  'OVERWATCH_MCP_TOKEN_FILE',
   'OVERWATCH_DASHBOARD_TOKEN',
+  'OVERWATCH_DAEMON_MANAGED',
+  'OVERWATCH_DAEMON_RECORD',
+  'OVERWATCH_DAEMON_LOG',
+  'OVERWATCH_DAEMON_MANAGEMENT_NONCE',
+  'OVERWATCH_RUNTIME_PROFILE',
   'OVERWATCH_CHECKPOINT_SIGNING_KEY',
 ]);
 

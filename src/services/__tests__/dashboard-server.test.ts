@@ -150,6 +150,39 @@ describe('DashboardServer', () => {
     expect(JSON.parse(res.body).added.cidrs).toEqual(['10.20.0.0/16']);
   });
 
+  it('closes the durable mutation gate and drains requests admitted before shutdown', async () => {
+    const before = structuredClone(engine.getConfig().scope);
+    const req = new PassThrough() as any;
+    req.url = '/api/config/scope';
+    req.method = 'PATCH';
+    req.headers = { host: 'localhost', 'content-type': 'application/json' };
+    const res = {
+      statusCode: 0,
+      body: '',
+      setHeader() {},
+      writeHead(statusCode: number) { this.statusCode = statusCode; },
+      end(body?: string) { this.body = body || ''; },
+    };
+
+    (dashboard as any).handleHttpRoute(req, res);
+    let shutdownSettled = false;
+    const shutdown = dashboard.beginRuntimeShutdown().then(() => { shutdownSettled = true; });
+    await Promise.resolve();
+    expect(shutdownSettled).toBe(false);
+
+    req.end(JSON.stringify({
+      cidrs: ['10.10.10.0/30', '10.20.0.0/16'],
+      domains: ['test.local'],
+      exclusions: [],
+    }));
+    await shutdown;
+
+    expect(shutdownSettled).toBe(true);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).code).toBe('RUNTIME_STOPPING');
+    expect(engine.getConfig().scope).toEqual(before);
+  });
+
   it('attributes dashboard tape toggles to dashboard', async () => {
     const tapeDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-tape-'));
     const tape = new InProcessTapeController(engine, { defaultDir: tapeDir });
@@ -198,16 +231,18 @@ describe('DashboardServer', () => {
     req.headers = {};
     req.url = '/api/tape/toggle';
     req.method = 'POST';
+    let responseDone!: () => void;
+    const response = new Promise<void>(resolve => { responseDone = resolve; });
     const res = {
       statusCode: 0,
       body: '',
       writeHead(statusCode: number) { this.statusCode = statusCode; },
-      end(body?: string) { this.body = body || ''; },
+      end(body?: string) { this.body = body || ''; responseDone(); },
       setHeader() {},
     };
     (dashboard as any).handleHttpRoute(req, res);
     req.end(JSON.stringify({ action: 'disable' }));
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await response;
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ enabled: false, frame_count: 0 });
@@ -227,17 +262,19 @@ describe('DashboardServer', () => {
     req.url = '/api/tape/toggle';
     req.method = 'POST';
     const headers: Record<string, string | string[]> = {};
+    let responseDone!: () => void;
+    const response = new Promise<void>(resolve => { responseDone = resolve; });
     const res = {
       statusCode: 0,
       body: '',
       setHeader(name: string, value: string | string[]) { headers[name] = value; },
       removeHeader(name: string) { delete headers[name]; },
       writeHead(statusCode: number) { this.statusCode = statusCode; },
-      end(body?: string) { this.body = body || ''; },
+      end(body?: string) { this.body = body || ''; responseDone(); },
     };
     (dashboard as any).handleHttpRoute(req, res);
     req.end('{not-json');
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await response;
 
     expect(res.statusCode).toBe(400);
     expect(tape.getStatus().enabled).toBe(true);
@@ -402,6 +439,7 @@ describe('DashboardServer', () => {
         input_sha256: 'a'.repeat(64),
         runtime_pid: process.pid,
         runtime_started_at: '2026-07-17T00:00:00.000Z',
+        runtime_instance_id: '11111111-1111-4111-8111-111111111111',
       },
       debounceMs: 0,
     });

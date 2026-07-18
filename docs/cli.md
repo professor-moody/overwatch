@@ -8,9 +8,9 @@ exception: it inspects persisted files without requiring a running server.
 It is **not** part of `claude`/MCP. It's a separate binary you run yourself:
 
 ```
-pane 1:  $ npm run start:daemon  # the one Overwatch runtime owner
-pane 2:  $ claude                # the model drives it via HTTP MCP
-pane 3:  $ overwatch status      # you watch / approve / deploy directly
+terminal: $ npm run daemon:start # starts one verified owner in the background
+terminal: $ claude               # the model drives it via HTTP MCP
+terminal: $ overwatch status     # you watch / approve / deploy directly
 ```
 
 All three panes are adapters to the **same running Overwatch daemon and durable
@@ -27,7 +27,7 @@ session.
 The engagement must be running (it serves the API on `:8384`):
 
 ```bash
-npm run start:daemon     # or: npm run demo:daemon  (demo engagement)
+npm run daemon:start     # or: npm run demo:daemon  (demo engagement)
 ```
 
 Then, from the repo:

@@ -88,6 +88,48 @@ describe('TaskExecutionService', () => {
     expect(engine.getTask('scripted-1')?.status).toBe('completed');
   });
 
+  it('keeps scripted work and the watchdog dormant until runtime readiness is published', async () => {
+    const watchdogStart = vi.spyOn((svc as any).watchdog, 'start');
+    svc.start({ deferInitialDrain: true });
+    engine.registerAgent(runningTask({
+      id: 'scripted-deferred',
+      backend: 'scripted',
+      frontier_item_id: 'frontier-nonexistent',
+    }));
+
+    await settle();
+    expect(engine.getTask('scripted-deferred')?.status).toBe('running');
+    expect(watchdogStart).not.toHaveBeenCalled();
+
+    svc.activateAfterRuntimeReady();
+    await Promise.resolve();
+    await settle();
+    expect(watchdogStart).toHaveBeenCalledTimes(1);
+    expect(engine.getTask('scripted-deferred')?.status).toBe('completed');
+  });
+
+  it('awaits in-flight scripted execution during daemon shutdown', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn((svc as any).scripted, 'runTask').mockReturnValue(blocked);
+    svc.start();
+    engine.registerAgent(runningTask({
+      id: 'scripted-shutdown',
+      backend: 'scripted',
+      frontier_item_id: 'frontier-nonexistent',
+    }));
+    await Promise.resolve();
+
+    let settled = false;
+    const shutdown = svc.shutdown().then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    release();
+    await shutdown;
+    expect(settled).toBe(true);
+  });
+
   it('does not start scripted, headless, or orchestrator work while persistence is read-only', async () => {
     engine.registerAgent(runningTask({
       id: 'degraded-scripted',

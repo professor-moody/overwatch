@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -12,12 +12,16 @@ export interface RuntimeBuildInfo {
   built_at?: string;
   runtime_pid: number;
   runtime_started_at: string;
+  runtime_instance_id: string;
 }
 
 const runtimeStartedAt = new Date().toISOString();
+const runtimeInstanceId = randomUUID();
 const FALLBACK_INPUT_PATHS = [
   'src',
   'scripts',
+  'skills',
+  'engagement-templates',
   'package.json',
   'package-lock.json',
   'tsconfig.json',
@@ -89,6 +93,7 @@ export function readRuntimeBuildInfo(options: ReadRuntimeBuildInfoOptions = {}):
         ...(typeof parsed.built_at === 'string' ? { built_at: parsed.built_at } : {}),
         runtime_pid: process.pid,
         runtime_started_at: runtimeStartedAt,
+        runtime_instance_id: runtimeInstanceId,
       };
     } catch {
       // Try the next package/source-layout candidate.
@@ -105,6 +110,7 @@ export function readRuntimeBuildInfo(options: ReadRuntimeBuildInfoOptions = {}):
     input_file_count: fingerprint.fileCount,
     runtime_pid: process.pid,
     runtime_started_at: runtimeStartedAt,
+    runtime_instance_id: runtimeInstanceId,
   };
 }
 
@@ -133,7 +139,8 @@ export async function isDashboardPortOccupied(
 
 function probeAddress(host: string): string {
   const normalized = host.trim().toLowerCase();
-  if (normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]') return '127.0.0.1';
+  if (normalized === '0.0.0.0') return '127.0.0.1';
+  if (normalized === '::' || normalized === '[::]') return '[::1]';
   return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
 }
 
@@ -176,6 +183,9 @@ export async function probeRunningDashboard(
         runtime_pid: Number(record.runtime_pid) || 0,
         runtime_started_at: typeof record.runtime_started_at === 'string'
           ? record.runtime_started_at
+          : '',
+        runtime_instance_id: typeof record.runtime_instance_id === 'string'
+          ? record.runtime_instance_id
           : '',
       },
     };
