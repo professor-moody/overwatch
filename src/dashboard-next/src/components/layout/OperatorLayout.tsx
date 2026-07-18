@@ -77,11 +77,10 @@ export function OperatorLayout() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Temporary compatibility shim for old #panel=... deep links.
   useEffect(() => {
-    const target = parseHash(location.hash);
-    if (target) {
-      navigate(buildPanelPath(target), { replace: true });
+    const legacyTarget = parseHash(location.hash);
+    if (legacyTarget) {
+      navigate(buildPanelPath(legacyTarget), { replace: true });
       return;
     }
     if (!isPanelId(panelId)) {

@@ -52,31 +52,17 @@ export function buildPanelPath(target: NavigationTarget): string {
   return `/${target.panel}${q ? `?${q}` : ''}`;
 }
 
-/**
- * Parses the current URL hash into a NavigationTarget.
- * Format: #panel=X&item=Y&subview=Z
- */
+/** One-release redirect reader for pre-route dashboard bookmarks. */
 export function parseHash(hash: string): NavigationTarget | null {
   if (!hash || hash === '#') return null;
   const params = new URLSearchParams(hash.replace(/^#/, ''));
-  const panelParam = params.get('panel') || undefined;
-  if (!isPanelId(panelParam)) return null;
+  const panel = params.get('panel') || undefined;
+  if (!isPanelId(panel)) return null;
   return {
-    panel: panelParam,
+    panel,
     item: params.get('item') || undefined,
     subview: params.get('subview') || undefined,
   };
-}
-
-/**
- * Builds a URL hash string from a NavigationTarget.
- */
-export function buildHash(target: NavigationTarget): string {
-  const params = new URLSearchParams();
-  params.set('panel', target.panel);
-  if (target.item) params.set('item', target.item);
-  if (target.subview) params.set('subview', target.subview);
-  return `#${params.toString()}`;
 }
 
 export function useNavigation() {

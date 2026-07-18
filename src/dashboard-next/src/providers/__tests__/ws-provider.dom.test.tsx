@@ -167,8 +167,14 @@ describe('WsProvider effect ownership', () => {
       socket.onmessage?.({
         data: JSON.stringify({
           type: 'state_refresh',
+          contract_version: 2,
           timestamp: '2026-07-17T00:00:00.000Z',
-          data: { state: dashboardState(), history_count: 77 },
+          data: {
+            patch: {},
+            base_revision: 0,
+            state_revision: 1,
+            history_count: 77,
+          },
         }),
       } as MessageEvent);
     });
@@ -178,6 +184,7 @@ describe('WsProvider effect ownership', () => {
       socket.onmessage?.({
         data: JSON.stringify({
           type: 'full_state',
+          contract_version: 2,
           timestamp: '2026-07-17T00:00:01.000Z',
           data: fullState(1),
         }),
@@ -222,6 +229,7 @@ describe('WsProvider effect ownership', () => {
       socket.onmessage?.({
         data: JSON.stringify({
           type: 'full_state',
+          contract_version: 2,
           timestamp: '2026-07-17T00:00:01.000Z',
           data: legacy,
         }),
@@ -231,6 +239,55 @@ describe('WsProvider effect ownership', () => {
     await waitFor(() => expect(screen.getByText(/legacy\/unknown/)).toBeInTheDocument());
     expect(screen.getByText('provider disconnected')).toBeInTheDocument();
     expect(socket.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects WebSocket v1 state envelopes on the bundled v2 client', async () => {
+    vi.mocked(api.getState).mockImplementation(() => new Promise(() => {}));
+    const socket = fakeSocket();
+    vi.mocked(createDashboardWebSocket).mockReturnValue(socket as unknown as WebSocket);
+
+    render(
+      <WsProvider>
+        <Probe />
+      </WsProvider>,
+    );
+    await waitFor(() => expect(createDashboardWebSocket).toHaveBeenCalledWith('/ws?contract=2'));
+
+    act(() => {
+      socket.readyState = 1;
+      socket.onopen?.(new Event('open'));
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'full_state',
+          timestamp: '2026-07-18T00:00:01.000Z',
+          data: fullState(1),
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => expect(socket.close).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/requires main WebSocket contract v2/)).toBeInTheDocument();
+    expect(screen.getByText('provider disconnected')).toBeInTheDocument();
+    expect(useEngagementStore.getState().initialized).toBe(false);
+    expect(createDashboardWebSocket).toHaveBeenCalledTimes(1);
+  });
+
+  it('hydrates from an HTTP compatibility-v1 snapshot without a state revision', async () => {
+    const { state_revision: _revision, ...snapshot } = fullState(41);
+    vi.mocked(api.getState).mockResolvedValue(snapshot);
+    const socket = fakeSocket();
+    vi.mocked(createDashboardWebSocket).mockReturnValue(socket as unknown as WebSocket);
+
+    render(
+      <WsProvider>
+        <Probe />
+      </WsProvider>,
+    );
+
+    await waitFor(() => expect(useEngagementStore.getState().initialized).toBe(true));
+    expect(useEngagementStore.getState().historyCount).toBe(41);
+    expect(useEngagementStore.getState().stateRevision).toBeNull();
+    expect(screen.getByText('provider disconnected')).toBeInTheDocument();
   });
 
   it('negotiates contract v2 and converges keyed agent patches exactly', async () => {

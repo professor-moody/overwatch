@@ -25,7 +25,11 @@ import {
   processStartIdentityMatches,
   readProcessStartIdentity,
 } from './process-identity.js';
-import { acquireStateMigrationWriteGuard } from './state-migration-lock.js';
+import {
+  acquireStateMigrationWriteGuard,
+  assertStateMigrationWriteAllowed,
+  stateMigrationLockDirectory,
+} from './state-migration-lock.js';
 
 export type DaemonLifecyclePhase =
   | 'recovering'
@@ -79,6 +83,9 @@ export interface AcquireDaemonInstanceLeaseInput {
   git_sha?: string | null;
   dashboard_url?: string;
   mcp_url?: string;
+  /** Upgrade-only capability used to atomically hand a frozen state family
+   * from the lifecycle supervisor to the replacement runtime. */
+  migration_owner_token?: string;
 }
 
 export interface DaemonInstanceLease {
@@ -251,7 +258,10 @@ export function acquireDaemonInstanceLease(
       );
     }
   }
-  const releaseWriter = acquireStateMigrationWriteGuard(stateFile);
+  const releaseWriter = acquireStateMigrationWriteGuard(
+    stateFile,
+    input.migration_owner_token,
+  );
   const now = new Date().toISOString();
   const instanceId = randomUUID();
   const startIdentity = observer.startIdentity(process.pid)
@@ -294,6 +304,42 @@ export function acquireDaemonInstanceLease(
     createOwnerExclusive(ownerPath, owner);
   } finally {
     releaseWriter();
+  }
+
+  if (input.migration_owner_token) {
+    const lockDirectory = stateMigrationLockDirectory(stateFile);
+    const deadline = Date.now() + 30_000;
+    const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+    try {
+      while (existsSync(lockDirectory)) {
+        assertStateMigrationWriteAllowed(stateFile, input.migration_owner_token);
+        if (Date.now() >= deadline) {
+          throw new Error('timed out waiting for the upgrade state lease handoff');
+        }
+        Atomics.wait(sleepCell, 0, 0, 25);
+      }
+    } catch (error) {
+      const releaseCleanup = acquireStateMigrationWriteGuard(
+        stateFile,
+        input.migration_owner_token,
+      );
+      try {
+        if (existsSync(ownerPath)) {
+          const current = parseOwner(ownerPath);
+          if (
+            current.daemon_instance_id === instanceId
+            && current.pid === process.pid
+            && current.process_start_identity === startIdentity
+          ) {
+            unlinkSync(ownerPath);
+            fsyncDirectory(directory);
+          }
+        }
+      } finally {
+        releaseCleanup();
+      }
+      throw error;
+    }
   }
 
   let released = false;

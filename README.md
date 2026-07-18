@@ -43,9 +43,16 @@ Claude's user settings only for authentication. This lets you keep using Claude
 interactively in your terminal while the dashboard deploys agents, without
 starting a second engine or mixing their sessions.
 
-After later pulls, `npm run upgrade` stops the identity-verified daemon,
-installs the locked dependencies, rebuilds, and restarts without changing the
-engagement. A normal start rebuilds stale output only when no daemon is live,
+After later pulls, `npm run upgrade` first checks dependency and state/WAL
+migration readiness while the current daemon stays live, then stops the
+identity-verified daemon and repeats the state/WAL check against frozen files.
+It holds a cross-process reservation on that state family through the locked
+dependency install and build, and releases it only after the replacement
+runtime publishes its durable ownership. Only then can another writer start.
+A failed frozen check attempts to restart the unchanged compiled daemon
+without changing the engagement; if another physical owner claims the state in
+that legacy-runtime handoff window, restart fails closed. See the [0.2.0 compatibility and
+release contract](docs/compatibility.md). A normal start rebuilds stale output only when no daemon is live,
 so an old dashboard or planner cannot silently run against replaced assets. If the
 dashboard says **Disconnected**, a planner exits unexpectedly, or `doctor`
 reports a build mismatch, stop the old daemon, rebuild, run `npm run doctor`,
@@ -94,7 +101,9 @@ npm run upgrade
 npm run doctor
 ```
 
-The upgrade command performs the verified stop/install/build/start sequence. It
+The upgrade command performs live and frozen preflights around the verified
+stop before install/build/start. Its cross-process reservation prevents a
+second checkout or runtime from claiming the engagement during that window. It
 does not replace `engagement.json`, its state/WAL, evidence, or reports.
 
 ## Documentation

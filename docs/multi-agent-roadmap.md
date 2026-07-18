@@ -57,8 +57,9 @@ are adapters over the same engine boundary.
 ## Prompt and role status
 
 The context-first `lean` sub-agent prompt is the default. The older `control`
-variant remains available for one release through
-`OVERWATCH_PROMPT_VARIANT=control`. Archetype missions and skills refine the
+variant remains available throughout the 0.2.x compatibility release through
+`OVERWATCH_PROMPT_VARIANT=control`; its retirement gate is tracked in the
+[compatibility ledger](compatibility.md#subagent-control-prompt). Archetype missions and skills refine the
 job and method; the generated system prompt remains the live source of
 engagement state and tool availability.
 

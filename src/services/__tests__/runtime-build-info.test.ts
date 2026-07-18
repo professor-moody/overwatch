@@ -15,12 +15,13 @@ describe('runtime build identity', () => {
     try {
       mkdirSync(join(root, 'src'));
       writeFileSync(join(root, 'src', 'index.ts'), 'export const source = true;\n');
-      writeFileSync(join(root, 'package.json'), '{"name":"source-fixture"}\n');
+      writeFileSync(join(root, 'package.json'), '{"name":"source-fixture","version":"9.8.7"}\n');
 
       const first = readRuntimeBuildInfo({ metadataCandidates: [], fallbackRoot: root });
       const second = readRuntimeBuildInfo({ metadataCandidates: [], fallbackRoot: root });
 
       expect(first).toMatchObject({
+        release_version: '9.8.7',
         input_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
         input_file_count: 2,
         runtime_pid: process.pid,
@@ -35,6 +36,7 @@ describe('runtime build identity', () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       runtime_build: {
         schema_version: 1,
+        release_version: '0.2.0',
         git_sha: 'abc123',
         input_sha256: 'a'.repeat(64),
         runtime_pid: 42,
@@ -45,6 +47,7 @@ describe('runtime build identity', () => {
     await expect(probeRunningDashboard(8384, fetchImpl as typeof fetch, async () => true)).resolves.toMatchObject({
       running: true,
       runtime_build: {
+        release_version: '0.2.0',
         input_sha256: 'a'.repeat(64),
         runtime_pid: 42,
       },

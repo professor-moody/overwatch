@@ -290,15 +290,14 @@ const AnswerBatchResponseSchema = z.object({
   answered: z.number().int().nonnegative(),
 }).passthrough();
 const AgentContextResponseSchema = z.object({
-  // The server now emits AgentDto. Keep the historical context shape readable
-  // while rolling upgrades can still pair a new dashboard with an old daemon.
+  // Compatibility v1 remains readable throughout the 0.2.x release. The
+  // bundled dashboard requires matching runtime identity, while external N-1
+  // clients can still validate the pre-canonical context envelope.
   task: z.union([
     AgentDtoSchema.extend({ work: AgentWorkMetadataSchema }),
     z.object({
       id: z.string(),
       agent_id: z.string(),
-      // A payload that claims canonical identity must satisfy AgentDto above;
-      // this branch is only for the pre-canonical compatibility envelope.
       task_id: z.never().optional(),
       agent_label: z.never().optional(),
       work: z.never().optional(),

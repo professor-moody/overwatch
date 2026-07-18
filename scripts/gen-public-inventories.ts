@@ -24,6 +24,11 @@ import {
 import { getSupportedParsers } from '../src/services/parsers/index.js';
 import { BUILTIN_RULES } from '../src/services/builtin-inference-rules.js';
 import { EDGE_TYPES, NODE_TYPES } from '../src/types.js';
+import {
+  buildCompatibilityManifest,
+  COMPATIBILITY_ENTRIES,
+  OVERWATCH_RELEASE_VERSION,
+} from '../src/services/compatibility-release.js';
 
 const CHECK = process.argv.includes('--check');
 const ROOT = resolve('.');
@@ -106,6 +111,23 @@ function capabilityTable(capabilities: CapabilityCounts): string {
     `| Parser aliases | **${capabilities.parser_aliases}** | Built-in inference rules | **${capabilities.inference_rules}** |`,
     `| Node types | **${capabilities.node_types}** | Edge types | **${capabilities.edge_types}** |`,
     `| Agent archetypes | **${capabilities.agent_archetypes}** | Tool categories | **${capabilities.tool_categories}** |`,
+  ].join('\n');
+}
+
+function compatibilityTable(): string {
+  const status = (entry: typeof COMPATIBILITY_ENTRIES[number]) => {
+    if (entry.status === 'retired') return `Retired in ${entry.retired_in}`;
+    return entry.status === 'retained' ? 'Retained' : 'Migration path retained';
+  };
+  const boundary = (entry: typeof COMPATIBILITY_ENTRIES[number]) =>
+    entry.status === 'retired'
+      ? entry.retired_in
+      : entry.removal_not_before ?? 'Evidence-gated';
+  return [
+    '| Compatibility surface | Status | Canonical replacement | Release boundary |',
+    '|---|---|---|---|',
+    ...COMPATIBILITY_ENTRIES.map(entry =>
+      `| <a id="${entry.id}"></a>${escapeCell(entry.compatibility)} | ${status(entry)} | ${escapeCell(entry.canonical)} | ${boundary(entry)} |`),
   ].join('\n');
 }
 
@@ -208,11 +230,30 @@ try {
     '<!-- END:archetype-table -->',
     generateOperatorCockpitArchetypeTable(),
   );
+  updateMarkedFile(
+    'docs/compatibility.md',
+    '<!-- BEGIN:compatibility-ledger -->',
+    '<!-- END:compatibility-ledger -->',
+    compatibilityTable(),
+  );
 
   writeOrCheck(
     'docs/reference/tool-schema-manifest.json',
     `${JSON.stringify(publicManifest, null, 2)}\n`,
   );
+  writeOrCheck(
+    'docs/reference/compatibility-manifest.json',
+    `${JSON.stringify(buildCompatibilityManifest(), null, 2)}\n`,
+  );
+
+  const packageVersion = (JSON.parse(
+    readFileSync(resolve(ROOT, 'package.json'), 'utf8'),
+  ) as { version?: string }).version;
+  if (packageVersion !== OVERWATCH_RELEASE_VERSION) {
+    throw new Error(
+      `package version ${packageVersion ?? 'missing'} does not match compatibility release ${OVERWATCH_RELEASE_VERSION}`,
+    );
+  }
 
   const categoryCounts = Object.fromEntries(
     registry.categories.map(category => [

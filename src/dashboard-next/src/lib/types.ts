@@ -6,7 +6,7 @@ import type {
   ColdNodeDto,
   FrontierItemDto,
   FrontierWeightsDto,
-  GraphUpdateDataDto,
+  GraphUpdateDataV2Dto,
   DashboardStatePatchDto,
   HealthDto,
   MainWebSocketEvent,
@@ -16,6 +16,7 @@ import type {
   RawGraphDto,
   SessionBufferResponseDto,
   SessionDto,
+  StateRefreshDataV2Dto,
 } from '@overwatch/dashboard-contracts';
 import type { GraphEdgeViewModel, GraphNodeViewModel, GraphViewModel } from './ui-models';
 
@@ -335,8 +336,11 @@ export interface FullStateData {
   state: EngagementState;
   graph: RawGraphDto;
   history_count: number;
+  // The HTTP compatibility-v1 snapshot has no authoritative revision. A
+  // socket full_state always carries one before revisioned v2 patches apply.
   state_revision?: number;
-  runtime_build?: {
+  runtime_build: {
+    release_version?: string;
     git_sha?: string | null;
     input_sha256: string;
     runtime_pid: number;
@@ -344,19 +348,13 @@ export interface FullStateData {
   };
 }
 export interface GraphUpdateData {
-  state?: EngagementState;
-  history_count: number;
-  detail: GraphUpdateDataDto['detail'];
-  delta: GraphUpdateDataDto['delta'];
+  history_count: GraphUpdateDataV2Dto['history_count'];
+  detail: GraphUpdateDataV2Dto['detail'];
+  delta: GraphUpdateDataV2Dto['delta'];
 }
-export interface StateRefreshData {
-  state?: EngagementState;
-  patch?: DashboardStatePatchDto;
-  base_revision?: number;
-  state_revision?: number;
-  history_count: number;
-  community_ids?: Record<string, number>;
-}
+export type StateRefreshData = StateRefreshDataV2Dto & {
+  patch: DashboardStatePatchDto;
+};
 
 // --- OPSEC Budget ---
 

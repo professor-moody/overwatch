@@ -151,7 +151,8 @@ Integration suites auto-skip in restricted environments (e.g., EPERM on `listen(
 `npm run test:scale-soak` is a required CI gate, not a microbenchmark. It runs
 serially with one worker and proves the following release bounds:
 
-- one durable heartbeat remains below 250 ms and 64 KiB of WAL growth with
+- median warmed durable-heartbeat latency remains below 250 ms and six sampled
+  heartbeats remain below 64 KiB of total WAL growth with
   1,000, 10,000, and 50,000 tasks, and the trusted 50,000-task base reopens
   with the heartbeat and lease intact;
 - a no-op 50,000-task watchdog cycle stays read-only;

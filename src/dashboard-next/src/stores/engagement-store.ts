@@ -205,16 +205,12 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
   },
 
   applyGraphUpdate: (data: GraphUpdateData) => {
-    const s = data.state ?? {} as Partial<EngagementState>;
     const prev = get().graph;
     const graph = graphDeltaIndex.apply(prev, data);
 
     set({
-      engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : get().engagement,
-      accessLevel: s.access_summary?.current_access_level || get().accessLevel,
       historyCount: data.history_count ?? get().historyCount,
       graph,
-      graphSummary: s.graph_summary || get().graphSummary,
       graphVersion: get().graphVersion + 1,
       lastDelta: {
         nodes: data.delta.nodes.map(flattenNode),
@@ -222,52 +218,29 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
         removed_nodes: data.delta.removed_nodes,
         removed_edges: data.delta.removed_edges,
       },
-      frontier: s.frontier || get().frontier,
-      frontierHidden: s.frontier_hidden ?? get().frontierHidden,
-      objectives: s.objectives || get().objectives,
-      agents: s.agents || get().agents,
-      campaigns: s.campaigns || get().campaigns,
-      sessions: s.sessions || get().sessions,
-      pendingActions: s.pending_actions || get().pendingActions,
-      playbookRuns: s.playbook_runs
-        ? s.playbook_runs.filter((run): run is PlaybookRun => run.schema_version === 1)
-        : get().playbookRuns,
-      phases: s.phases || get().phases,
-      readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : get().readiness,
-      persistenceRecovery: s.persistence_recovery ?? get().persistenceRecovery,
-      accessSummary: s.access_summary || get().accessSummary,
-      recentActivity: (s as any).recent_activity || get().recentActivity,
     });
   },
 
-  applyStateRefresh: ({ state, patch, base_revision, state_revision, history_count, community_ids }) => {
+  applyStateRefresh: ({ patch, base_revision, state_revision, history_count, community_ids }) => {
     const current = get();
-    if (patch) {
-      if (base_revision === undefined || state_revision === undefined) {
-        throw new Error('Dashboard state patch is missing its base or resulting revision.');
-      }
-      if (current.stateRevision !== base_revision) {
-        throw new Error(`Dashboard state patch expected revision ${base_revision}; current revision is ${current.stateRevision ?? 'unknown'}.`);
-      }
-      if (state_revision !== base_revision + 1) {
-        throw new Error(`Dashboard state patch revision ${state_revision} does not follow base revision ${base_revision}.`);
-      }
+    if (current.stateRevision !== base_revision) {
+      throw new Error(`Dashboard state patch expected revision ${base_revision}; current revision is ${current.stateRevision ?? 'unknown'}.`);
     }
-    const s = {
-      ...(state ?? {}),
-      ...(patch?.state ?? {}),
-    } as Partial<EngagementState>;
-    const unset = new Set(patch?.unset ?? []);
+    if (state_revision !== base_revision + 1) {
+      throw new Error(`Dashboard state patch revision ${state_revision} does not follow base revision ${base_revision}.`);
+    }
+    const s = { ...(patch.state ?? {}) } as Partial<EngagementState>;
+    const unset = new Set(patch.unset ?? []);
     const hasStateKey = (key: string) =>
       Object.prototype.hasOwnProperty.call(s, key);
-    const agents = patch?.agents
+    const agents = patch.agents
       ? applyIndexedCollectionPatch<AgentInfo>(
           current.agents,
           patch.agents,
           agent => agent.task_id ?? agent.id,
         )
       : s.agents;
-    const frontier = patch?.frontier
+    const frontier = patch.frontier
       ? applyIndexedCollectionPatch<FrontierItem>(
           current.frontier,
           patch.frontier,
@@ -288,7 +261,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
         ? 'none'
         : s.access_summary?.current_access_level ?? get().accessLevel,
       historyCount: history_count ?? get().historyCount,
-      stateRevision: patch ? state_revision! : get().stateRevision,
+      stateRevision: state_revision,
       ...(communityDelta.length > 0 ? {
         graph,
         communityVersion: get().communityVersion + 1,

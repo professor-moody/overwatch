@@ -3,6 +3,14 @@ import { useEngagementStore } from '../engagement-store';
 import type { Campaign, FullStateData, GraphUpdateData, PendingAction, SessionInfo } from '../../lib/types';
 
 const initialState = useEngagementStore.getState();
+const fullStateMeta = {
+  state_revision: 1,
+  runtime_build: {
+    input_sha256: 'd'.repeat(64),
+    runtime_pid: 123,
+    runtime_started_at: '2026-07-18T00:00:00.000Z',
+  },
+};
 
 describe('engagement store hydration', () => {
   beforeEach(() => {
@@ -63,6 +71,7 @@ describe('engagement store hydration', () => {
     } as SessionInfo;
 
     const data: FullStateData = {
+      ...fullStateMeta,
       state: {
         engagement: { id: 'eng-1', name: 'Demo Engagement' },
         pending_actions: [pendingAction],
@@ -110,6 +119,7 @@ describe('engagement store hydration', () => {
       created_at: '2026-07-16T00:00:00Z', updated_at: '2026-07-16T00:00:00Z', resume_count: 0,
     };
     useEngagementStore.getState().loadFullState({
+      ...fullStateMeta,
       state: { playbook_runs: [run, { run_id: 'legacy-placeholder', status: 'pending' }] },
       graph: { nodes: [], edges: [] }, history_count: 0,
     } as FullStateData);
@@ -125,6 +135,7 @@ describe('engagement store hydration', () => {
     // `access_level`. Before the fix the store read the phantom fields, so the toolbar
     // was blank, access showed 'none', and the graph-layout key fell back to 'default'.
     const data: FullStateData = {
+      ...fullStateMeta,
       state: {
         config: { id: 'eng-42', name: 'Prod Engagement', profile: 'goad_ad', created_at: '2026-05-15T10:00:00Z' },
         access_summary: { compromised_hosts: ['h1'], valid_credentials: ['c1'], current_access_level: 'domain_admin' },
@@ -146,11 +157,12 @@ describe('engagement store hydration', () => {
       last_seen_at: '2026-07-15T00:00:00Z',
     };
     useEngagementStore.getState().loadFullState({
+      ...fullStateMeta,
       state: {}, graph: { nodes: [], edges: [], cold_nodes: [cold] }, history_count: 0,
     } as FullStateData);
 
     const baseDelta = {
-      state: {}, history_count: 0, detail: {},
+      history_count: 0, detail: {},
       delta: { nodes: [], edges: [], removed_nodes: [], removed_edges: [] },
     } as GraphUpdateData;
     useEngagementStore.getState().applyGraphUpdate(baseDelta);
@@ -164,6 +176,7 @@ describe('engagement store hydration', () => {
 
   it('applies a coalesced state refresh without replacing the graph projection', () => {
     useEngagementStore.getState().loadFullState({
+      ...fullStateMeta,
       state: {},
       graph: { nodes: [{ id: 'host-1', properties: { type: 'host', label: 'Host' } }], edges: [] },
       history_count: 1,
@@ -173,12 +186,14 @@ describe('engagement store hydration', () => {
     const communityVersion = useEngagementStore.getState().communityVersion;
 
     useEngagementStore.getState().applyStateRefresh({
-      state: {
+      patch: { state: {
         graph_summary: {
           total_nodes: 1, total_edges: 0, confirmed_edges: 0, inferred_edges: 0,
           nodes_by_type: { host: 1 },
         },
-      },
+      } },
+      base_revision: 1,
+      state_revision: 2,
       history_count: 2,
       community_ids: { 'host-1': 7 },
     } as any);
@@ -196,6 +211,7 @@ describe('engagement store hydration', () => {
 
   it('rejects a keyed patch whose base revision is not the loaded full-state revision', () => {
     useEngagementStore.getState().loadFullState({
+      ...fullStateMeta,
       state: { agents: [], frontier: [] },
       graph: { nodes: [], edges: [] },
       history_count: 1,
@@ -216,6 +232,7 @@ describe('engagement store hydration', () => {
 
   it('clears normalized optional state only through explicit v2 unset keys', () => {
     useEngagementStore.getState().loadFullState({
+      ...fullStateMeta,
       state: {
         agents: [], frontier: [],
         frontier_hidden: { total: 1, by_reason: { lease: 1, opsec: 0, dead_host: 0, scope: 0 } },
@@ -246,10 +263,11 @@ describe('engagement store hydration', () => {
       last_seen_at: '2026-07-15T00:00:00Z',
     };
     useEngagementStore.getState().loadFullState({
+      ...fullStateMeta,
       state: {}, graph: { nodes: [], edges: [], cold_nodes: [cold] }, history_count: 0,
     } as FullStateData);
     useEngagementStore.getState().applyGraphUpdate({
-      state: {}, history_count: 0, detail: { new_nodes: ['host-1'] },
+      history_count: 0, detail: { new_nodes: ['host-1'] },
       delta: {
         nodes: [{ id: 'host-1', properties: { type: 'host', label: 'promoted' } }],
         edges: [], removed_nodes: [], removed_edges: [], cold_nodes: [],
@@ -259,7 +277,7 @@ describe('engagement store hydration', () => {
     expect(useEngagementStore.getState().graph.coldInventory).toEqual([]);
 
     useEngagementStore.getState().applyGraphUpdate({
-      state: {}, history_count: 0, detail: { removed_nodes: ['host-1'] },
+      history_count: 0, detail: { removed_nodes: ['host-1'] },
       delta: { nodes: [], edges: [], removed_nodes: ['host-1'], removed_edges: [], cold_nodes: [] },
     } as GraphUpdateData);
     expect(useEngagementStore.getState().graph.nodes).toEqual([]);
@@ -294,6 +312,7 @@ describe('engagement store hydration', () => {
       }],
     };
     useEngagementStore.getState().loadFullState({
+      ...fullStateMeta,
       state: { persistence_recovery: initialRecovery },
       graph: { nodes: [], edges: [] },
       history_count: 0,
@@ -303,16 +322,18 @@ describe('engagement store hydration', () => {
       .toEqual([expect.objectContaining({ run_id: 'runtime-store-warning' })]);
 
     const deltaBase = {
-      state: {}, history_count: 0, detail: {},
+      history_count: 0, detail: {},
       delta: { nodes: [], edges: [], removed_nodes: [], removed_edges: [] },
     } as GraphUpdateData;
     useEngagementStore.getState().applyGraphUpdate(deltaBase);
     expect(useEngagementStore.getState().persistenceRecovery).toEqual(initialRecovery);
 
     const recovered = { ...initialRecovery, outcome: 'recovered' as const, complete: true, writable: true };
-    useEngagementStore.getState().applyGraphUpdate({
-      ...deltaBase,
-      state: { persistence_recovery: recovered },
+    useEngagementStore.getState().applyStateRefresh({
+      patch: { state: { persistence_recovery: recovered } },
+      base_revision: 1,
+      state_revision: 2,
+      history_count: 0,
     });
     expect(useEngagementStore.getState().persistenceRecovery).toEqual(recovered);
 

@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 env:
@@ -19,7 +20,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: git diff --check "origin/${{ github.base_ref }}...HEAD"
       - name: Check pushed diff formatting
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
         run: git diff --check "${{ github.event.before }}...HEAD"
 
   typecheck:
@@ -157,6 +158,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -166,6 +169,13 @@ jobs:
       - run: npm ci
       # Production build enforces the dashboard's <500 kB entry-chunk budget.
       - run: npm run build
+      - run: npm run check:release
+      - name: Fetch main release authority
+        if: startsWith(github.ref, 'refs/tags/')
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+      - name: Verify release tag points at the declared source release
+        if: startsWith(github.ref, 'refs/tags/')
+        run: npm run check:release -- --require-head-tag
       - run: npm run check:package
       - run: npm run check:docs
       - run: npm run check:dashboard-api

@@ -78,6 +78,7 @@ import { registerPostgresTools } from './tools/postgres.js';
 import { registerIngestJsonTools } from './tools/ingest-json.js';
 import { registerBundleTools } from './tools/bundle.js';
 import { registerInstructionTools } from './tools/instructions.js';
+import { OVERWATCH_RELEASE_VERSION } from './services/compatibility-release.js';
 import { registerRecoveryTools } from './tools/recovery.js';
 import {
   recoverInterruptedAtomicJsonWrite,
@@ -1002,6 +1003,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
         git_sha: runtimeBuild.git_sha,
         dashboard_url: options.runtimeOwnership.dashboard_url,
         mcp_url: options.runtimeOwnership.mcp_url,
+        migration_owner_token: process.env.OVERWATCH_UPGRADE_MIGRATION_TOKEN,
       })
     : undefined;
   const runtimeLifecycle: { phase: DaemonLifecyclePhase } = { phase: 'recovering' };
@@ -1103,7 +1105,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   sessionManager.restorePersistedDescriptors(engine.getSessionDescriptors());
   const server = new McpServer({
     name: 'overwatch-mcp-server',
-    version: '0.1.0',
+    version: OVERWATCH_RELEASE_VERSION,
   });
 
   const dashboardPort = options.dashboardPort ?? parseInt(process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
@@ -1608,7 +1610,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
   function createSessionServer(authenticatedActorTaskId: string | null): McpServer {
     const server = new McpServer({
       name: 'overwatch-mcp-server',
-      version: '0.1.0',
+      version: OVERWATCH_RELEASE_VERSION,
     });
     registerAllTools(server, {
       engine: app.engine,

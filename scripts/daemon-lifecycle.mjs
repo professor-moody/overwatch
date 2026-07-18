@@ -542,6 +542,133 @@ function preflightSourceUpgrade() {
   }
 }
 
+function preflightStateUpgrade(selection, { frozen = false } = {}) {
+  const stateDescription = frozen
+    ? 'after the verified daemon stopped'
+    : 'while the running daemon remains active';
+  if (!selection.profile) {
+    throw new Error(
+      `No persisted runtime profile exists. Run \`npm run setup\` before upgrading; checked ${stateDescription}.`,
+    );
+  }
+  const expected = expectedRuntime(selection.environment, selection.profile);
+  if (!expected.statePath) {
+    throw new Error(
+      `The runtime profile does not identify an engagement state file. Run \`npm run setup\` before upgrading; checked ${stateDescription}.`,
+    );
+  }
+  const tsx = process.env.OVERWATCH_LIFECYCLE_STATE_PREFLIGHT
+    || join(root, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  if (!existsSync(tsx)) {
+    throw new Error(
+      `The offline migration preflight runner is unavailable at ${tsx}; checked ${stateDescription}. Run \`npm ci\` without changing engagement artifacts, then retry the upgrade.`,
+    );
+  }
+  runChecked(
+    process.execPath,
+    [
+      tsx,
+      join(root, 'src', 'cli', 'operator-cli.ts'),
+      'state',
+      'migrate',
+      '--check',
+      '--state-file',
+      expected.statePath,
+      '--config-file',
+      expected.configPath,
+      '--no-color',
+    ],
+    `offline state/WAL migration preflight ${stateDescription}`,
+    selection.environment,
+  );
+}
+
+async function acquireUpgradeStateLease(selection) {
+  const expected = expectedRuntime(selection.environment, selection.profile);
+  if (!expected.statePath) throw new Error('Cannot reserve an upgrade without a selected state file.');
+  const helper = spawn(
+    process.execPath,
+    [join(root, 'scripts', 'upgrade-state-lease.mjs'), expected.statePath],
+    {
+      cwd: root,
+      env: selection.environment,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    },
+  );
+  helper.stdout.setEncoding('utf8');
+  helper.stderr.setEncoding('utf8');
+  let stdout = '';
+  let stderr = '';
+  helper.stdout.on('data', chunk => { stdout += chunk; });
+  helper.stderr.on('data', chunk => { stderr += chunk; });
+  const exit = new Promise(resolveExit => {
+    helper.once('error', error => resolveExit({ code: 1, signal: null, error }));
+    helper.once('exit', (code, signal) => resolveExit({ code, signal }));
+  });
+  let token;
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const line = stdout.split('\n').find(candidate => candidate.trim().startsWith('{'));
+    if (line) {
+      try {
+        const ready = JSON.parse(line);
+        if (ready.ready === true && typeof ready.token === 'string' && ready.token.length > 0) {
+          token = ready.token;
+          break;
+        }
+      } catch { /* wait for a complete line */ }
+    }
+    if (!processAlive(helper.pid)) {
+      const result = await exit;
+      throw result.error || new Error(
+        `Upgrade state lease exited before acquisition (${result.code ?? result.signal ?? 'unknown'}).${stderr.trim() ? ` ${stderr.trim()}` : ''}`,
+      );
+    }
+    await new Promise(resolveWait => setTimeout(resolveWait, 25));
+  }
+  if (!token) {
+    try { helper.kill('SIGTERM'); } catch { /* helper already exited */ }
+    await exit;
+    throw new Error(`Upgrade state lease did not become ready within ${START_TIMEOUT_MS}ms.${stderr.trim() ? ` ${stderr.trim()}` : ''}`);
+  }
+
+  let released = false;
+  return {
+    token,
+    get released() { return released; },
+    async release() {
+      if (released) return;
+      if (!processAlive(helper.pid)) {
+        const result = await exit;
+        throw result.error || new Error(
+          `Upgrade state lease exited before release (${result.code ?? result.signal ?? 'unknown'}).${stderr.trim() ? ` ${stderr.trim()}` : ''}`,
+        );
+      }
+      helper.stdin.end('release\n');
+      const result = await exit;
+      if (result.error || result.code !== 0) {
+        throw result.error || new Error(
+          `Upgrade state lease release failed (${result.code ?? result.signal ?? 'unknown'}).${stderr.trim() ? ` ${stderr.trim()}` : ''}`,
+        );
+      }
+      released = true;
+    },
+  };
+}
+
+async function holdUpgradeLeaseForTest(environment) {
+  const marker = environment.OVERWATCH_LIFECYCLE_UPGRADE_HOLD_FILE;
+  if (!marker) return;
+  writeFileSync(marker, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  while (existsSync(marker) && Date.now() < deadline) {
+    await new Promise(resolveWait => setTimeout(resolveWait, 25));
+  }
+  if (existsSync(marker)) {
+    throw new Error(`Timed out waiting for the upgrade hold marker to be removed: ${marker}`);
+  }
+}
+
 function ensureFreshBuild(environment, stdio = 'inherit') {
   const freshness = inspectBuildFreshness(root);
   if (freshness.fresh) return;
@@ -689,14 +816,25 @@ async function waitForStateOwnership(child, expected) {
   throw new Error(`Stdio process ${child.pid} did not acquire durable state ownership within ${START_TIMEOUT_MS}ms.`);
 }
 
-async function startDaemon({ detached, onReady }) {
+async function startDaemon({
+  detached,
+  onReady,
+  allowStaleBuild = false,
+  upgradeStateLease,
+}) {
   const { environment, profile } = runtimeEnvironment(root);
   const inspected = await inspectBeforeStart(environment, profile);
   if (inspected.reuse) {
     console.log(`READY — ${runtimeDescription(inspected.probe)} is already serving ${inspected.expected.runtimeUrl}.`);
     return { reused: true, probe: inspected.probe };
   }
-  ensureFreshBuild(environment);
+  if (allowStaleBuild) {
+    if (!existsSync(join(root, 'dist', 'index.js'))) {
+      throw new Error('The previous compiled runtime is unavailable; refusing to synthesize a replacement during recovery.');
+    }
+  } else {
+    ensureFreshBuild(environment);
+  }
   const logPath = managedDaemonLogPath(root);
   let out = 'inherit';
   let err = 'inherit';
@@ -716,6 +854,9 @@ async function startDaemon({ detached, onReady }) {
       OVERWATCH_DAEMON_RECORD: managedDaemonPath(root),
       OVERWATCH_DAEMON_LOG: logPath,
       OVERWATCH_DAEMON_MANAGEMENT_NONCE: managementNonce,
+      ...(upgradeStateLease
+        ? { OVERWATCH_UPGRADE_MIGRATION_TOKEN: upgradeStateLease.token }
+        : {}),
     },
     detached,
     stdio: ['ignore', out, err],
@@ -742,6 +883,10 @@ async function startDaemon({ detached, onReady }) {
   }
   let probe;
   try {
+    if (upgradeStateLease) {
+      await waitForStateOwnership(child, inspected.expected);
+      await upgradeStateLease.release();
+    }
     probe = await waitForReady(child, inspected.expected, environment);
     const mode = probe.body.runtime_status.phase === 'ready_read_only'
       ? `RECOVERY READ-ONLY — ${probe.body.runtime_status.recovery_reason || 'explicit recovery is required'}`
@@ -1137,13 +1282,50 @@ async function main() {
             + 'Run `npm run setup -- --daemon` before using the managed daemon upgrade command.',
           );
         }
+        preflightStateUpgrade(beforeStop);
         await stopDaemon();
-        const { environment } = runtimeEnvironment(root);
-        const npm = process.env.OVERWATCH_LIFECYCLE_NPM
-          || (process.platform === 'win32' ? 'npm.cmd' : 'npm');
-        runChecked(npm, ['ci'], 'npm ci', environment);
-        runChecked(npm, ['run', 'build'], 'build', environment);
-        await startDaemon({ detached: true });
+        const frozenSelection = runtimeEnvironment(root);
+        const upgradeStateLease = await acquireUpgradeStateLease(frozenSelection);
+        try {
+          const unexpectedOwner = readStateOwner(expectedRuntime(
+            frozenSelection.environment,
+            frozenSelection.profile,
+          ));
+          if (unexpectedOwner) {
+            throw new Error(
+              `State ownership changed during upgrade reservation (PID ${unexpectedOwner.pid ?? 'unknown'}); no install or build was attempted.`,
+            );
+          }
+          await holdUpgradeLeaseForTest(frozenSelection.environment);
+          try {
+            preflightStateUpgrade(frozenSelection, { frozen: true });
+          } catch (preflightError) {
+            try {
+              await upgradeStateLease.release();
+              await startDaemon({ detached: true, allowStaleBuild: true });
+            } catch (restartError) {
+              throw new Error(
+                'The authoritative frozen state/WAL preflight failed after shutdown, and the previous compiled runtime could not be restarted. '
+                + 'No dependency install or build was attempted; the daemon remains stopped. '
+                + `Preflight: ${preflightError instanceof Error ? preflightError.message : String(preflightError)}. `
+                + `Restart: ${restartError instanceof Error ? restartError.message : String(restartError)}.`,
+              );
+            }
+            throw new Error(
+              'The authoritative frozen state/WAL preflight failed after shutdown; no dependency install or build was attempted, '
+              + 'and the previous compiled runtime was restarted unchanged. '
+              + `${preflightError instanceof Error ? preflightError.message : String(preflightError)}`,
+            );
+          }
+          const { environment } = frozenSelection;
+          const npm = process.env.OVERWATCH_LIFECYCLE_NPM
+            || (process.platform === 'win32' ? 'npm.cmd' : 'npm');
+          runChecked(npm, ['ci'], 'npm ci', environment);
+          runChecked(npm, ['run', 'build'], 'build', environment);
+          await startDaemon({ detached: true, upgradeStateLease });
+        } finally {
+          if (!upgradeStateLease.released) await upgradeStateLease.release();
+        }
       });
       break;
     }
