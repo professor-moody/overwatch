@@ -16,6 +16,12 @@ import type { RunRecord, ToolCall, ActivityLite } from '../services/eval-rubric.
 import type { OrchRunRecord } from '../services/eval-orchestration-rubric.js';
 import { recommendArchetype, isArchetypeId } from '../services/agent-archetypes.js';
 import type { EvalScenario } from './eval-scenarios.js';
+import {
+  EvalArtifactSession,
+  shouldPreserveEvalArtifacts,
+  type EvalArtifactManifest,
+  type EvalOutcome,
+} from './eval-artifacts.js';
 
 const FAKE_CLAUDE = resolve('./src/test-support/fake-claude.mjs');
 const rawConfig = readFileSync(resolve('./engagement.example.json'), 'utf-8');
@@ -29,18 +35,35 @@ export interface EvalRunOptions {
   maxTurns?: number;
   /** In-flight Claude Code spend ceiling for this run. */
   maxBudgetUsd?: number;
+  /** Command-wide ceiling recorded in the artifact manifest. */
+  maxTotalUsd?: number;
   /** Sub_agent prompt variant ('control' | 'lean') — the A/B arm. Default 'control'. */
   variant?: string;
   timeoutMs?: number;
+  /** Preserve fake-run artifacts too. Real runs always preserve them. */
+  preserveArtifacts?: boolean;
+  /** Override the normal gitignored eval-artifacts root (primarily for tests). */
+  artifactRoot?: string;
+}
+
+export interface EvalArtifactCompletion {
+  grade?: unknown;
+  reportedCostUsd?: number;
+  reservedCostUsd?: number;
+  outcome?: EvalOutcome;
+  error?: unknown;
 }
 
 export interface EvalRunResult {
   record: RunRecord;
+  outcome: EvalOutcome;
   usage: EvalUsage;
   /** Accounting total, including cache reads/creation. Retained for compatibility. */
   usageTokens: number;
   /** total_cost_usd from the result event, if the binary reports it. */
   costUsd?: number;
+  artifactDirectory?: string;
+  finalizeArtifacts: (details?: EvalArtifactCompletion) => EvalArtifactManifest | undefined;
   cleanup: () => Promise<void>;
 }
 
@@ -50,6 +73,16 @@ export interface EvalUsage {
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   accountingTokens: number;
+}
+
+function toArtifactUsage(usage: EvalUsage) {
+  return {
+    input_tokens: usage.inputTokens,
+    output_tokens: usage.outputTokens,
+    cache_read_input_tokens: usage.cacheReadInputTokens,
+    cache_creation_input_tokens: usage.cacheCreationInputTokens,
+    accounting_tokens: usage.accountingTokens,
+  };
 }
 
 /** Build the bounded set of Claude CLI arguments shared by prompt and
@@ -62,15 +95,47 @@ export function buildEvalClaudeArgs(model?: string, maxBudgetUsd?: number): stri
   ];
 }
 
-function waitFor(pred: () => boolean, timeoutMs: number): Promise<void> {
+function waitFor(pred: () => boolean, timeoutMs: number): Promise<boolean> {
   return new Promise((res) => {
     const start = Date.now();
     const tick = () => {
-      if (pred() || Date.now() - start > timeoutMs) return res();
+      if (pred()) return res(true);
+      if (Date.now() - start > timeoutMs) return res(false);
       setTimeout(tick, 50);
     };
     tick();
   });
+}
+
+function streamReportsBudgetExhaustion(ndjson: string): boolean {
+  for (const line of ndjson.split('\n')) {
+    if (!line.trim().startsWith('{')) continue;
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      if (record.type !== 'result' && record.type !== 'error') continue;
+      const signal = [record.subtype, record.stop_reason, record.error, record.result]
+        .map(value => typeof value === 'string' ? value : JSON.stringify(value ?? ''))
+        .join(' ');
+      if (/(?:max[_ -]?budget|budget[_ -]?exhausted|budget\s+(?:limit\s+)?exceeded)/iu.test(signal)) return true;
+    } catch {
+      // Malformed model output is ignored for accounting classification; the
+      // terminal task status still determines the fallback outcome.
+    }
+  }
+  return false;
+}
+
+export function classifyEvalOutcome(
+  taskStatus: string | undefined,
+  ndjson: string,
+  timedOut: boolean,
+): EvalOutcome {
+  if (timedOut) return 'timed_out';
+  if (streamReportsBudgetExhaustion(ndjson)) return 'budget_exhausted';
+  if (taskStatus === 'completed') return 'completed';
+  if (taskStatus === 'failed') return 'failed';
+  if (taskStatus === 'interrupted') return 'interrupted';
+  return 'harness_error';
 }
 
 /** Extract tool calls from claude/fake-claude stream-json — handles top-level
@@ -162,6 +227,29 @@ export function parseEvalUsage(ndjson: string): { usage: EvalUsage; costUsd?: nu
 export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptions = {}): Promise<EvalRunResult> {
   const binary = opts.claudeBinary ?? FAKE_CLAUDE;
   const usingFake = binary === FAKE_CLAUDE;
+  const maxTurns = opts.maxTurns ?? 10;
+  const timeoutMs = opts.timeoutMs ?? 20000;
+  const commandArgs = buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd);
+  const taskId = `eval-${scenario.id}`;
+  const artifactSession = shouldPreserveEvalArtifacts(usingFake, opts.preserveArtifacts)
+    ? new EvalArtifactSession({
+      kind: 'prompt',
+      scenario: scenario.id,
+      model: opts.model ?? (usingFake ? 'fake' : 'default'),
+      promptVariant: opts.variant ?? 'control',
+      command: {
+        binary,
+        args: ['--max-turns', String(maxTurns), ...commandArgs],
+      },
+      limits: {
+        max_budget_usd: opts.maxBudgetUsd,
+        max_total_usd: opts.maxTotalUsd,
+        max_turns: maxTurns,
+        timeout_ms: timeoutMs,
+      },
+      rootDir: opts.artifactRoot,
+    })
+    : undefined;
   const prev = {
     mode: process.env.OVERWATCH_FAKE_MODE,
     binary: process.env.OVERWATCH_CLAUDE_BINARY,
@@ -170,21 +258,8 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     tokenFile: process.env.OVERWATCH_MCP_TOKEN_FILE,
     token: process.env.OVERWATCH_MCP_TOKEN,
   };
-  if (usingFake) { chmodSync(FAKE_CLAUDE, 0o755); process.env.OVERWATCH_FAKE_MODE = scenario.fakeMode; }
-  process.env.OVERWATCH_CLAUDE_BINARY = binary;
-  // Selects the sub_agent prompt variant the in-process app's get_system_prompt
-  // renders for this run (the A/B arm). The harness is single-process + serial
-  // (one app per run, like the FAKE_MODE/binary env above), so an env selector is
-  // sufficient; set it explicitly every run, and restore it in cleanup so the
-  // arm never leaks into a later in-process get_system_prompt.
-  process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
-  // Unattended eval against synthetic/unreachable targets: make tools fail fast
-  // (real `claude` picks slow scans like nmap -p- that would otherwise run to the
-  // 1-hour default and stall the whole run). Restored in cleanup.
-  if (!usingFake) process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = '20000';
-
-  // Restore the env we mutated above — called from cleanup on success AND from the
-  // catch below if anything between here and the return throws (e.g. an HTTP
+  // Restore the env the guarded run mutates — called from cleanup on success AND
+  // from the catch below if anything between setup and return throws (e.g. an HTTP
   // port-bind failure), so a thrown run can't leak its arm/timeout into a later
   // in-process run or test.
   const restoreEnv = () => {
@@ -200,11 +275,27 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     set('OVERWATCH_MCP_TOKEN', prev.token);
   };
 
-  const tempDir = mkdtempSync(join(tmpdir(), 'ow-prompt-eval-'));
-  process.env.OVERWATCH_MCP_TOKEN_FILE = join(tempDir, '.overwatch-mcp-token');
-  const logDir = join(tempDir, 'agents');
+  let tempDir: string | undefined;
+  let logPath: string | undefined;
   let app: ReturnType<typeof createOverwatchApp> | undefined;
   try {
+    if (usingFake) {
+      chmodSync(FAKE_CLAUDE, 0o755);
+      process.env.OVERWATCH_FAKE_MODE = scenario.fakeMode;
+    }
+    process.env.OVERWATCH_CLAUDE_BINARY = binary;
+    // Selects the sub_agent prompt variant the in-process app's get_system_prompt
+    // renders for this run (the A/B arm). The harness is single-process + serial.
+    process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
+    // Real eval tools must fail inside the bounded action window too. Step 4
+    // replaces the unreachable scanner path with a hermetic shim.
+    if (!usingFake) process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = '20000';
+
+    tempDir = mkdtempSync(join(tmpdir(), 'ow-prompt-eval-'));
+    const runningTempDir = tempDir;
+    process.env.OVERWATCH_MCP_TOKEN_FILE = join(runningTempDir, '.overwatch-mcp-token');
+    const logDir = join(runningTempDir, 'agents');
+    logPath = join(logDir, `${taskId}.ndjson`);
     const config = parseEngagementConfig(rawConfig);
     // Unattended eval: shrink the operator-approval window so a gated run_bash/
     // run_tool auto-resolves in seconds instead of stalling on the 5-min default.
@@ -213,21 +304,21 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       config,
       skillDir: resolve('./skills'),
       dashboardPort: 0,
-      stateFilePath: join(tempDir, `state-${config.id}.json`),
+      stateFilePath: join(runningTempDir, `state-${config.id}.json`),
       taskExecution: {
         headless: {
           // Pass the binary through the structured option too (not only the env)
           // so the run doesn't depend on env-mutation ordering.
           claudeBinary: binary,
           logDir,
-          configDir: join(tempDir, 'mcp-configs'),
-          maxTurns: opts.maxTurns ?? 10,
+          configDir: join(runningTempDir, 'mcp-configs'),
+          maxTurns,
           // A real headless `claude -p` has no stdin to answer permission prompts,
           // so it would hang on the first tool call in the default mode. Bypass
           // claude's own gate (Overwatch's approval queue still applies); fake-claude
           // ignores claude flags, so leave it unset there.
           permissionMode: usingFake ? undefined : 'bypassPermissions',
-          extraArgs: buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd),
+          extraArgs: commandArgs,
         },
       },
     });
@@ -243,7 +334,6 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       seededIds = new Set(ingest.new_nodes ?? []);
     }
 
-    const taskId = `eval-${scenario.id}`;
     const agentId = `agent-${scenario.id}`;
     const scopedIds = scenario.scopeSeededNodes ? [...seededIds] : [];
     app.engine.registerAgent({
@@ -252,9 +342,29 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       objective: scenario.objective,
     } as AgentTask);
 
-    await waitFor(() => { const s = app!.engine.getTask(taskId)?.status; return s === 'completed' || s === 'failed' || s === 'interrupted'; }, opts.timeoutMs ?? 20000);
+    const reachedTerminal = await waitFor(() => {
+      const s = app!.engine.getTask(taskId)?.status;
+      return s === 'completed' || s === 'failed' || s === 'interrupted';
+    }, timeoutMs);
+    let timedOut = !reachedTerminal;
+    if (timedOut) {
+      app.taskExecution.cancelHeadless(taskId, `evaluation timed out after ${timeoutMs}ms`);
+      const cancelled = await waitFor(() => {
+        const s = app!.engine.getTask(taskId)?.status;
+        return app!.taskExecution.activeHeadlessCount() === 0
+          && (s === 'completed' || s === 'failed' || s === 'interrupted');
+      }, 10_000);
+      if (!cancelled) throw new Error(`Timed-out evaluation worker ${taskId} did not reach terminal state.`);
+    } else {
+      const workerSettled = await waitFor(() => app!.taskExecution.activeHeadlessCount() === 0, 10_000);
+      if (!workerSettled) {
+        timedOut = true;
+        app.taskExecution.cancelHeadless(taskId, 'evaluation worker did not terminate after the task became terminal');
+        const cancelled = await waitFor(() => app!.taskExecution.activeHeadlessCount() === 0, 10_000);
+        if (!cancelled) throw new Error(`Terminal evaluation worker ${taskId} could not be drained.`);
+      }
+    }
 
-    const logPath = join(logDir, `${taskId}.ndjson`);
     const ndjson = existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
     const { usage, costUsd } = parseEvalUsage(ndjson);
 
@@ -272,18 +382,65 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       taskStatus: app.engine.getTask(taskId)?.status ?? 'unknown',
       newNodeTypes,
     };
+    const outcome = classifyEvalOutcome(record.taskStatus, ndjson, timedOut);
+    const finalizeArtifacts = (details: EvalArtifactCompletion = {}) => artifactSession?.finalize({
+      outcome: details.outcome ?? outcome,
+      agentNdjson: ndjson,
+      record,
+      grade: details.grade,
+      usage: toArtifactUsage(usage),
+      reportedCostUsd: details.reportedCostUsd ?? costUsd,
+      reservedCostUsd: details.reservedCostUsd,
+      graphDelta: { new_node_types: newNodeTypes },
+      toolCalls: record.toolCalls,
+      error: details.error,
+    });
 
     const runningApp = app;
     const cleanup = async () => {
+      if (artifactSession && !artifactSession.hasFinalizationStarted) {
+        finalizeArtifacts({
+          outcome: 'harness_error',
+          error: new Error('Evaluation cleanup began before artifacts were finalized.'),
+          reservedCostUsd: opts.maxBudgetUsd,
+        });
+      }
       restoreEnv();
       await shutdownOverwatchApp(runningApp).catch(() => { /* ignore */ });
-      try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { rmSync(runningTempDir, { recursive: true, force: true }); } catch { /* ignore */ }
     };
-    return { record, usage, usageTokens: usage.accountingTokens, costUsd, cleanup };
+    return {
+      record,
+      outcome,
+      usage,
+      usageTokens: usage.accountingTokens,
+      costUsd,
+      artifactDirectory: artifactSession?.directory,
+      finalizeArtifacts,
+      cleanup,
+    };
   } catch (err) {
+    const ndjson = logPath && existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
+    const { usage, costUsd } = parseEvalUsage(ndjson);
+    let artifactError: unknown;
+    try {
+      if (artifactSession && !artifactSession.hasFinalizationStarted) {
+        artifactSession.finalize({
+          outcome: 'harness_error',
+          agentNdjson: ndjson,
+          usage: toArtifactUsage(usage),
+          reportedCostUsd: costUsd,
+          reservedCostUsd: costUsd === undefined ? opts.maxBudgetUsd : 0,
+          error: err,
+        });
+      }
+    } catch (artifactFailure) {
+      artifactError = artifactFailure;
+    }
     restoreEnv();
     if (app) await shutdownOverwatchApp(app).catch(() => { /* ignore */ });
-    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    if (tempDir) { try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ } }
+    if (artifactError) throw new AggregateError([err, artifactError], 'Evaluation failed and its artifact record could not be finalized.');
     throw err;
   }
 }
@@ -311,23 +468,50 @@ export interface OrchEvalOptions {
   model?: string;
   maxTurns?: number;
   maxBudgetUsd?: number;
+  maxTotalUsd?: number;
   variant?: string;
   timeoutMs?: number;
+  preserveArtifacts?: boolean;
+  artifactRoot?: string;
 }
 
 export interface OrchEvalResult {
   record: OrchRunRecord;
+  outcome: EvalOutcome;
   usage: EvalUsage;
   usageTokens: number;
   costUsd?: number;
+  artifactDirectory?: string;
+  finalizeArtifacts: (details?: EvalArtifactCompletion) => EvalArtifactManifest | undefined;
   cleanup: () => Promise<void>;
 }
 
 export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Promise<OrchEvalResult> {
   const primaryBinary = opts.claudeBinary ?? FAKE_CLAUDE;
   const usingFakePrimary = primaryBinary === FAKE_CLAUDE;
-  chmodSync(FAKE_CLAUDE, 0o755);
-
+  const maxTurns = opts.maxTurns ?? 14;
+  const deadline = opts.timeoutMs ?? (usingFakePrimary ? 30000 : 600000);
+  const commandArgs = buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd);
+  const taskId = 'eval-orch';
+  const artifactSession = shouldPreserveEvalArtifacts(usingFakePrimary, opts.preserveArtifacts)
+    ? new EvalArtifactSession({
+      kind: 'orchestration',
+      scenario: 'orchestration',
+      model: opts.model ?? (usingFakePrimary ? 'fake' : 'default'),
+      promptVariant: opts.variant ?? 'control',
+      command: {
+        binary: primaryBinary,
+        args: ['--max-turns', String(maxTurns), ...commandArgs],
+      },
+      limits: {
+        max_budget_usd: opts.maxBudgetUsd,
+        max_total_usd: opts.maxTotalUsd,
+        max_turns: maxTurns,
+        timeout_ms: deadline,
+      },
+      rootDir: opts.artifactRoot,
+    })
+    : undefined;
   const prev = {
     mode: process.env.OVERWATCH_FAKE_MODE,
     bin: process.env.OVERWATCH_CLAUDE_BINARY,
@@ -354,6 +538,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
   let tempDir: string | undefined;
   let app: ReturnType<typeof createOverwatchApp> | undefined;
   try {
+    chmodSync(FAKE_CLAUDE, 0o755);
     // 'auto': primary (no archetype) orchestrates; children (archetype) land findings.
     // Runner default = fake so dispatched children are cheap; the primary task overrides
     // to the real binary for the A/B.
@@ -381,9 +566,9 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
           claudeBinary: FAKE_CLAUDE,
           logDir,
           configDir: join(tempDir, 'mcp-configs'),
-          maxTurns: opts.maxTurns ?? 14,
+          maxTurns,
           permissionMode: usingFakePrimary ? undefined : 'bypassPermissions',
-          extraArgs: buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd),
+          extraArgs: commandArgs,
         },
       },
     });
@@ -392,15 +577,24 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     app.engine.ingestFinding({ id: 'seed-orch', agent_id: 'seed', timestamp: new Date().toISOString(), nodes: ORCH_SEED_NODES, edges: [] } as never);
     const beforeCount = app.engine.exportGraph().nodes.length;
 
-    const taskId = 'eval-orch';
     app.engine.registerAgent({
       id: taskId, agent_id: 'agent-orch', assigned_at: new Date().toISOString(), status: 'running',
       subgraph_node_ids: [], backend: 'headless_mcp', orchestrator: true, claudeBinary: primaryBinary,
       objective: 'Manage the engagement: score the frontier, dispatch the right agents, synthesize findings, progress the objectives.',
     } as AgentTask);
 
-    const deadline = opts.timeoutMs ?? (usingFakePrimary ? 30000 : 600000);
-    await waitFor(() => { const s = app!.engine.getTask(taskId)?.status; return s === 'completed' || s === 'failed' || s === 'interrupted'; }, deadline);
+    const reachedTerminal = await waitFor(() => {
+      const s = app!.engine.getTask(taskId)?.status;
+      return s === 'completed' || s === 'failed' || s === 'interrupted';
+    }, deadline);
+    let timedOut = !reachedTerminal;
+    if (timedOut) {
+      for (const task of app.engine.getAgentTasks()) {
+        if (task.status === 'running' || task.status === 'pending') {
+          app.taskExecution.cancelHeadless(task.id, `orchestration evaluation timed out after ${deadline}ms`);
+        }
+      }
+    }
     // Settle: wait until no headless process is active AND no child task is still
     // non-terminal. The second clause matters because a child dispatched past the
     // concurrency cap is queued (non-terminal) but not yet a running process, so
@@ -412,12 +606,23 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     // "saw >=1 child" gate or this can return before children attach.
     const childrenSettled = () => app!.taskExecution.activeHeadlessCount() === 0
       && app!.engine.getAgentTasks().every(t => t.id === taskId || ['completed', 'failed', 'interrupted'].includes(t.status));
-    await waitFor(childrenSettled, Math.min(deadline, 60000));
+    const settled = await waitFor(childrenSettled, Math.min(deadline, 60000));
+    if (!settled) {
+      timedOut = true;
+      for (const task of app.engine.getAgentTasks()) {
+        if (task.status === 'running' || task.status === 'pending') {
+          app.taskExecution.cancelHeadless(task.id, 'orchestration evaluation children did not settle');
+        }
+      }
+      const cancelled = await waitFor(childrenSettled, 10_000);
+      if (!cancelled) throw new Error('Timed-out orchestration workers did not reach terminal state.');
+    }
 
     const logPath = join(logDir, `${taskId}.ndjson`);
     const ndjson = existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
     const { usage, costUsd } = parseEvalUsage(ndjson);
-    const toolCalls = extractToolCalls(ndjson).map(c => ({ tool: c.tool }));
+    const artifactToolCalls = extractToolCalls(ndjson);
+    const toolCalls = artifactToolCalls.map(c => ({ tool: c.tool }));
 
     // Dispatched children = every agent task other than the primary. (Children
     // registered via register_agent carry no persisted `backend` — it resolves to
@@ -447,18 +652,67 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     // Orchestration-specific credit comes from the dispatch criteria, not this one.
     const afterCount = app.engine.exportGraph().nodes.length;
     const record: OrchRunRecord = { toolCalls, dispatches, newNodeCount: Math.max(0, afterCount - beforeCount) };
+    const taskStatus = app.engine.getTask(taskId)?.status;
+    const outcome = classifyEvalOutcome(taskStatus, ndjson, timedOut);
+    const finalizeArtifacts = (details: EvalArtifactCompletion = {}) => artifactSession?.finalize({
+      outcome: details.outcome ?? outcome,
+      agentNdjson: ndjson,
+      record: { ...record, task_status: taskStatus ?? 'unknown' },
+      grade: details.grade,
+      usage: toArtifactUsage(usage),
+      reportedCostUsd: details.reportedCostUsd ?? costUsd,
+      reservedCostUsd: details.reservedCostUsd,
+      graphDelta: { new_node_count: record.newNodeCount },
+      toolCalls: artifactToolCalls,
+      error: details.error,
+    });
 
     const captured = { app, tempDir };
     const cleanup = async () => {
+      if (artifactSession && !artifactSession.hasFinalizationStarted) {
+        finalizeArtifacts({
+          outcome: 'harness_error',
+          error: new Error('Orchestration evaluation cleanup began before artifacts were finalized.'),
+          reservedCostUsd: opts.maxBudgetUsd,
+        });
+      }
       restoreEnv();
       await shutdownOverwatchApp(captured.app).catch(() => { /* ignore */ });
       try { rmSync(captured.tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
     };
-    return { record, usage, usageTokens: usage.accountingTokens, costUsd, cleanup };
+    return {
+      record,
+      outcome,
+      usage,
+      usageTokens: usage.accountingTokens,
+      costUsd,
+      artifactDirectory: artifactSession?.directory,
+      finalizeArtifacts,
+      cleanup,
+    };
   } catch (err) {
+    const logPath = tempDir ? join(tempDir, 'agents', `${taskId}.ndjson`) : undefined;
+    const ndjson = logPath && existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
+    const { usage, costUsd } = parseEvalUsage(ndjson);
+    let artifactError: unknown;
+    try {
+      if (artifactSession && !artifactSession.hasFinalizationStarted) {
+        artifactSession.finalize({
+          outcome: 'harness_error',
+          agentNdjson: ndjson,
+          usage: toArtifactUsage(usage),
+          reportedCostUsd: costUsd,
+          reservedCostUsd: costUsd === undefined ? opts.maxBudgetUsd : 0,
+          error: err,
+        });
+      }
+    } catch (artifactFailure) {
+      artifactError = artifactFailure;
+    }
     restoreEnv();
     if (app) await shutdownOverwatchApp(app).catch(() => { /* ignore */ });
     if (tempDir) { try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ } }
+    if (artifactError) throw new AggregateError([err, artifactError], 'Orchestration evaluation failed and its artifact record could not be finalized.');
     throw err;
   }
 }

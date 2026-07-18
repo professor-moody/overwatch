@@ -133,7 +133,8 @@ function printUsage(): void {
     --timeout-ms N      per-run wall-clock cap (default: ${DEFAULT_ORCH_TIMEOUT_MS})
     --variant <name>    candidate primary prompt to A/B vs control: ${PRIMARY_PROMPT_VARIANTS.filter(v => v !== 'control').join(', ')}
 
-  Children always run fake-claude (cheap). Only the primary spends real tokens.`);
+  Children always run fake-claude (cheap). Only the primary spends real tokens.
+  Every real-run outcome is preserved privately under eval-artifacts/.`);
 }
 
 async function main(): Promise<void> {
@@ -202,6 +203,7 @@ async function main(): Promise<void> {
         model: args.model,
         maxTurns: args.maxTurns,
         maxBudgetUsd: assignedUsd,
+        maxTotalUsd: args.maxTotalUsd,
         timeoutMs: args.timeoutMs,
         variant: arm,
       });
@@ -215,11 +217,29 @@ async function main(): Promise<void> {
       const g = gradeOrchestration(res.record);
       grades.push(g);
       const r = res.record;
-      console.log(`\n[${arm}] trial ${t + 1}/${args.trials}: ${formatUsage(res.usage)} · $${charge.chargedUsd.toFixed(4)} ${charge.source} · ${r.toolCalls.length} primary tool-calls · ${r.dispatches.length} dispatch(es) [${r.dispatches.map(d => `${d.archetype}${d.matchedFrontier ? '✓' : '✗'}`).join(', ')}] · +${r.newNodeCount} nodes`);
+      const capExceeded = charge.chargedUsd > assignedUsd + 0.000001;
+      const artifactOutcome = capExceeded ? 'harness_error' : res.outcome;
+      try {
+        res.finalizeArtifacts({
+          outcome: artifactOutcome,
+          grade: g,
+          reportedCostUsd: res.costUsd,
+          reservedCostUsd: charge.source === 'reserved_cap' ? charge.chargedUsd : 0,
+          error: capExceeded
+            ? new Error(`Provider cost exceeded the assigned in-flight cap of $${assignedUsd.toFixed(6)}.`)
+            : undefined,
+        });
+      } finally {
+        await res.cleanup();
+      }
+      console.log(`\n[${arm}] trial ${t + 1}/${args.trials}: ${formatUsage(res.usage)} · $${charge.chargedUsd.toFixed(4)} ${charge.source} · outcome ${artifactOutcome} · ${r.toolCalls.length} primary tool-calls · ${r.dispatches.length} dispatch(es) [${r.dispatches.map(d => `${d.archetype}${d.matchedFrontier ? '✓' : '✗'}`).join(', ')}] · +${r.newNodeCount} nodes${res.artifactDirectory ? ` · artifacts ${res.artifactDirectory}` : ''}`);
       printGrade(g);
-      await res.cleanup();
-      if (charge.chargedUsd > assignedUsd + 0.000001) {
+      if (capExceeded) {
         console.error(`Provider cost $${charge.chargedUsd.toFixed(6)} exceeded the assigned $${assignedUsd.toFixed(6)} in-flight cap; stopping.`);
+        process.exit(2);
+      }
+      if (res.outcome !== 'completed') {
+        console.error(`Orchestration evaluation ended as ${res.outcome}; it was preserved but does not qualify.`);
         process.exit(2);
       }
     }

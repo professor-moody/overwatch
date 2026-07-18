@@ -9,8 +9,9 @@
 // criteria (starts_with_context, validate_before_execute) need a real model and
 // are exercised by the Tier-2 CLI, not here.
 import { describe, it, expect, afterEach, beforeAll } from 'vitest';
-import { resolve } from 'path';
-import { chmodSync } from 'fs';
+import { join, resolve } from 'path';
+import { chmodSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { createServer } from 'net';
 import { runEvalScenario, extractToolCalls, type EvalRunResult } from '../test-support/eval-run.js';
 import { EVAL_SCENARIOS } from '../test-support/eval-scenarios.js';
@@ -55,4 +56,47 @@ describe.skipIf(!supportsLocalListen)('prompt-eval pipeline smoke (fake claude)'
     expect(calls.map(c => c.tool)).toEqual(['get_agent_context', 'validate_action']);
     expect(calls[1]).toMatchObject({ action_id: 'a1', frontier_item_id: 'f1' });
   });
+
+  it('can explicitly preserve and finalize a fake run without retaining its runtime', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'ow-prompt-eval-artifact-smoke-'));
+    try {
+      last = await runEvalScenario(EVAL_SCENARIOS[0], {
+        preserveArtifacts: true,
+        artifactRoot: join(sandbox, 'artifacts'),
+      });
+      const grade = gradeRun(last.record, EVAL_SCENARIOS[0].rubric);
+      const manifest = last.finalizeArtifacts({ grade });
+      expect(manifest).toMatchObject({ outcome: 'completed', eligible_for_baseline: true });
+      expect(JSON.parse(readFileSync(join(last.artifactDirectory!, 'grade.json'), 'utf8')))
+        .toMatchObject({ outcome: 'completed', grade: { overall: grade.overall } });
+    } finally {
+      if (last) await last.cleanup();
+      last = null;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('cancels a timed-out worker, waits for interruption, and preserves the terminal outcome', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'ow-prompt-eval-timeout-smoke-'));
+    try {
+      const timeoutScenario = { ...EVAL_SCENARIOS[0], id: 'recon-timeout', fakeMode: 'hang' };
+      last = await runEvalScenario(timeoutScenario, {
+        timeoutMs: 500,
+        preserveArtifacts: true,
+        artifactRoot: join(sandbox, 'artifacts'),
+      });
+      expect(last.outcome).toBe('timed_out');
+      expect(last.record.taskStatus).toBe('interrupted');
+      const grade = gradeRun(last.record, timeoutScenario.rubric);
+      const manifest = last.finalizeArtifacts({ grade });
+      expect(manifest).toMatchObject({
+        outcome: 'timed_out',
+        eligible_for_baseline: false,
+      });
+    } finally {
+      if (last) await last.cleanup();
+      last = null;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  }, 30000);
 });

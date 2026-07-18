@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildEvalClaudeArgs, parseEvalUsage } from './eval-run.js';
+import { buildEvalClaudeArgs, classifyEvalOutcome, parseEvalUsage } from './eval-run.js';
 
 describe('buildEvalClaudeArgs', () => {
   it('passes the model and exact in-flight dollar cap to Claude', () => {
@@ -55,5 +55,29 @@ describe('parseEvalUsage', () => {
       cacheCreationInputTokens: 13,
       accountingTokens: 41,
     });
+  });
+});
+
+describe('classifyEvalOutcome', () => {
+  it('preserves every supported terminal task outcome', () => {
+    expect(classifyEvalOutcome('completed', '', false)).toBe('completed');
+    expect(classifyEvalOutcome('failed', '', false)).toBe('failed');
+    expect(classifyEvalOutcome('interrupted', '', false)).toBe('interrupted');
+    expect(classifyEvalOutcome('running', '', false)).toBe('harness_error');
+  });
+
+  it('gives harness timeout precedence over the interrupted cancellation state', () => {
+    expect(classifyEvalOutcome('interrupted', '', true)).toBe('timed_out');
+  });
+
+  it('recognizes Claude budget termination from result and error events', () => {
+    expect(classifyEvalOutcome('failed', JSON.stringify({
+      type: 'result',
+      subtype: 'error_max_budget_usd',
+    }), false)).toBe('budget_exhausted');
+    expect(classifyEvalOutcome('failed', JSON.stringify({
+      type: 'error',
+      error: { message: 'Budget limit exceeded' },
+    }), false)).toBe('budget_exhausted');
   });
 });
