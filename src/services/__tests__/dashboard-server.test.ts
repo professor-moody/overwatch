@@ -396,6 +396,93 @@ describe('DashboardServer', () => {
     }
   });
 
+  it('keeps v1 websocket envelopes intact while v2 receives bounded state patches', () => {
+    vi.useFakeTimers();
+    try {
+      const v1 = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+        on: vi.fn(),
+      };
+      const v2 = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+        on: vi.fn(),
+      };
+      (dashboard as any).mainHub.attachConnection(v1, 1);
+      (dashboard as any).mainHub.attachConnection(v2, 2);
+      v1.send.mockClear();
+      v2.send.mockClear();
+
+      dashboard.onGraphUpdate({ updated_nodes: ['contract-node'] });
+      dashboard.flush();
+
+      const v1Graph = sentMessages(v1).find(message => message.type === 'graph_update');
+      const v2Graph = sentMessages(v2).find(message => message.type === 'graph_update');
+      expect(v1Graph.data.state).toBeDefined();
+      expect(v2Graph.data.state).toBeUndefined();
+      expect(v2Graph.data.delta).toEqual(v1Graph.data.delta);
+
+      vi.advanceTimersByTime(750);
+      const v1Refresh = sentMessages(v1).find(message => message.type === 'state_refresh');
+      const v2Refresh = sentMessages(v2).find(message => message.type === 'state_refresh');
+      expect(v1Refresh.data.state).toBeDefined();
+      expect(v1Refresh.data.patch).toBeUndefined();
+      expect(v2Refresh.data.state).toBeUndefined();
+      expect(v2Refresh.data.patch).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resynchronizes existing v2 clients before advancing a shared patch baseline', () => {
+    const baseline = (dashboard as any).buildFrontendState();
+    const transientAgent = {
+      task_id: 'task-transient',
+      agent_label: 'transient',
+      id: 'task-transient',
+      agent_id: 'transient',
+      status: 'running' as const,
+      assigned_at: '2026-07-18T00:00:00.000Z',
+      queued: false,
+      lifecycle: 'live' as const,
+      live: true,
+      subgraph_node_ids: [],
+      findings_count: 0,
+    };
+    let currentState = { ...baseline, agents: [transientAgent] };
+    const hub = new DashboardMainWebSocketHub(engine, null, {
+      buildState: () => currentState,
+      buildGraph: () => engine.exportGraph({ includeDerivedCommunities: true }),
+      runtimeBuild: {
+        schema_version: 1,
+        input_sha256: 'a'.repeat(64),
+        runtime_pid: process.pid,
+        runtime_started_at: '2026-07-18T00:00:00.000Z',
+        runtime_instance_id: '11111111-1111-4111-8111-111111111111',
+      },
+    });
+    const first = { readyState: WebSocket.OPEN, send: vi.fn(), close: vi.fn(), on: vi.fn() };
+    const second = { readyState: WebSocket.OPEN, send: vi.fn(), close: vi.fn(), on: vi.fn() };
+    try {
+      hub.attachConnection(first as any, 2);
+      currentState = baseline;
+      hub.attachConnection(second as any, 2);
+
+      const firstStates = sentMessages(first).filter(message => message.type === 'full_state');
+      const secondStates = sentMessages(second).filter(message => message.type === 'full_state');
+      expect(firstStates).toHaveLength(2);
+      expect(firstStates[0].data.state.agents).toHaveLength(1);
+      expect(firstStates[1].data.state.agents).toHaveLength(0);
+      expect(secondStates).toHaveLength(1);
+      expect(secondStates[0].data.state.agents).toHaveLength(0);
+    } finally {
+      hub.dispose();
+    }
+  });
+
   it('does not postpone authoritative state refresh under sustained graph updates', () => {
     vi.useFakeTimers();
     try {
@@ -660,7 +747,7 @@ describe('DashboardServer', () => {
     dashboard.flush();
     dashboard.flush();
 
-    expect(mockClient.send).toHaveBeenCalledTimes(1);
+    expect(sentGraphUpdates(mockClient)).toHaveLength(1);
   });
 
   it('flush includes removed_nodes and removed_edges in delta', () => {

@@ -30,6 +30,10 @@ export interface FrontierLeasesState {
 
 export class FrontierLeases {
   private byItem: Map<string, FrontierLease> = new Map();
+  /** Secondary ownership index. Heartbeats and terminal transitions are keyed
+   * by task, so walking every historical lease made their cost proportional to
+   * the complete engagement instead of the touched runtime. */
+  private byTask: Map<string, Set<string>> = new Map();
 
   /**
    * Acquire a lease. Refuses if a different agent already holds an active
@@ -52,21 +56,23 @@ export class FrontierLeases {
       const renewed: FrontierLease = {
         ...existing,
         leased_at: args.now,
-        expires_at: addSeconds(args.now, ttl),
+        expires_at: frontierLeaseExpiry(args.now, ttl),
         ttl_seconds: ttl,
       };
       this.byItem.set(args.frontier_item_id, renewed);
       return { ok: true, lease: renewed };
     }
+    if (existing) this.unindex(existing);
     const lease: FrontierLease = {
       frontier_item_id: args.frontier_item_id,
       agent_id: args.agent_id,
       task_id: args.task_id,
       leased_at: args.now,
-      expires_at: addSeconds(args.now, ttl),
+      expires_at: frontierLeaseExpiry(args.now, ttl),
       ttl_seconds: ttl,
     };
     this.byItem.set(args.frontier_item_id, lease);
+    this.index(lease);
     return { ok: true, lease };
   }
 
@@ -75,27 +81,34 @@ export class FrontierLeases {
    * the lease (it was released or another agent took over after expiry).
    */
   renew(taskId: string, now: string): boolean {
-    for (const [itemId, lease] of this.byItem) {
-      if (lease.task_id !== taskId) continue;
+    const itemIds = this.byTask.get(taskId);
+    if (!itemIds) return false;
+    let renewed = false;
+    for (const itemId of itemIds) {
+      const lease = this.byItem.get(itemId);
+      if (!lease || lease.task_id !== taskId) continue;
       this.byItem.set(itemId, {
         ...lease,
         leased_at: now,
-        expires_at: addSeconds(now, lease.ttl_seconds),
+        expires_at: frontierLeaseExpiry(now, lease.ttl_seconds),
       });
-      return true;
+      renewed = true;
     }
-    return false;
+    return renewed;
   }
 
   /** Release every lease held by this task (on terminal status). */
   releaseByTask(taskId: string): number {
+    const itemIds = this.byTask.get(taskId);
+    if (!itemIds) return 0;
     let released = 0;
-    for (const [itemId, lease] of this.byItem) {
-      if (lease.task_id === taskId) {
-        this.byItem.delete(itemId);
-        released++;
-      }
+    for (const itemId of itemIds) {
+      const lease = this.byItem.get(itemId);
+      if (!lease || lease.task_id !== taskId) continue;
+      this.byItem.delete(itemId);
+      released++;
     }
+    this.byTask.delete(taskId);
     return released;
   }
 
@@ -105,6 +118,7 @@ export class FrontierLeases {
     for (const [itemId, lease] of this.byItem) {
       if (!this.isActive(lease, now)) {
         this.byItem.delete(itemId);
+        this.unindex(lease);
         dropped.push(itemId);
       }
     }
@@ -147,11 +161,45 @@ export class FrontierLeases {
     return lease ? structuredClone(lease) : null;
   }
 
+  /** Exact durable images owned by one task. The result is stable so bounded
+   * coordination records remain byte-deterministic across recovery order. */
+  getSnapshotsByTask(taskId: string): FrontierLease[] {
+    const itemIds = this.byTask.get(taskId);
+    if (!itemIds) return [];
+    return [...itemIds]
+      .sort()
+      .map(itemId => this.byItem.get(itemId))
+      .filter((lease): lease is FrontierLease => lease?.task_id === taskId)
+      .map(lease => structuredClone(lease));
+  }
+
+  /** Read expired durable images without mutating them. The watchdog uses this
+   * preflight to avoid drafting a roster-sized transaction on a no-op tick. */
+  getExpiredSnapshots(now: string): FrontierLease[] {
+    const expired: FrontierLease[] = [];
+    for (const lease of this.byItem.values()) {
+      if (!this.isActive(lease, now)) expired.push(structuredClone(lease));
+    }
+    return expired.sort((left, right) =>
+      left.frontier_item_id < right.frontier_item_id ? -1
+        : left.frontier_item_id > right.frontier_item_id ? 1 : 0);
+  }
+
   /** Install one validated durable image. Only bounded recovery/coordination
    * appliers should call this; ordinary ownership uses acquire/renew/release. */
   applySnapshot(frontier_item_id: string, lease: FrontierLease | null): void {
-    if (lease) this.byItem.set(frontier_item_id, structuredClone(lease));
-    else this.byItem.delete(frontier_item_id);
+    if (lease && lease.frontier_item_id !== frontier_item_id) {
+      throw new Error(`Frontier lease snapshot key ${frontier_item_id} does not match ${lease.frontier_item_id}.`);
+    }
+    const existing = this.byItem.get(frontier_item_id);
+    if (existing) this.unindex(existing);
+    if (lease) {
+      const installed = structuredClone(lease);
+      this.byItem.set(frontier_item_id, installed);
+      this.index(installed);
+    } else {
+      this.byItem.delete(frontier_item_id);
+    }
   }
 
   // ---- Persistence ----
@@ -164,7 +212,7 @@ export class FrontierLeases {
     const leases = new FrontierLeases();
     if (state?.byItem) {
       for (const [itemId, lease] of Object.entries(state.byItem)) {
-        leases.byItem.set(itemId, lease);
+        leases.applySnapshot(itemId, lease);
       }
     }
     return leases;
@@ -175,8 +223,21 @@ export class FrontierLeases {
   private isActive(lease: FrontierLease, now: string): boolean {
     return Date.parse(now) < Date.parse(lease.expires_at);
   }
+
+  private index(lease: FrontierLease): void {
+    const itemIds = this.byTask.get(lease.task_id) ?? new Set<string>();
+    itemIds.add(lease.frontier_item_id);
+    this.byTask.set(lease.task_id, itemIds);
+  }
+
+  private unindex(lease: FrontierLease): void {
+    const itemIds = this.byTask.get(lease.task_id);
+    if (!itemIds) return;
+    itemIds.delete(lease.frontier_item_id);
+    if (itemIds.size === 0) this.byTask.delete(lease.task_id);
+  }
 }
 
-function addSeconds(isoTs: string, seconds: number): string {
+export function frontierLeaseExpiry(isoTs: string, seconds: number): string {
   return new Date(Date.parse(isoTs) + seconds * 1000).toISOString();
 }

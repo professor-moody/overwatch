@@ -51,6 +51,13 @@ export interface MissionContext {
   now?: number;
 }
 
+export interface MissionContextIndex {
+  awaitingAnswerTaskIds: Set<string>;
+  pendingApprovalTaskIds: Set<string>;
+  pendingApprovalFrontierIds: Set<string>;
+  sessionIdsByTaskId: Map<string, string[]>;
+}
+
 const FRESH_MS = 60_000;
 const RECENT_MS = 5 * 60_000;
 
@@ -101,6 +108,61 @@ export function pendingApprovalFor(
   });
 }
 
+/** Build the shared attribution indexes once for a complete fleet projection.
+ * Mission cards used to rescan the entire roster, sessions, approvals, and
+ * questions for every task, turning the Fleet panel into O(tasks²). */
+export function buildMissionContextIndex(ctx: MissionContext): MissionContextIndex {
+  const agents = ctx.agents ?? [];
+  const taskIdByLabel = new Map<string, string | null>();
+  const taskIds = new Set<string>();
+  for (const agent of agents) {
+    const taskId = canonicalAgentTaskId(agent);
+    const label = agent.agent_label ?? agent.agent_id;
+    taskIds.add(taskId);
+    if (!label) continue;
+    if (!taskIdByLabel.has(label)) taskIdByLabel.set(label, taskId);
+    else if (taskIdByLabel.get(label) !== taskId) taskIdByLabel.set(label, null);
+  }
+
+  const awaitingAnswerTaskIds = new Set<string>();
+  for (const query of ctx.agentQueries ?? []) {
+    const owner = query.owner_task_id ?? query.task_id;
+    if (query.status === 'open' && owner) awaitingAnswerTaskIds.add(owner);
+  }
+
+  const pendingApprovalTaskIds = new Set<string>();
+  const pendingApprovalFrontierIds = new Set<string>();
+  for (const action of ctx.pendingActions ?? []) {
+    if (action.task_id) {
+      pendingApprovalTaskIds.add(action.task_id);
+    } else if (action.agent_id && taskIds.has(action.agent_id)) {
+      pendingApprovalTaskIds.add(action.agent_id);
+    } else {
+      const label = action.agent_label ?? action.agent_id;
+      const uniqueTaskId = label ? taskIdByLabel.get(label) : undefined;
+      if (uniqueTaskId) pendingApprovalTaskIds.add(uniqueTaskId);
+    }
+    if (action.frontier_item_id) pendingApprovalFrontierIds.add(action.frontier_item_id);
+  }
+
+  const sessionIdsByTaskId = new Map<string, string[]>();
+  for (const session of ctx.sessions ?? []) {
+    const owner = session.claimed_by
+      ?? (session.agent_id && taskIds.has(session.agent_id) ? session.agent_id : undefined);
+    if (!owner) continue;
+    const ids = sessionIdsByTaskId.get(owner) ?? [];
+    ids.push(session.id);
+    sessionIdsByTaskId.set(owner, ids);
+  }
+
+  return {
+    awaitingAnswerTaskIds,
+    pendingApprovalTaskIds,
+    pendingApprovalFrontierIds,
+    sessionIdsByTaskId,
+  };
+}
+
 /**
  * A running agent is "stuck" when it's still heartbeating (status stays 'running'
  * — a stale heartbeat would have been reaped to 'interrupted') but has made no
@@ -142,22 +204,41 @@ export function stuckIdleMinutes(agent: AgentInfo, now: number): number {
   return Math.max(0, Math.floor(age / 60_000));
 }
 
-export function buildMissionCard(agent: AgentInfo, ctx: MissionContext = {}): MissionCard {
+export function buildMissionCard(
+  agent: AgentInfo,
+  ctx: MissionContext = {},
+  index?: MissionContextIndex,
+): MissionCard {
   const now = ctx.now ?? Date.now();
   const queries = ctx.agentQueries ?? [];
   const actions = ctx.pendingActions ?? [];
-  const ownedSessionIds = sessionsForAgent(ctx.sessions ?? [], agent).map(s => s.id);
+  const taskId = canonicalAgentTaskId(agent);
+  const ownedSessionIds = index
+    ? index.sessionIdsByTaskId.get(taskId) ?? []
+    : sessionsForAgent(ctx.sessions ?? [], agent).map(s => s.id);
 
-  const awaitingAnswer = awaitingAnswerFor(agent, queries);
-  const pendingApproval = pendingApprovalFor(agent, actions, ctx.agents ?? []);
+  const awaitingAnswer = index
+    ? index.awaitingAnswerTaskIds.has(taskId)
+    : awaitingAnswerFor(agent, queries);
+  const pendingApproval = index
+    ? index.pendingApprovalTaskIds.has(taskId)
+      || (!!agent.frontier_item_id
+        && index.pendingApprovalFrontierIds.has(agent.frontier_item_id))
+    : pendingApprovalFor(agent, actions, ctx.agents ?? []);
   const terminalBad = agent.status === 'failed' || agent.status === 'interrupted';
-  // isStuck already excludes blocked agents, so the tone ladder's blocked check
-  // (above stuck) keeps blocked winning — an agent waiting on you is "blocked".
-  const stuck = isStuck(agent, now, {
-    agents: ctx.agents,
-    pendingActions: actions,
-    agentQueries: queries,
-  });
+  // The shared index already resolved blocking attribution. Re-evaluating via
+  // isStuck here would rescan actions, questions, and the roster for every card.
+  const assignedAge = agent.assigned_at ? now - new Date(agent.assigned_at).getTime() : NaN;
+  const idleAge = agent.current_action_at
+    ? now - new Date(agent.current_action_at).getTime()
+    : NaN;
+  const stuck = agent.status === 'running'
+    && !awaitingAnswer
+    && !pendingApproval
+    && Number.isFinite(assignedAge)
+    && assignedAge > STUCK_IDLE_MS
+    && Number.isFinite(idleAge)
+    && idleAge > STUCK_IDLE_MS;
 
   let blocker: string | undefined;
   if (awaitingAnswer) blocker = 'waiting on your answer';
@@ -191,6 +272,17 @@ export function buildMissionCard(agent: AgentInfo, ctx: MissionContext = {}): Mi
     tone,
     scopeNodeCount: (agent.subgraph_node_ids || agent.scope_node_ids || []).length,
   };
+}
+
+/** Linear fleet projection. Callers rendering more than one card should use
+ * this instead of invoking buildMissionCard independently. */
+export function buildMissionCards(
+  agents: AgentInfo[],
+  ctx: Omit<MissionContext, 'agents'> = {},
+): MissionCard[] {
+  const fullContext = { ...ctx, agents };
+  const index = buildMissionContextIndex(fullContext);
+  return agents.map(agent => buildMissionCard(agent, fullContext, index));
 }
 
 export interface MissionGroup {

@@ -1140,7 +1140,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
-        "200": "34a9adb794d999c859f8304933fa37ac52adefef47913f8da6fe499c9e977e1f"
+        "200": "f6f5a76484c4fac44c6819189e6816ac4b2f190215aba208dcca16cc1a11cc31"
       }
     },
     "getGraph": {
@@ -2026,7 +2026,7 @@
     "main": {
       "operation_id": "dashboardMainSocket",
       "path": "/ws",
-      "server_events": "93be3b0a998e49d251158bea19a4ff26349cab3c8d9eb9983f32f550d6096a3f"
+      "server_events": "dd172f046b8c2a6ef7ad19178edd70de29f663cf8e6c7397b17d53619ff27127"
     },
     "session": {
       "operation_id": "dashboardSessionSocket",
@@ -2040,5 +2040,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "1fd67f6c21ce554424ac8affed27e796700eac69b9b380a33c4f813d938e5e69"
+  "schema_hash": "ac885bf1167ddd1d36834a805ec0176bc7f5cbaf6cc7ac040c48833b860193c0"
 }

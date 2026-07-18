@@ -113,6 +113,42 @@ describe('generation-owned main socket', () => {
     controller.stop();
   });
 
+  it('invalidates a synchronized generation and requires a fresh full state after reconnect', () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    const changes: boolean[] = [];
+    const messages: unknown[] = [];
+    const controller = new GenerationSocketController({
+      createSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      onMessage: (data, generation) => {
+        messages.push(data);
+        controller.markSynchronized(generation);
+      },
+      onSynchronizedChange: value => changes.push(value),
+    });
+    controller.start();
+    const staleMessage = sockets[0].onmessage!;
+    sockets[0].onmessage?.({ data: 'baseline-1' } as MessageEvent);
+    expect(controller.isSynchronized()).toBe(true);
+
+    controller.reconnect();
+    expect(sockets[0].close).toHaveBeenCalledOnce();
+    expect(controller.isSynchronized()).toBe(false);
+    staleMessage({ data: 'stale' } as MessageEvent);
+    vi.advanceTimersByTime(1_000);
+    expect(sockets).toHaveLength(2);
+    expect(controller.isSynchronized()).toBe(false);
+    sockets[1].onmessage?.({ data: 'baseline-2' } as MessageEvent);
+    expect(controller.isSynchronized()).toBe(true);
+    expect(messages).toEqual(['baseline-1', 'baseline-2']);
+    expect(changes).toEqual([true, false, true]);
+    controller.stop();
+  });
+
   it('cancels retries on stop and never resurrects a socket', () => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];

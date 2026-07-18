@@ -11,6 +11,8 @@ npm start        # Run the shared HTTP daemon in the foreground
 npm run start:stdio  # Explicit private/compatibility stdio runtime
 npm run start:daemon # Run the shared Streamable HTTP daemon
 npm test         # Run fast source-level tests
+npm run test:scale-soak       # 50k scale + mixed restart/resource gates
+npm run test:scale-soak:extended # Longer local soak before a release
 npm run test:integration:stdio   # Fresh-build stdio integration suite
 npm run test:integration:http    # Fresh-build HTTP transport integration suite
 npm run verify   # Source + stdio integration + HTTP integration + dist freshness check
@@ -137,10 +139,41 @@ Tests use [Vitest](https://vitest.dev/). The source suite is now **4000+ tests a
 npm test                        # Fast source tests (see Vitest summary for current count)
 npm run test:integration:stdio  # Stdio MCP integration (build-backed)
 npm run test:integration:http   # Streamable HTTP transport integration (build-backed)
+npm run test:scale-soak         # Required bounded-scale and restart/resource gate
+npm run test:scale-soak:extended # Longer release-candidate soak profile
 npm run verify                  # All of the above + dist freshness check
 ```
 
 Integration suites auto-skip in restricted environments (e.g., EPERM on `listen()`) using async bind probes.
+
+### Scale and soak profiles
+
+`npm run test:scale-soak` is a required CI gate, not a microbenchmark. It runs
+serially with one worker and proves the following release bounds:
+
+- one durable heartbeat remains below 250 ms and 64 KiB of WAL growth with
+  1,000, 10,000, and 50,000 tasks, and the trusted 50,000-task base reopens
+  with the heartbeat and lease intact;
+- a no-op 50,000-task watchdog cycle stays read-only;
+- agent lineage, duplicate inspection, DTO projection, and dashboard mission
+  projection remain within their checked budgets;
+- ten changes across 50,000-agent and 50,000-frontier collections serialize and
+  apply in linear time as a bounded keyed patch, while exhaustive order tests
+  and an end-to-end reorder prove producer/consumer convergence;
+- 300+ mixed graph, command, agent, runtime, playbook, question, and plan
+  operations retain complete graph/cold and durable-slice semantics through
+  repeated WAL replay, forced base publication, and retained-snapshot rotation;
+  and
+- repeated hub and complete HTTP/WebSocket dashboard start/stop cycles return
+  listeners, timers, and TCP/socket handles to their baseline.
+
+The default profile is intended for every PR and completes within its four-minute
+CI step limit (inside the ten-minute job). Before a compatibility-removal or release candidate, run
+`npm run test:scale-soak:extended`; it expands the mixed restart soak from 12
+to 40 epochs, hub lifecycle cycling from 50 to 250 iterations, and complete
+dashboard server cycling from 10 to 50 iterations.
+`npm run benchmark:agents` is the focused agent-coordination view when tuning a
+specific regression.
 
 ### Prompt behavior-eval
 

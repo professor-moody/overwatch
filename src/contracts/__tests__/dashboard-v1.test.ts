@@ -14,8 +14,10 @@ import {
   CampaignSplitRequestSchema,
   ConfigDivergenceResolveRequestSchema,
   ConfigDivergenceResolveResponseSchema,
+  DashboardStatePatchDtoSchema,
   FRONTIER_TYPES,
   FrontierListDtoSchema,
+  MainWebSocketEventSchema,
   ObjectiveCreateRequestSchema,
   RecoveryStatusResponseSchema,
   SettingsPatchSchema,
@@ -52,6 +54,115 @@ const frontierFixtures = [
 ];
 
 describe('dashboard v1 contracts', () => {
+  it('accepts bounded v2 graph and state patches while retaining v1 full-state refreshes', () => {
+    const graphUpdate = MainWebSocketEventSchema.parse({
+      type: 'graph_update',
+      contract_version: 2,
+      timestamp: '2026-07-18T00:00:00.000Z',
+      data: {
+        history_count: 7,
+        detail: { updated_nodes: ['node-1'] },
+        delta: {
+          nodes: [],
+          edges: [],
+          removed_nodes: [],
+          removed_edges: [],
+        },
+      },
+    });
+    expect(graphUpdate.type).toBe('graph_update');
+    if (graphUpdate.type === 'graph_update') expect(graphUpdate.data.state).toBeUndefined();
+
+    const stateRefresh = MainWebSocketEventSchema.parse({
+      type: 'state_refresh',
+      contract_version: 2,
+      timestamp: '2026-07-18T00:00:01.000Z',
+      data: {
+        history_count: 8,
+        base_revision: 3,
+        state_revision: 4,
+        patch: {
+          state: { warnings: { bounded: true } },
+          unset: ['current_phase'],
+          agents: { upsert: [], remove: ['task-old'], moves: [], total: 0 },
+          active_agents: {
+            upsert: [{ task_id: 'task-live', status: 'running' }],
+            remove: [],
+            moves: [{ id: 'task-live', index: 0 }],
+            total: 1,
+          },
+          frontier: { upsert: [], remove: [], moves: [], total: 0 },
+        },
+      },
+    });
+    expect(stateRefresh.type).toBe('state_refresh');
+    if (stateRefresh.type === 'state_refresh') {
+      expect(stateRefresh.data.state).toBeUndefined();
+      expect(stateRefresh.data.patch?.agents?.remove).toEqual(['task-old']);
+      expect(stateRefresh.data.patch?.active_agents?.upsert)
+        .toEqual([{ task_id: 'task-live', status: 'running' }]);
+      expect(stateRefresh.data.patch?.unset).toEqual(['current_phase']);
+    }
+
+    expect(MainWebSocketEventSchema.safeParse({
+      type: 'state_refresh',
+      contract_version: 2,
+      timestamp: '2026-07-18T00:00:02.000Z',
+      data: { history_count: 9 },
+    }).success).toBe(false);
+    expect(MainWebSocketEventSchema.safeParse({
+      type: 'graph_update',
+      timestamp: '2026-07-18T00:00:03.000Z',
+      data: {
+        history_count: 9,
+        detail: {},
+        delta: { nodes: [], edges: [], removed_nodes: [], removed_edges: [] },
+      },
+    }).success).toBe(false);
+  });
+
+  it('rejects ambiguous or internally inconsistent collection patches', () => {
+    const task = {
+      task_id: 'task-1', agent_label: 'agent-1', id: 'task-1', agent_id: 'agent-1',
+      status: 'running', assigned_at: '2026-07-18T00:00:00.000Z', queued: false,
+      lifecycle: 'live', live: true, subgraph_node_ids: [], findings_count: 0,
+    };
+    const base = { upsert: [], remove: [], moves: [], total: 1 };
+    expect(DashboardStatePatchDtoSchema.safeParse({
+      agents: { ...base, replace: [task] },
+    }).success).toBe(true);
+    expect(DashboardStatePatchDtoSchema.safeParse({
+      agents: { ...base, total: 2, replace: [task] },
+    }).success).toBe(false);
+    expect(DashboardStatePatchDtoSchema.safeParse({
+      agents: { ...base, upsert: [task], replace: [task] },
+    }).success).toBe(false);
+    expect(DashboardStatePatchDtoSchema.safeParse({
+      agents: { ...base, upsert: [task, task], total: 2 },
+    }).success).toBe(false);
+    expect(DashboardStatePatchDtoSchema.safeParse({
+      agents: { ...base, remove: ['task-1', 'task-1'], total: 0 },
+    }).success).toBe(false);
+    expect(DashboardStatePatchDtoSchema.safeParse({
+      agents: { ...base, moves: [{ id: '', index: 0 }] },
+    }).success).toBe(false);
+    expect(DashboardStatePatchDtoSchema.safeParse({
+      agents: { ...base, moves: [{ id: 'task-1', index: 1 }] },
+    }).success).toBe(false);
+    expect(DashboardStatePatchDtoSchema.safeParse({
+      agents: {
+        ...base,
+        total: 2,
+        moves: [{ id: 'task-1', index: 0 }, { id: 'task-2', index: 0 }],
+      },
+    }).success).toBe(false);
+    expect(DashboardStatePatchDtoSchema.safeParse({
+      state: { warnings: {} }, unset: ['warnings'],
+    }).success).toBe(false);
+    expect(DashboardStatePatchDtoSchema.safeParse({ unset: ['agents'] }).success).toBe(false);
+    expect(DashboardStatePatchDtoSchema.safeParse({ unset: ['current_phase', 'current_phase'] }).success).toBe(false);
+  });
+
   it('accepts every canonical frontier kind and target shape', () => {
     const parsed = FrontierListDtoSchema.parse(frontierFixtures);
     expect(parsed.map(item => item.type)).toEqual(FRONTIER_TYPES);

@@ -4,8 +4,10 @@ import {
   projectCampaignDtos,
   projectDashboardState,
   projectDashboardSnapshot,
+  projectDashboardStatePatch,
   projectGraphDelta,
 } from '../dashboard-projectors.js';
+import { applyIndexedCollectionPatch } from '../../contracts/indexed-collection-patch.js';
 
 const progress = (total: number, completed: number) => ({
   total,
@@ -56,7 +58,116 @@ const graph = (): ExportedGraph => ({
   }],
 });
 
+function permutations<T>(values: readonly T[]): T[][] {
+  if (values.length <= 1) return [[...values]];
+  return values.flatMap((value, index) =>
+    permutations([...values.slice(0, index), ...values.slice(index + 1)])
+      .map(rest => [value, ...rest]));
+}
+
 describe('dashboard pure projectors', () => {
+  it('projects agent and frontier collections as keyed upsert/remove/move patches', () => {
+    const previous = {
+      agents: [
+        { task_id: 'task-a', value: 1 },
+        { task_id: 'task-b', value: 1 },
+      ],
+      active_agents: [{ task_id: 'task-a' }],
+      frontier: [{ id: 'fi-a', value: 1 }, { id: 'fi-b', value: 1 }],
+      warnings: { marker: 'old' },
+    };
+    const next = {
+      agents: [
+        { task_id: 'task-c', value: 1 },
+        { task_id: 'task-b', value: 2 },
+      ],
+      active_agents: [{ task_id: 'task-c' }],
+      frontier: [{ id: 'fi-b', value: 2 }, { id: 'fi-c', value: 1 }],
+      warnings: { marker: 'new' },
+    };
+
+    expect(projectDashboardStatePatch(previous, next)).toEqual({
+      state: { warnings: { marker: 'new' } },
+      agents: {
+        upsert: [
+          { task_id: 'task-c', value: 1 },
+          { task_id: 'task-b', value: 2 },
+        ],
+        remove: ['task-a'],
+        moves: [{ id: 'task-c', index: 0 }],
+        total: 2,
+      },
+      active_agents: {
+        upsert: [{ task_id: 'task-c' }],
+        remove: ['task-a'],
+        moves: [{ id: 'task-c', index: 0 }],
+        total: 1,
+      },
+      frontier: {
+        upsert: [{ id: 'fi-b', value: 2 }, { id: 'fi-c', value: 1 }],
+        remove: ['fi-a'],
+        moves: [{ id: 'fi-c', index: 1 }],
+        total: 2,
+      },
+    });
+  });
+
+  it('expresses removed scalar state explicitly across JSON transport', () => {
+    const patch = projectDashboardStatePatch(
+      {
+        agents: [], active_agents: [], frontier: [],
+        current_phase: 'recon', persistence_recovery: { writable: false },
+      },
+      {
+        agents: [], active_agents: [], frontier: [],
+        current_phase: undefined,
+      },
+    );
+
+    expect(JSON.parse(JSON.stringify(patch))).toEqual({
+      unset: ['current_phase', 'persistence_recovery'],
+    });
+  });
+
+  it('converges every five-record producer permutation through the shared client applier', () => {
+    const previousAgents = ['a', 'b', 'c', 'd', 'e']
+      .map((id, index) => ({ task_id: id, value: index }));
+    for (const order of permutations(previousAgents)) {
+      const nextAgents = order.map((item, index) => ({
+        ...item,
+        value: item.task_id === 'c' ? 100 + index : item.value,
+      }));
+      const patch = projectDashboardStatePatch(
+        { agents: previousAgents, active_agents: [], frontier: [] },
+        { agents: nextAgents, active_agents: [], frontier: [] },
+      ).agents!;
+      expect(applyIndexedCollectionPatch(previousAgents, patch, item => item.task_id))
+        .toEqual(nextAgents);
+    }
+  });
+
+  it('atomically converges mixed insertion, removal, value, and order changes', () => {
+    const previous = [
+      { task_id: 'a', value: 1 },
+      { task_id: 'b', value: 1 },
+      { task_id: 'c', value: 1 },
+      { task_id: 'd', value: 1 },
+      { task_id: 'e', value: 1 },
+    ];
+    const next = [
+      { task_id: 'a', value: 2 },
+      { task_id: 'c', value: 1 },
+      { task_id: 'new', value: 1 },
+      { task_id: 'e', value: 2 },
+      { task_id: 'd', value: 1 },
+    ];
+    const patch = projectDashboardStatePatch(
+      { agents: previous, active_agents: [], frontier: [] },
+      { agents: next, active_agents: [], frontier: [] },
+    ).agents!;
+    expect(applyIndexedCollectionPatch(previous, patch, item => item.task_id)).toEqual(next);
+  });
+
   it('aggregates parent progress and deduplicates child findings and agents', () => {
     const parent = campaign();
     const child = campaign({

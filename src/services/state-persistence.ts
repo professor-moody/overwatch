@@ -83,7 +83,10 @@ import {
 import type { ActivityAppendPayloadV1 } from './activity-append.js';
 import type { ApplicationCommandChangePayloadV1 } from './application-command-change.js';
 import type { CommandCoordinationChangePayloadV1 } from './command-coordination-change.js';
-import type { AgentCoordinationChangePayloadV1 } from './agent-coordination-change.js';
+import {
+  validateAgentCoordinationChangePayload,
+  type AgentCoordinationChangePayloadV1,
+} from './agent-coordination-change.js';
 import {
   TransactionFootprintAccumulator,
   type GraphColdInverse,
@@ -113,7 +116,6 @@ import {
   coordinationRecoveryWarning,
   mergeCoordinationRecoveryWarnings,
   normalizeAgentTask,
-  resolveAgentIdentity,
   taskIdOf,
   type CoordinationRecoveryWarning,
 } from './agent-identity.js';
@@ -2232,6 +2234,32 @@ export class StatePersistence {
       normalizedAgents.set(taskIdOf(task), task);
     }
     this.ctx.agents = normalizedAgents;
+    // Recovery may resolve many relationships (most notably one lease per
+    // active task). Build identity indexes once instead of materializing and
+    // scanning the complete roster for every relationship.
+    const agentsByLabel = new Map<string, import('../types.js').AgentTask[]>();
+    for (const task of this.ctx.agents.values()) {
+      for (const label of new Set([agentLabelOf(task), task.agent_id])) {
+        const matches = agentsByLabel.get(label) ?? [];
+        matches.push(task);
+        agentsByLabel.set(label, matches);
+      }
+    }
+    const resolveRestoredAgentIdentity = (reference: string) => {
+      const exact = this.ctx.agents.get(reference);
+      if (exact) return { status: 'exact' as const, task: exact };
+      const labelMatches = agentsByLabel.get(reference) ?? [];
+      if (labelMatches.length === 1) {
+        return { status: 'unique_legacy_label' as const, task: labelMatches[0]! };
+      }
+      if (labelMatches.length > 1) {
+        return {
+          status: 'ambiguous_legacy_label' as const,
+          candidate_task_ids: labelMatches.map(taskIdOf).sort(),
+        };
+      }
+      return { status: 'missing' as const };
+    };
     const coordinationWarnings: CoordinationRecoveryWarning[] = Array.isArray(data.coordinationRecoveryWarnings)
       ? JSON.parse(JSON.stringify(data.coordinationRecoveryWarnings))
       : [];
@@ -2243,7 +2271,7 @@ export class StatePersistence {
       preservedAgentLabel?: string,
     ): { task_id?: string; agent_label?: string; warning?: CoordinationRecoveryWarning } => {
       if (!reference) return {};
-      const resolution = resolveAgentIdentity(this.ctx.agents.values(), reference);
+      const resolution = resolveRestoredAgentIdentity(reference);
       if (resolution.status === 'exact' || resolution.status === 'unique_legacy_label') {
         return {
           task_id: taskIdOf(resolution.task),
@@ -4666,12 +4694,8 @@ export class StatePersistence {
           case 'agent_coordination_change': {
             if (!mutators) return undefined;
             const change = payload as unknown as AgentCoordinationChangePayloadV1;
-            if (
-              change.payload_version !== 1
-              || !Array.isArray(change.task_changes)
-              || change.task_changes.length < 1
-              || !Array.isArray(change.lease_changes)
-            ) return undefined;
+            const validation = validateAgentCoordinationChangePayload(change);
+            if (!validation.ok) return undefined;
             break;
           }
           case 'activity_append': {

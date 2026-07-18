@@ -130,7 +130,7 @@ import {
   type AgentCoordinationTaskChangeV1,
 } from './agent-coordination-change.js';
 import { readAgentWorkMetadata } from './agent-work.js';
-import { FrontierLeases } from './frontier-leases.js';
+import { FrontierLeases, frontierLeaseExpiry, type FrontierLease } from './frontier-leases.js';
 import type {
   DurableStatePatchV1,
   DurableStateSliceKey,
@@ -828,10 +828,18 @@ export class GraphEngine {
           }
         }
       }
+      // Journal and apply the canonical postimage, including provenance
+      // derived from both the existing record and the incoming observation.
+      // Recovery normalizes loaded nodes, so persisting raw merge attributes
+      // here previously made sources/first/last-seen change only after restart.
+      const normalizedMerged: Partial<NodeProperties> = {
+        ...merged,
+        ...normalizeNodeProvenance({ ...existing, ...merged } as NodeProperties),
+      };
       // Journal the GUARDED result (post type-strip), so WAL replay records what
       // was actually applied — not the raw incoming props whose conflicting type
       // the live path refused. (updateNode already journals post-guard.)
-      this.ctx.applyJournaledMutation('merge_node_attrs', { props: merged }, () => {
+      this.ctx.applyJournaledMutation('merge_node_attrs', { props: normalizedMerged }, () => {
         // A property change on an existing node can add or resolve frontier work — e.g.
         // filling `services` clears an incomplete_node item, setting `cve_checked_at`
         // retires a cve_research item, a new `version` creates one. Previously the merge
@@ -840,16 +848,23 @@ export class GraphEngine {
         // the frontier too, but only when the merge actually changes an attribute (a no-op
         // re-observation shouldn't churn the cache). Shallow compare — arrays/objects
         // compare by ref, conservatively counting as changed (safe over-invalidation).
-        const attrsChanged = Object.keys(merged).some(
-          k => (existing as Record<string, unknown>)[k] !== (merged as Record<string, unknown>)[k],
+        const attrsChanged = Object.keys(normalizedMerged).some(
+          k => (existing as Record<string, unknown>)[k] !== (normalizedMerged as Record<string, unknown>)[k],
         );
-        this.ctx.graph.mergeNodeAttributes(props.id, merged);
+        this.ctx.graph.mergeNodeAttributes(props.id, normalizedMerged);
         this.invalidateHealthReport();
         if (attrsChanged) this.invalidateFrontierCache();
       });
     } else {
-      this.ctx.applyJournaledMutation('add_node', { props }, () => {
-        this.ctx.graph.addNode(props.id, props);
+      // New nodes use the same canonical provenance shape in live memory and
+      // after base/WAL restore. Previously load-time normalization alone added
+      // first/last-seen fields, so a crash/reopen changed graph semantics.
+      const normalizedProps = {
+        ...props,
+        ...normalizeNodeProvenance(props),
+      } as NodeProperties;
+      this.ctx.applyJournaledMutation('add_node', { props: normalizedProps }, () => {
+        this.ctx.graph.addNode(normalizedProps.id, normalizedProps);
         this.invalidatePathGraph();
         this.invalidateAllCaches();
       });
@@ -4360,6 +4375,42 @@ export class GraphEngine {
   }
 
   /**
+   * Commit a bounded coordination delta through the canonical recovery
+   * applier.  Building the immutable payload must not touch the live roster or
+   * lease index: WAL append happens first, then StatePersistence captures exact
+   * touched-record preimages and applies the same operation used at startup.
+   *
+   * When an activity record is supplied it is finalized before the commit and
+   * travels in the same transaction, so a visible heartbeat cannot be split
+   * from its audit event.
+   */
+  private commitAgentCoordinationChange(
+    payload: AgentCoordinationChangePayloadV1,
+    activity?: ActivityLogInput,
+  ): MutationApplyResult {
+    const validation = validateAgentCoordinationChangePayload(payload);
+    if (!validation.ok) throw new Error(validation.reason);
+    const operations: EngineOperation[] = [{
+      type: 'agent_coordination_change',
+      payload: validation.payload as unknown as Record<string, unknown>,
+    }];
+    if (activity) {
+      const prepared = this.ctx.withClock(payload.occurred_at, () =>
+        this.ctx.prepareActivityAppend(activity));
+      operations.push({
+        type: 'activity_append',
+        payload: prepared.payload as unknown as Record<string, unknown>,
+      });
+    }
+    const transactionDraft = { operations };
+    return this.ctx.applyEngineTransaction(
+      transactionDraft,
+      () => this.persistence.applyTransactionDraft(transactionDraft, this),
+      'agent coordination change',
+    );
+  }
+
+  /**
    * Install complete post-images for the touched tasks. New live tasks are
    * dispatch-policy checked as one batch and acquire any frontier lease in the
    * same WAL transaction. Existing tasks are compare-and-swap updated; no
@@ -4478,13 +4529,7 @@ export class GraphEngine {
         after: leaseAfter.get(frontierItemId) ?? before,
       })),
     };
-    const validation = validateAgentCoordinationChangePayload(payload);
-    if (!validation.ok) throw new Error(validation.reason);
-    const result = this.ctx.applyCompositeJournaledMutation(
-      'agent_coordination_change',
-      payload as unknown as Record<string, unknown>,
-      () => this.applyAgentCoordinationChangeMutation(payload, false),
-    );
+    const result = this.commitAgentCoordinationChange(payload);
     if (result.status === 'skipped') {
       throw new Error(`Agent coordination was rejected: ${result.reason}`);
     }
@@ -4535,13 +4580,7 @@ export class GraphEngine {
         after,
       }],
     };
-    const validation = validateAgentCoordinationChangePayload(payload);
-    if (!validation.ok) throw new Error(validation.reason);
-    const result = this.ctx.applyCompositeJournaledMutation(
-      'agent_coordination_change',
-      payload as unknown as Record<string, unknown>,
-      () => this.applyAgentCoordinationChangeMutation(payload, false),
-    );
+    const result = this.commitAgentCoordinationChange(payload);
     if (result.status === 'skipped') return false;
     this.persist();
     return true;
@@ -4603,13 +4642,6 @@ export class GraphEngine {
    * activity event, but the task/lease projection still crosses the canonical
    * durable state boundary. */
   agentHeartbeat(taskId: string, now?: string, opts?: { silent?: boolean }): boolean {
-    if (!this.ctx.isDraftingTransaction()) {
-      return this.transactDurableSlices(
-        'record agent heartbeat',
-        ['agents', 'activity', 'frontier'],
-        () => this.applyAgentHeartbeat(taskId, now, opts),
-      );
-    }
     return this.applyAgentHeartbeat(taskId, now, opts);
   }
 
@@ -4619,9 +4651,50 @@ export class GraphEngine {
     opts?: { silent?: boolean },
   ): boolean {
     this.assertPersistenceWritable();
-    const ok = this.agentMgr.heartbeat(taskId, now, opts);
-    if (ok && !opts?.silent) this.persist();
-    return ok;
+    const current = this.ctx.agents.get(taskId);
+    if (!current) return false;
+    if (current.status === 'completed'
+      || current.status === 'failed'
+      || current.status === 'interrupted') return false;
+
+    const occurredAt = now ?? this.ctx.nowIso();
+    const before = detached(current);
+    const after = detached({ ...current, heartbeat_at: occurredAt });
+    const leasesBefore = this.ctx.frontierLeases.getSnapshotsByTask(taskId);
+    const payload: AgentCoordinationChangePayloadV1 = {
+      payload_version: AGENT_COORDINATION_CHANGE_PAYLOAD_VERSION,
+      operation_id: uuidv4(),
+      occurred_at: occurredAt,
+      reason: 'record agent heartbeat',
+      task_changes: [{ task_id: taskId, before, after }],
+      lease_changes: leasesBefore.map(lease => ({
+        frontier_item_id: lease.frontier_item_id,
+        before: lease,
+        after: {
+          ...lease,
+          leased_at: occurredAt,
+          expires_at: frontierLeaseExpiry(occurredAt, lease.ttl_seconds),
+        },
+      })),
+    };
+    const activity: ActivityLogInput | undefined = opts?.silent
+      ? undefined
+      : {
+          description: `Agent heartbeat: ${agentLabelOf(after)}`,
+          agent_id: agentLabelOf(after),
+          category: 'agent',
+          event_type: 'heartbeat',
+          linked_agent_task_id: taskId,
+          frontier_item_id: after.frontier_item_id,
+          result_classification: 'neutral',
+          details: { heartbeat_at: occurredAt },
+        };
+    const result = this.commitAgentCoordinationChange(payload, activity);
+    if (result.status === 'skipped') {
+      throw new Error(`Agent heartbeat was rejected: ${result.reason}`);
+    }
+    this.persist();
+    return true;
   }
 
   /**
@@ -4667,6 +4740,7 @@ export class GraphEngine {
 
   reapStaleAgents(now?: string): number {
     if (!this.ctx.isDraftingTransaction()) {
+      if (this.agentMgr.getStaleHeartbeatTaskIds(now).length === 0) return 0;
       return this.transactDurableSlices(
         'reap stale agents',
         ['agents', 'plans_questions', 'approvals', 'activity', 'frontier'],
@@ -4763,15 +4837,40 @@ export class GraphEngine {
    * watchdog. Returns the dropped frontier_item_ids.
    */
   reapExpiredFrontierLeases(now?: string): string[] {
-    if (!this.ctx.isDraftingTransaction()) {
-      return this.transactDurableSlices(
-        'reap expired frontier leases',
-        ['agents'],
-        () => this.reapExpiredFrontierLeases(now),
-      );
-    }
     this.assertPersistenceWritable();
-    return this.ctx.frontierLeases.reapExpired(now ?? this.ctx.nowIso());
+    const occurredAt = now ?? this.ctx.nowIso();
+    const expired = this.ctx.frontierLeases.getExpiredSnapshots(occurredAt);
+    if (expired.length === 0) return [];
+    const dropped: string[] = [];
+    for (let offset = 0; offset < expired.length; offset += 16) {
+      const batch = expired.slice(offset, offset + 16);
+      this.applyExpiredFrontierLeaseBatch(batch, occurredAt);
+      dropped.push(...batch.map(lease => lease.frontier_item_id));
+    }
+    return dropped;
+  }
+
+  private applyExpiredFrontierLeaseBatch(
+    batch: FrontierLease[],
+    occurredAt: string,
+  ): void {
+    const payload: AgentCoordinationChangePayloadV1 = {
+      payload_version: AGENT_COORDINATION_CHANGE_PAYLOAD_VERSION,
+      operation_id: uuidv4(),
+      occurred_at: occurredAt,
+      reason: 'reap expired frontier leases',
+      task_changes: [],
+      lease_changes: batch.map(lease => ({
+        frontier_item_id: lease.frontier_item_id,
+        before: lease,
+        after: null,
+      })),
+    };
+    const result = this.commitAgentCoordinationChange(payload);
+    if (result.status === 'skipped') {
+      throw new Error(`Expired frontier lease reap was rejected: ${result.reason}`);
+    }
+    this.persist();
   }
 
   /**

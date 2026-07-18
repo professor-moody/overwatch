@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useEngagementStore } from '../stores/engagement-store';
 import { useToastStore } from '../stores/toast-store';
-import type { WsMessage, FullStateData, GraphUpdateData, StateRefreshData, SessionInfo, AgentConsoleEvent } from '../lib/types';
+import type { WsMessage, FullStateData, GraphUpdateData, StateRefreshData, SessionInfo, AgentConsoleEvent, AgentInfo } from '../lib/types';
 import * as api from '../lib/api';
 import { createDashboardWebSocket } from '../lib/dashboard-transport';
 import { FallbackPollCoordinator, GenerationSocketController } from '../lib/generation-socket';
@@ -31,6 +31,26 @@ export function WsProvider({ children }: { children: ReactNode }) {
 
     const abortFallbackPoll = () => {
       fallbackPoll.invalidate();
+    };
+
+    const notifyAgentCompletions = (
+      previousAgents: AgentInfo[],
+      candidates: AgentInfo[],
+    ) => {
+      const previousById = new Map(previousAgents.map(agent => [agent.task_id ?? agent.id, agent]));
+      const toast = useToastStore.getState().addToast;
+      for (const agent of candidates) {
+        const previous = previousById.get(agent.task_id ?? agent.id);
+        if (previous?.status === 'running' && agent.status === 'completed') {
+          toast({
+            type: 'success',
+            title: 'Agent completed',
+            message: `${(agent.agent_label || agent.agent_id || agent.id).slice(0, 8)} — ${agent.findings_count || 0} findings`,
+            linkPanel: 'agents',
+            linkItem: agent.task_id ?? agent.id,
+          });
+        }
+      }
     };
 
     const handleMessage = (raw: unknown, generation: number, controller: GenerationSocketController) => {
@@ -63,25 +83,25 @@ export function WsProvider({ children }: { children: ReactNode }) {
 
         switch (msg.type) {
           case 'graph_update': {
+            const data = msg.data as unknown as GraphUpdateData;
             const prevAgents = s.agents;
-            s.applyGraphUpdate(msg.data as unknown as GraphUpdateData);
-            for (const agent of store.getState().agents) {
-              const previous = prevAgents.find(candidate => candidate.id === agent.id);
-              if (previous?.status === 'running' && agent.status === 'completed') {
-                toast({
-                  type: 'success',
-                  title: 'Agent completed',
-                  message: `${(agent.agent_id || agent.id).slice(0, 8)} — ${agent.findings_count || 0} findings`,
-                  linkPanel: 'agents',
-                  linkItem: agent.id,
-                });
-              }
-            }
+            s.applyGraphUpdate(data);
+            // Contract v2 graph deltas contain no roster. Avoid scanning the
+            // entire fleet for an event that cannot carry lifecycle changes.
+            if (data.state?.agents) notifyAgentCompletions(prevAgents, data.state.agents);
             break;
           }
-          case 'state_refresh':
-            s.applyStateRefresh(msg.data as unknown as StateRefreshData);
+          case 'state_refresh': {
+            const data = msg.data as unknown as StateRefreshData;
+            const prevAgents = s.agents;
+            s.applyStateRefresh(data);
+            const candidates = data.patch?.agents?.replace
+              ?? data.patch?.agents?.upsert
+              ?? data.state?.agents
+              ?? [];
+            notifyAgentCompletions(prevAgents, candidates);
             break;
+          }
           case 'action_pending':
             s.updatePendingAction(msg.type, msg.data);
             toast({
@@ -142,7 +162,8 @@ export function WsProvider({ children }: { children: ReactNode }) {
             break;
         }
       } catch (error) {
-        console.error('[WS] Message parse error:', error);
+        console.error('[WS] State-channel event rejected; requiring a fresh full state:', error);
+        controller.reconnect();
       }
     };
 
@@ -172,7 +193,9 @@ export function WsProvider({ children }: { children: ReactNode }) {
     };
 
     controller = new GenerationSocketController({
-      createSocket: () => createDashboardWebSocket(buildDashboardWebSocketPath('main', {})),
+      createSocket: () => createDashboardWebSocket(
+        `${buildDashboardWebSocketPath('main', {})}?contract=2`,
+      ),
       onMessage: (data, generation) => handleMessage(data, generation, controller),
       onSynchronizedChange: synchronized => {
         if (!active) return;
