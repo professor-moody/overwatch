@@ -26,8 +26,7 @@ New to the dashboard? The [Cockpit Walkthrough](cockpit-walkthrough.md) tours th
 These pages aren't tutorials — they're answers to specific questions:
 
 - **[parse_output vs report_finding](parse-vs-report.md)** — which tool to use to get data into the graph
-- **[Session Instructions](session-instructions.md)** — the core loop (`AGENTS.md` content) for the AI to follow
-- **[CLI Adapter](cli-adapter.md)** — operate Overwatch via shell when MCP is unavailable
+- **[Session Instructions](session-instructions.md)** — runtime prompt authority and the current instrumented operator loop
 
 ---
 
@@ -41,11 +40,10 @@ flowchart LR
     B --> C[Bootstrap<br/>scan + ingest]
     C --> D{Main loop}
     D --> E[next_task]
-    E --> F[validate_action]
-    F --> G[execute]
+    E --> F[log_thought decision]
+    F --> G[run_tool / run_bash<br/>instrumented execution]
     G --> H[parse_output<br/>or report_finding]
-    H --> I[log_action_event]
-    I --> D
+    H --> D
     D -.objective hit.-> J[generate_report]
     J --> K[run_retrospective]
 
@@ -53,7 +51,7 @@ flowchart LR
     classDef loop fill:#3b82f6,stroke:#1e40af,color:#fff
     classDef end_ fill:#d97706,stroke:#92400e,color:#fff
     class A,B start
-    class D,E,F,G,H,I loop
+    class D,E,F,G,H loop
     class J,K end_
 ```
 

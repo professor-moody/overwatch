@@ -1,4 +1,13 @@
-# CLI Adapter
+<!-- DOCS_STATUS: archived-unimplemented-design -->
+
+# CLI Adapter (unimplemented design archive)
+
+!!! danger "Not a shipped operator workflow"
+    This page preserves an early design proposal. Overwatch does not ship the
+    `overwatch-adapter` repository, its `./ow` wrapper, or the commands shown
+    below. The page is intentionally absent from active navigation. Use the
+    supported [`overwatch` terminal CLI](../cli.md), shared HTTP MCP daemon, or
+    explicit solo-stdio compatibility mode instead.
 
 **Goal:** Run Overwatch from a non-MCP environment — when policy blocks MCP, when you're using a non-MCP client, or when you want shell-level auditability.
 

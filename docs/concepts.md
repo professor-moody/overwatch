@@ -97,7 +97,9 @@ When the LLM's context window overflows, Claude Code **compacts** — summarizin
 Overwatch survives compaction because the graph lives outside the context window. After compaction:
 
 1. Claude Code starts a fresh context
-2. The `AGENTS.md` instructions tell it to call `get_state()` first
+2. The runtime-generated prompt tells it to reload `get_system_prompt` and
+   `get_state`; `AGENTS.md` carries the same fallback reminder when MCP is
+   unavailable
 3. `get_state()` reconstructs the current operational briefing from durable state:
     - Scope and objectives
     - All discoveries and access

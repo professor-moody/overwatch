@@ -46,20 +46,29 @@ dashboard listener.
 
 ### Remote token mode
 
-Loopback access needs no dashboard token. When binding the dashboard to a
-non-loopback host, set `OVERWATCH_DASHBOARD_TOKEN` and enter through a URL such
-as `https://ops.example.test/?token=<token>`.
+Loopback access needs no dashboard token. When setup sees a non-loopback bind
+and no supplied `OVERWATCH_DASHBOARD_TOKEN`, it generates one automatically.
+Setup stores the credential in the private `0600`
+`.overwatch-dashboard-token` file and records that file's absolute path in the
+runtime profile. You may supply your own strong token while the daemon is
+stopped; otherwise read the generated token from that file.
 
-Run setup with the host and token once. Setup stores the token in a private
-`0600` file and the runtime profile retains that file path for later lifecycle
-commands:
+`0.0.0.0` is a **bind address**, not a browser destination. Enter through a
+client-reachable DNS name or IP, for example
+`https://ops.example.test/?token=<token>` or
+`https://192.0.2.20:8384/?token=<token>`:
 
 ```bash
 npm run daemon:stop
 OVERWATCH_DASHBOARD_HOST=0.0.0.0 \
-OVERWATCH_DASHBOARD_TOKEN='<strong-random-token>' npm run setup
+npm run setup
 npm run daemon:start
 ```
+
+To choose the credential instead of generating it, include
+`OVERWATCH_DASHBOARD_TOKEN='<strong-random-token>'` on the setup command. Treat
+the token file like a password: keep it local, do not commit it, and do not put
+its value in logs or shared shell history.
 
 The browser captures the landing token in `sessionStorage` under
 `overwatch.dashboard.token`, removes every `token` query parameter from the
@@ -69,7 +78,9 @@ parameters, and hash. The shared transport then sends `Authorization: Bearer
 requests. Protected media and downloads are loaded through authenticated blob
 URLs. The main-state, session-terminal, and action-output WebSockets receive an
 encoded `token` query parameter because browser WebSocket handshakes cannot set
-an Authorization header.
+an Authorization header. The bundled dashboard selects the canonical main
+socket contract with `/ws?contract=2`; omitting `contract=2` retains the legacy
+full-state contract for compatibility.
 
 If browser storage is unavailable, the captured credential remains in memory
 for that page lifetime. Reloading then requires a fresh token-bearing landing
@@ -149,7 +160,7 @@ Click any node to open the right-side inspector. It shows:
 - Clickable neighbor list (click a neighbor to navigate to it)
 - Clickable service summary items (navigate to service/edge nodes)
 - **Derivation chain** (for credential nodes) — walks `DERIVED_FROM` edges bidirectionally to show the full credential chain with derivation methods
-- **Screenshot** (for webapp nodes with a `screenshot_evidence_id`) — the ingested capture is rendered inline (from `/api/evidence/<id>/image`); click to open full-size
+- **Screenshot** (for webapp nodes with a `screenshot_evidence_id`) — the ingested capture is rendered inline (from `/api/evidence/{evidence_id}/image`); click to open full-size
 
 ### Frontier Item Navigation
 
@@ -380,8 +391,8 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/api/agents/dispatch` | POST | Dispatch a sub-agent (`{ target_node_ids, archetype?, skill?, campaign_id?, frontier_item_id? }`) |
 | `/api/agents/quick-deploy` | POST | Ad-hoc deploy — scope a raw IP/CIDR/domain + dispatch the recommended/chosen agent type |
 | `/api/agent-archetypes` | GET | Agent-type catalog for the Deploy picker |
-| `/api/agents/:id/directive` | POST | Steer one running agent — one validated directive op via `executeOps` |
-| `/api/agents/:id/dismiss` | POST | Remove a terminal agent from the roster (409 if it's still running/pending — cancel first) |
+| `/api/agents/{task_id}/directive` | POST | Steer one running agent — one validated directive op via `executeOps` |
+| `/api/agents/{task_id}/dismiss` | POST | Remove a terminal agent from the roster (409 if it's still running/pending — cancel first) |
 | `/api/fleet/directive` | POST | Fleet-wide pause/resume/stop (optionally one campaign) |
 | `/api/fleet/dismiss` | POST | Bulk "Clear finished" — dismiss every terminal agent (optionally one campaign) |
 | `/api/commands` | POST | NL command — preview / confirm / deny (operator cockpit) |
@@ -389,18 +400,18 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/api/commands/{command_id}` | GET | One durable command and its stored terminal outcome |
 | `/api/config/scope/preview` | POST | Read-only dry-run of a scope change — nodes entering/leaving scope, resolved suggestions (Add Targets) |
 | `/api/config/scope` | PATCH | Apply a scope change (full-replacement body, diffed server-side → `updateScope`) |
-| `/api/actions/:id/approve` · `/api/actions/:id/deny` | POST | Resolve a pending action (inline approve/deny; canonical `resolveApprovalRequest` path) |
+| `/api/actions/{action_id}/approve` · `/api/actions/{action_id}/deny` | POST | Resolve a pending action (inline approve/deny; canonical `resolveApprovalRequest` path) |
 | `/api/actions/approve-batch` · `/api/actions/deny-batch` | POST | Bulk resolve `{ action_ids[] }` (deny takes one shared `reason`) — each id routes through the same canonical path |
 | `/api/plans` | GET | Open planner-proposed plans awaiting confirmation |
-| `/api/agent-queries` · `/api/agent-queries/:id/answer` | GET · POST | Agent→operator question inbox + answer |
-| `/api/actions/:id/output` | GET | Raw stdout/stderr (head-by-default) + run metadata (Analysis workspace) |
-| `/api/evidence/:id/raw` | GET | Bounded, paged (`offset`/`max_bytes`) raw-evidence read |
-| `/api/evidence/:id/image` | GET | Serve a `screenshot` evidence blob as raw image bytes — raster only (PNG/JPEG/GIF/WebP; SVG excluded), 25 MB cap, `nosniff` + inline disposition. 404 if absent, 415 if not a viewable image |
-| `/api/actions/:id/reparse` | POST | Re-parse a run's output — preview (`ingest:false`) or promote (`ingest:true`) to the graph |
+| `/api/agent-queries` · `/api/agent-queries/{query_id}/answer` | GET · POST | Agent→operator question inbox + answer |
+| `/api/actions/{action_id}/output` | GET | Raw stdout/stderr (head-by-default) + run metadata (Analysis workspace) |
+| `/api/evidence/{evidence_id}/raw` | GET | Bounded, paged (`offset`/`max_bytes`) raw-evidence read |
+| `/api/evidence/{evidence_id}/image` | GET | Serve a `screenshot` evidence blob as raw image bytes — raster only (PNG/JPEG/GIF/WebP; SVG excluded), 25 MB cap, `nosniff` + inline disposition. 404 if absent, 415 if not a viewable image |
+| `/api/actions/{action_id}/reparse` | POST | Re-parse a run's output — preview (`ingest:false`) or promote (`ingest:true`) to the graph |
 | `/api/parsers` | GET | Supported parser names for the re-parse picker |
-| `ws://…/ws` | WebSocket | Live graph delta + `agent_console_update` / `agent_query` push stream |
-| `ws://…/ws/session/:id` | WebSocket | Component-owned interactive-session terminal channel |
-| `ws://…/ws/actions/:id/output` | WebSocket | Live stdout/stderr stream of a running action (Analysis) |
+| `ws://…/ws?contract=2` | WebSocket | Canonical revisioned graph/state patches + `agent_console_update` / `agent_query`; omitting `contract=2` retains the compatibility full-state stream |
+| `ws://…/ws/session/{session_id}` | WebSocket | Component-owned interactive-session terminal channel |
+| `ws://…/ws/actions/{action_id}/output` | WebSocket | Live stdout/stderr stream of a running action (Analysis) |
 
 ## Verifying Dashboard Status
 

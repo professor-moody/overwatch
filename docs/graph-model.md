@@ -129,7 +129,7 @@ For engagements with `engagement_nonce` populated, action and event IDs are dete
 | `title` | `string` | Page title |
 | `final_url` | `string` | Post-redirect URL (recorded when it differs from the scanned URL) |
 | `screenshot_path` | `string` | Screenshot filename from a visual-recon report (gowitness/aquatone) |
-| `screenshot_evidence_id` | `string` | Evidence id of the ingested screenshot PNG — viewable via `GET /api/evidence/<id>/image` (set by the `ingest_screenshots` tool) |
+| `screenshot_evidence_id` | `string` | Evidence id of the ingested screenshot PNG — viewable via `GET /api/evidence/{evidence_id}/image` (set by the `ingest_screenshots` tool) |
 
 ### Vulnerability Properties
 

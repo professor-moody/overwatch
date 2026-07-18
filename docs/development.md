@@ -4,18 +4,27 @@ For current development direction, see the [Roadmap](roadmap.md). For a commit-b
 
 ## Build & Run
 
+Create the managed runtime profile before any normal start command. Setup is
+state-preserving on an established checkout:
+
 ```bash
+npm ci
 npm run build    # Compile TypeScript + copy dashboard assets
+npm run setup    # Create/preserve engagement + write managed runtime/client wiring
+npm run daemon:start # Recommended detached shared owner
+npm run doctor   # Verify the running owner and client wiring
+
 npm run dev      # Watch mode (tsc --watch)
-npm start        # Run the shared HTTP daemon in the foreground
+npm start        # Foreground shared daemon; requires the setup profile
 npm run start:stdio  # Explicit private/compatibility stdio runtime
-npm run start:daemon # Run the shared Streamable HTTP daemon
+npm run start:daemon # Foreground shared Streamable HTTP daemon
 npm test         # Run fast source-level tests
 npm run test:scale-soak       # 50k scale + mixed restart/resource gates
 npm run test:scale-soak:extended # Longer local soak before a release
 npm run test:integration:stdio   # Fresh-build stdio integration suite
 npm run test:integration:http    # Fresh-build HTTP transport integration suite
-npm run verify   # Source + stdio integration + HTTP integration + dist freshness check
+npm run verify   # Full source/DOM/journey/scale/integration/lifecycle/package verification
+npm run check:dist # Separate tracked-build freshness check after npm run build
 ```
 
 ## Project Structure
@@ -141,8 +150,14 @@ npm run test:integration:stdio  # Stdio MCP integration (build-backed)
 npm run test:integration:http   # Streamable HTTP transport integration (build-backed)
 npm run test:scale-soak         # Required bounded-scale and restart/resource gate
 npm run test:scale-soak:extended # Longer release-candidate soak profile
-npm run verify                  # All of the above + dist freshness check
+npm run verify                  # Docs/API drift, source/DOM/journeys/scale,
+                                # stdio+HTTP, lifecycle, release, and package checks
+npm run build && npm run check:dist # Separate tracked dist freshness check
 ```
+
+`npm run verify` does **not** invoke `check:dist`. CI runs the production build
+and generated/package checks in their own jobs; use the explicit command above
+when reviewing a change that is expected to update tracked build output.
 
 Integration suites auto-skip in restricted environments (e.g., EPERM on `listen()`) using async bind probes.
 

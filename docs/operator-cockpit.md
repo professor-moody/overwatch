@@ -69,9 +69,9 @@ Each resolves to one or more `OperatorOp`s, previews, and runs through `executeO
 
 The directive substrate ([`manage_agent_directive`](tools/manage-agent-directive.md)) is delivered on the agent's heartbeat as `pending_directive`; the agent calls [`acknowledge_agent_directive`](tools/acknowledge-agent-directive.md) and honors it. Only a **live `headless_mcp` agent** acknowledges directives — for any other target (a `manual`/`scripted` backend, or a task with no live process) the directive is **advisory**: it's recorded and shown to the operator, but nothing auto-applies it, and the activity log + command result say so ("recorded … advisory") rather than "issued". The cockpit surfaces it as:
 
-- **Per-agent** Pause / Resume / Stop buttons + a free-text box (`instruct`) on the agent context panel — `POST /api/agents/:id/directive` builds one directive op and runs it through `executeOps`.
+- **Per-agent** Pause / Resume / Stop buttons + a free-text box (`instruct`) on the agent context panel — `POST /api/agents/{task_id}/directive` builds one directive op and runs it through `executeOps`.
 - **Fleet-wide** Pause/Resume/Stop all (optionally one campaign) — `POST /api/fleet/directive` fans out directive ops over the running set.
-- **Roster cleanup** — a terminal (completed/failed/interrupted) agent can be **dismissed** from the roster (`POST /api/agents/:id/dismiss`, 409 if still live), or all of them cleared at once via **Clear finished** (`POST /api/fleet/dismiss`). This only removes the finished card from the roster; the agent's activity + findings stay in the log.
+- **Roster cleanup** — a terminal (completed/failed/interrupted) agent can be **dismissed** from the roster (`POST /api/agents/{task_id}/dismiss`, 409 if still live), or all of them cleared at once via **Clear finished** (`POST /api/fleet/dismiss`). This only removes the finished card from the roster; the agent's activity + findings stay in the log.
 
 ## Seeing everything
 
@@ -92,7 +92,7 @@ Each campaign's **detail** view shows a **Campaign Noise** gauge — that campai
 
 ## Escalation — agents asking the operator {#escalation}
 
-A running agent at a genuine fork calls [`ask_operator`](tools/ask-operator.md) and waits by heartbeating. The durable question lands in `AgentQueryStore` and surfaces in the cockpit's **Agent Questions** inbox; the operator answers (`POST /api/agent-queries/:id/answer`) and the answer is delivered as `pending_answer`. Delivery is at-least-once until the agent acts and passes `acknowledged_query_id` on a later heartbeat. Questions retain their original absolute expiry across restart, and a task's still-actionable questions are marked expired when it goes terminal, so a dead agent's question never lingers in the inbox.
+A running agent at a genuine fork calls [`ask_operator`](tools/ask-operator.md) and waits by heartbeating. The durable question lands in `AgentQueryStore` and surfaces in the cockpit's **Agent Questions** inbox; the operator answers (`POST /api/agent-queries/{query_id}/answer`) and the answer is delivered as `pending_answer`. Delivery is at-least-once until the agent acts and passes `acknowledged_query_id` on a later heartbeat. Questions retain their original absolute expiry across restart, and a task's still-actionable questions are marked expired when it goes terminal, so a dead agent's question never lingers in the inbox.
 
 When the effective policy queues an action, the approval gate works the same
 way—an agent's target-facing call blocks, the operator can resolve it from the
@@ -147,7 +147,7 @@ The **Analysis** workspace (Investigate group) is where the operator **assesses 
 
 - **Run list** — every agent tool run derived from the activity history (status: running / success / failure / partial; tool; command; agent; targets), filterable by status + free text.
 - **Assessment view** — for a selected run: raw **stdout/stderr** (scrollable, stdout↔stderr toggle, find-in-output) **plus** the run's parsed findings and linked graph nodes. Head-by-default with a **Load more** (up to the 1 MiB server cap), and clear banners for truncated / missing / capture-failed streams.
-- **Live streaming** — while a run is in flight, its output streams in real time over `ws://…/ws/actions/:id/output` (an engine-owned `ActionOutputBuffer`); on completion the view falls back to the durable evidence (the source of truth).
+- **Live streaming** — while a run is in flight, its output streams in real time over `ws://…/ws/actions/{action_id}/output` (an engine-owned `ActionOutputBuffer`); on completion the view falls back to the durable evidence (the source of truth).
 - **Re-parse & promote** — pick a parser, **Preview** what it extracts (node/edge counts), then **Promote to graph**. Routes through the same parse→ingest pipeline as the [`parse_output`](tools/parse-output.md) tool (`parseAndMaybeIngest`), so validation/events/graph mutation stay identical. Preview never mutates the graph.
 - **Deploy-at-findings** — one-click deploy a follow-up agent at the run's target nodes (dispatch) or raw IPs/CIDRs (quick-deploy), with a recommended agent type — reusing the same validated dispatch/quick-deploy paths, no retyping node IDs.
 
@@ -163,19 +163,19 @@ This makes the workspace a tight assess → re-parse → deploy loop, suggest-on
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /api/commands` | NL command — preview (`{command}`) / confirm (`{confirm,plan_id}`) / deny (`{deny,plan_id}`) |
-| `GET /api/actions/:id/output` | Raw stdout/stderr (head-by-default) + metadata for a run (Analysis) |
-| `GET /api/evidence/:id/raw` | Bounded, paged (`offset`/`max_bytes`) raw-evidence read |
-| `ws://…/ws/actions/:id/output` | Live stdout/stderr stream of a running action |
-| `POST /api/actions/:id/reparse` | Re-parse an action's output: preview (`ingest:false`) or promote (`ingest:true`) |
+| `GET /api/actions/{action_id}/output` | Raw stdout/stderr (head-by-default) + metadata for a run (Analysis) |
+| `GET /api/evidence/{evidence_id}/raw` | Bounded, paged (`offset`/`max_bytes`) raw-evidence read |
+| `ws://…/ws/actions/{action_id}/output` | Live stdout/stderr stream of a running action |
+| `POST /api/actions/{action_id}/reparse` | Re-parse an action's output: preview (`ingest:false`) or promote (`ingest:true`) |
 | `GET /api/parsers` | Supported parser names for the re-parse picker |
 | `GET /api/plans` | Open planner-proposed plans awaiting confirmation |
 | `GET /api/find-paths` | Structured attack-path query — `from`+`to` or `objective`, `optimize`, `max` (backs the Attack Paths **Custom path** picker; engine-ranked, supports `balanced`) |
-| `POST /api/agents/:id/directive` | Steer one agent (one validated directive op) |
-| `POST /api/agents/:id/dismiss` | Remove a terminal agent from the roster (409 if still running/pending) |
+| `POST /api/agents/{task_id}/directive` | Steer one agent (one validated directive op) |
+| `POST /api/agents/{task_id}/dismiss` | Remove a terminal agent from the roster (409 if still running/pending) |
 | `POST /api/fleet/directive` | Fleet-wide pause/resume/stop (optionally by campaign) |
 | `POST /api/fleet/dismiss` | Bulk "Clear finished" — dismiss all terminal agents (optionally by campaign) |
-| `GET /api/agent-queries` · `POST /api/agent-queries/:id/answer` | The agent-question inbox |
-| `POST /api/actions/:id/approve` · `POST /api/actions/:id/deny` | Resolve a pending action inline (canonical `resolveApprovalRequest`) |
+| `GET /api/agent-queries` · `POST /api/agent-queries/{query_id}/answer` | The agent-question inbox |
+| `POST /api/actions/{action_id}/approve` · `POST /api/actions/{action_id}/deny` | Resolve a pending action inline (canonical `resolveApprovalRequest`) |
 | `POST /api/actions/approve-batch` · `POST /api/actions/deny-batch` | Bulk resolve `{ action_ids[] }` — each id routes through the same canonical path (deny takes one shared reason) |
 | `POST /api/config/scope/preview` · `PATCH /api/config/scope` | Add Targets — read-only impact dry-run, then apply via `updateScope` |
 | `GET /api/agent-archetypes` | The agent-type catalog for the Deploy picker |

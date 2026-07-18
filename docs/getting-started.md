@@ -190,10 +190,12 @@ expected. With the daemon active, run `npm run doctor`
 to verify its PID/build/state identity, MCP token, Claude CLI
 worker flags, and port ownership.
 
-Terminal Claude connects to the already-running Overwatch engine and reads
+Terminal Claude connects to the already-running Overwatch engine. At runtime,
+`get_system_prompt(role="primary")` is authoritative because it includes the
+current engagement, OPSEC posture, and live tool registry.
 [`AGENTS.md`](https://github.com/professor-moody/overwatch/blob/main/AGENTS.md)
-as the primary session prompt. The dashboard, CLI, Claude, and dispatched agents
-now share the same durable commands, state, leases, and playbook ownership.
+is the offline fallback. The dashboard, CLI, Claude, and dispatched agents now
+share the same durable commands, state, leases, and playbook ownership.
 
 Dashboard-managed Claude workers are separate headless processes, not copies of
 your terminal session. Each gets a temporary task-specific MCP configuration,
@@ -229,7 +231,9 @@ Once `claude` is running and connected, the AI is waiting for direction. Some go
 > **"Show me a path from any owned credential to Domain Admin."**
 > Triggers `find_paths` and the AI explains what's missing.
 
-You're the operator giving direction; the AI handles the `validate_action` → `log_action_event` → execute → `parse_output` → `report_finding` bookkeeping for you.
+You're the operator giving direction; the AI uses instrumented `run_tool` /
+`run_bash` execution for validation, approval, lifecycle logging, and evidence,
+then lands discoveries through `parse_output` or `report_finding`.
 
 For a fully narrated example, read the [End-to-End Walkthrough](playbook/walkthrough.md).
 
@@ -300,22 +304,12 @@ semantics, planner diagnosis, end-of-day choices, and safe backups, use the
 
 ---
 
-## Run as a persistent daemon (HTTP)
+## Shared daemon reference
 
 The Quick Start already runs Overwatch as an **HTTP daemon** so the dashboard,
 the [`overwatch` CLI](cli.md), terminal Claude, and dispatched sub-agents share
-the same live engagement. This section explains the wiring and how to switch an
-older solo stdio setup.
-
-The default setup already wires Claude to this endpoint and creates the same
-stable token the daemon will reuse:
-
-```bash
-cd /absolute/path/to/overwatch
-npm run daemon:start                # detached; returns after READY
-npm run start:daemon                # foreground equivalent
-npm run daemon:status
-```
+the same live engagement. Setup has already written the required profile, MCP
+token, and client entry; normal starts do not need transient path overrides.
 
 Lifecycle commands are identity-verified against the persisted runtime profile
 and the daemon's state-family lease:
@@ -330,26 +324,10 @@ and the daemon's state-family lease:
 | `npm run start:daemon` | Foreground form for service managers or interactive diagnostics |
 | `npm run upgrade` | Dependency/live state preflight, verified stop, authoritative frozen state/WAL preflight, `npm ci`, build, and detached restart after you pull |
 
-The first upgrade preflight runs before downtime; a blocked early check leaves
-the current daemon running. The authoritative frozen check runs after stop and,
-if blocked, attempts to restart the unchanged compiled daemon before any
-install/build. A competing physical owner can make that availability recovery
-fail closed, but cannot become a second writer.
-After that check passes, a cross-process state-family reservation remains held
-through dependency installation and build. Startup hands the reservation to
-the replacement runtime by publishing the new durable owner before release;
-competing checkouts and direct runtimes fail closed during this interval.
-The lifecycle never runs `git pull`
-and never rewrites engagement configuration,
-state/WAL/snapshots, evidence, reports, tapes, or migration backups. If stop
-cannot prove the live PID's physical identity, it fails closed and signals
-nothing. Start, stop, restart, and upgrade are serialized by a local lifecycle
-lock. A failed final flush is not reported as a clean stop and blocks automatic
-restart or upgrade until recovery is inspected.
-
-Closing the browser or terminal Claude does not stop this daemon. Conversely,
-an intentional stop does not resume a live model turn later: durable state and
-artifacts remain, but unfinished managed work must be resumed or redispatched.
+For exact shutdown, interrupted-work, upgrade, and backup semantics, use
+[Daily Operation](daily-operations.md). Closing the browser or terminal Claude
+does not stop the daemon. An intentional stop preserves durable state and
+artifacts but does not reconstruct a live model turn.
 
 It binds two loopback ports:
 
@@ -358,14 +336,14 @@ It binds two loopback ports:
 | `127.0.0.1:3000` | MCP endpoint (`POST /mcp`) | Claude Code, headless sub-agents |
 | `127.0.0.1:8384` | Dashboard + `/api` | The browser dashboard, the `overwatch` CLI |
 
-Every MCP client gets its own `mcp-session-id`, but they all read and write the **same** graph, sessions, and approval queue — that's what lets the dashboard, a terminal Claude, the CLI, and sub-agents coordinate on one engagement.
+Every MCP client gets its own `mcp-session-id`, but they all use the **same**
+graph, sessions, approvals, leases, and playbook ownership.
 
-### Point Claude Code at the daemon
+### Return from solo stdio mode
 
-If you started with solo stdio mode, switch safely without replacing the
-engagement. First exit the terminal Claude session that owns the stdio runtime;
-setup deliberately refuses to change profiles while that writer is live. Then
-persist the shared profile and start it once:
+If you started with solo stdio mode, exit the terminal Claude session that owns
+it before returning to the shared profile. Setup preserves the engagement while
+rewriting machine-local runtime and client wiring:
 
 ```bash
 npm run setup
@@ -373,35 +351,10 @@ npm run daemon:start
 npm run doctor
 ```
 
-```json
-{
-  "mcpServers": {
-    "overwatch": {
-      "type": "http",
-      "url": "http://127.0.0.1:3000/mcp",
-      "headers": { "Authorization": "Bearer <local setup token>" }
-    }
-  }
-}
-```
-
 The `/mcp` endpoint requires a bearer token by default, even on loopback.
 Setup writes it into the local `.mcp.json` and stores the same value `0600` in
-`.overwatch-mcp-token`; daemon restarts reuse that file automatically. You can
-still provide `OVERWATCH_MCP_TOKEN` explicitly while the daemon is stopped and
-rerun setup; setup publishes that same authority to the token file and client
-configuration so startup can prove they converge.
-
-For a non-loopback dashboard, setup likewise stores the dashboard credential in
-a `0600` token file and records only that file's path in the runtime profile.
-Later `start`, `status`, `stop`, and `upgrade` commands retain remote
-authentication without requiring the original setup shell environment.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OVERWATCH_HTTP_PORT` | `3000` | MCP HTTP port |
-| `OVERWATCH_HTTP_HOST` | `127.0.0.1` | MCP bind address |
-| `OVERWATCH_MCP_TOKEN` | *(auto-generated)* | Bearer token required on `/mcp` |
+`.overwatch-mcp-token`; daemon restarts reuse that file automatically. Setup
+and lifecycle commands verify the profile, token file, and client entry agree.
 
 ### Operate from the terminal — the `overwatch` CLI
 
@@ -421,10 +374,11 @@ Skip this section unless you actually need it.
 
 ### Audit trail (defensible evidence)
 
-Two opt-in features turn Overwatch into a tamper-evident, replayable system of record. Both are off by default and free to ignore for a lab or CTF.
-
-1. **Hash-chained activity log** — set `"hash_chain_enabled": true` in `engagement.json`. Every system + agent event gets `prev_hash` and `event_hash`; `verify_activity_chain` proves the log hasn't been edited.
-2. **JSON-RPC tape proxy** — run the AI client through `overwatch-mcp-tape` to capture every wire-level MCP frame. After the engagement, `register_tape_session` imports the tape and links it to the activity log. Now you can prove the AI called `validate_action` before every `run_bash`.
+New engagements enable the hash-chained activity log by default; the chain is
+tamper-evident even without a signing key. Checkpoint signing and JSON-RPC tape
+recording remain opt-in. Prefer the dashboard's in-process Tape control for the
+shared daemon; the standalone `overwatch-mcp-tape` proxy is only for an
+intentional isolated stdio session.
 
 Details in [Concepts — Audit Trail](concepts.md#audit-trail).
 
@@ -435,7 +389,7 @@ The dashboard is on by default at `http://localhost:8384`. To change the port or
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OVERWATCH_DASHBOARD_PORT` | `8384` | Set to `0` to disable |
-| `OVERWATCH_DASHBOARD_TOKEN` | *(none)* | If set, requires `?token=<value>` |
+| `OVERWATCH_DASHBOARD_TOKEN` | *(none on loopback; generated for non-loopback)* | Optional setup-time override; remote browsers land with `?token=<value>` |
 
 Runtime-profile changes are deliberate: run `npm run daemon:stop`, rerun setup
 with the new variables, then `npm run daemon:start`. Setup refuses to change

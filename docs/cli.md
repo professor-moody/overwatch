@@ -34,6 +34,7 @@ approval timeout behavior, planner diagnosis, shutdown effects, and backups.
 The engagement must be running (it serves the API on `:8384`):
 
 ```bash
+npm run setup            # once per checkout/profile; preserves existing engagement
 npm run daemon:start     # or: npm run demo:daemon  (demo engagement)
 ```
 
@@ -240,8 +241,10 @@ Color auto-disables when output is piped or `NO_COLOR` is set, so
 
 ## Remote / authenticated servers
 
-A loopback server (the default) needs no auth. For a server bound to a non-loopback
-host, set the token (the server logs/uses `OVERWATCH_DASHBOARD_TOKEN`):
+A loopback server (the default) needs no dashboard auth. For a non-loopback
+bind, stopped setup generates the dashboard token when one is not supplied and
+stores it in `.overwatch-dashboard-token` (`0600`). Pass that value explicitly
+or through `OVERWATCH_DASHBOARD_TOKEN`:
 
 ```bash
 overwatch status --url https://host:8384 --token "$OVERWATCH_DASHBOARD_TOKEN"
