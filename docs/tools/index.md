@@ -111,11 +111,12 @@ The checked-in [schema manifest](../reference/tool-schema-manifest.json) records
 ### Engagement Setup
 
 Conversational engagement creation + configuration — so nobody hand-edits
-`engagement.json`. [`create_engagement`](create-engagement.md) /
-[`list_engagements`](list-engagements.md) build + list configs (create-then-start:
-restart to activate); [`add_objective`](add-objective.md),
+`engagement.json`. [`create_engagement`](create-engagement.md) creates an
+inactive config and [`list_engagements`](list-engagements.md) lists active and
+inactive configs; neither switches the running daemon, and dashboard switching
+is not currently supported. [`add_objective`](add-objective.md),
 [`set_opsec`](set-opsec.md), and [`update_scope`](update-scope.md) configure the
-active engagement.
+current active engagement through the revisioned write-through path.
 
 If the active file, runtime, and durable state disagree, use
 [`get_recovery_status`](get-recovery-status.md) to inspect the exact observed

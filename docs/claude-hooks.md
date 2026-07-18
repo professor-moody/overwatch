@@ -16,7 +16,7 @@ It does **not** activate MCP or hooks by itself. `.mcp.json` and
 machine-specific paths. The recommended daemon setup creates both safely:
 
 ```bash
-npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm run setup
 ```
 
 That command preserves other MCP entries, an existing `engagement.json`, and
@@ -28,6 +28,17 @@ also writes the shared HTTP MCP credential and converges the managed hook settin
 without removing unrelated entries. Use the manual
 example-copying flow below only when you intentionally want the solo stdio
 compatibility mode or need to merge an existing custom configuration by hand.
+
+For actual engagement work, launch the terminal client with the engagement
+gate armed:
+
+```bash
+OVERWATCH_ENGAGEMENT_ACTIVE=1 claude
+```
+
+Plain `claude` still connects through the generated MCP entry, but these
+engagement-only hooks remain silent. Leave the flag unset when developing
+Overwatch itself.
 
 ## `.mcp.json` vs `.claude/settings.json`
 

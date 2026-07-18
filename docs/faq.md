@@ -21,6 +21,18 @@ process restart.
 
 See [Compaction](concepts.md#compaction) for details.
 
+### What is the current engagement model?
+
+One daemon owns one current active engagement. Terminal Claude, the dashboard,
+the CLI, planners, and deployed agents all share it. Add scope through
+**Console → Add Targets** or `update_scope`; edit objectives and OPSEC through
+**Settings** or `add_objective` / `set_opsec`.
+
+**New Engagement** and `create_engagement` can write another inactive
+configuration, and `list_engagements` can list it. Creation does not switch the
+running daemon, and the dashboard does not currently support engagement
+switching.
+
 ### Can I run multiple engagements simultaneously?
 
 Not in a single server instance. Each Overwatch server runs one engagement. To run multiple engagements, start multiple server instances with different `OVERWATCH_CONFIG` paths and `OVERWATCH_DASHBOARD_PORT` values, and configure separate MCP entries in Claude Code.

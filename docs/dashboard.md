@@ -9,7 +9,7 @@ The dashboard starts on port **8384** (configurable via
 recommended startup is one shared daemon:
 
 ```bash
-npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm run setup
 npm run daemon:start
 npm run doctor
 ```
@@ -20,6 +20,13 @@ to this owner. Re-running setup refreshes client wiring but never replaces an
 existing engagement. If its config is missing beside retained state or other
 engagement artifacts, setup preserves them and enters or requests explicit
 recovery instead of creating a competing empty engagement.
+
+The daemon owns one current active engagement. Use **Console → Add Targets** to
+change its scope and **Settings** to change objectives or OPSEC; the same
+changes are available to terminal Claude through `update_scope`,
+`add_objective`, and `set_opsec`. **New Engagement** creates a separate inactive
+configuration. It does not switch this daemon, and the dashboard does not
+currently provide engagement switching.
 
 ```
 http://localhost:8384

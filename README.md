@@ -9,10 +9,12 @@ It runs as a **multi-agent operator cockpit**: a human operator drives a primary
 ```bash
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
-npm install
-npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm ci
+npm run build
+npm run setup
 npm run daemon:start
 npm run doctor
+OVERWATCH_ENGAGEMENT_ACTIVE=1 claude
 ```
 
 > **Note:** `node-pty` is an optional native dependency used for local PTY sessions. It requires native build tools (Python 3, C++ compiler). If it fails to install, the rest of Overwatch works normally — only `local_pty` sessions will be unavailable.
@@ -31,8 +33,24 @@ set.
 If you run `npm run doctor` before the first start, its warning that the daemon
 is not running is expected. `npm run daemon:start` starts the
 verified daemon in the background, so the same terminal remains free. Open
-`http://127.0.0.1:8384`, then run `claude` or the CLI there. You can run
+`http://127.0.0.1:8384`, then run
+`OVERWATCH_ENGAGEMENT_ACTIVE=1 claude` for engagement work or use the CLI. A
+plain `claude` still connects to MCP, but intentionally leaves the
+engagement-only anti-drift hooks inactive. You can run
 `npm run doctor` again there to verify the live daemon and local build match.
+
+Setup is initial selection and client wiring, not the way to edit a running
+engagement. On a fresh checkout you may add `--template`, `--name`, `--cidr`, or
+`--domain`; those values are used only when setup creates `engagement.json`.
+Afterward, add scope from **Console → Add Targets** (or `update_scope`), edit
+objectives and OPSEC in **Settings** (or `add_objective` / `set_opsec`), and let
+the revisioned write-through service keep the live engine, durable state, and
+active file aligned.
+
+The dashboard's **New Engagement** flow and the `create_engagement` MCP tool
+create another validated, inactive config. They do not switch the running
+daemon away from its current engagement; dashboard engagement switching is not
+currently supported.
 
 There is exactly **one Overwatch runtime owner**. Terminal Claude connects to
 that daemon over MCP; the browser dashboard and `overwatch` CLI use its API;
@@ -88,7 +106,8 @@ absolute paths and still goes through the ownership gate:
 ```
 
 Do not hand-edit one side of this pair; rerun `npm run setup:stdio` to reconcile
-it. Then run `claude`. `.claude/settings.json` enables hooks that keep Claude using
+it. Then run `OVERWATCH_ENGAGEMENT_ACTIVE=1 claude` for engagement work.
+`.claude/settings.json` installs hooks that keep Claude using
 Overwatch instead of drifting into raw target-facing Bash. See the full
 [Getting Started](https://professor-moody.github.io/overwatch/getting-started/)
 guide.
