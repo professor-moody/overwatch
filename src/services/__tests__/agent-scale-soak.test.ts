@@ -78,19 +78,26 @@ describe.sequential('agent coordination scale and soak gates', () => {
       // have a real trusted base so its WAL tail is restart-replayable.
       engine.persistImmediate();
       const beforeBytes = journalBytes(stateFile);
-      const started = performance.now();
-      expect(engine.agentHeartbeat(
-        fixture.target_task_id,
-        '2026-07-17T00:01:00.000Z',
-        { silent: true },
-      )).toBe(true);
-      elapsed[size] = performance.now() - started;
+      let heartbeatSequence = 0;
+      let finalHeartbeatAt = '';
+      elapsed[size] = measured(() => {
+        finalHeartbeatAt = new Date(
+          Date.parse('2026-07-17T00:00:55.000Z') + heartbeatSequence * 1_000,
+        ).toISOString();
+        heartbeatSequence += 1;
+        expect(engine.agentHeartbeat(
+          fixture.target_task_id,
+          finalHeartbeatAt,
+          { silent: true },
+        )).toBe(true);
+      });
       const walGrowth = journalBytes(stateFile) - beforeBytes;
+      const leaseReadAt = new Date(Date.parse(finalHeartbeatAt) + 1_000).toISOString();
 
       expect(walGrowth).toBeLessThan(64 * 1_024);
       expect(engine.getTask(fixture.target_task_id)?.heartbeat_at)
-        .toBe('2026-07-17T00:01:00.000Z');
-      expect(engine.getActiveFrontierLeases('2026-07-17T00:01:01.000Z')
+        .toBe(finalHeartbeatAt);
+      expect(engine.getActiveFrontierLeases(leaseReadAt)
         .find(lease => lease.frontier_item_id === fixture.target_frontier_item_id))
         .toMatchObject({ task_id: fixture.target_task_id });
 
@@ -99,9 +106,9 @@ describe.sequential('agent coordination scale and soak gates', () => {
       engines.push(reopened);
       expect(reopened.getTask(fixture.target_task_id)).toMatchObject({
         status: 'pending',
-        heartbeat_at: '2026-07-17T00:01:00.000Z',
+        heartbeat_at: finalHeartbeatAt,
       });
-      expect(reopened.getActiveFrontierLeases('2026-07-17T00:01:01.000Z')
+      expect(reopened.getActiveFrontierLeases(leaseReadAt)
         .find(lease => lease.frontier_item_id === fixture.target_frontier_item_id))
         .toMatchObject({ task_id: fixture.target_task_id });
       expect(reopened.getPersistenceRecoveryStatus()).toMatchObject({
