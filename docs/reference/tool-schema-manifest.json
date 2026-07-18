@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
-  "tool_count": 91,
-  "registry_sha256": "a45188a59b808c3853ed0f2639a3e94738fb0e960acd1f537ec0cf8a8c89053c",
+  "tool_count": 95,
+  "registry_sha256": "b64ba41aab7ee1b8d3c85e84f088e7aa0d195dd5e0cfbdcd3817a8dae434d00d",
   "categories": [
     {
       "id": "state-readiness",
@@ -2101,6 +2101,37 @@
       }
     },
     {
+      "name": "find_duplicate_agent_work",
+      "title": "Find Duplicate Agent Work",
+      "description": "Find groups of agent tasks that have the same canonical work signature.\n\nThis is an exact, conservative comparison of scope, frontier/campaign linkage,\nagent type, role, skill, and objective. It does not mutate or hide any task.\nThis fleet-wide inspection is restricted to the operator or an orchestrator task.",
+      "category": "agents-planning",
+      "category_label": "Agents & planning",
+      "category_order": 40,
+      "read_only": true,
+      "destructive": false,
+      "idempotent": true,
+      "open_world": false,
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {},
+        "type": "object"
+      },
+      "output_schema": null,
+      "input_schema_sha256": "7a014b717a77aac971ea0ab5c0ff47bb13e6cae7ef9442d9dedb15ce36381b15",
+      "output_schema_sha256": null,
+      "documentation": {
+        "path": "tools/agent-work.md",
+        "purpose": "Find groups of agent tasks that have the same canonical work signature."
+      },
+      "archetype_exposure": [
+        "default"
+      ],
+      "persistence": {
+        "mode": "read",
+        "allowed_during_recovery": true
+      }
+    },
+    {
       "name": "find_paths",
       "title": "Find Attack Paths",
       "description": "Find paths through the graph from current access to objectives or between specific nodes.\n\nUse this to:\n- Find the shortest path from compromised hosts to an objective\n- Evaluate if a newly discovered credential opens a path\n- Compare multiple potential attack routes by confidence\n\nReturns paths with per-hop confidence scores and total path confidence.",
@@ -3051,6 +3082,112 @@
       "persistence": {
         "mode": "read",
         "allowed_during_recovery": true
+      }
+    },
+    {
+      "name": "handoff_agent_work",
+      "title": "Handoff Agent Work",
+      "description": "Create one durable successor for a terminal agent task.\n\nCancel or otherwise finish the source task and wait for its runtime resources to\nsettle before calling this tool. Historical evidence, findings, transcripts,\napprovals, sessions, and process ownership remain attributed to the source task.",
+      "category": "agents-planning",
+      "category_label": "Agents & planning",
+      "category_order": 40,
+      "read_only": false,
+      "destructive": false,
+      "idempotent": true,
+      "open_world": false,
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "agent_label": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "archetype": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "command_id": {
+            "description": "Stable application-command ID for correlation and safe retries.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable retry key. Identical retries return the original durable result.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "key_event_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "key_evidence_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "key_finding_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "objective": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by an earlier invocation whose response was lost.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "skill": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "source_task_id": {
+            "description": "Terminal source task to hand off.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "archetype",
+          "objective",
+          "source_task_id",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "output_schema": null,
+      "input_schema_sha256": "daced0ccd70c9f313d5e9d9a1198778482bb882709232911574fa2b6048e50fb",
+      "output_schema_sha256": null,
+      "documentation": {
+        "path": "tools/agent-work.md",
+        "purpose": "Create one durable successor for a terminal agent task."
+      },
+      "archetype_exposure": [
+        "default"
+      ],
+      "persistence": {
+        "mode": "write",
+        "allowed_during_recovery": false
       }
     },
     {
@@ -4326,6 +4463,78 @@
       "documentation": {
         "path": "tools/manage-campaign.md",
         "purpose": "Create, control, and manage campaigns."
+      },
+      "archetype_exposure": [
+        "default"
+      ],
+      "persistence": {
+        "mode": "write",
+        "allowed_during_recovery": false
+      }
+    },
+    {
+      "name": "merge_duplicate_agent_work",
+      "title": "Merge Duplicate Agent Work",
+      "description": "Mark terminal exact-duplicate agent tasks as merged into one canonical task.\n\nThe command never deletes or relabels historical task artifacts. Every duplicate\nmust have the canonical task's exact server-derived work signature and own no\nlive runtime resources.",
+      "category": "agents-planning",
+      "category_label": "Agents & planning",
+      "category_order": 40,
+      "read_only": false,
+      "destructive": false,
+      "idempotent": true,
+      "open_world": false,
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "canonical_task_id": {
+            "description": "Task retained as the canonical work item.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "command_id": {
+            "description": "Stable application-command ID for correlation and safe retries.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "duplicate_task_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          },
+          "idempotency_key": {
+            "description": "Stable retry key. Identical retries return the original durable result.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by an earlier invocation whose response was lost.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_task_id",
+          "duplicate_task_ids",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "output_schema": null,
+      "input_schema_sha256": "a5c43379cf8035f0b220fb0ebdf72d5a13e0b15c44032543259122c9b85b97dc",
+      "output_schema_sha256": null,
+      "documentation": {
+        "path": "tools/agent-work.md",
+        "purpose": "Mark terminal exact-duplicate agent tasks as merged into one canonical task."
       },
       "archetype_exposure": [
         "default"
@@ -7688,6 +7897,135 @@
       }
     },
     {
+      "name": "split_agent_work",
+      "title": "Split Agent Work",
+      "description": "Split one terminal ad-hoc node task into two to twenty durable child tasks.\n\nChild node scopes must be non-empty, pairwise disjoint, and together cover the\nsource scope exactly. PR9 deliberately rejects frontier- or campaign-linked\nsources so split work cannot duplicate a live lease or campaign assignment.",
+      "category": "agents-planning",
+      "category_label": "Agents & planning",
+      "category_order": 40,
+      "read_only": false,
+      "destructive": false,
+      "idempotent": true,
+      "open_world": false,
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "children": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "agent_label": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "archetype": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "model": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "objective": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "skill": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "target_node_ids": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "archetype",
+                "objective",
+                "target_node_ids"
+              ],
+              "type": "object"
+            },
+            "maxItems": 20,
+            "minItems": 2,
+            "type": "array"
+          },
+          "command_id": {
+            "description": "Stable application-command ID for correlation and safe retries.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable retry key. Identical retries return the original durable result.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "key_event_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "key_evidence_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "key_finding_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by an earlier invocation whose response was lost.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "source_task_id": {
+            "description": "Terminal ad-hoc node task to split.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "children",
+          "source_task_id",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "output_schema": null,
+      "input_schema_sha256": "97878795b0f7b9052a4d6cfa636a2c64414a9c0ea4ffa8399e5ad05b74462b41",
+      "output_schema_sha256": null,
+      "documentation": {
+        "path": "tools/agent-work.md",
+        "purpose": "Split one terminal ad-hoc node task into two to twenty durable child tasks."
+      },
+      "archetype_exposure": [
+        "default"
+      ],
+      "persistence": {
+        "mode": "write",
+        "allowed_during_recovery": false
+      }
+    },
+    {
       "name": "start_playbook_step",
       "title": "Start Playbook Step",
       "description": "Reserve exactly one ready playbook step and return its resolved execution descriptor.\n\nPass the returned playbook_run_id, playbook_step_id, and playbook_attempt_id\nthrough the indicated runner. Only one attempt may be active in a run.",
@@ -8991,7 +9329,7 @@
     }
   ],
   "capabilities": {
-    "mcp_tools": 91,
+    "mcp_tools": 95,
     "skills": 44,
     "parser_aliases": 138,
     "inference_rules": 64,

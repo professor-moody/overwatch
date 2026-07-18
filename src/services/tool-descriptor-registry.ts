@@ -51,7 +51,8 @@ const CATEGORY_MEMBERS: Record<ToolCategoryId, readonly string[]> = {
     'submit_agent_transcript', 'propose_plan', 'ask_operator',
     'manage_agent_directive', 'acknowledge_agent_directive', 'research_cve',
     'agent_heartbeat', 'dispatch_subnet_agents', 'dispatch_campaign_agents',
-    'manage_campaign',
+    'manage_campaign', 'find_duplicate_agent_work', 'handoff_agent_work',
+    'split_agent_work', 'merge_duplicate_agent_work',
   ],
   'credentials-playbooks': [
     'connect_postgres', 'list_postgres_tables', 'ingest_postgres_table',
@@ -103,6 +104,10 @@ const SHARED_DOC_PATHS: Record<string, string> = Object.fromEntries([
     'list_sessions', 'resume_session', 'update_session', 'resize_session',
     'signal_session', 'close_session',
   ].map(name => [name, 'tools/sessions.md']),
+  ...[
+    'find_duplicate_agent_work', 'handoff_agent_work', 'split_agent_work',
+    'merge_duplicate_agent_work',
+  ].map(name => [name, 'tools/agent-work.md']),
   ['register_tape_session', 'tools/tape-sessions.md'],
   ['validate_token_credential', 'tools/token-credential.md'],
 ]);

@@ -47,12 +47,16 @@ The checked-in [schema manifest](../reference/tool-schema-manifest.json) records
 | [`dispatch_agents`](dispatch-agents.md) | Batch-register sub-agent tasks from the current filtered frontier. | Agents & planning | Mutating |
 | [`dispatch_campaign_agents`](dispatch-campaign-agents.md) | Dispatch sub-agents for each item in a campaign, using campaign-aware scoping. | Agents & planning | Mutating |
 | [`dispatch_subnet_agents`](dispatch-subnet-agents.md) | Dispatch one sub-agent per scope CIDR for parallel network enumeration. | Agents & planning | Mutating |
+| [`find_duplicate_agent_work`](agent-work.md) | Find groups of agent tasks that have the same canonical work signature. | Agents & planning | Read-only |
 | [`get_agent_context`](get-agent-context.md) | Returns the scoped subgraph view for a registered agent. | Agents & planning | Read-only |
+| [`handoff_agent_work`](agent-work.md) | Create one durable successor for a terminal agent task. | Agents & planning | Mutating |
 | [`manage_agent_directive`](manage-agent-directive.md) | Steer a running sub-agent. | Agents & planning | Mutating |
 | [`manage_campaign`](manage-campaign.md) | Create, control, and manage campaigns. | Agents & planning | Mutating |
+| [`merge_duplicate_agent_work`](agent-work.md) | Mark terminal exact-duplicate agent tasks as merged into one canonical task. | Agents & planning | Mutating |
 | [`propose_plan`](propose-plan.md) | Submit a plan of operator operations for the human operator to confirm. | Agents & planning | Mutating |
 | [`register_agent`](register-agent.md) | Register a new sub-agent task. | Agents & planning | Mutating |
 | [`research_cve`](research-cve.md) | Record the outcome of operator-style CVE/exploit research for a versioned service. | Agents & planning | Mutating |
+| [`split_agent_work`](agent-work.md) | Split one terminal ad-hoc node task into two to twenty durable child tasks. | Agents & planning | Mutating |
 | [`submit_agent_transcript`](transcripts.md) | Sub-agent wrap-up: hand the primary session a short summary plus an optional raw transcript blob. | Agents & planning | Mutating |
 | [`update_agent`](update-agent.md) | Update the status of a running agent task. | Agents & planning | Mutating |
 | [`complete_playbook_attempt`](cloud-playbooks.md) | Record a pre-execution failure or the durable outcome and evidence/finding references for an attempt that crossed the instrumented execution boundary. | Credentials & playbooks | Mutating |

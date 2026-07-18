@@ -8,6 +8,16 @@ import { existsSync, readFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { engagementConfigSchema } from '../../types.js';
 import { inspectStateMigration } from '../../services/state-migration.js';
+import {
+  AgentHandoffRequestSchema,
+  AgentMergeRequestSchema,
+  AgentSplitRequestSchema,
+  type AgentDuplicatesResponse,
+  type AgentHandoffResponse,
+  type AgentMergeResponse,
+  type AgentSplitResponse,
+} from '../../contracts/dashboard-v1.js';
+import { DashboardHttpRegistry } from '../../contracts/dashboard-api-v1.js';
 
 export interface CommandContext {
   client: ApiClient;
@@ -35,10 +45,12 @@ function flagValue(args: string[], name: string): string | undefined {
 
 // Flags that take a value (so their value isn't mistaken for a positional).
 const VALUE_FLAGS = new Set([
-  'url', 'token', 'reason', 'archetype', 'skill', 'type', 'max', 'severity', 'node',
+  'url', 'token', 'command-id', 'reason', 'archetype', 'skill', 'type', 'max', 'severity', 'node',
   'file-hash', 'state-hash',
   'state-file', 'config-file',
   'credential', 'status',
+  'summary', 'objective', 'agent-label', 'model',
+  'finding', 'evidence', 'event', 'duplicate', 'file',
 ]);
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -70,6 +82,30 @@ function requireFirst(args: string[], label: string): string {
   const p = positionals(args)[0];
   if (!p) throw new Error(`Missing required <${label}>.`);
   return p;
+}
+
+function requireFlag(args: string[], name: string): string {
+  const value = flagValue(args, name)?.trim();
+  if (!value) throw new Error(`Missing required --${name} <value>.`);
+  return value;
+}
+
+function optionalMultiFlag(args: string[], name: string): string[] | undefined {
+  const values = multiFlag(args, name).map(value => value.trim()).filter(Boolean);
+  return values.length > 0 ? values : undefined;
+}
+
+function readJsonRequestFile(path: string): unknown {
+  try {
+    const source = path === '-' ? readFileSync(0, 'utf8') : readFileSync(resolve(path), 'utf8');
+    return JSON.parse(source) as unknown;
+  } catch (error) {
+    throw new Error(
+      `Cannot read JSON request from ${path === '-' ? 'stdin' : path}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 }
 
 interface StateResp { state?: { frontier?: Array<{ type: string }> } }
@@ -172,13 +208,6 @@ export const READ_COMMANDS: Record<string, Command> = {
       return { data: filtered, text: render.renderFindings(filtered as never) };
     },
   },
-  agents: {
-    summary: 'Running agent roster',
-    async run({ client }) {
-      const resp = await client.get<{ agents: unknown[] }>('/api/agents');
-      return { data: resp.agents ?? [], text: render.renderAgents((resp.agents ?? []) as never) };
-    },
-  },
   approvals: {
     summary: 'Pending operator approvals',
     async run({ client }) {
@@ -225,6 +254,79 @@ export const READ_COMMANDS: Record<string, Command> = {
 };
 
 export const WRITE_COMMANDS: Record<string, Command> = {
+  agents: {
+    summary: 'List agents or hand off, split, and merge terminal agent work',
+    usage: 'agents [duplicates|handoff TASK|split TASK|merge TASK] [options]',
+    async run({ client, args }) {
+      const positional = positionals(args);
+      const action = positional[0] ?? 'list';
+
+      if (action === 'list') {
+        const response = await client.get<{ agents: unknown[] }>(DashboardHttpRegistry.getAgents.path);
+        const agents = response.agents ?? [];
+        return { data: agents, text: render.renderAgents(agents as never) };
+      }
+
+      if (action === 'duplicates') {
+        if (positional.length > 1) {
+          throw new Error('`agents duplicates` does not accept positional arguments.');
+        }
+        const response = await client.get<AgentDuplicatesResponse>(DashboardHttpRegistry.getAgentDuplicates.path);
+        return { data: response, text: render.renderAgentDuplicates(response) };
+      }
+
+      if (action !== 'handoff' && action !== 'split' && action !== 'merge') {
+        throw new Error(`Unknown agents action: ${action}. Expected list, duplicates, handoff, split, or merge.`);
+      }
+
+      const taskId = positional[1];
+      if (!taskId) throw new Error(`Missing required <task-id> for agents ${action}.`);
+      const encodedTaskId = encodeURIComponent(taskId);
+
+      if (action === 'handoff') {
+        const request = AgentHandoffRequestSchema.parse({
+          summary: requireFlag(args, 'summary'),
+          archetype: requireFlag(args, 'archetype'),
+          objective: requireFlag(args, 'objective'),
+          ...(flagValue(args, 'agent-label') ? { agent_label: flagValue(args, 'agent-label') } : {}),
+          ...(flagValue(args, 'skill') ? { skill: flagValue(args, 'skill') } : {}),
+          ...(flagValue(args, 'model') ? { model: flagValue(args, 'model') } : {}),
+          ...(optionalMultiFlag(args, 'finding') ? { key_finding_ids: optionalMultiFlag(args, 'finding') } : {}),
+          ...(optionalMultiFlag(args, 'evidence') ? { key_evidence_ids: optionalMultiFlag(args, 'evidence') } : {}),
+          ...(optionalMultiFlag(args, 'event') ? { key_event_ids: optionalMultiFlag(args, 'event') } : {}),
+        });
+        const response = await client.post<AgentHandoffResponse>(
+          DashboardHttpRegistry.handoffAgent.path.replace('{task_id}', encodedTaskId),
+          request,
+        );
+        return { data: response, text: render.renderAgentWorkMutation(response) };
+      }
+
+      if (action === 'split') {
+        const file = requireFlag(args, 'file');
+        const request = AgentSplitRequestSchema.parse(readJsonRequestFile(file));
+        const response = await client.post<AgentSplitResponse>(
+          DashboardHttpRegistry.splitAgent.path.replace('{task_id}', encodedTaskId),
+          request,
+        );
+        return { data: response, text: render.renderAgentWorkMutation(response) };
+      }
+
+      if (action === 'merge') {
+        const request = AgentMergeRequestSchema.parse({
+          summary: requireFlag(args, 'summary'),
+          duplicate_task_ids: multiFlag(args, 'duplicate'),
+        });
+        const response = await client.post<AgentMergeResponse>(
+          DashboardHttpRegistry.mergeAgent.path.replace('{task_id}', encodedTaskId),
+          request,
+        );
+        return { data: response, text: render.renderAgentWorkMutation(response) };
+      }
+
+      throw new Error(`Unknown agents action: ${action}.`);
+    },
+  },
   playbook: {
     summary: 'Prepare, resume, retry, release, or skip durable playbook work',
     usage: 'playbook <start RUN STEP|resume RUN|retry RUN STEP|interrupt RUN STEP [--reason TEXT]|skip RUN STEP [--reason TEXT]>',

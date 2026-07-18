@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { DispatchCommandService } from '../services/dispatch-command-service.js';
 import { AgentLifecycleCommandService } from '../services/agent-lifecycle-command-service.js';
+import { AgentWorkCommandService } from '../services/agent-work-command-service.js';
 import {
   registerDispatchAgentsTool,
   registerDispatchCampaignAgentsTool,
@@ -19,6 +20,7 @@ import {
   registerAskOperatorTool,
   registerManageAgentDirectiveTool,
 } from './agent-steering-tools.js';
+import { registerAgentWorkTools } from './agent-work-tools.js';
 
 export {
   dispatchCampaignAgents,
@@ -30,6 +32,7 @@ export {
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
   const dispatchCommands = new DispatchCommandService(engine);
   const lifecycleCommands = new AgentLifecycleCommandService(engine);
+  const workCommands = new AgentWorkCommandService(engine);
 
   registerSingleAgentTool(server, dispatchCommands);
   registerDispatchAgentsTool(server, dispatchCommands);
@@ -42,4 +45,5 @@ export function registerAgentTools(server: McpServer, engine: GraphEngine): void
   registerAskOperatorTool(server, lifecycleCommands);
   registerManageAgentDirectiveTool(server, lifecycleCommands);
   registerAcknowledgeAgentDirectiveTool(server, lifecycleCommands);
+  registerAgentWorkTools(server, workCommands);
 }

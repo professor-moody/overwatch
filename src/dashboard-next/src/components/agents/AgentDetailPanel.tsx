@@ -7,6 +7,7 @@ import {
 import type { DirectiveKind } from '../../lib/api/agents';
 import { cn, formatElapsed } from '../../lib/utils';
 import { ActionButton, PanelSection, StatusPill } from '../shared/primitives';
+import { AgentWorkModal, type AgentWorkMode } from './AgentWorkModal';
 
 export type AgentContext = {
   subgraph?: {
@@ -25,6 +26,7 @@ export interface AgentDetailPanelProps {
   onNavigateCampaign: (campaignId: string) => void;
   onNavigateSession: (sessionId: string) => void;
   onIssueDirective: (taskId: string, kind: DirectiveKind) => Promise<void>;
+  onWorkChanged?: () => void;
 }
 
 export function AgentSteeringControls({
@@ -73,7 +75,9 @@ export function AgentDetailPanel({
   onNavigateCampaign,
   onNavigateSession,
   onIssueDirective,
+  onWorkChanged,
 }: AgentDetailPanelProps) {
+  const [workMode, setWorkMode] = useState<AgentWorkMode | null>(null);
   const taskId = canonicalAgentTaskId(agent);
   const label = agentDisplayLabel(agent);
   const elapsed = agent.elapsed_ms
@@ -82,6 +86,8 @@ export function AgentDetailPanel({
       ? formatElapsed(new Date(agent.completed_at).getTime() - new Date(agent.assigned_at).getTime())
       : '—';
   const subgraphNodes = context?.subgraph?.nodes ?? [];
+  const terminal = agent.status === 'completed' || agent.status === 'failed' || agent.status === 'interrupted';
+  const mergedAway = Boolean(agent.work?.merged_into_task_id);
 
   return (
     <PanelSection dense>
@@ -117,6 +123,19 @@ export function AgentDetailPanel({
             Campaign
           </ActionButton>
         )}
+        {terminal && !mergedAway && (
+          <ActionButton onClick={() => setWorkMode('handoff')} size="xs" variant="purple">
+            Hand off
+          </ActionButton>
+        )}
+        {terminal && !mergedAway && !agent.frontier_item_id && !agent.campaign_id && agent.subgraph_node_ids.length >= 2 && (
+          <ActionButton onClick={() => setWorkMode('split')} size="xs" variant="secondary">
+            Split
+          </ActionButton>
+        )}
+        <ActionButton onClick={() => setWorkMode('merge')} size="xs" variant="ghost">
+          Exact duplicates
+        </ActionButton>
       </div>
 
       {agent.status === 'running' && taskId && (
@@ -130,6 +149,13 @@ export function AgentDetailPanel({
         {agent.frontier_item_id && <DetailRow label="Frontier" value={agent.frontier_item_id} mono />}
         {agent.result_summary && <DetailRow label="Result" value={agent.result_summary} />}
         <DetailRow label="Scope" value={`${(agent.subgraph_node_ids || agent.scope_node_ids || []).length} nodes`} />
+        {agent.work?.relation && <DetailRow label="Work origin" value={`${agent.work.relation.kind} from ${agent.work.relation.source_task_id}`} mono />}
+        {agent.work?.relation?.summary && <DetailRow label="Work summary" value={agent.work.relation.summary} />}
+        {agent.work?.relation?.key_finding_ids?.length ? <DetailRow label="Key findings" value={agent.work.relation.key_finding_ids.join(', ')} mono /> : null}
+        {agent.work?.relation?.key_evidence_ids?.length ? <DetailRow label="Key evidence" value={agent.work.relation.key_evidence_ids.join(', ')} mono /> : null}
+        {agent.work?.relation?.key_event_ids?.length ? <DetailRow label="Key events" value={agent.work.relation.key_event_ids.join(', ')} mono /> : null}
+        {agent.work?.merged_into_task_id && <DetailRow label="Merged into" value={agent.work.merged_into_task_id} mono />}
+        {agent.merged_source_task_ids?.length ? <DetailRow label="Merged sources" value={String(agent.merged_source_task_ids.length)} /> : null}
       </div>
 
       {subgraphNodes.length > 0 && (
@@ -151,6 +177,15 @@ export function AgentDetailPanel({
             )}
           </div>
         </div>
+      )}
+
+      {workMode && (
+        <AgentWorkModal
+          agent={agent}
+          mode={workMode}
+          onClose={() => setWorkMode(null)}
+          onCompleted={() => onWorkChanged?.()}
+        />
       )}
     </PanelSection>
   );

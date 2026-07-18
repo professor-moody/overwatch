@@ -25,9 +25,10 @@ import {
   FrontierLinkageTracker,
   type FrontierLinkageRecord,
 } from './frontier-linkage.js';
-import { FrontierLeases } from './frontier-leases.js';
+import { FrontierLeases, type FrontierLease } from './frontier-leases.js';
 import {
   type EngagementConfig,
+  type AgentTask,
   type InferenceRule,
   type NodeProperties,
   type EdgeProperties,
@@ -82,6 +83,7 @@ import {
 import type { ActivityAppendPayloadV1 } from './activity-append.js';
 import type { ApplicationCommandChangePayloadV1 } from './application-command-change.js';
 import type { CommandCoordinationChangePayloadV1 } from './command-coordination-change.js';
+import type { AgentCoordinationChangePayloadV1 } from './agent-coordination-change.js';
 import {
   TransactionFootprintAccumulator,
   type GraphColdInverse,
@@ -95,6 +97,10 @@ type BoundedTransactionInverse = GraphColdInverse | {
 } | {
   kind: 'command_coordination';
   payload: CommandCoordinationChangePayloadV1;
+} | {
+  kind: 'agent_coordination_snapshot';
+  tasks: Array<[string, AgentTask | null]>;
+  leases: Array<[string, FrontierLease | null]>;
 } | {
   kind: 'activity_append';
   payload: ActivityAppendPayloadV1;
@@ -178,6 +184,7 @@ export interface ReplayMutators {
   applyStatePatchMutation(payload: DurableStatePatchV1, recovery?: boolean): MutationApplyResult;
   applyApplicationCommandChangeMutation(payload: ApplicationCommandChangePayloadV1, recovery?: boolean): MutationApplyResult;
   applyCommandCoordinationChangeMutation(payload: CommandCoordinationChangePayloadV1, recovery?: boolean): MutationApplyResult;
+  applyAgentCoordinationChangeMutation(payload: AgentCoordinationChangePayloadV1, recovery?: boolean): MutationApplyResult;
   prepareRecoveryCommit?(): void;
   completeRecoveryCommit?(): void;
   abortRecoveryReplay?(): void;
@@ -2319,9 +2326,10 @@ export class StatePersistence {
       ? JSON.parse(JSON.stringify(data.runtimeRuns))
       : [];
     for (const run of this.ctx.runtimeRuns) {
+      const relationship = `runtime_run:${run.run_id}`;
       const reference = run.task_id ?? run.agent_id;
       const owner = resolveOwner(
-        `runtime_run:${run.run_id}`,
+        relationship,
         reference,
         run,
         run.task_id !== undefined,
@@ -2330,6 +2338,14 @@ export class StatePersistence {
       if (owner.task_id) {
         run.task_id = owner.task_id;
         run.agent_id = owner.agent_label;
+        // `recovery_warning` also carries real process/supervisor failures.
+        // Clear only the stale identity-ambiguity marker represented by the
+        // durable coordination warning, never an unrelated runtime warning.
+        if (coordinationWarnings.some(warning =>
+          warning.relationship === relationship
+          && warning.message === run.recovery_warning)) {
+          delete run.recovery_warning;
+        }
       } else if (owner.warning && reference) {
         delete run.task_id;
         run.recovery_warning = owner.warning.message;
@@ -4311,6 +4327,22 @@ export class StatePersistence {
               }
               return mutators.applyCommandCoordinationChangeMutation(payload, true);
             }
+            case 'agent_coordination_change': {
+              const payload = entry.payload as unknown as AgentCoordinationChangePayloadV1;
+              if (payload.payload_version !== 1) {
+                return {
+                  status: 'skipped',
+                  reason: `unsupported agent_coordination_change payload version: ${String(payload.payload_version)}`,
+                };
+              }
+              if (!mutators) {
+                return {
+                  status: 'skipped',
+                  reason: 'agent_coordination_change replay requires the engine coordination applier',
+                };
+              }
+              return mutators.applyAgentCoordinationChangeMutation(payload, true);
+            }
             case 'activity_append': {
               return ctx.applyActivityAppend(
                 entry.payload as unknown as ActivityAppendPayloadV1,
@@ -4631,6 +4663,17 @@ export class StatePersistence {
             ) return undefined;
             break;
           }
+          case 'agent_coordination_change': {
+            if (!mutators) return undefined;
+            const change = payload as unknown as AgentCoordinationChangePayloadV1;
+            if (
+              change.payload_version !== 1
+              || !Array.isArray(change.task_changes)
+              || change.task_changes.length < 1
+              || !Array.isArray(change.lease_changes)
+            ) return undefined;
+            break;
+          }
           case 'activity_append': {
             const append = payload as unknown as ActivityAppendPayloadV1;
             if (
@@ -4671,6 +4714,19 @@ export class StatePersistence {
           );
           if (restored.status === 'skipped') {
             throw new Error(`Bounded command-coordination rollback was rejected: ${restored.reason}`);
+          }
+          continue;
+        }
+        if (inverse.kind === 'agent_coordination_snapshot') {
+          for (const [taskId, task] of inverse.tasks) {
+            if (task) this.ctx.agents.set(taskId, structuredClone(task));
+            else this.ctx.agents.delete(taskId);
+          }
+          for (const [frontierItemId, lease] of inverse.leases) {
+            this.ctx.frontierLeases.applySnapshot(
+              frontierItemId,
+              lease ? structuredClone(lease) : null,
+            );
           }
           continue;
         }
@@ -4776,6 +4832,7 @@ export class StatePersistence {
             let coldBefore: ReturnType<EngineContext['coldStore']['captureEntrySnapshot']> | undefined;
             let applicationCommandInverse: BoundedTransactionInverse | undefined;
             let commandCoordinationInverse: BoundedTransactionInverse | undefined;
+            let agentCoordinationInverse: BoundedTransactionInverse | undefined;
             let activityAppendInverse: BoundedTransactionInverse | undefined;
             if (bounded) {
               if (
@@ -4852,6 +4909,22 @@ export class StatePersistence {
                 } as CommandCoordinationChangePayloadV1,
                 };
                 inverses.push(commandCoordinationInverse);
+              } else if (operation.type === 'agent_coordination_change') {
+                const change = operation.payload as unknown as AgentCoordinationChangePayloadV1;
+                agentCoordinationInverse = {
+                  kind: 'agent_coordination_snapshot',
+                  tasks: change.task_changes.map(taskChange => [
+                    taskChange.task_id,
+                    this.ctx.agents.get(taskChange.task_id)
+                      ? structuredClone(this.ctx.agents.get(taskChange.task_id)!)
+                      : null,
+                  ]),
+                  leases: change.lease_changes.map(leaseChange => [
+                    leaseChange.frontier_item_id,
+                    this.ctx.frontierLeases.getSnapshot(leaseChange.frontier_item_id),
+                  ]),
+                };
+                inverses.push(agentCoordinationInverse);
               } else if (operation.type === 'activity_append') {
                 const append = operation.payload as unknown as ActivityAppendPayloadV1;
                 const linkageBefore = new Map<string, FrontierLinkageRecord | undefined>();
@@ -4884,6 +4957,9 @@ export class StatePersistence {
                 : {}),
             });
             if (result.status === 'skipped') {
+              if (agentCoordinationInverse && inverses.at(-1) === agentCoordinationInverse) {
+                inverses.pop();
+              }
               if (commandCoordinationInverse && inverses.at(-1) === commandCoordinationInverse) {
                 inverses.pop();
               }

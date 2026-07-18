@@ -183,6 +183,7 @@ export function buildHeadlessClaudeEnv(
 // boundary. Imported + re-exported here so existing callers/tests keep importing
 // it from the runner; the legacy role strings are byte-identical (regression-locked).
 import { allowedToolsFor, getArchetype, bootstrapMission } from './agent-archetypes.js';
+import { readAgentWorkMetadata } from './agent-work.js';
 export { allowedToolsFor };
 
 /** Heartbeat TTL (seconds) granted to a freshly-launched headless agent so its
@@ -846,8 +847,12 @@ export class HeadlessMcpRunner {
       ? `Your methodology skill is "${skillId}" — call get_skill(skill_id="${skillId}") for the full text.`
       : '';
     const objective = task.objective ? `OBJECTIVE: ${task.objective}` : '';
+    const relation = readAgentWorkMetadata(task).relation;
+    const handoff = relation
+      ? `CONTINUATION: this work was ${relation.kind === 'handoff' ? 'handed off' : 'split'} from task "${relation.source_task_id}". Read work.relation in get_agent_context before acting; it contains the durable operator summary and key finding/evidence/event references.`
+      : '';
     const close = `When done — or if you cannot proceed — call submit_agent_transcript, then update_agent(task_id="${task.id}", status="completed").`;
-    return [...common, mission, skill, objective, close].filter(Boolean).join(' ');
+    return [...common, mission, skill, objective, handoff, close].filter(Boolean).join(' ');
   }
 
   private writeMcpConfig(task_id: string, endpoint: HeadlessEndpoint): string {

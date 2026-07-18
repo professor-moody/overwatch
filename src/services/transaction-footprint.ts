@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { EdgeProperties, NodeProperties } from '../types.js';
+import type { AgentTask, EdgeProperties, NodeProperties } from '../types.js';
 import type { ChainCheckpoint } from './activity-chain.js';
 import type {
   ActivityActionFrontierValueV1,
@@ -14,6 +14,11 @@ import type {
 } from './engine-transaction.js';
 import { edgeIdentityMatches } from './edge-identity.js';
 import type { FrontierLinkageRecord } from './frontier-linkage.js';
+import type { FrontierLease } from './frontier-leases.js';
+import {
+  validateAgentCoordinationChangePayload,
+  type AgentCoordinationChangePayloadV1,
+} from './agent-coordination-change.js';
 
 export interface GraphNodeSnapshot {
   node_id: string;
@@ -51,6 +56,11 @@ interface ActivityInverse {
   action_id?: string;
   action_before?: ActivityActionFrontierValueV1;
   linkage_before: Map<string, FrontierLinkageRecord | undefined>;
+}
+
+interface AgentCoordinationInverse {
+  tasks: Map<string, AgentTask | undefined>;
+  leases: Map<string, FrontierLease | null>;
 }
 
 export interface FinalizedTransactionFootprint {
@@ -213,6 +223,11 @@ export class TransactionFootprintAccumulator {
 type CapturedOperation =
   | { kind: 'none' }
   | {
+      kind: 'agent_coordination';
+      task_ids: string[];
+      frontier_item_ids: string[];
+    }
+  | {
       kind: 'node';
       operation_type: 'add_node' | 'merge_node_attrs' | 'replace_node_attrs';
       node_id: string;
@@ -285,6 +300,9 @@ function matchingEdgeIds(
 export class BoundedTransactionFootprintCapture implements EngineOperationDraftObserver {
   private readonly inverses: GraphColdInverse[] = [];
   private readonly activityInverses: ActivityInverse[] = [];
+  private readonly agentCoordinationInverses: AgentCoordinationInverse[] = [];
+  private readonly agentCoordinationExpectedTasks = new Map<string, AgentTask | null>();
+  private readonly agentCoordinationExpectedLeases = new Map<string, FrontierLease | null>();
   private readonly accumulator = new TransactionFootprintAccumulator();
 
   constructor(private readonly ctx: EngineContext) {}
@@ -400,10 +418,30 @@ export class BoundedTransactionFootprintCapture implements EngineOperationDraftO
       const current = this.ctx.coldStore.get(change.id);
       if (!snapshotsEqual(change.after, current ? structuredClone(current) : null)) return false;
     }
+    for (const [taskId, task] of this.agentCoordinationExpectedTasks) {
+      const current = this.ctx.agents.get(taskId);
+      if (!snapshotsEqual(task, current ? structuredClone(current) : null)) return false;
+    }
+    for (const [frontierItemId, lease] of this.agentCoordinationExpectedLeases) {
+      if (!snapshotsEqual(lease, this.ctx.frontierLeases.getSnapshot(frontierItemId))) return false;
+    }
     return true;
   }
 
   restore(): void {
+    for (let index = this.agentCoordinationInverses.length - 1; index >= 0; index--) {
+      const inverse = this.agentCoordinationInverses[index]!;
+      for (const [taskId, task] of inverse.tasks) {
+        if (task) this.ctx.agents.set(taskId, structuredClone(task));
+        else this.ctx.agents.delete(taskId);
+      }
+      for (const [frontierItemId, lease] of inverse.leases) {
+        this.ctx.frontierLeases.applySnapshot(
+          frontierItemId,
+          lease ? structuredClone(lease) : null,
+        );
+      }
+    }
     for (let index = this.activityInverses.length - 1; index >= 0; index--) {
       const inverse = this.activityInverses[index]!;
       inverse.activity_ref.length = inverse.activity_length;
@@ -628,12 +666,55 @@ export class BoundedTransactionFootprintCapture implements EngineOperationDraftO
         // do not authorize graph/cold-store writes and are restored by their
         // owning command-state draft capture rather than this graph recorder.
         return { kind: 'none' };
+      case 'agent_coordination_change': {
+        const validation = validateAgentCoordinationChangePayload(
+          operation.payload as unknown as AgentCoordinationChangePayloadV1,
+        );
+        if (!validation.ok) {
+          throw new Error(
+            `Bounded transaction cannot capture malformed agent_coordination_change: ${validation.reason}`,
+          );
+        }
+        this.agentCoordinationInverses.push({
+          tasks: new Map(validation.payload.task_changes.map(change => [
+            change.task_id,
+            this.ctx.agents.get(change.task_id)
+              ? structuredClone(this.ctx.agents.get(change.task_id)!)
+              : undefined,
+          ])),
+          leases: new Map(validation.payload.lease_changes.map(change => [
+            change.frontier_item_id,
+            this.ctx.frontierLeases.getSnapshot(change.frontier_item_id),
+          ])),
+        });
+        return {
+          kind: 'agent_coordination',
+          task_ids: validation.payload.task_changes.map(change => change.task_id),
+          frontier_item_ids: validation.payload.lease_changes.map(change => change.frontier_item_id),
+        };
+      }
       default:
         throw new Error(`Bounded transaction drafting does not support ${operation.type}.`);
     }
   }
 
   private captureAfter(operation: EngineOperation, captured: CapturedOperation): void {
+    if (captured.kind === 'agent_coordination') {
+      for (const taskId of captured.task_ids) {
+        const current = this.ctx.agents.get(taskId);
+        this.agentCoordinationExpectedTasks.set(
+          taskId,
+          current ? structuredClone(current) : null,
+        );
+      }
+      for (const frontierItemId of captured.frontier_item_ids) {
+        this.agentCoordinationExpectedLeases.set(
+          frontierItemId,
+          this.ctx.frontierLeases.getSnapshot(frontierItemId),
+        );
+      }
+      return;
+    }
     if (captured.kind === 'node') {
       this.accumulator.recordNode(
         captured.node_id,

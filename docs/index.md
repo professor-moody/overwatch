@@ -33,7 +33,7 @@ After compaction or restart, [`get_state()`](tools/get-state.md) returns an oper
 <!-- BEGIN:capability-counts -->
 | Capability | Count | Capability | Count |
 |------------|------:|------------|------:|
-| MCP tools | **91** | Offensive skills | **44** |
+| MCP tools | **95** | Offensive skills | **44** |
 | Parser aliases | **138** | Built-in inference rules | **64** |
 | Node types | **30** | Edge types | **90** |
 | Agent archetypes | **15** | Tool categories | **8** |

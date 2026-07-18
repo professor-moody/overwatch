@@ -24,6 +24,7 @@ import type { SerializedProposedPlanStore } from './proposed-plan-store.js';
 import type { SerializedAgentQueryStore } from './agent-query-store.js';
 import type { CoordinationRecoveryWarning } from './agent-identity.js';
 import type { OperatorOp } from './command-interpreter.js';
+import { computeAgentWorkSignature } from './agent-work.js';
 
 export const CURRENT_STATE_VERSION = 1 as const;
 export const LEGACY_STATE_VERSION = 0 as const;
@@ -1855,6 +1856,97 @@ function validateAgentTask(value: unknown, path: string, key: string): void {
   if (task.heartbeat_at !== undefined) requireIsoDate(task.heartbeat_at, `${path}.heartbeat_at`);
   if (task.heartbeat_ttl_seconds !== undefined) {
     requireSafeInteger(task.heartbeat_ttl_seconds, `${path}.heartbeat_ttl_seconds`, 1);
+  }
+  if (task.work !== undefined) {
+    validateAgentWorkMetadata(task.work, `${path}.work`, key);
+    const declaredSignature = requireString(
+      requireRecord(task.work, `${path}.work`).signature,
+      `${path}.work.signature`,
+    );
+    const computedSignature = computeAgentWorkSignature(task as unknown as AgentTask);
+    if (declaredSignature !== computedSignature) {
+      throw new PersistedStateVersionError(
+        `${path}.work.signature does not match the task's canonical work fields`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+  }
+}
+
+function validateAgentWorkMetadata(value: unknown, path: string, taskId: string): void {
+  const work = requireRecord(value, path);
+  if (requireSafeInteger(work.version, `${path}.version`, 1) !== 1) {
+    throw new PersistedStateVersionError(
+      `${path}.version is unsupported`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  requireString(work.root_task_id, `${path}.root_task_id`);
+  const signature = requireString(work.signature, `${path}.signature`);
+  if (!/^[a-f0-9]{64}$/.test(signature)) {
+    throw new PersistedStateVersionError(
+      `${path}.signature must be a lowercase SHA-256 digest`,
+      CURRENT_STATE_VERSION,
+      'invalid',
+    );
+  }
+  if (work.origin_frontier_item_id !== undefined) {
+    requireString(work.origin_frontier_item_id, `${path}.origin_frontier_item_id`);
+  }
+  if (work.relation !== undefined) {
+    const relation = requireRecord(work.relation, `${path}.relation`);
+    const kind = requireString(relation.kind, `${path}.relation.kind`);
+    if (kind !== 'handoff' && kind !== 'split') {
+      throw new PersistedStateVersionError(
+        `${path}.relation.kind is invalid`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    const sourceTaskId = requireString(
+      relation.source_task_id,
+      `${path}.relation.source_task_id`,
+    );
+    if (sourceTaskId === taskId) {
+      throw new PersistedStateVersionError(
+        `${path}.relation.source_task_id cannot reference the same task`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
+    requireIsoDate(relation.created_at, `${path}.relation.created_at`);
+    requireString(relation.summary, `${path}.relation.summary`);
+    for (const field of [
+      'key_finding_ids',
+      'key_evidence_ids',
+      'key_event_ids',
+    ] as const) {
+      if (relation[field] === undefined) continue;
+      const ids = requireArray(relation[field], `${path}.relation.${field}`)
+        .map((id, index) => requireString(id, `${path}.relation.${field}[${index}]`));
+      if (new Set(ids).size !== ids.length) {
+        throw new PersistedStateVersionError(
+          `${path}.relation.${field} contains duplicate ids`,
+          CURRENT_STATE_VERSION,
+          'invalid',
+        );
+      }
+    }
+  }
+  if (work.merged_into_task_id !== undefined) {
+    const mergedIntoTaskId = requireString(
+      work.merged_into_task_id,
+      `${path}.merged_into_task_id`,
+    );
+    if (mergedIntoTaskId === taskId) {
+      throw new PersistedStateVersionError(
+        `${path}.merged_into_task_id cannot reference the same task`,
+        CURRENT_STATE_VERSION,
+        'invalid',
+      );
+    }
   }
 }
 

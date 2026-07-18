@@ -12,6 +12,12 @@ import type {
   StateMigrationStatus,
 } from '../../types.js';
 import type { StateMigrationInspection } from '../../services/state-migration.js';
+import type {
+  AgentDuplicatesResponse,
+  AgentHandoffResponse,
+  AgentMergeResponse,
+  AgentSplitResponse,
+} from '../../contracts/dashboard-v1.js';
 
 const sev = (s: string): ((x: string) => string) => {
   switch (s) {
@@ -389,6 +395,46 @@ export function renderAgents(agents: AgentInfo[]): string {
     agents.map(a => [a.status, a.id, a.skill ?? a.agent_id ?? '—', a.current_action ?? '']),
     { color: [s => agentStatusColor(s.trim())(s), dim, undefined, dim] },
   );
+}
+
+export function renderAgentDuplicates(response: AgentDuplicatesResponse): string {
+  if (response.groups.length === 0) return green('No exact duplicate agent work found.');
+  return `${bold(`${response.total} duplicate group${response.total === 1 ? '' : 's'}`)}\n\n${formatTable(
+    ['SIGNATURE', 'CANONICAL', 'CANDIDATES', 'TERMINAL MERGE IDS'],
+    response.groups.map(group => {
+      const byId = new Map(group.tasks.map(task => [task.task_id, task]));
+      const canonical = byId.get(group.canonical_task_id);
+      const mergeable = group.tasks
+        .filter(task => task.task_id !== group.canonical_task_id)
+        .filter(task => task.status === 'completed' || task.status === 'failed' || task.status === 'interrupted')
+        .map(task => task.task_id);
+      return [
+        group.signature.slice(0, 16),
+        `${group.canonical_task_id}:${canonical?.status ?? 'unknown'}`,
+        group.candidate_task_ids.map(id => `${id}:${byId.get(id)?.status ?? 'unknown'}`).join(', '),
+        mergeable.join(', ') || '—',
+      ];
+    }),
+    { color: [dim, cyan, undefined, undefined] },
+  )}`;
+}
+
+type AgentWorkMutationResponse = AgentHandoffResponse | AgentSplitResponse | AgentMergeResponse;
+
+export function renderAgentWorkMutation(response: AgentWorkMutationResponse): string {
+  const warnings = response.warnings.length > 0
+    ? `\n${response.warnings.map(warning => `  ${yellow('!')} ${warning}`).join('\n')}`
+    : '';
+  if (response.operation === 'handoff') {
+    return `${green(response.reused_existing ? 'Reused successor' : 'Handed off')} ${response.source_task_id} to ${cyan(response.created_tasks[0].id)}.${warnings}`;
+  }
+  if (response.operation === 'split') {
+    return `${green(response.reused_existing ? 'Reused split' : 'Split')} ${response.source_task_id} into ${response.created_tasks.length} tasks: ${response.created_tasks.map(task => task.id).join(', ')}.${warnings}`;
+  }
+  const merged = response.updated_tasks
+    .filter(task => task.id !== response.canonical_task_id)
+    .map(task => task.id);
+  return `${green(response.reused_existing ? 'Reused merge' : 'Merged')} ${merged.length} duplicate task${merged.length === 1 ? '' : 's'} into ${cyan(response.canonical_task_id)}.${warnings}`;
 }
 
 export function renderApprovals(pending: PendingAction[]): string {

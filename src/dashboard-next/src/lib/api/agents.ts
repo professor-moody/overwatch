@@ -4,12 +4,23 @@ import type {
 } from '../types';
 import {
   AgentListResponseSchema,
+  AgentDuplicatesResponseSchema,
+  AgentHandoffResponseSchema,
+  AgentMergeResponseSchema,
+  AgentSplitResponseSchema,
   normalizeLegacyAgentDispatchDescription,
   type ActivityEntryDto,
   type AgentArchetypeSummary as ContractAgentArchetypeSummary,
+  type AgentDuplicatesResponse,
   type AgentDto,
+  type AgentHandoffRequest,
+  type AgentHandoffResponse,
   type AgentListResponse,
+  type AgentMergeRequest,
+  type AgentMergeResponse,
   type AgentQueryDto,
+  type AgentSplitRequest,
+  type AgentSplitResponse,
 } from '@overwatch/dashboard-contracts';
 import {
   DashboardApiError,
@@ -39,6 +50,37 @@ async function request<T extends GeneratedDashboardOperationId>(
 
 export async function getAgents(): Promise<AgentListResponse> {
   return AgentListResponseSchema.parse(await request('getAgents'));
+}
+
+export async function getAgentDuplicates(): Promise<AgentDuplicatesResponse> {
+  return AgentDuplicatesResponseSchema.parse(await request('getAgentDuplicates'));
+}
+
+export async function handoffAgentWork(
+  taskId: string,
+  body: AgentHandoffRequest,
+): Promise<AgentHandoffResponse> {
+  return AgentHandoffResponseSchema.parse(
+    await request('handoffAgent', { path: { task_id: taskId }, body }),
+  );
+}
+
+export async function splitAgentWork(
+  taskId: string,
+  body: AgentSplitRequest,
+): Promise<AgentSplitResponse> {
+  return AgentSplitResponseSchema.parse(
+    await request('splitAgent', { path: { task_id: taskId }, body }),
+  );
+}
+
+export async function mergeAgentWork(
+  canonicalTaskId: string,
+  body: AgentMergeRequest,
+): Promise<AgentMergeResponse> {
+  return AgentMergeResponseSchema.parse(
+    await request('mergeAgent', { path: { task_id: canonicalTaskId }, body }),
+  );
 }
 
 export async function getAgentContext(agentId: string): Promise<{
@@ -191,6 +233,16 @@ export async function dispatchBatch(body: {
 }
 
 export type AgentQuery = AgentQueryDto;
+
+export type {
+  AgentDuplicatesResponse,
+  AgentHandoffRequest,
+  AgentHandoffResponse,
+  AgentMergeRequest,
+  AgentMergeResponse,
+  AgentSplitRequest,
+  AgentSplitResponse,
+};
 
 export async function getAgentQueries(): Promise<{ queries: AgentQuery[] }> {
   return request('getAgentQueries');

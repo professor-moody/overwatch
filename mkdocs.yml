@@ -139,6 +139,7 @@ nav:
       - register_agent: tools/register-agent.md
       - dispatch_agents: tools/dispatch-agents.md
       - get_agent_context: tools/get-agent-context.md
+      - Agent work handoff, split, and merge: tools/agent-work.md
       - update_agent: tools/update-agent.md
       - submit_agent_transcript: tools/transcripts.md
       - agent_heartbeat: tools/agent-heartbeat.md

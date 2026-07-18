@@ -59,6 +59,7 @@ export interface AgentLifecycleCommandPort extends ApplicationCommandHost {
     patch: { no_retry?: boolean; reoffered?: boolean },
   ): boolean;
   abortApprovalsForTask(taskId: string, reason?: string): number;
+  getAgentWorkDismissalBlocker(taskId: string): string | null;
   dismissAgent(taskId: string): boolean;
 }
 
@@ -1002,6 +1003,15 @@ export class AgentLifecycleCommandService {
     >('agent.dismiss', input, metadata);
     if (replay) return this.requireSucceeded(replay);
     const task = this.requireTask(input.task_id);
+    const lineageBlocker = this.engine.getAgentWorkDismissalBlocker(input.task_id);
+    if (lineageBlocker) {
+      throw new AgentLifecycleCommandError(
+        `Agent cannot be dismissed because ${lineageBlocker}.`,
+        'AGENT_DISMISS_LINEAGE_PROTECTED',
+        409,
+        { task_id: input.task_id, blocker: lineageBlocker },
+      );
+    }
     const live = task.status === 'running' || task.status === 'pending';
     if (live && !input.force) {
       throw new AgentLifecycleCommandError(
@@ -1070,6 +1080,18 @@ export class AgentLifecycleCommandService {
         const targets = this.engine.getAgentTasks().filter(task =>
           terminal.has(task.status)
           && (!parsed.campaign_id || task.campaign_id === parsed.campaign_id));
+        const protectedTask = targets.find(task =>
+          this.engine.getAgentWorkDismissalBlocker(task.task_id ?? task.id));
+        if (protectedTask) {
+          const protectedTaskId = protectedTask.task_id ?? protectedTask.id;
+          const blocker = this.engine.getAgentWorkDismissalBlocker(protectedTaskId);
+          throw new AgentLifecycleCommandError(
+            `Fleet dismissal cannot remove ${protectedTaskId} because ${blocker}.`,
+            'AGENT_DISMISS_LINEAGE_PROTECTED',
+            409,
+            { task_id: protectedTaskId, blocker },
+          );
+        }
         let dismissed = 0;
         for (const task of targets) {
           if (this.engine.dismissAgent(task.task_id ?? task.id)) dismissed++;

@@ -4,10 +4,18 @@ import {
   ActiveApplicationCommandsResponseSchema,
   ActivityEntryDtoSchema,
   AgentArchetypesResponseSchema,
+  AgentDuplicatesResponseSchema,
   AgentDtoSchema,
   AgentConsoleEventDtoSchema,
+  AgentHandoffRequestSchema,
+  AgentHandoffResponseSchema,
   AgentListResponseSchema,
+  AgentMergeRequestSchema,
+  AgentMergeResponseSchema,
   AgentQueriesResponseSchema,
+  AgentSplitRequestSchema,
+  AgentSplitResponseSchema,
+  AgentWorkMetadataSchema,
   ApplicationCommandResponseSchema,
   CampaignActionRequestSchema,
   CampaignActionResponseSchema,
@@ -285,12 +293,15 @@ const AgentContextResponseSchema = z.object({
   // The server now emits AgentDto. Keep the historical context shape readable
   // while rolling upgrades can still pair a new dashboard with an old daemon.
   task: z.union([
-    AgentDtoSchema,
+    AgentDtoSchema.extend({ work: AgentWorkMetadataSchema }),
     z.object({
       id: z.string(),
       agent_id: z.string(),
-      task_id: z.string().optional(),
-      agent_label: z.string().optional(),
+      // A payload that claims canonical identity must satisfy AgentDto above;
+      // this branch is only for the pre-canonical compatibility envelope.
+      task_id: z.never().optional(),
+      agent_label: z.never().optional(),
+      work: z.never().optional(),
     }).passthrough(),
   ]),
   subgraph: z.object({ nodes: z.array(z.unknown()), edges: z.array(z.unknown()) }).passthrough(),
@@ -653,7 +664,8 @@ const ReportRenderBodySchema = z.object({
 export const DASHBOARD_OPERATION_IDS = [
   'getRecovery', 'resolveConfigDivergence', 'getState', 'getGraph',
   'getHistory', 'getDecisionLog', 'getTimeline', 'findPaths', 'getSessions',
-  'getAgents', 'dispatchAgent', 'dispatchAgentBatch', 'quickDeployAgent',
+  'getAgents', 'getAgentDuplicates', 'handoffAgent', 'splitAgent', 'mergeAgent',
+  'dispatchAgent', 'dispatchAgentBatch', 'quickDeployAgent',
   'getAgentArchetypes', 'issueFleetDirective', 'dismissFleetAgents',
   'approveActionsBatch', 'denyActionsBatch', 'interpretCommand',
   'getProposedPlans', 'getAgentQueries', 'answerAgentQueriesBatch',
@@ -715,6 +727,10 @@ const dashboardCoreEndpoints = {
 
 const dashboardAgentCommandEndpoints = {
   getAgents: endpoint({ operation_id: 'getAgents', method: 'GET', path: '/api/agents', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: AgentListResponseSchema }, response_kind: 'json', summary: 'List projected agents' }),
+  getAgentDuplicates: endpoint({ operation_id: 'getAgentDuplicates', method: 'GET', path: '/api/agents/duplicates', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: AgentDuplicatesResponseSchema }, response_kind: 'json', summary: 'List exact duplicate agent work groups' }),
+  handoffAgent: endpoint({ operation_id: 'handoffAgent', method: 'POST', path: '/api/agents/{task_id}/handoff', path_schema: idPath('task_id'), query_schema: EmptyQuerySchema, body_schema: AgentHandoffRequestSchema, responses: { 200: AgentHandoffResponseSchema, 400: DashboardErrorSchema, 403: DashboardErrorSchema, 404: DashboardErrorSchema, 409: DashboardErrorSchema, 429: DashboardErrorSchema, 503: DashboardErrorSchema }, response_kind: 'json', summary: 'Hand terminal agent work to one successor' }),
+  splitAgent: endpoint({ operation_id: 'splitAgent', method: 'POST', path: '/api/agents/{task_id}/split', path_schema: idPath('task_id'), query_schema: EmptyQuerySchema, body_schema: AgentSplitRequestSchema, responses: { 200: AgentSplitResponseSchema, 400: DashboardErrorSchema, 403: DashboardErrorSchema, 404: DashboardErrorSchema, 409: DashboardErrorSchema, 429: DashboardErrorSchema, 503: DashboardErrorSchema }, response_kind: 'json', summary: 'Split terminal node-scoped agent work into child tasks' }),
+  mergeAgent: endpoint({ operation_id: 'mergeAgent', method: 'POST', path: '/api/agents/{task_id}/merge', path_schema: idPath('task_id'), query_schema: EmptyQuerySchema, body_schema: AgentMergeRequestSchema, responses: { 200: AgentMergeResponseSchema, 400: DashboardErrorSchema, 403: DashboardErrorSchema, 404: DashboardErrorSchema, 409: DashboardErrorSchema, 503: DashboardErrorSchema }, response_kind: 'json', summary: 'Merge terminal duplicate work into the canonical task' }),
   dispatchAgent: endpoint({ operation_id: 'dispatchAgent', method: 'POST', path: '/api/agents/dispatch', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: DispatchBodySchema, responses: { 201: DispatchAgentResponseSchema, 409: DispatchAgentResponseSchema, 429: DispatchAgentResponseSchema }, response_kind: 'json', summary: 'Dispatch one agent' }),
   dispatchAgentBatch: endpoint({ operation_id: 'dispatchAgentBatch', method: 'POST', path: '/api/agents/dispatch-batch', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: DispatchBatchBodySchema, responses: { 200: DispatchBatchResponseSchema }, response_kind: 'json', summary: 'Dispatch a batch of agents' }),
   quickDeployAgent: endpoint({ operation_id: 'quickDeployAgent', method: 'POST', path: '/api/agents/quick-deploy', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: QuickDeployBodySchema, responses: { 201: QuickDeployResponseSchema, 409: QuickDeployResponseSchema, 429: QuickDeployResponseSchema }, response_kind: 'json', summary: 'Scope a raw target and dispatch an agent' }),

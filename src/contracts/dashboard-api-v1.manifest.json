@@ -102,6 +102,63 @@
       "summary": "List projected agents"
     },
     {
+      "operation_id": "getAgentDuplicates",
+      "method": "GET",
+      "path": "/api/agents/duplicates",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "List exact duplicate agent work groups"
+    },
+    {
+      "operation_id": "handoffAgent",
+      "method": "POST",
+      "path": "/api/agents/{task_id}/handoff",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        400,
+        403,
+        404,
+        409,
+        429,
+        503
+      ],
+      "summary": "Hand terminal agent work to one successor"
+    },
+    {
+      "operation_id": "splitAgent",
+      "method": "POST",
+      "path": "/api/agents/{task_id}/split",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        400,
+        403,
+        404,
+        409,
+        429,
+        503
+      ],
+      "summary": "Split terminal node-scoped agent work into child tasks"
+    },
+    {
+      "operation_id": "mergeAgent",
+      "method": "POST",
+      "path": "/api/agents/{task_id}/merge",
+      "response_kind": "json",
+      "success_statuses": [
+        200,
+        400,
+        403,
+        404,
+        409,
+        503
+      ],
+      "summary": "Merge terminal duplicate work into the canonical task"
+    },
+    {
       "operation_id": "dispatchAgent",
       "method": "POST",
       "path": "/api/agents/dispatch",
@@ -1083,7 +1140,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
-        "200": "e28c4150e69a292792332b63dfa726838b4ca6f9d2098e1463cd741ba41170c9"
+        "200": "34a9adb794d999c859f8304933fa37ac52adefef47913f8da6fe499c9e977e1f"
       }
     },
     "getGraph": {
@@ -1139,7 +1196,56 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
-        "200": "4674607359c48ec85f70727689e2c8607058d9d0bf51ee102cb7da982afb85c4"
+        "200": "af9b4172227f0d05e5dff20332312e9638d30032373f19b0ce2e1a64a3dc05c5"
+      }
+    },
+    "getAgentDuplicates": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "4d70e06cedbf6171e34656ad3c774d7d9fac3098ff937e1c2fc6e706b936a3da"
+      }
+    },
+    "handoffAgent": {
+      "path": "aec5817a2e4c7fcb21d68290a4ef06718e55fd34f28523b42cd223aa5a2969ea",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "54266caf1009c5f2f10d19e019015c0e413077cae91cfbca135003b2ca7a93f6",
+      "responses": {
+        "200": "76d866bf498e8b3455ea399e318eee995b297776541394729566882dda6fef2e",
+        "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "403": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "429": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "503": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+      }
+    },
+    "splitAgent": {
+      "path": "aec5817a2e4c7fcb21d68290a4ef06718e55fd34f28523b42cd223aa5a2969ea",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "d5a3369284c1325bbfaf237da02a95210cf1e23e71967af8f3741542bdded513",
+      "responses": {
+        "200": "80d6a761e4c36fe02bcd1fe26845f3a51f0287be824de5e3a985cfdeb7fb126e",
+        "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "403": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "429": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "503": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
+      }
+    },
+    "mergeAgent": {
+      "path": "aec5817a2e4c7fcb21d68290a4ef06718e55fd34f28523b42cd223aa5a2969ea",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "99d37f9664870a4e4a39325dae86e6b93f38391fc414e8e30571a58646264eb5",
+      "responses": {
+        "200": "9902f86b682cbaad9fa3cff762cd2339e2a55c8cd78e47a7aaa1a1eaaa2cb63a",
+        "400": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "403": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "404": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "409": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc",
+        "503": "825cf8fd855d7c79227c0d2031a3bb322d135e37c5e4caddf42ecad6b95b7fdc"
       }
     },
     "dispatchAgent": {
@@ -1147,9 +1253,9 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "c80c6e71d2b15be0085884a28292116d4828c2fe28fba5c2452c4f80ab8c3493",
       "responses": {
-        "201": "a73a5fbd94aa86b836f943e4f028505873f1c7b56a92174800649b021f71bfbb",
-        "409": "a73a5fbd94aa86b836f943e4f028505873f1c7b56a92174800649b021f71bfbb",
-        "429": "a73a5fbd94aa86b836f943e4f028505873f1c7b56a92174800649b021f71bfbb"
+        "201": "7c427fc525dd7354c4e989217a840022dcee9ac31c8a6e3943aee34e824b6794",
+        "409": "7c427fc525dd7354c4e989217a840022dcee9ac31c8a6e3943aee34e824b6794",
+        "429": "7c427fc525dd7354c4e989217a840022dcee9ac31c8a6e3943aee34e824b6794"
       }
     },
     "dispatchAgentBatch": {
@@ -1165,9 +1271,9 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "f7a186fc994fa293aab231c183e8940a5ccee4084bbd87f276879d82b8842d1b",
       "responses": {
-        "201": "3b9b538a7cee7746b934446417734566d5e02dc5e2f4481ea4cc75a279386bbe",
-        "409": "3b9b538a7cee7746b934446417734566d5e02dc5e2f4481ea4cc75a279386bbe",
-        "429": "3b9b538a7cee7746b934446417734566d5e02dc5e2f4481ea4cc75a279386bbe"
+        "201": "ee954b6ee4c5486aabcebb4b9bc3d7589a014cae1a7a7098fbffc8c409a37dd3",
+        "409": "ee954b6ee4c5486aabcebb4b9bc3d7589a014cae1a7a7098fbffc8c409a37dd3",
+        "429": "ee954b6ee4c5486aabcebb4b9bc3d7589a014cae1a7a7098fbffc8c409a37dd3"
       }
     },
     "getAgentArchetypes": {
@@ -1638,7 +1744,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
-        "200": "dcc3c070b3a61667386791924366fc5bc54b0c25935511463e22c31ae3480562"
+        "200": "b70af1e43822aa8b4709fec4da40f97f41bd2c2b941b04a4f67290fbf4965556"
       }
     },
     "getAgentHistory": {
@@ -1710,7 +1816,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
-        "200": "244d559511305cebf0f1479cb6f93031f0f322755629bf3e48f732dd83f2d0c1"
+        "200": "401bc184836937b940174c2ce3ff01a5cca173b3e2114c522d8ca75b9c4e866b"
       }
     },
     "updateCampaign": {
@@ -1920,7 +2026,7 @@
     "main": {
       "operation_id": "dashboardMainSocket",
       "path": "/ws",
-      "server_events": "1697f843fddf668992baf704a37e2a356cf8001df90c722bcef10587f4482d69"
+      "server_events": "93be3b0a998e49d251158bea19a4ff26349cab3c8d9eb9983f32f550d6096a3f"
     },
     "session": {
       "operation_id": "dashboardSessionSocket",
@@ -1934,5 +2040,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "b207914d856c17fb0d5195d00f1983b698219bc583f48a7f19777bab149a844f"
+  "schema_hash": "1fd67f6c21ce554424ac8affed27e796700eac69b9b380a33c4f813d938e5e69"
 }

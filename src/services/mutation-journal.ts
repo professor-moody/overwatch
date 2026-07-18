@@ -69,6 +69,10 @@ import {
   MAX_COMMAND_COORDINATION_VALUE_BYTES,
   type CommandCoordinationChangePayloadV1,
 } from './command-coordination-change.js';
+import {
+  validateAgentCoordinationChangePayload,
+  type AgentCoordinationChangePayloadV1,
+} from './agent-coordination-change.js';
 
 type WriteSyncLike = (
   fd: number,
@@ -139,6 +143,7 @@ export type MutationType =
   | 'activity_append'
   | 'application_command_change'
   | 'command_coordination_change'
+  | 'agent_coordination_change'
   | 'state_patch';
 
 export const JOURNAL_V2_CHUNK_BYTES = 64 * 1024;
@@ -341,6 +346,7 @@ const REPLAYABLE_MUTATION_TYPES = new Set<string>([
   'activity_append',
   'application_command_change',
   'command_coordination_change',
+  'agent_coordination_change',
   'state_patch',
 ]);
 
@@ -816,6 +822,13 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
           return { ok: false, reason: `command_coordination_change.${phase} outcome is malformed` };
         }
       }
+      break;
+    }
+    case 'agent_coordination_change': {
+      const validation = validateAgentCoordinationChangePayload(
+        payload as unknown as AgentCoordinationChangePayloadV1,
+      );
+      if (!validation.ok) return validation;
       break;
     }
     case 'activity_append': {

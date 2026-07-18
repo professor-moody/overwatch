@@ -139,6 +139,21 @@ export class FrontierLeases {
     return result;
   }
 
+  /** Exact durable image, including an expired lease. Coordination CAS uses
+   * this rather than `get()` so replay compares against persisted truth without
+   * making wall-clock expiry part of transaction application. */
+  getSnapshot(frontier_item_id: string): FrontierLease | null {
+    const lease = this.byItem.get(frontier_item_id);
+    return lease ? structuredClone(lease) : null;
+  }
+
+  /** Install one validated durable image. Only bounded recovery/coordination
+   * appliers should call this; ordinary ownership uses acquire/renew/release. */
+  applySnapshot(frontier_item_id: string, lease: FrontierLease | null): void {
+    if (lease) this.byItem.set(frontier_item_id, structuredClone(lease));
+    else this.byItem.delete(frontier_item_id);
+  }
+
   // ---- Persistence ----
 
   serialize(): FrontierLeasesState {
