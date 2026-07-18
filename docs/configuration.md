@@ -452,9 +452,16 @@ The orchestrator's autonomous loop is **prompt-driven** (`get_system_prompt(role
 
 ## Environment Variables
 
+The table describes raw process inputs. In the recommended managed workflow,
+run setup while stopped to persist the selected config/state/endpoints in
+`.overwatch-runtime/profile.json`; later lifecycle commands use that profile and
+reject conflicting transient ownership overrides. Use raw variables directly
+only for an explicitly isolated developer process, fixture, or documented setup
+selection.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OVERWATCH_CONFIG` | `./engagement.json` | Path to engagement configuration file |
+| `OVERWATCH_CONFIG` | `./engagement.json` | Raw/setup-time engagement config selection; managed lifecycle uses the persisted profile |
 | `OVERWATCH_SKILLS` | `./skills` | Path to skill library directory |
 | `OVERWATCH_DASHBOARD_PORT` | `8384` | Port for live dashboard (set to `0` to disable) |
 | `OVERWATCH_TRANSPORT` | `stdio` | Transport mode: `stdio` or `http` |

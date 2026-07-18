@@ -103,9 +103,20 @@ records rather than browser timers:
   from the dashboard or CLI, and the waiting action observes that one durable
   resolution.
 
+The approval queue is policy-dependent, not universal. `auto-approve` bypasses
+it, while queued actions that receive no operator answer by
+`approval_timeout_ms` execute as explicitly stamped unattended timeouts.
+Cancellation, reaping, disconnect, and shutdown abort associated pending
+approvals instead of executing them.
+
 If an agent exits without producing the required plan or terminal result, the
 task is finalized truthfully and its transcript/evidence remains available for
 diagnosis. Restart does not invent a successful response.
+
+The default planner lane admits one running planner; additional accepted
+commands may remain queued. `GET /api/commands/active` and
+`GET /api/commands/{command_id}` expose their durable status across browser
+reloads.
 
 ![Approval and question round-trip](assets/approval-question-roundtrip-light.svg#only-light)
 ![Approval and question round-trip](assets/approval-question-roundtrip-dark.svg#only-dark)

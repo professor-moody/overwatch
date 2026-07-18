@@ -4,7 +4,7 @@ Overwatch is operated as a **multi-agent cockpit**: a human operator drives a pr
 
 ## Safety invariant
 
-> **The cockpit never invents a new mutation path.** Every operator action — a typed command, a per-agent steering button, a fleet control, a confirmed plan — routes through an existing **validated engine method** (`issueAgentDirective`, `updateScope`, the approval queue, `registerAgent`). The single dashboard-side execution function is [`executeOps`](#operatorop) in `command-interpreter.ts`. So OPSEC, scope, frontier-lease, and approval guards apply to everything, and nothing mutates engagement state without an explicit operator confirm (or a single deliberate click that maps 1:1 to one validated op).
+> **The cockpit never invents a new mutation path.** Every operator action — a typed command, a per-agent steering button, a fleet control, a confirmed plan — routes through an existing **validated engine method** (`issueAgentDirective`, `updateScope`, the approval queue, `registerAgent`). The single dashboard-side execution function is [`executeOps`](#operatorop) in `command-interpreter.ts`. Scope, OPSEC, frontier-lease, persistence, and the configured approval policy therefore apply identically. Operator-authored configuration/coordination mutations use an explicit confirm or one deliberate 1:1 control; target execution may be auto-approved or time out to an explicitly stamped unattended execution when the configured policy permits it.
 
 ## The headless multi-agent runtime
 
@@ -94,7 +94,12 @@ Each campaign's **detail** view shows a **Campaign Noise** gauge — that campai
 
 A running agent at a genuine fork calls [`ask_operator`](tools/ask-operator.md) and waits by heartbeating. The durable question lands in `AgentQueryStore` and surfaces in the cockpit's **Agent Questions** inbox; the operator answers (`POST /api/agent-queries/:id/answer`) and the answer is delivered as `pending_answer`. Delivery is at-least-once until the agent acts and passes `acknowledged_query_id` on a later heartbeat. Questions retain their original absolute expiry across restart, and a task's still-actionable questions are marked expired when it goes terminal, so a dead agent's question never lingers in the inbox.
 
-The approval gate works the same way — an agent's target-facing call **blocks** in the engine's queue, the operator resolves it from the "Needs you" strip, and the agent resumes. Both round-trips are the clearest proof that the terminal agent and the dashboard operate on one shared engine:
+When the effective policy queues an action, the approval gate works the same
+way—an agent's target-facing call blocks, the operator can resolve it from the
+"Needs you" strip, and the agent resumes. `auto-approve` bypasses this queue;
+an unanswered queued action executes after `approval_timeout_ms` as an
+unattended timeout. Both round-trips are the clearest proof that the terminal
+agent and the dashboard operate on one shared engine:
 
 ![Approval and question round-trip](assets/approval-question-roundtrip-light.svg#only-light)
 ![Approval and question round-trip](assets/approval-question-roundtrip-dark.svg#only-dark)

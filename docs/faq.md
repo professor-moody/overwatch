@@ -35,7 +35,11 @@ switching.
 
 ### Can I run multiple engagements simultaneously?
 
-Not in a single server instance. Each Overwatch server runs one engagement. To run multiple engagements, start multiple server instances with different `OVERWATCH_CONFIG` paths and `OVERWATCH_DASHBOARD_PORT` values, and configure separate MCP entries in Claude Code.
+Not in one managed daemon or dashboard. One checkout profile selects one current
+engagement. Concurrent independent runtimes are an advanced deployment that
+must isolate config, state/WAL family, runtime profile and ownership record,
+MCP/dashboard ports, credentials, and client wiring—not merely change the
+dashboard port. It is not dashboard engagement switching.
 
 ### Can I use this with models other than Claude?
 
@@ -53,23 +57,16 @@ Use the [behavior-eval harness](prompt-eval.md), not your judgment. A determinis
 
 ### How do I reset an engagement?
 
-Stop the daemon, preserve the complete engagement directory, and restart with a
-new explicit state path:
-
-```bash
-cp -a /path/to/engagement /path/to/engagement-before-reset
-export OVERWATCH_STATE_FILE=/path/to/engagement/state-<engagement-id>-fresh-$(date +%Y%m%d%H%M%S).json
-# Restart Overwatch with the same validated engagement.json
-```
-
-Do not reset by deleting only `state-<id>.json`: a retained WAL, snapshot,
-rollback intent, or migration intent deliberately prevents silent reseeding.
-Using a new path creates a fresh graph while preserving the old state, evidence,
-reports, and rollback authority.
+An in-place reset is not a supported normal managed workflow. First use
+`bundle_engagement` (or stop the daemon and capture the complete state family),
+then initialize a separate clean workspace for the new engagement. Do not point
+the existing profile at a transient `OVERWATCH_STATE_FILE` or delete only
+`state-<id>.json`; retained WAL, snapshots, intents, evidence, and reports are
+part of the recovery authority. See [Daily Operation](daily-operations.md#backup-and-relocation).
 
 ### How do I resume a previous engagement?
 
-Start the same daemon with the same `OVERWATCH_CONFIG` and state path. It loads
+Start the same managed profile with `npm run daemon:start`. It loads
 the newest valid base and replays complete committed journal transactions. Call
 `get_recovery_status` (or `overwatch recovery`) first if startup is degraded,
 then `get_state` for the current operational briefing. Do not delete state,
@@ -189,7 +186,11 @@ daemon built from an older checkout, and a Claude CLI that lacks the strict MCP,
 setting-source, or no-session-persistence flags required for isolated workers.
 For a genuine worker failure, inspect `logs/agents/<task-id>.ndjson`; the task ID
 is shown in the Fleet/command activity. Preserve that log when reporting the
-problem.
+problem. The planner lane runs one task by default, so `queued` may be normal.
+Use `GET /api/commands/active` or `GET /api/commands/{command_id}` to distinguish
+queued, running, succeeded, failed, and interrupted command truth. Do not
+restart solely because a planner is slow; inspect the transcript/result when a
+worker reaches a terminal no-plan outcome.
 
 ### What's `engagement_nonce`? Why do new engagements have it but old ones don't?
 
