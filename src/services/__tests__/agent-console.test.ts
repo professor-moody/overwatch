@@ -88,6 +88,17 @@ describe('agent console helpers', () => {
     expect(buildOperatorConsoleEvents(entries, [task], { after: 'middle' })
       .map(event => event.id)).toEqual(['new']);
   });
+
+  it('applies operator event-id cursors after chronological ordering', () => {
+    const entries = [
+      entry({ event_id: 'new', timestamp: '2026-06-12T10:03:00Z' }),
+      entry({ event_id: 'old', timestamp: '2026-06-12T10:01:00Z' }),
+      entry({ event_id: 'middle', timestamp: '2026-06-12T10:02:00Z' }),
+    ];
+
+    expect(buildOperatorConsoleEvents(entries, [task], { after: 'old' })
+      .map(event => event.id)).toEqual(['middle', 'new']);
+  });
 });
 
 describe('activityToAgentConsoleEvent — WS-path attribution (3A.3)', () => {

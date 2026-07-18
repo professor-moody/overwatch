@@ -97,9 +97,9 @@ import {
   type ToolDescriptor,
 } from './tool-descriptor-registry.js';
 import { buildTrustSignalsResponse, type TrustSignalSeverity } from './trust-signal-summary.js';
-import { buildAgentConsoleEvents, buildOperatorConsoleEvents } from './agent-console.js';
 import { assessPersistenceRecovery } from './lab-preflight.js';
 import { projectAgentDtos } from './dashboard-agent-projector.js';
+import { DashboardAgentReadModel } from './dashboard-agent-read-model.js';
 import {
   projectCampaignDtos,
   projectDashboardSnapshot,
@@ -117,7 +117,6 @@ import { readRuntimeBuildInfo } from './runtime-build-info.js';
 import { DashboardProjectionService } from './dashboard-projection-service.js';
 import { DashboardStaticServer } from './dashboard-static-server.js';
 import {
-  AgentListResponseSchema,
   CampaignActionRequestSchema,
   CampaignActionResponseSchema,
   CampaignChildrenResponseSchema,
@@ -290,6 +289,7 @@ export class DashboardServer {
   private runtimeStopping = false;
   private readonly inFlightDurableMutations = new Set<Promise<void>>();
   private readonly dashboardProjections: DashboardProjectionService;
+  private readonly dashboardAgentReads: DashboardAgentReadModel;
 
   attachRuntimeStatus(provider: () => DaemonRuntimeStatus): void {
     this.runtimeStatusProvider = provider;
@@ -341,6 +341,7 @@ export class DashboardServer {
   ) {
     this.engine = engine;
     this.dashboardProjections = new DashboardProjectionService(engine);
+    this.dashboardAgentReads = new DashboardAgentReadModel(engine);
     this.applicationCommands = applicationCommands ?? new ApplicationCommandService(engine);
     this.mutationBoundary = new ExternalMutationCommandService(engine);
     this.dispatchCommands = new DispatchCommandService(engine, this.applicationCommands);
@@ -2876,90 +2877,58 @@ export class DashboardServer {
   // ---- Agent & Campaign REST endpoints ----
 
   private serveAgents(res: ServerResponse): void {
-    const enriched = projectAgentDtos(
-      this.engine.getAllAgents(),
-      this.engine.getFullHistory(),
-      this.engine.listCampaigns(),
-    );
-    const payload = AgentListResponseSchema.parse({ agents: enriched, total: enriched.length });
+    const payload = this.dashboardAgentReads.listAgents();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(payload));
   }
 
   private serveAgentContext(taskId: string, res: ServerResponse): void {
-    const task = this.engine.getTask(taskId);
-    if (!task) {
+    const payload = this.dashboardAgentReads.getAgentContext(taskId);
+    if (!payload) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Agent task not found' }));
       return;
     }
-    const subgraph = this.engine.getSubgraphForAgent(task.subgraph_node_ids, { hops: 2 });
-    const [projectedTask] = projectAgentDtos(
-      [task],
-      this.engine.getFullHistory(),
-      this.engine.listCampaigns(),
-    );
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ task: projectedTask, subgraph }));
+    res.end(JSON.stringify(payload));
   }
 
   private serveAgentHistory(taskId: string, res: ServerResponse): void {
-    const task = this.engine.getTask(taskId);
-    if (!task) {
+    const payload = this.dashboardAgentReads.getAgentHistory(taskId);
+    if (!payload) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Agent task not found' }));
       return;
     }
-    const agentId = task.agent_label ?? task.agent_id;
-    const uniqueLabel = this.engine.getAgentTasks()
-      .filter(candidate => (candidate.agent_label ?? candidate.agent_id) === agentId).length === 1;
-    // Include events tagged with either the human-readable agent_id or the
-    // task UUID — submit_agent_transcript / log_action_event events are
-    // recorded against linked_agent_task_id, which the simple agent_id filter
-    // would miss.
-    const entries = this.engine.getFullHistory().filter(e =>
-      (e as { linked_agent_task_id?: string }).linked_agent_task_id === taskId
-      || (uniqueLabel && e.agent_id === agentId)
-    );
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ entries, total: entries.length }));
+    res.end(JSON.stringify(payload));
   }
 
   private serveAgentConsole(taskId: string, url: string, res: ServerResponse): void {
-    const task = this.engine.getTask(taskId);
-    if (!task) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Agent task not found' }));
-      return;
-    }
-
     const params = new URL(url, 'http://localhost').searchParams;
     const rawLimit = params.get('limit') || undefined;
     const limit = rawLimit ? parseInt(rawLimit, 10) : 80;
     const after = params.get('after') || undefined;
-    const agentLabel = task.agent_label ?? task.agent_id;
-    const allowLegacyLabel = this.engine.getAgentTasks()
-      .filter(candidate => (candidate.agent_label ?? candidate.agent_id) === agentLabel).length === 1;
-    const events = buildAgentConsoleEvents(this.engine.getFullHistory(), task, {
+    const payload = this.dashboardAgentReads.getAgentConsole(taskId, {
       limit: Number.isFinite(limit) && limit > 0 ? limit : 80,
       after,
-      allowLegacyLabel,
     });
+    if (!payload) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Agent task not found' }));
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ events, total: events.length }));
+    res.end(JSON.stringify(payload));
   }
 
   private serveOperatorConsole(url: string, res: ServerResponse): void {
     const query = new URL(url, 'http://localhost').searchParams;
     const limit = Math.max(1, Math.min(1_000, Number(query.get('limit') || 200)));
     const after = query.get('after') || undefined;
-    const events = buildOperatorConsoleEvents(
-      this.engine.getFullHistory(),
-      this.engine.getAllAgents(),
-      { limit, after },
-    );
+    const payload = this.dashboardAgentReads.getOperatorConsole({ limit, after });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ events, total: events.length }));
+    res.end(JSON.stringify(payload));
   }
 
   private serveOpsecBudget(res: ServerResponse): void {
