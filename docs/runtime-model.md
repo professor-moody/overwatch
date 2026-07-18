@@ -20,6 +20,9 @@ The supported shapes are deliberately distinct:
   `npm run daemon:start`. The generated `.mcp.json` points terminal Claude at
   the daemon's HTTP MCP endpoint. The dashboard and CLI use the same daemon's
   HTTP/WebSocket API, and dispatched agents connect back to its MCP endpoint.
+  Launch terminal Claude as `OVERWATCH_ENGAGEMENT_ACTIVE=1 claude` during real
+  engagement work so the installed anti-drift hooks are active; plain `claude`
+  connects but intentionally leaves those hooks silent.
 - **Stdio (solo fallback):** `npm run setup:stdio` configures one Claude session
   to launch and own one Overwatch
   process. Do not also start a daemon for the same engagement; that would be a

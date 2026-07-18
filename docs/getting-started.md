@@ -30,10 +30,12 @@ Both bring up the live dashboard. Keep the default **daemon** whenever you use t
 ```bash
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
-npm install
-npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm ci
+npm run build
+npm run setup
 npm run daemon:start
 npm run doctor
+OVERWATCH_ENGAGEMENT_ACTIVE=1 claude
 ```
 
 Requires **Node.js 20+** and the **Claude Code CLI** (`claude`).
@@ -43,9 +45,16 @@ sqlmap, etc.) installed on PATH. See [Prerequisites](prerequisites.md) for
 grouped install commands by engagement type — install only the group(s) you
 need, then use the `check_tools` MCP tool as a preflight.
 
-### 2. Pick a template
+### 2. Create or preserve the active engagement
 
-Start with the general-purpose **`ctf.json`** template — it has no OPSEC constraints, auto-approves everything, and works for any lab, CTF, HTB box, or "I just want to try Overwatch" scenario. It's the friendliest first run.
+Plain `npm run setup` is the canonical path. On a genuinely fresh checkout it
+creates the active `engagement.json`; on an established checkout it preserves
+that file and refreshes machine-local wiring. Setup does not start the daemon.
+
+If this is the first setup and you already know the initial scope, you can use
+the following command **in place of** the plain `npm run setup` in step 1. It
+selects the general-purpose **`ctf.json`** template and seeds it in the same
+call:
 
 ```bash
 npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
@@ -55,10 +64,14 @@ On a fresh checkout this creates a local `engagement.json` from the template,
 fills in the CIDR, adds a fresh `engagement_nonce`, and writes an authenticated
 HTTP `.mcp.json`, `.overwatch-mcp-token`, `.overwatch-runtime/profile.json`, and
 `.claude/settings.json`. `npm run daemon:start` returns after the verified
-daemon is ready, so you can open `http://127.0.0.1:8384` and start `claude` in
-the same terminal. Re-running the default `npm run setup` keeps an existing
+daemon is ready, so you can open `http://127.0.0.1:8384` and start terminal
+Claude in the same terminal. For engagement work, launch it as
+`OVERWATCH_ENGAGEMENT_ACTIVE=1 claude`; a plain `claude` connects successfully
+but leaves the engagement-only anti-drift hooks inactive. Re-running the
+default `npm run setup` keeps an existing
 `engagement.json`; it only refreshes the shared-client wiring. `--force` does
-not override that safety rule.
+not override that safety rule. `--template`, `--name`, `--cidr`, and `--domain`
+are fresh-creation inputs and do not edit an established engagement.
 
 Each setup-owned file is published atomically. If setup reports a late local
 wiring write failure, fix the filesystem error and rerun the same setup command;
@@ -95,20 +108,20 @@ CLI, or MCP configuration commands so file, runtime, and durable state advance
 together. If an external edit is detected, Overwatch starts read-only and asks
 you to reconcile the exact file/state hashes instead of guessing.
 
-!!! tip "Or set it up conversationally — no JSON"
-    Once Overwatch is wired into Claude Code (including a genuinely fresh empty
-    bootstrap engagement via `OVERWATCH_BOOTSTRAP=1`), you can just **tell the model**: *"set up an
-    engagement scoped to 10.10.10.0/24, objective domain-admin, quiet OPSEC."* It
-    calls [`create_engagement`](tools/create-engagement.md), which writes a
-    validated `engagements/<id>.json` and returns the activation steps
-    (**create-then-start**: set `OVERWATCH_CONFIG` to it → restart → confirm with
-    [`list_engagements`](tools/list-engagements.md)). After it's running, adjust the
-    active engagement with [`add_objective`](tools/add-objective.md),
-    [`set_opsec`](tools/set-opsec.md), and [`update_scope`](tools/update-scope.md) —
-    all without touching the file.
+!!! tip "Configure the current engagement without editing JSON"
+    After startup, tell Claude *"add 10.10.10.0/24 to the current scope, add the
+    objective domain-admin, and use quiet OPSEC."* It uses
+    [`update_scope`](tools/update-scope.md),
+    [`add_objective`](tools/add-objective.md), and
+    [`set_opsec`](tools/set-opsec.md). In the dashboard, use **Console → Add
+    Targets** for scope and **Settings** for objectives and OPSEC. These active
+    edits update the live engine, durable state, and `engagement.json` together.
 
-??? info "Other templates (for real engagements)"
-    Once you've gotten comfortable with the basics, swap in the template that matches your engagement profile. Each one preconfigures sensible objectives, OPSEC posture, and the right `profile` field so preflight checks the right tools.
+??? info "Other templates (for a fresh real engagement)"
+    Before the initial setup, choose the template that matches your engagement
+    profile. Each one preconfigures sensible objectives, OPSEC posture, and the
+    right `profile` field so preflight checks the right tools. Setup flags do
+    not replace or retarget an engagement that already exists.
 
     | Template | What it does | Use when |
     |----------|-------------|----------|
@@ -163,7 +176,7 @@ The command returns only after every configured runtime endpoint reports `READY`
 
 ```bash
 cd /absolute/path/to/overwatch
-claude
+OVERWATCH_ENGAGEMENT_ACTIVE=1 claude
 ```
 
 Startup verifies that the compiled runtime, engagement, and state family match
@@ -422,13 +435,30 @@ ports or credentials underneath a live state owner.
 
 Full feature list, keyboard shortcuts, and API endpoints in the [Dashboard Guide](dashboard.md).
 
-### Set up an engagement conversationally (no hand-edited JSON)
+### Create another engagement configuration
 
-You don't have to write `engagement.json` by hand. With a server running, just ask Claude to build one and it uses MCP tools to do it:
+The dashboard's **New Engagement** flow and the `create_engagement` MCP tool can
+build another validated configuration without hand-editing JSON:
 
 > **"Set up an engagement named Acme Q3 scoped to 10.10.0.0/16, objective 'reach Domain Admin', quiet OPSEC."**
 
-Under the hood that's `create_engagement` (which validates scope/OPSEC and writes `engagements/<id>.json`, returning activation steps), plus `add_objective`, `set_opsec` (confirm-gated, warns when you loosen posture), and `update_scope`. See the [Engagement Setup tools](tools/index.md). New engagements activate on restart (create-then-start), so there's no live reload to reason about.
+`create_engagement` validates scope and OPSEC and writes
+`engagements/<id>.json`. The new configuration is **inactive**: it does not
+replace or reload the current daemon's engagement. `list_engagements` can show
+both configurations, but it does not switch between them, and dashboard
+engagement switching is not currently supported. To change the current
+engagement, use **Add Targets**, **Settings**, `update_scope`, `add_objective`,
+or `set_opsec`. See the [Engagement Setup tools](tools/index.md).
+
+## What should I see?
+
+After the quick start:
+
+- the dashboard at `http://127.0.0.1:8384` reports connected;
+- terminal Claude and the dashboard name the same active engagement;
+- scope added from **Add Targets** or `update_scope` appears on both surfaces;
+- agents deployed from Claude or the dashboard appear in the same Fleet; and
+- both surfaces share approvals, task leases, findings, and durable state.
 
 ### Writing engagement.json from scratch
 
@@ -439,7 +469,9 @@ If none of the templates fit, the full schema is in [Configuration](configuratio
 ## Troubleshooting
 
 ??? failure "Server won't start: Cannot find engagement config"
-    Set `OVERWATCH_CONFIG` to an absolute path, or create `engagement.json` in the directory you launched from.
+    Run `npm run setup` from the repository root. It creates a fresh config only
+    when no engagement artifacts exist; otherwise it preserves recovery
+    authority and tells you what must be selected or restored.
 
 ??? failure "Server won't start: Failed to parse engagement config"
     Validate the JSON. Common culprits: trailing commas, unquoted keys, smart quotes from copy-paste.

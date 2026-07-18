@@ -47,10 +47,12 @@ After compaction or restart, [`get_state()`](tools/get-state.md) returns an oper
 ```bash
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
-npm install
-npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
+npm ci
+npm run build
+npm run setup
 npm run daemon:start
 npm run doctor
+OVERWATCH_ENGAGEMENT_ACTIVE=1 claude
 ```
 
 `ctf.json` is the friendliest first-run template — no OPSEC constraints,
@@ -59,12 +61,19 @@ auto-approves everything. For real engagements switch to
 [Configuration](configuration.md).
 
 The detached daemon remains running after `daemon:start` returns. Open
-`http://127.0.0.1:8384` and launch `claude` from the repo in the same or another
-terminal. Terminal Claude, the dashboard, the
+`http://127.0.0.1:8384` and launch
+`OVERWATCH_ENGAGEMENT_ACTIVE=1 claude` from the repo in the same or another
+terminal. (Plain `claude` connects, but leaves engagement-only anti-drift hooks
+inactive.) Terminal Claude, the dashboard, the
 [`overwatch` CLI](cli.md), and deployed agents share that one runtime; do not
 launch a second stdio server beside it. Dashboard-managed Claude workers use
 isolated per-task MCP configuration and do not inherit the terminal session's
 project settings, hooks, or resume history.
+
+Use **Console → Add Targets** and **Settings**—or the corresponding MCP
+configuration tools—to update the current engagement. **New Engagement**
+creates another inactive config; it does not switch this daemon, and dashboard
+engagement switching is not currently supported.
 
 The solo **stdio** compatibility mode is still available through
 `npm run setup:stdio` (or `npm run setup -- --stdio`), but use the default daemon

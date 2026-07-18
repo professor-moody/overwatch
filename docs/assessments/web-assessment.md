@@ -39,7 +39,12 @@ Then fill in the scope with the subdomains and IPs you were given:
 !!! important "Scope is the egress boundary"
     Every target-facing tool call (`nuclei`, `sqlmap`, `curl`, …) is checked against this scope before it runs — an out-of-scope URL/host is **rejected before spawn**. `*` matches one path/host segment, `**` matches any depth. Get the patterns right and the guard does the rest. See [Configuration](../configuration.md) for the matching rules.
 
-Or set it up conversationally — tell Claude: *"Set up a web assessment for app.acme.com and api.acme.com plus 203.0.113.0/28, objective 'initial access', quiet OPSEC."* It calls `create_engagement`.
+To update the running assessment conversationally, tell Claude: *"Add
+app.acme.com, api.acme.com, and 203.0.113.0/28 to the current scope; add the
+objective 'initial access'; use quiet OPSEC."* It uses the active
+`update_scope`, `add_objective`, and `set_opsec` paths. Calling
+`create_engagement` would instead create another inactive config without
+switching the running daemon.
 
 ## 2. Seed the targets you were given
 

@@ -11,14 +11,13 @@ Build and persist a new engagement config — conversationally, with no hand-edi
 - Spinning a variant off a template (`ctf`, `internal-pentest`,
   `external-assessment`, `red-team`, `cloud-assessment`, `assumed-breach`).
 
-## Create-then-start
+## Inactive creation
 
 The new engagement is **persisted but not live**. The running server keeps
-serving the current engagement until it is **restarted pointed at the new
-config** (there is no live engine reload). The result includes an `activation`
-block with the exact steps. It does **not** touch the running engagement, so no
-confirmation gate is needed; use `dry_run: true` to preview the built config
-without writing.
+serving the current engagement. This tool does not switch or reload the daemon,
+and the dashboard does not currently provide engagement switching. It does
+**not** touch the running engagement, so no confirmation gate is needed; use
+`dry_run: true` to preview the built config without writing.
 
 ## Parameters
 
@@ -35,11 +34,10 @@ without writing.
 
 ## Returns
 
-On write: the engagement summary (incl. `config_path`) plus an `activation`
-object — `status: "not_active"`, a note, and `steps` (set `OVERWATCH_CONFIG` /
-copy to `engagement.json` → restart → confirm with
-[`list_engagements`](list-engagements.md)). With `dry_run: true`: `{ dry_run:
-true, config }` and nothing is written.
+On write: the engagement summary (including `config_path`) and the existing
+additive `activation` metadata, whose status is `not_active`. Treat that block
+as status information, not as dashboard switching support. With `dry_run:
+true`, the result is `{ dry_run: true, config }` and nothing is written.
 
 ## Behavior notes
 

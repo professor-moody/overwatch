@@ -9,7 +9,7 @@ It is **not** part of `claude`/MCP. It's a separate binary you run yourself:
 
 ```
 terminal: $ npm run daemon:start # starts one verified owner in the background
-terminal: $ claude               # the model drives it via HTTP MCP
+terminal: $ OVERWATCH_ENGAGEMENT_ACTIVE=1 claude # model + anti-drift hooks
 terminal: $ overwatch status     # you watch / approve / deploy directly
 ```
 
@@ -21,6 +21,10 @@ a playbook step, the others show its owner instead of silently claiming it too.
 Dashboard-deployed Claude workers use isolated per-task MCP configuration and
 do not share the human terminal's project settings, hooks, or resumable Claude
 session.
+
+Plain `claude` can still connect to the configured MCP endpoint, but its
+engagement-only hooks remain inactive. Use the environment flag above for real
+engagement work and leave it unset while developing Overwatch itself.
 
 ## Prerequisites
 

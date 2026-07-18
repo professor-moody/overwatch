@@ -19,7 +19,17 @@ as a precheck failure rather than silently hanging.
 
 ## Engagement Config (`engagement.json`)
 
-The engagement config defines scope, objectives, and OPSEC policy. It's loaded at server startup from the path specified by `OVERWATCH_CONFIG` (defaults to `./engagement.json`).
+The engagement config defines scope, objectives, and OPSEC policy. In the
+recommended managed-daemon workflow, `npm run setup` selects its exact path and
+records it in `.overwatch-runtime/profile.json`; normal lifecycle commands use
+that persisted selection. A fresh setup defaults to `./engagement.json`.
+
+After startup, use **Console → Add Targets**, **Settings**, or the
+`update_scope`, `add_objective`, and `set_opsec` tools. Those revisioned
+write-through edits keep the file, live engine, and durable state aligned.
+`create_engagement` and the dashboard's **New Engagement** flow instead create
+an inactive config under `engagements/`; they do not switch the running daemon.
+Dashboard engagement switching is not currently supported.
 
 ### Schema
 
