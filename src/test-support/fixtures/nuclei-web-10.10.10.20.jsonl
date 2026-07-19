@@ -1,0 +1,1 @@
+{"template-id":"exposed-admin-panel","type":"http","host":"http://10.10.10.20","matched-at":"http://10.10.10.20/admin","info":{"name":"Synthetic exposed administration panel","severity":"high","tags":["exposure","panel"]}}

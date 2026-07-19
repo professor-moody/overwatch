@@ -23,10 +23,13 @@ import {
   type EvalOutcome,
 } from './eval-artifacts.js';
 import {
-  installHermeticReconTooling,
+  HERMETIC_EVAL_ENV_KEYS,
+  installHermeticEvalTooling,
   readHermeticNmapInvocations,
+  readHermeticToolInvocations,
+  type HermeticEvalTooling,
   type HermeticNmapInvocation,
-  type HermeticReconTooling,
+  type HermeticToolInvocation,
 } from './eval-hermetic-tools.js';
 
 const FAKE_CLAUDE = resolve('./src/test-support/fake-claude.mjs');
@@ -78,6 +81,21 @@ export interface EvalRunResult {
     frontierItemId: string;
     servicePorts: number[];
   };
+  /** Qualification-only evidence for every installed no-network executable fixture. */
+  hermeticFixture?: {
+    kind: NonNullable<EvalScenario['hermeticTooling']>;
+    binary: string;
+    runtimeRoot: string;
+    shimPath: string;
+    fixturePath: string;
+    invocationLogPath: string;
+    invocations: HermeticToolInvocation[];
+    frontierItemId: string;
+    producedNodeTypes: string[];
+  };
+  /** A completed model run is not qualification-valid unless it invoked exactly
+   * one expected shim and no other instrumented executable. */
+  qualificationError?: string;
   artifactDirectory?: string;
   finalizeArtifacts: (details?: EvalArtifactCompletion) => EvalArtifactManifest | undefined;
   cleanup: () => Promise<void>;
@@ -102,10 +120,10 @@ function toArtifactUsage(usage: EvalUsage) {
 }
 
 export interface EvalClaudeArgOptions {
-  /** A qualification run owns exactly one paid model process. Built-in Claude
-   * delegation would create unaccounted workers and can hide the required
-   * context-first sequence inside a child transcript. */
-  disallowBuiltInDelegation?: boolean;
+  /** Keep paid qualification inside one model worker and the instrumented MCP
+   * boundary. Built-in delegation creates unaccounted workers; built-in shell
+   * or web tools could bypass the hermetic executable fixtures. */
+  qualificationGuardrails?: boolean;
 }
 
 /** Build the bounded set of Claude CLI arguments shared by prompt and
@@ -119,7 +137,9 @@ export function buildEvalClaudeArgs(
   return [
     ...(model ? ['--model', model] : []),
     ...(maxBudgetUsd !== undefined ? ['--max-budget-usd', String(maxBudgetUsd)] : []),
-    ...(options.disallowBuiltInDelegation ? ['--disallowedTools', 'Agent,Task'] : []),
+    ...(options.qualificationGuardrails
+      ? ['--disallowedTools', 'Agent,Task,Bash,WebFetch,WebSearch']
+      : []),
   ];
 }
 
@@ -128,6 +148,24 @@ export function buildEvalClaudeArgs(
  * deadline instead of imposing a second, much shorter timeout. */
 export function remainingEvalTimeMs(startedAtMs: number, timeoutMs: number, nowMs = Date.now()): number {
   return Math.max(0, startedAtMs + timeoutMs - nowMs);
+}
+
+export function validateHermeticQualification(
+  expectedBinary: string,
+  invocations: HermeticToolInvocation[],
+  executedTools: string[],
+): string | undefined {
+  if (invocations.length !== 1) {
+    return `Expected exactly one ${expectedBinary} fixture invocation; observed ${invocations.length}.`;
+  }
+  if (invocations[0]?.network_activity !== false) {
+    return `The ${expectedBinary} fixture did not attest network_activity=false.`;
+  }
+  const unexpectedTools = [...new Set(executedTools)].filter(tool => tool !== expectedBinary);
+  if (unexpectedTools.length > 0) {
+    return `Qualification executed unexpected instrumented tools: ${unexpectedTools.join(', ')}.`;
+  }
+  return undefined;
 }
 
 function waitFor(pred: () => boolean, timeoutMs: number): Promise<boolean> {
@@ -265,7 +303,7 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
   const maxTurns = opts.maxTurns ?? 10;
   const timeoutMs = opts.timeoutMs ?? 20000;
   const commandArgs = buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd, {
-    disallowBuiltInDelegation: !usingFake,
+    qualificationGuardrails: !usingFake,
   });
   const taskId = `eval-${scenario.id}`;
   const artifactSession = shouldPreserveEvalArtifacts(usingFake, opts.preserveArtifacts)
@@ -295,8 +333,7 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     tokenFile: process.env.OVERWATCH_MCP_TOKEN_FILE,
     token: process.env.OVERWATCH_MCP_TOKEN,
     path: process.env.PATH,
-    nmapInvocationLog: process.env.OVERWATCH_EVAL_NMAP_INVOCATION_LOG,
-    nmapFixtureFile: process.env.OVERWATCH_EVAL_NMAP_FIXTURE_FILE,
+    hermeticEnv: Object.fromEntries(HERMETIC_EVAL_ENV_KEYS.map(key => [key, process.env[key]])),
   };
   // Restore the env the guarded run mutates — called from cleanup on success AND
   // from the catch below if anything between setup and return throws (e.g. an HTTP
@@ -314,13 +351,12 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     set('OVERWATCH_MCP_TOKEN_FILE', prev.tokenFile);
     set('OVERWATCH_MCP_TOKEN', prev.token);
     set('PATH', prev.path);
-    set('OVERWATCH_EVAL_NMAP_INVOCATION_LOG', prev.nmapInvocationLog);
-    set('OVERWATCH_EVAL_NMAP_FIXTURE_FILE', prev.nmapFixtureFile);
+    for (const key of HERMETIC_EVAL_ENV_KEYS) set(key, prev.hermeticEnv[key]);
   };
 
   let tempDir: string | undefined;
   let logPath: string | undefined;
-  let hermeticTooling: HermeticReconTooling | undefined;
+  let hermeticTooling: HermeticEvalTooling | undefined;
   let app: ReturnType<typeof createOverwatchApp> | undefined;
   try {
     if (usingFake) {
@@ -337,11 +373,10 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
 
     tempDir = mkdtempSync(join(tmpdir(), 'ow-prompt-eval-'));
     const runningTempDir = tempDir;
-    if (scenario.hermeticTooling === 'nmap-recon') {
-      hermeticTooling = installHermeticReconTooling(runningTempDir, process.env.PATH ?? '');
+    if (scenario.hermeticTooling) {
+      hermeticTooling = installHermeticEvalTooling(scenario.hermeticTooling, runningTempDir, process.env.PATH ?? '');
       process.env.PATH = hermeticTooling.path;
-      process.env.OVERWATCH_EVAL_NMAP_INVOCATION_LOG = hermeticTooling.env.OVERWATCH_EVAL_NMAP_INVOCATION_LOG;
-      process.env.OVERWATCH_EVAL_NMAP_FIXTURE_FILE = hermeticTooling.env.OVERWATCH_EVAL_NMAP_FIXTURE_FILE;
+      Object.assign(process.env, hermeticTooling.env);
     }
     process.env.OVERWATCH_MCP_TOKEN_FILE = join(runningTempDir, '.overwatch-mcp-token');
     const logDir = join(runningTempDir, 'agents');
@@ -390,14 +425,14 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
 
     const agentId = `agent-${scenario.id}`;
     const scopedIds = scenario.scopeSeededNodes ? [...seededIds] : [];
-    const assignedFrontierItemId = scenario.hermeticTooling === 'nmap-recon'
+    const assignedFrontierItemId = scenario.hermeticTooling
       ? app.engine.computeFrontier().find(item =>
         (item.node_id !== undefined && seededIds.has(item.node_id))
-        || (item.type === 'network_discovery' && item.target_cidr === config.scope.cidrs[0]))?.id
+        || (scenario.hermeticTooling === 'nmap-recon'
+          && item.type === 'network_discovery'
+          && item.target_cidr === config.scope.cidrs[0]))?.id
+        ?? `frontier-eval-${scenario.id}`
       : undefined;
-    if (scenario.hermeticTooling === 'nmap-recon' && !assignedFrontierItemId) {
-      throw new Error('Hermetic recon fixture did not produce an actionable frontier item for its seeded host.');
-    }
     const runStartedAt = Date.now();
     app.engine.registerAgent({
       id: taskId, agent_id: agentId, assigned_at: new Date().toISOString(), status: 'running',
@@ -437,8 +472,9 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
 
     // One agent + one seed per run, so "everything except the seed" is the agent's
     // work — robust regardless of how the headless path attributes the agent_id.
-    const activity: ActivityLite[] = app.engine.getFullHistory()
-      .filter(e => (e as { agent_id?: string }).agent_id !== 'seed')
+    const fullActivity = app.engine.getFullHistory()
+      .filter(e => (e as { agent_id?: string }).agent_id !== 'seed');
+    const activity: ActivityLite[] = fullActivity
       .map(e => ({ event_type: (e as { event_type?: string }).event_type, action_id: (e as { action_id?: string }).action_id, frontier_item_id: (e as { frontier_item_id?: string }).frontier_item_id }));
 
     const graph = app.engine.exportGraph();
@@ -453,7 +489,23 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       taskStatus: app.engine.getTask(taskId)?.status ?? 'unknown',
       newNodeTypes,
     };
-    const outcome = classifyEvalOutcome(record.taskStatus, ndjson, timedOut);
+    const hermeticInvocations = hermeticTooling
+      ? readHermeticToolInvocations(hermeticTooling.invocationLogPath)
+      : [];
+    const executedTools = [...new Set(fullActivity
+      .filter(event => event.event_type === 'action_started')
+      .map(event => event.tool_name)
+      .filter((value): value is string => typeof value === 'string' && value.length > 0))];
+    const baseOutcome = classifyEvalOutcome(record.taskStatus, ndjson, timedOut);
+    let qualificationError: string | undefined;
+    if (baseOutcome === 'completed' && hermeticTooling) {
+      qualificationError = validateHermeticQualification(
+        hermeticTooling.binary,
+        hermeticInvocations,
+        executedTools,
+      );
+    }
+    const outcome: EvalOutcome = qualificationError ? 'harness_error' : baseOutcome;
     const finalizeArtifacts = (details: EvalArtifactCompletion = {}) => artifactSession?.finalize({
       outcome: details.outcome ?? outcome,
       agentNdjson: ndjson,
@@ -467,6 +519,7 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       error: details.error,
     });
     const hermeticRecon = hermeticTooling && assignedFrontierItemId
+      && hermeticTooling.kind === 'nmap-recon'
       ? {
         runtimeRoot: runningTempDir,
         shimPath: hermeticTooling.shimPath,
@@ -479,6 +532,19 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
           .map(node => Number(node.properties.port))
           .filter(Number.isFinite)
           .sort((left, right) => left - right),
+      }
+      : undefined;
+    const hermeticFixture = hermeticTooling && assignedFrontierItemId
+      ? {
+        kind: hermeticTooling.kind,
+        binary: hermeticTooling.binary,
+        runtimeRoot: runningTempDir,
+        shimPath: hermeticTooling.shimPath,
+        fixturePath: hermeticTooling.fixturePath,
+        invocationLogPath: hermeticTooling.invocationLogPath,
+        invocations: hermeticInvocations,
+        frontierItemId: assignedFrontierItemId,
+        producedNodeTypes: newNodeTypes,
       }
       : undefined;
 
@@ -502,6 +568,8 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       usageTokens: usage.accountingTokens,
       costUsd,
       hermeticRecon,
+      hermeticFixture,
+      qualificationError,
       artifactDirectory: artifactSession?.directory,
       finalizeArtifacts,
       cleanup,
@@ -579,7 +647,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
   const maxTurns = opts.maxTurns ?? 14;
   const deadline = opts.timeoutMs ?? (usingFakePrimary ? 30000 : 600000);
   const commandArgs = buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd, {
-    disallowBuiltInDelegation: !usingFakePrimary,
+    qualificationGuardrails: !usingFakePrimary,
   });
   const taskId = 'eval-orch';
   const artifactSession = shouldPreserveEvalArtifacts(usingFakePrimary, opts.preserveArtifacts)

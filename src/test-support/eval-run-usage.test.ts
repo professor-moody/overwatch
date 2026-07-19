@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildEvalClaudeArgs, classifyEvalOutcome, parseEvalUsage, remainingEvalTimeMs } from './eval-run.js';
+import {
+  buildEvalClaudeArgs,
+  classifyEvalOutcome,
+  parseEvalUsage,
+  remainingEvalTimeMs,
+  validateHermeticQualification,
+} from './eval-run.js';
 
 describe('buildEvalClaudeArgs', () => {
   it('passes the model and exact in-flight dollar cap to Claude', () => {
@@ -13,11 +19,11 @@ describe('buildEvalClaudeArgs', () => {
     expect(buildEvalClaudeArgs()).toEqual([]);
   });
 
-  it('blocks built-in delegation for a single-worker real qualification run', () => {
-    expect(buildEvalClaudeArgs('haiku', 0.5, { disallowBuiltInDelegation: true })).toEqual([
+  it('keeps real qualification in one worker and inside instrumented MCP tools', () => {
+    expect(buildEvalClaudeArgs('haiku', 0.5, { qualificationGuardrails: true })).toEqual([
       '--model', 'haiku',
       '--max-budget-usd', '0.5',
-      '--disallowedTools', 'Agent,Task',
+      '--disallowedTools', 'Agent,Task,Bash,WebFetch,WebSearch',
     ]);
   });
 });
@@ -29,6 +35,27 @@ describe('remainingEvalTimeMs', () => {
 
   it('never returns a negative timeout after the deadline', () => {
     expect(remainingEvalTimeMs(1_000, 10_000, 12_000)).toBe(0);
+  });
+});
+
+describe('validateHermeticQualification', () => {
+  const invocation = {
+    schema_version: 1 as const,
+    shim: 'overwatch-hermetic-nuclei' as const,
+    argv: ['-u', 'http://10.10.10.20', '-jsonl'],
+    expected_target: 'http://10.10.10.20',
+    network_activity: false as const,
+    invoked_at: '2026-01-01T00:00:00.000Z',
+  };
+
+  it('accepts exactly one expected shim and no other executable', () => {
+    expect(validateHermeticQualification('nuclei', [invocation], ['nuclei'])).toBeUndefined();
+  });
+
+  it('rejects missing, repeated, and alternative instrumented execution', () => {
+    expect(validateHermeticQualification('nuclei', [], [])).toContain('observed 0');
+    expect(validateHermeticQualification('nuclei', [invocation, invocation], ['nuclei'])).toContain('observed 2');
+    expect(validateHermeticQualification('nuclei', [invocation], ['nuclei', 'curl'])).toContain('curl');
   });
 });
 
