@@ -33,14 +33,32 @@ function assert(condition, message) {
 async function freePorts(count) {
   const servers = [];
   try {
-    for (let index = 0; index < count; index += 1) {
+    // Port 0 normally allocates from the OS ephemeral range. This smoke keeps
+    // the same ports across an `npm ci` upgrade, so an outbound install socket
+    // can otherwise claim one after the daemon stops and before it restarts.
+    // Reserve wildcard-bound ports below the default Linux/macOS/Windows
+    // ephemeral ranges, while still probing every candidate for local use.
+    const rangeStart = 20_000;
+    const rangeSize = 10_000;
+    let candidate = rangeStart + ((process.pid * 7_919) % rangeSize);
+    let attempts = 0;
+    while (servers.length < count && attempts < rangeSize) {
       const server = createServer();
-      await new Promise((resolveListen, rejectListen) => {
-        server.once('error', rejectListen);
-        server.listen(0, '127.0.0.1', resolveListen);
+      const reserved = await new Promise((resolveListen, rejectListen) => {
+        server.once('error', error => {
+          if (error && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE') {
+            resolveListen(false);
+            return;
+          }
+          rejectListen(error);
+        });
+        server.listen(candidate, '0.0.0.0', () => resolveListen(true));
       });
-      servers.push(server);
+      if (reserved) servers.push(server);
+      candidate = rangeStart + ((candidate - rangeStart + 1) % rangeSize);
+      attempts += 1;
     }
+    if (servers.length !== count) throw new Error(`could not reserve ${count} lifecycle test ports`);
     return servers.map(server => {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('could not reserve a test port');

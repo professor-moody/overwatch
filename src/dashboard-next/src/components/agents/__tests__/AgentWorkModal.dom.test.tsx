@@ -185,6 +185,9 @@ describe('AgentWorkModal', () => {
     );
     await screen.findByText('Terminal merge candidates:');
     fireEvent.click(screen.getByLabelText('task-other'));
+    await waitFor(() => {
+      expect(screen.getByLabelText('task-other')).not.toBeChecked();
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Merge duplicates' }));
 
     await waitFor(() => {

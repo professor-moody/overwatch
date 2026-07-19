@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildEvalClaudeArgs, classifyEvalOutcome, parseEvalUsage } from './eval-run.js';
+import { buildEvalClaudeArgs, classifyEvalOutcome, parseEvalUsage, remainingEvalTimeMs } from './eval-run.js';
 
 describe('buildEvalClaudeArgs', () => {
   it('passes the model and exact in-flight dollar cap to Claude', () => {
@@ -11,6 +11,24 @@ describe('buildEvalClaudeArgs', () => {
 
   it('does not invent optional arguments for deterministic fake runs', () => {
     expect(buildEvalClaudeArgs()).toEqual([]);
+  });
+
+  it('blocks built-in delegation for a single-worker real qualification run', () => {
+    expect(buildEvalClaudeArgs('haiku', 0.5, { disallowBuiltInDelegation: true })).toEqual([
+      '--model', 'haiku',
+      '--max-budget-usd', '0.5',
+      '--disallowedTools', 'Agent,Task',
+    ]);
+  });
+});
+
+describe('remainingEvalTimeMs', () => {
+  it('lets terminal-task process cleanup use the original deadline remainder', () => {
+    expect(remainingEvalTimeMs(1_000, 300_000, 72_000)).toBe(229_000);
+  });
+
+  it('never returns a negative timeout after the deadline', () => {
+    expect(remainingEvalTimeMs(1_000, 10_000, 12_000)).toBe(0);
   });
 });
 

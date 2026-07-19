@@ -60,6 +60,9 @@ accident:
    budget.
 4. **Turn and time caps** — `--max-turns` (default 10) and `--timeout-ms`
    (default 600000 = 10 min) bound agent work and wall-clock waiting.
+   A task that becomes terminal may use only the remainder of that same overall
+   deadline while the Claude process emits its final result; it does not receive
+   a separate grace-period budget.
 5. **Token-accounting batch gate** — `--budget` (default 50k) uses input,
    output, cache-read, and cache-creation accounting to decide whether another
    run should start. A completed final run remains valid and baseline-eligible
@@ -104,6 +107,11 @@ in that order. Automatic CVE-research dispatch is disabled inside this
 single-agent evaluator so newly versioned services cannot start unaccounted model
 workers. The runtime, shim, fixture, and invocation log are removed after the
 redacted qualification artifacts have been captured.
+
+Real qualification owns exactly one paid Claude process. Claude's built-in
+`Agent`/`Task` delegation is disabled for these runs so required MCP sequencing
+cannot be hidden in an unaccounted child transcript. This restriction belongs to
+the evaluation harness and does not change normal Overwatch agent operation.
 
 Use this fixed diagnosis table for a guarded recon failure:
 
