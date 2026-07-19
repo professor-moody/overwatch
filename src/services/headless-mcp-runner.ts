@@ -217,7 +217,10 @@ export class HeadlessMcpRunner {
     this.mutationAllowed = () => this.engine.isPersistenceWritable();
     this.opts = {
       claudeBinary: options.claudeBinary ?? process.env.OVERWATCH_CLAUDE_BINARY ?? 'claude',
-      logDir: options.logDir ?? 'logs/agents',
+      // Managed dogfood/developer runtimes can isolate worker transcripts with
+      // the rest of their temporary runtime family. Explicit constructor
+      // options remain authoritative for embedded callers and tests.
+      logDir: options.logDir ?? process.env.OVERWATCH_AGENT_LOG_DIR ?? 'logs/agents',
       configDir: options.configDir ?? tmpdir(),
       permissionMode: options.permissionMode,
       maxTurns: options.maxTurns,

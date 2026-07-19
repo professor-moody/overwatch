@@ -6,7 +6,7 @@
 // connects to the Overwatch HTTP MCP endpoint as a real MCP client, exercises
 // the sub-agent loop (get_agent_context → report_finding → update_agent), and
 // emits a couple of stream-json lines. Behavior is selected by env:
-//   OVERWATCH_FAKE_MODE = 'complete' (default) | 'hang' | 'research' | 'planner' | 'ask'
+//   OVERWATCH_FAKE_MODE = 'complete' (default) | 'hang' | 'research' | 'planner' | 'ask' | 'dogfood'
 //   OVERWATCH_TASK_ID   = the agent task id (set by the runner)
 // ============================================================
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -218,7 +218,7 @@ async function main() {
     process.exit(0);
   }
 
-  if (mode === 'auto') {
+  if (mode === 'auto' || (mode === 'dogfood' && childArchetype !== 'planner')) {
     // Orchestration-eval child: land findings matched to THIS child's archetype
     // (read from get_agent_context above) so a real PRIMARY's dispatch→synthesize
     // loop sees plausible, type-appropriate progress — not a canned blob. Unique
@@ -249,9 +249,42 @@ async function main() {
       ];
       edges = [{ source: u('host'), target: u('svc'), type: 'RUNS', confidence: 1 }];
     }
+    // The full local dogfood journey uses one web agent to exercise the
+    // durable agent→operator question lane before that agent lands results.
+    // Other deterministic modes stay unchanged so focused tests remain fast.
+    let dogfoodAnswer;
+    if (mode === 'dogfood' && childArchetype === 'web_tester') {
+      const askRes = await client.callTool({
+        name: 'ask_operator',
+        arguments: {
+          task_id: taskId,
+          agent_id: agentId,
+          question: 'Should the synthetic web fixture remain in quiet mode?',
+          options: ['yes', 'no'],
+        },
+      });
+      const queryId = JSON.parse(askRes.content[0].text).query_id;
+      let answer;
+      for (let i = 0; i < 100 && !answer; i++) {
+        const heartbeat = await client.callTool({
+          name: 'agent_heartbeat',
+          arguments: { task_id: taskId },
+        });
+        const parsed = JSON.parse(heartbeat.content[0].text);
+        if (parsed.pending_answer?.query_id === queryId) answer = parsed.pending_answer.answer;
+        if (!answer) await new Promise(resolveWait => setTimeout(resolveWait, 100));
+      }
+      if (!answer) throw new Error('dogfood web agent did not receive its operator answer');
+      dogfoodAnswer = answer;
+      await client.callTool({
+        name: 'agent_heartbeat',
+        arguments: { task_id: taskId, acknowledged_query_id: queryId },
+      });
+    }
     await client.callTool({ name: 'report_finding', arguments: { agent_id: agentId, nodes, edges } });
-    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: `fake ${childArchetype || 'auto'} child: ${nodes.length} nodes` } });
-    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: `fake ${childArchetype || 'auto'} done` } });
+    const answerSummary = dogfoodAnswer ? `; operator answer: ${dogfoodAnswer}` : '';
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: `fake ${childArchetype || 'auto'} child: ${nodes.length} nodes${answerSummary}` } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: `fake ${childArchetype || 'auto'} done${answerSummary}` } });
     emit({ type: 'result', subtype: 'success', is_error: false });
     await client.close();
     process.exit(0);
@@ -292,7 +325,7 @@ async function main() {
     process.exit(0);
   }
 
-  if (mode === 'planner') {
+  if (mode === 'planner' || (mode === 'dogfood' && childArchetype === 'planner')) {
     // Planner role: translate the operator command into a plan. The objective
     // (embedded in the -p prompt) lists the steerable task_ids; pick a running
     // task that isn't us and propose a `pause` directive on it via propose_plan.
