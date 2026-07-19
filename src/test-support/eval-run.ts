@@ -101,14 +101,33 @@ function toArtifactUsage(usage: EvalUsage) {
   };
 }
 
+export interface EvalClaudeArgOptions {
+  /** A qualification run owns exactly one paid model process. Built-in Claude
+   * delegation would create unaccounted workers and can hide the required
+   * context-first sequence inside a child transcript. */
+  disallowBuiltInDelegation?: boolean;
+}
+
 /** Build the bounded set of Claude CLI arguments shared by prompt and
  * orchestration evaluation. Keeping this pure makes the actual runner boundary
  * testable without launching a model process. */
-export function buildEvalClaudeArgs(model?: string, maxBudgetUsd?: number): string[] {
+export function buildEvalClaudeArgs(
+  model?: string,
+  maxBudgetUsd?: number,
+  options: EvalClaudeArgOptions = {},
+): string[] {
   return [
     ...(model ? ['--model', model] : []),
     ...(maxBudgetUsd !== undefined ? ['--max-budget-usd', String(maxBudgetUsd)] : []),
+    ...(options.disallowBuiltInDelegation ? ['--disallowedTools', 'Agent,Task'] : []),
   ];
+}
+
+/** A terminal Overwatch task does not imply that the model process has emitted
+ * its final stream result yet. Let it use the remainder of the original run
+ * deadline instead of imposing a second, much shorter timeout. */
+export function remainingEvalTimeMs(startedAtMs: number, timeoutMs: number, nowMs = Date.now()): number {
+  return Math.max(0, startedAtMs + timeoutMs - nowMs);
 }
 
 function waitFor(pred: () => boolean, timeoutMs: number): Promise<boolean> {
@@ -245,7 +264,9 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
   const usingFake = binary === FAKE_CLAUDE;
   const maxTurns = opts.maxTurns ?? 10;
   const timeoutMs = opts.timeoutMs ?? 20000;
-  const commandArgs = buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd);
+  const commandArgs = buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd, {
+    disallowBuiltInDelegation: !usingFake,
+  });
   const taskId = `eval-${scenario.id}`;
   const artifactSession = shouldPreserveEvalArtifacts(usingFake, opts.preserveArtifacts)
     ? new EvalArtifactSession({
@@ -377,6 +398,7 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     if (scenario.hermeticTooling === 'nmap-recon' && !assignedFrontierItemId) {
       throw new Error('Hermetic recon fixture did not produce an actionable frontier item for its seeded host.');
     }
+    const runStartedAt = Date.now();
     app.engine.registerAgent({
       id: taskId, agent_id: agentId, assigned_at: new Date().toISOString(), status: 'running',
       subgraph_node_ids: scopedIds, backend: 'headless_mcp', archetype: scenario.archetype,
@@ -387,7 +409,7 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     const reachedTerminal = await waitFor(() => {
       const s = app!.engine.getTask(taskId)?.status;
       return s === 'completed' || s === 'failed' || s === 'interrupted';
-    }, timeoutMs);
+    }, remainingEvalTimeMs(runStartedAt, timeoutMs));
     let timedOut = !reachedTerminal;
     if (timedOut) {
       app.taskExecution.cancelHeadless(taskId, `evaluation timed out after ${timeoutMs}ms`);
@@ -398,10 +420,13 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
       }, 10_000);
       if (!cancelled) throw new Error(`Timed-out evaluation worker ${taskId} did not reach terminal state.`);
     } else {
-      const workerSettled = await waitFor(() => app!.taskExecution.activeHeadlessCount() === 0, 10_000);
+      const workerSettled = await waitFor(
+        () => app!.taskExecution.activeHeadlessCount() === 0,
+        remainingEvalTimeMs(runStartedAt, timeoutMs),
+      );
       if (!workerSettled) {
         timedOut = true;
-        app.taskExecution.cancelHeadless(taskId, 'evaluation worker did not terminate after the task became terminal');
+        app.taskExecution.cancelHeadless(taskId, `evaluation worker did not terminate before the ${timeoutMs}ms run deadline`);
         const cancelled = await waitFor(() => app!.taskExecution.activeHeadlessCount() === 0, 10_000);
         if (!cancelled) throw new Error(`Terminal evaluation worker ${taskId} could not be drained.`);
       }
@@ -553,7 +578,9 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
   const usingFakePrimary = primaryBinary === FAKE_CLAUDE;
   const maxTurns = opts.maxTurns ?? 14;
   const deadline = opts.timeoutMs ?? (usingFakePrimary ? 30000 : 600000);
-  const commandArgs = buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd);
+  const commandArgs = buildEvalClaudeArgs(opts.model, opts.maxBudgetUsd, {
+    disallowBuiltInDelegation: !usingFakePrimary,
+  });
   const taskId = 'eval-orch';
   const artifactSession = shouldPreserveEvalArtifacts(usingFakePrimary, opts.preserveArtifacts)
     ? new EvalArtifactSession({
