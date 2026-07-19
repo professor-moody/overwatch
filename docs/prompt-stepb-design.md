@@ -86,6 +86,23 @@ and runs **~43–46% leaner** than control (tool table kept).
 
 ## Results
 
+### Guarded qualification follow-up (2026-07-19)
+
+The hermetic web control qualification completed at **1.00**, landed the expected
+fixture through the production parser, and produced a complete artifact. The first
+lean qualification failed safely before target execution: it reached the eight-turn
+limit after repeatedly calling `ToolSearch` for `get_agent_context`, even though the
+search had already returned the tool reference. No shim or network-capable command
+ran, and the incomplete run was not promoted to a baseline.
+
+That preserved artifact demonstrated a prompt-level deferred-tool handoff gap, so
+the lean ORIENT instruction now makes the boundary explicit: `ToolSearch` discovers
+a tool; after it returns a reference, the agent invokes that MCP tool next and does
+not search for it again. This is intentionally narrower than disabling ToolSearch,
+which remains necessary when the deferred MCP surface starts empty. The failed lean
+cell must be rerun under the same independent dollar cap before qualification
+continues.
+
 Real-model A/B on `haiku`, **5 trials/cell**, 3 scenarios (~35 runs total, ~$1.8).
 A first **n=1** pass looked like a clean sweep for lean (+0.18/+0.17/+0.33) — but
 **n=5 shows that was mostly noise.** Per-scenario overall (lean vs control):
