@@ -62,8 +62,9 @@ accident:
    (default 600000 = 10 min) bound agent work and wall-clock waiting.
 5. **Token-accounting batch gate** — `--budget` (default 50k) uses input,
    output, cache-read, and cache-creation accounting to decide whether another
-   run should start and to stop a batch after a large result. It is not an
-   in-flight spend ceiling; the dollar flags are.
+   run should start. A completed final run remains valid and baseline-eligible
+   even when its accounting total crosses the gate; a subsequent run is blocked
+   before launch. It is not an in-flight spend ceiling; the dollar flags are.
 6. **Tiny defaults + confirmation** — 3 scenarios, `--trials 2`; the command
    prints the maximum possible dollar spend and requires `y` or `--yes`.
 7. **Baseline cache** — control results are cached to `eval-baselines/`

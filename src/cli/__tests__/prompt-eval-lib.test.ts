@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import {
   parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath, percentile,
   allocateRunBudgetUsd, chargeRunBudgetUsd, inspectClaudeBudgetCompatibility,
+  accountingBatchBlocksNextRun,
   DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_BUDGET_USD,
   DEFAULT_MAX_TOTAL_USD, DEFAULT_MAX_TURNS, DEFAULT_TIMEOUT_MS,
 } from '../prompt-eval-lib.js';
@@ -104,6 +105,14 @@ describe('real-model dollar guard', () => {
     }
     expect(assigned).toEqual([0.5, 0.5, 0.5, 0.5, 0]);
     expect(chargedUsd).toBe(2);
+  });
+});
+
+describe('token-accounting batch gate', () => {
+  it('blocks only before another run and does not classify a completed run as failed', () => {
+    expect(accountingBatchBlocksNextRun(0, 15_000, 50_000)).toBe(false);
+    expect(accountingBatchBlocksNextRun(35_001, 15_000, 50_000)).toBe(true);
+    expect(accountingBatchBlocksNextRun(427_787, 15_000, 50_000)).toBe(true);
   });
 });
 
