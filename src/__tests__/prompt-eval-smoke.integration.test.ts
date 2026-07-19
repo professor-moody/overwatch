@@ -32,8 +32,12 @@ describe.skipIf(!supportsLocalListen)('prompt-eval pipeline smoke (fake claude)'
     it(`${scenario.id}: maps a fake run into a graded RunRecord`, async () => {
       const priorHermeticEnv = {
         path: process.env.PATH,
-        invocationLog: process.env.OVERWATCH_EVAL_NMAP_INVOCATION_LOG,
-        fixtureFile: process.env.OVERWATCH_EVAL_NMAP_FIXTURE_FILE,
+        nmapInvocationLog: process.env.OVERWATCH_EVAL_NMAP_INVOCATION_LOG,
+        nmapFixtureFile: process.env.OVERWATCH_EVAL_NMAP_FIXTURE_FILE,
+        nucleiInvocationLog: process.env.OVERWATCH_EVAL_NUCLEI_INVOCATION_LOG,
+        nucleiFixtureFile: process.env.OVERWATCH_EVAL_NUCLEI_FIXTURE_FILE,
+        awsInvocationLog: process.env.OVERWATCH_EVAL_AWS_INVOCATION_LOG,
+        awsFixtureFile: process.env.OVERWATCH_EVAL_AWS_FIXTURE_FILE,
       };
       last = await runEvalScenario(scenario);
       expect(last.record.taskStatus).toBe('completed');
@@ -41,27 +45,42 @@ describe.skipIf(!supportsLocalListen)('prompt-eval pipeline smoke (fake claude)'
 
       const grade = gradeRun(last.record, scenario.rubric);
       expect(grade.criteria).toHaveLength(6);
-      expect(grade.overall).toBeGreaterThan(0);
+      expect(grade.overall).toBe(1);
       expect(grade.criteria.find(c => c.criterion === 'completed')!.score).toBe(1);
       expect(grade.criteria.find(c => c.criterion === 'objective_progress')!.score).toBe(1);
       expect(grade.criteria.find(c => c.criterion === 'lands_results')!.score).toBe(1);
 
-      if (scenario.hermeticTooling === 'nmap-recon') {
+      if (scenario.hermeticTooling) {
         expect(last.outcome).toBe('completed');
-        expect(last.hermeticRecon).toBeDefined();
-        expect(last.hermeticRecon!.servicePorts).toEqual([22, 80]);
-        expect(last.hermeticRecon!.invocations).toHaveLength(1);
-        expect(last.hermeticRecon!.invocations).toEqual(expect.arrayContaining([
-          expect.objectContaining({
+        expect(last.hermeticFixture).toMatchObject({
+          kind: scenario.hermeticTooling,
+          producedNodeTypes: expect.arrayContaining(scenario.rubric.expectedNodeTypes ?? []),
+        });
+        expect(last.hermeticFixture!.invocations).toHaveLength(1);
+        expect(last.hermeticFixture!.invocations[0]).toMatchObject({ network_activity: false });
+        const expectedInvocation = {
+          'nmap-recon': {
             shim: 'overwatch-hermetic-nmap',
             argv: ['-sV', '-oX', '-', '10.10.10.10'],
-            network_activity: false,
-          }),
-        ]));
-        expect(last.hermeticRecon!.invocations.every(invocation =>
-          invocation.shim === 'overwatch-hermetic-nmap'
-          && invocation.expected_target === '10.10.10.10'
-          && invocation.network_activity === false)).toBe(true);
+            expected_target: '10.10.10.10',
+          },
+          'nuclei-web': {
+            shim: 'overwatch-hermetic-nuclei',
+            argv: ['-u', 'http://10.10.10.20', '-jsonl'],
+            expected_target: 'http://10.10.10.20',
+          },
+          'aws-sts-cloud': {
+            shim: 'overwatch-hermetic-aws',
+            argv: ['sts', 'get-caller-identity', '--output', 'json'],
+            expected_command: ['sts', 'get-caller-identity', '--output', 'json'],
+          },
+        } as const;
+        expect(last.hermeticFixture!.invocations[0]).toMatchObject(expectedInvocation[scenario.hermeticTooling]);
+
+        if (scenario.hermeticTooling === 'nmap-recon') {
+          expect(last.hermeticRecon).toBeDefined();
+          expect(last.hermeticRecon!.servicePorts).toEqual([22, 80]);
+        }
         const calls = last.record.toolCalls;
         expect(calls.map(call => call.tool)).toEqual([
           'get_agent_context',
@@ -73,24 +92,28 @@ describe.skipIf(!supportsLocalListen)('prompt-eval pipeline smoke (fake claude)'
         const validation = calls.find(call => call.tool === 'validate_action')!;
         const execution = calls.find(call => call.tool === 'run_tool')!;
         expect(validation.action_id).toBe(execution.action_id);
-        expect(validation.frontier_item_id).toBe(last.hermeticRecon!.frontierItemId);
-        expect(execution.frontier_item_id).toBe(last.hermeticRecon!.frontierItemId);
+        expect(validation.frontier_item_id).toBe(last.hermeticFixture!.frontierItemId);
+        expect(execution.frontier_item_id).toBe(last.hermeticFixture!.frontierItemId);
 
         const actionEvents = last.record.activity.filter(event =>
           event.action_id === execution.action_id
           && ['action_validated', 'action_started', 'action_completed', 'action_failed'].includes(event.event_type ?? ''));
         expect(actionEvents.length).toBeGreaterThanOrEqual(3);
-        expect(actionEvents.every(event => event.frontier_item_id === last!.hermeticRecon!.frontierItemId)).toBe(true);
+        expect(actionEvents.every(event => event.frontier_item_id === last!.hermeticFixture!.frontierItemId)).toBe(true);
 
-        const runtimeRoot = last.hermeticRecon!.runtimeRoot;
-        expect(existsSync(last.hermeticRecon!.shimPath)).toBe(true);
-        expect(existsSync(last.hermeticRecon!.fixturePath)).toBe(true);
+        const runtimeRoot = last.hermeticFixture!.runtimeRoot;
+        expect(existsSync(last.hermeticFixture!.shimPath)).toBe(true);
+        expect(existsSync(last.hermeticFixture!.fixturePath)).toBe(true);
         await last.cleanup();
         last = null;
         expect(existsSync(runtimeRoot)).toBe(false);
         expect(process.env.PATH).toBe(priorHermeticEnv.path);
-        expect(process.env.OVERWATCH_EVAL_NMAP_INVOCATION_LOG).toBe(priorHermeticEnv.invocationLog);
-        expect(process.env.OVERWATCH_EVAL_NMAP_FIXTURE_FILE).toBe(priorHermeticEnv.fixtureFile);
+        expect(process.env.OVERWATCH_EVAL_NMAP_INVOCATION_LOG).toBe(priorHermeticEnv.nmapInvocationLog);
+        expect(process.env.OVERWATCH_EVAL_NMAP_FIXTURE_FILE).toBe(priorHermeticEnv.nmapFixtureFile);
+        expect(process.env.OVERWATCH_EVAL_NUCLEI_INVOCATION_LOG).toBe(priorHermeticEnv.nucleiInvocationLog);
+        expect(process.env.OVERWATCH_EVAL_NUCLEI_FIXTURE_FILE).toBe(priorHermeticEnv.nucleiFixtureFile);
+        expect(process.env.OVERWATCH_EVAL_AWS_INVOCATION_LOG).toBe(priorHermeticEnv.awsInvocationLog);
+        expect(process.env.OVERWATCH_EVAL_AWS_FIXTURE_FILE).toBe(priorHermeticEnv.awsFixtureFile);
       }
     }, 30000);
   }

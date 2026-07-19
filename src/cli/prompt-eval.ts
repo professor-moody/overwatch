@@ -178,7 +178,9 @@ async function main(): Promise<void> {
           reservedCostUsd: charge.source === 'reserved_cap' ? charge.chargedUsd : 0,
           error: capExceeded
             ? new Error(`Provider cost exceeded the assigned in-flight cap of $${assignedUsd.toFixed(6)}.`)
-            : undefined,
+            : run.qualificationError
+              ? new Error(run.qualificationError)
+              : undefined,
         });
       } finally {
         await run.cleanup();

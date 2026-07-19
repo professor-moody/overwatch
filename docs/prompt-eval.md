@@ -98,20 +98,31 @@ The library ([`src/test-support/eval-scenarios.ts`](https://github.com/professor
 is intentionally tiny (recon / web / cloud), each a seeded engagement state +
 archetype + objective + rubric, kept small so a real run stays cheap.
 
-The recon scenario is hermetic. Its temporary runtime places a local `nmap`
-shim first on `PATH`; the shim accepts only `10.10.10.10`, records its invocation,
-and emits the checked-in SSH/22 + HTTP/80 XML fixture without opening a socket or
-starting another process. The mission requires context, explicit validation,
-instrumented `run_tool`, parsing/landing, transcript submission, and completion
-in that order. Automatic CVE-research dispatch is disabled inside this
-single-agent evaluator so newly versioned services cannot start unaccounted model
-workers. The runtime, shim, fixture, and invocation log are removed after the
-redacted qualification artifacts have been captured.
+All three scenarios are hermetic. Each temporary runtime places exactly one
+local executable shim first on `PATH`:
+
+- recon permits only the fixed `nmap` command for `10.10.10.10` and returns the
+  checked-in SSH/22 + HTTP/80 XML;
+- web permits only the fixed `nuclei` command for `http://10.10.10.20` and
+  returns the checked-in exposed-admin JSONL finding;
+- cloud permits only `aws sts get-caller-identity --output json` and returns the
+  checked-in synthetic caller identity.
+
+The shims import no network or child-process modules, reject every unexpected
+target/argument sequence, record `network_activity: false`, and never open a
+socket. A completed run is changed to `harness_error` unless it invoked exactly
+one expected shim and no other instrumented executable. Each mission requires
+context, explicit validation, instrumented `run_tool`, parsing/landing,
+transcript submission, and completion in that order. Automatic CVE-research
+dispatch is disabled inside this single-agent evaluator so discoveries cannot
+start unaccounted model workers. The runtime, shim, fixture, and invocation log
+are removed after the redacted qualification artifacts have been captured.
 
 Real qualification owns exactly one paid Claude process. Claude's built-in
-`Agent`/`Task` delegation is disabled for these runs so required MCP sequencing
-cannot be hidden in an unaccounted child transcript. This restriction belongs to
-the evaluation harness and does not change normal Overwatch agent operation.
+`Agent`/`Task` delegation and built-in shell/web tools are disabled for these
+runs, so required MCP sequencing cannot be hidden in an unaccounted child or
+bypass the instrumented hermetic boundary. These restrictions belong only to
+the evaluation harness and do not change normal Overwatch agent operation.
 
 Use this fixed diagnosis table for a guarded recon failure:
 

@@ -40,9 +40,10 @@ async function main() {
   let agentId = 'fake-agent';
   let childArchetype = '';
   let frontierItemId = '';
+  let scopedNodes = [];
   try {
     const contextRequest = { name: 'get_agent_context', arguments: { task_id: taskId } };
-    if (mode === 'hermetic-recon') {
+    if (mode.startsWith('hermetic-')) {
       emit({ type: 'tool_use', name: 'mcp__overwatch__get_agent_context', input: contextRequest.arguments });
     }
     const ctx = await client.callTool(contextRequest);
@@ -50,6 +51,7 @@ async function main() {
     if (parsed.agent_id) agentId = parsed.agent_id;
     if (parsed.archetype) childArchetype = parsed.archetype;
     if (parsed.frontier_item_id) frontierItemId = parsed.frontier_item_id;
+    if (Array.isArray(parsed.subgraph?.nodes)) scopedNodes = parsed.subgraph.nodes;
   } catch { /* context optional for the fake */ }
 
   if (mode === 'hermetic-recon') {
@@ -93,6 +95,105 @@ async function main() {
     emit({ type: 'tool_use', name: 'mcp__overwatch__submit_agent_transcript', input: transcriptInput });
     await client.callTool({ name: 'submit_agent_transcript', arguments: transcriptInput });
     const completionInput = { task_id: taskId, status: 'completed', summary: 'hermetic recon complete' };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__update_agent', input: completionInput });
+    await client.callTool({ name: 'update_agent', arguments: completionInput });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
+  if (mode === 'hermetic-web') {
+    if (!frontierItemId) throw new Error('hermetic web context did not include frontier_item_id');
+    const actionId = `eval-web-nuclei-${taskId}`;
+    const validationInput = {
+      action_id: actionId,
+      frontier_item_id: frontierItemId,
+      target_url: 'http://10.10.10.20',
+      technique: 'web_vulnerability_scan',
+      tool_name: 'nuclei',
+      description: 'Hermetic nuclei scan of the synthetic web target',
+    };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__validate_action', input: validationInput });
+    const validation = await client.callTool({ name: 'validate_action', arguments: validationInput });
+    const validationPayload = JSON.parse(validation.content[0].text);
+    if (validationPayload.validation_result === 'invalid') {
+      throw new Error(`hermetic web validation failed: ${validation.content[0].text}`);
+    }
+
+    const runInput = {
+      binary: 'nuclei',
+      args: ['-u', 'http://10.10.10.20', '-jsonl'],
+      action_id: actionId,
+      frontier_item_id: frontierItemId,
+      agent_id: agentId,
+      target_url: 'http://10.10.10.20',
+      technique: 'web_vulnerability_scan',
+      parse_with: 'nuclei',
+      parse_stream: 'stdout',
+      validate: false,
+    };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__run_tool', input: runInput });
+    const scan = await client.callTool({ name: 'run_tool', arguments: runInput });
+    const scanPayload = JSON.parse(scan.content[0].text);
+    if (scan.isError || scanPayload.executed !== true || scanPayload.parse_summary?.parse_outcome !== 'ok') {
+      throw new Error(`hermetic web execution or parsing failed: ${scan.content[0].text}`);
+    }
+
+    const transcriptInput = { task_id: taskId, summary: 'Hermetic web evaluation landed the synthetic exposed admin vulnerability.' };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__submit_agent_transcript', input: transcriptInput });
+    await client.callTool({ name: 'submit_agent_transcript', arguments: transcriptInput });
+    const completionInput = { task_id: taskId, status: 'completed', summary: 'hermetic web complete' };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__update_agent', input: completionInput });
+    await client.callTool({ name: 'update_agent', arguments: completionInput });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
+  if (mode === 'hermetic-cloud') {
+    if (!frontierItemId) throw new Error('hermetic cloud context did not include frontier_item_id');
+    const credential = scopedNodes.find(node => node?.properties?.type === 'credential');
+    if (!credential?.id) throw new Error('hermetic cloud context did not include the credential node');
+    const actionId = `eval-cloud-sts-${taskId}`;
+    const validationInput = {
+      action_id: actionId,
+      frontier_item_id: frontierItemId,
+      target_node: credential.id,
+      technique: 'recon_cloud_identity',
+      tool_name: 'aws',
+      description: 'Hermetic AWS STS caller-identity enumeration',
+    };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__validate_action', input: validationInput });
+    const validation = await client.callTool({ name: 'validate_action', arguments: validationInput });
+    const validationPayload = JSON.parse(validation.content[0].text);
+    if (validationPayload.validation_result === 'invalid') {
+      throw new Error(`hermetic cloud validation failed: ${validation.content[0].text}`);
+    }
+
+    const runInput = {
+      binary: 'aws',
+      args: ['sts', 'get-caller-identity', '--output', 'json'],
+      action_id: actionId,
+      frontier_item_id: frontierItemId,
+      agent_id: agentId,
+      target_node: credential.id,
+      technique: 'recon_cloud_identity',
+      parse_with: 'aws-sts-identity',
+      parser_context: { source_credential_id: credential.id },
+      parse_stream: 'stdout',
+      validate: false,
+    };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__run_tool', input: runInput });
+    const scan = await client.callTool({ name: 'run_tool', arguments: runInput });
+    const scanPayload = JSON.parse(scan.content[0].text);
+    if (scan.isError || scanPayload.executed !== true || scanPayload.parse_summary?.parse_outcome !== 'ok') {
+      throw new Error(`hermetic cloud execution or parsing failed: ${scan.content[0].text}`);
+    }
+
+    const transcriptInput = { task_id: taskId, summary: 'Hermetic cloud evaluation landed the synthetic AWS caller identity.' };
+    emit({ type: 'tool_use', name: 'mcp__overwatch__submit_agent_transcript', input: transcriptInput });
+    await client.callTool({ name: 'submit_agent_transcript', arguments: transcriptInput });
+    const completionInput = { task_id: taskId, status: 'completed', summary: 'hermetic cloud complete' };
     emit({ type: 'tool_use', name: 'mcp__overwatch__update_agent', input: completionInput });
     await client.callTool({ name: 'update_agent', arguments: completionInput });
     emit({ type: 'result', subtype: 'success', is_error: false });
