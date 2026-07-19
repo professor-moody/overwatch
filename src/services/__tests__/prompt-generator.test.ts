@@ -406,6 +406,12 @@ describe('prompt-generator', () => {
         // copy is covered by the variant:'control'-pinned test above).
         expect(def).toContain('agent_heartbeat({ task_id })');
         expect(def).toContain('submit_agent_transcript({ task_id, summary');
+        // A guarded real web run exhausted all eight turns by repeatedly searching
+        // for get_agent_context after ToolSearch had already returned it. Keep the
+        // deferred-tool handoff explicit in the shipping lean prompt.
+        expect(def).toContain('`ToolSearch` is discovery only');
+        expect(def).toContain('invoke that exact MCP tool next');
+        expect(def).toContain('do not search for the same tool again');
         // control is still selectable as a rollback.
         const control = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent', variant: 'control' });
         expect(control).toContain('## Workflow');

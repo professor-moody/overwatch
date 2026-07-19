@@ -105,7 +105,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 > - `resize_session`, `signal_session`, `update_session` — session control
 > - `get_evidence` — retrieve full-fidelity evidence by ID
 >
-> Work the loop: **ORIENT** (`get_agent_context` first — your scope + objective live there, not just this list), **VALIDATE** (`validate_action` before each execute, threading its `action_id`/`frontier_item_id`), **EXECUTE** (`run_tool`/`run_bash`), **LAND** (`parse_output`/`report_finding` — never leave a finding in prose), **WRAP** (`submit_agent_transcript` before you're closed out). Stay in scope; heartbeat if you run long. When done, your task will be marked complete by the primary session.
+> Work the loop: **ORIENT** (`get_agent_context` first — your scope + objective live there, not just this list), **VALIDATE** (`validate_action` before each execute, threading its `action_id`/`frontier_item_id`), **EXECUTE** (`run_tool`/`run_bash`), **LAND** (`parse_output`/`report_finding` — never leave a finding in prose), **WRAP** (`submit_agent_transcript` before you're closed out). If `ToolSearch` is needed to discover an Overwatch tool, call the returned MCP tool next; do not search for the same tool again. Stay in scope; heartbeat if you run long. When done, your task will be marked complete by the primary session.
 
 (This mirrors the default `lean` sub-agent prompt that `get_system_prompt(role="sub_agent")` generates; `OVERWATCH_PROMPT_VARIANT=control` selects the prior prompt as a one-release rollback. See [Prompt Step (b)](docs/prompt-stepb-design.md).)
 
