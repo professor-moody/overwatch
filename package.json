@@ -86,6 +86,7 @@
     "test:integration:stdio": "npm run build && vitest run --config vitest.integration-stdio.config.ts",
     "test:integration:http": "npm run build && vitest run --config vitest.integration-http.config.ts",
     "test:lifecycle": "node scripts/lifecycle-smoke.mjs",
+    "dogfood:local": "npm run build && npx tsx scripts/dogfood-local.ts",
     "check:dist": "git diff --exit-code -- dist",
     "check:release": "node scripts/check-release.mjs",
     "check:package": "node scripts/check-package.mjs",

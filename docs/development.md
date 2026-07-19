@@ -21,6 +21,7 @@ npm run start:daemon # Foreground shared Streamable HTTP daemon
 npm test         # Run fast source-level tests
 npm run test:scale-soak       # 50k scale + mixed restart/resource gates
 npm run test:scale-soak:extended # Longer local soak before a release
+npm run dogfood:local         # Complete isolated operator journey (Node 20/22/24)
 npm run test:integration:stdio   # Fresh-build stdio integration suite
 npm run test:integration:http    # Fresh-build HTTP transport integration suite
 npm run verify   # Full source/DOM/journey/scale/integration/lifecycle/package verification
@@ -160,6 +161,21 @@ and generated/package checks in their own jobs; use the explicit command above
 when reviewing a change that is expected to update tracked build output.
 
 Integration suites auto-skip in restricted environments (e.g., EPERM on `listen()`) using async bind probes.
+
+### Isolated operator dogfood
+
+Run `npm run dogfood:local` on a release-qualified Node 20, 22, or 24 runtime.
+It builds the production server and dashboard, then exercises the documented
+operator journey against one managed daemon: repeated setup, doctor, concurrent
+MCP and dashboard clients, live scope editing, planner completion, typed agent
+dispatch, approval and question handling, evidence/report creation, every
+principal dashboard route, restart recovery, and clean shutdown.
+
+The command uses deterministic fake models and tools, dynamic loopback ports,
+and a temporary runtime root. It performs no target network activity or paid
+model calls. It fingerprints checkout-local engagement artifacts before and
+after the run, deletes the temporary runtime after verification, and fails if
+it changes operator-owned state, evidence, reports, tapes, or agent logs.
 
 ### Scale and soak profiles
 

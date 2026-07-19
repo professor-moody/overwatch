@@ -656,6 +656,23 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(spawnedCmds[0]).toBe(process.env.OVERWATCH_CLAUDE_BINARY ?? 'claude');
   });
 
+  it('isolates default worker transcripts when OVERWATCH_AGENT_LOG_DIR is set', () => {
+    const previous = process.env.OVERWATCH_AGENT_LOG_DIR;
+    const isolatedLogDir = join(testDir, 'isolated-agent-logs');
+    process.env.OVERWATCH_AGENT_LOG_DIR = isolatedLogDir;
+    try {
+      const runner = new HeadlessMcpRunner(
+        engine,
+        new HeadlessProcessRegistry(),
+        new ProcessTracker(),
+      );
+      expect((runner as any).opts.logDir).toBe(isolatedLogDir);
+    } finally {
+      if (previous === undefined) delete process.env.OVERWATCH_AGENT_LOG_DIR;
+      else process.env.OVERWATCH_AGENT_LOG_DIR = previous;
+    }
+  });
+
   it('grants a launched headless agent a generous cold-start heartbeat TTL', async () => {
     svc = makeService();
     svc.start();
