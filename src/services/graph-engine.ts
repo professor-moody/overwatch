@@ -770,6 +770,7 @@ export class GraphEngine {
       this.ctx.applyDurableStatePatch(baseline);
       this.applyRestoredRuntimeProjections();
       this.invalidateAllCaches();
+      this.invalidatePathGraph();
       throw error;
     }
     this.persist();
@@ -922,7 +923,12 @@ export class GraphEngine {
             });
           }
           this.ctx.graph.mergeEdgeAttributes(edgeId, effectiveProps as Partial<EdgeProperties>);
-          this.invalidateHealthReport();
+          // A merge can change confidence/opsec_noise/confirmed_at — the attributes
+          // path weight and frontier readiness derive from — so it must invalidate the
+          // path graph and frontier caches too, exactly like the new-edge/drop branches.
+          // (Health report alone leaves find_paths ranking a stale weight.)
+          this.invalidatePathGraph();
+          this.invalidateAllCaches();
           return { id: edgeId, isNew: false };
         },
       );
@@ -985,6 +991,9 @@ export class GraphEngine {
       { edge_id: edgeId, props },
       () => {
         this.ctx.graph.mergeEdgeAttributes(edgeId, props);
+        // Edge attributes feed path weight, so a durable merge must also drop the
+        // path-graph cache (invalidateAllCaches only clears health + frontier).
+        this.invalidatePathGraph();
         this.invalidateAllCaches();
       },
     );
@@ -6137,6 +6146,7 @@ export class GraphEngine {
       this.ctx.applyDurableStatePatch(baseline);
       this.applyRestoredRuntimeProjections();
       this.invalidateAllCaches();
+      this.invalidatePathGraph();
       throw error;
     }
     this.persist(detail);
@@ -6161,6 +6171,7 @@ export class GraphEngine {
       this.frontierComputer.setNoiseEstimates(this.ctx.frontierWeights.noise);
     }
     this.invalidateAllCaches();
+    this.invalidatePathGraph();
     return { status: 'applied' };
   }
 
@@ -8321,6 +8332,7 @@ export class GraphEngine {
       // A failed rollback may already have installed the selected state in
       // memory before durable cleanup failed and the write gate closed.
       this.invalidateAllCaches();
+      this.invalidatePathGraph();
     }
   }
 
