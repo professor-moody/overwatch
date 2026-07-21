@@ -5,7 +5,7 @@ import {
   canonicalAgentTaskId,
 } from '../../lib/agent-reference';
 import type { DirectiveKind } from '../../lib/api/agents';
-import { cn, formatElapsed } from '../../lib/utils';
+import { cn, formatElapsed, agentElapsedMs } from '../../lib/utils';
 import { ActionButton, PanelSection, StatusPill } from '../shared/primitives';
 import { AgentWorkModal, type AgentWorkMode } from './AgentWorkModal';
 
@@ -80,11 +80,7 @@ export function AgentDetailPanel({
   const [workMode, setWorkMode] = useState<AgentWorkMode | null>(null);
   const taskId = canonicalAgentTaskId(agent);
   const label = agentDisplayLabel(agent);
-  const elapsed = agent.elapsed_ms
-    ? formatElapsed(agent.elapsed_ms)
-    : agent.completed_at && agent.assigned_at
-      ? formatElapsed(new Date(agent.completed_at).getTime() - new Date(agent.assigned_at).getTime())
-      : '—';
+  const elapsed = formatElapsed(agentElapsedMs(agent));
   const subgraphNodes = context?.subgraph?.nodes ?? [];
   const terminal = agent.status === 'completed' || agent.status === 'failed' || agent.status === 'interrupted';
   const mergedAway = Boolean(agent.work?.merged_into_task_id);

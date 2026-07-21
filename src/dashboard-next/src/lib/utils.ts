@@ -15,6 +15,28 @@ export function formatElapsed(ms: number | undefined | null): string {
   return `${h}h ${m % 60}m`;
 }
 
+/**
+ * Elapsed runtime for an agent, derived on the client from `assigned_at` rather than
+ * a server-pushed `elapsed_ms`. Deriving here keeps the value live-ticking on re-render
+ * and, crucially, stops the server from marking every running agent "changed" on every
+ * projection tick (a time field that always differs defeats the bounded/keyed patch).
+ * Running → now - assigned; terminal → completed_at - assigned; otherwise undefined.
+ */
+export function agentElapsedMs(
+  agent: { status?: string; assigned_at?: string; completed_at?: string; elapsed_ms?: number },
+  now: number = Date.now(),
+): number | undefined {
+  const assigned = agent.assigned_at ? new Date(agent.assigned_at).getTime() : NaN;
+  if (agent.completed_at && Number.isFinite(assigned)) {
+    return Math.max(0, new Date(agent.completed_at).getTime() - assigned);
+  }
+  if (agent.status === 'running' && Number.isFinite(assigned) && now >= assigned) {
+    return now - assigned;
+  }
+  // Back-compat: honor a server-sent elapsed_ms if one is still present.
+  return agent.elapsed_ms;
+}
+
 export function formatTimestamp(iso: string | undefined): string {
   if (!iso) return '—';
   try {
