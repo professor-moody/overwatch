@@ -475,6 +475,11 @@ export class TaskExecutionService {
       // the lease's whole lifetime. Skipping WITHOUT marking keeps the item
       // retryable: once the lease frees, a later drain dispatches it.
       if (this.engine.isFrontierItemHeldByOther(item.id)) continue;
+      // The lease is released the instant the prior holder goes terminal, but its
+      // `claude -p` may still be draining (SIGTERM→SIGKILL). Skip WITHOUT marking so a
+      // later drain retries once reconcileTerminatedTasks reaps the orphan — otherwise
+      // two live processes would work this item at once.
+      if (this.frontierItemProcessDraining(item.id)) continue;
       // Mark attempted BEFORE registering: registerAgent fires onUpdate
       // synchronously, which re-enters drainCveResearch — marking first stops the
       // re-entrant pass from double-dispatching the same item.
@@ -710,6 +715,29 @@ export class TaskExecutionService {
       clearTimeout(timer);
       this.timeoutTimers.delete(taskId);
     }
+  }
+
+  /**
+   * A frontier item is NOT free to re-lease if its prior holder went terminal but the
+   * OS process is still tracked: the frontier lease is released eagerly on the status
+   * transition (agent-manager transition()), yet the dying `claude -p` may still be in
+   * its SIGTERM→SIGKILL escalation window (managed-runtime-supervisor) and could still
+   * emit target-facing work. Assigning the item to a second agent now would run two
+   * live processes on the same item. The window self-heals: reconcileTerminatedTasks
+   * kills the orphan each tick and its exit handler unregisters it, so the next drain
+   * proceeds. The requesting pending task itself is never blocked — its status is
+   * `pending`, which this predicate excludes. Legitimate handoff/split/merge re-lease
+   * durably inside the engine and never consult this runtime-layer guard.
+   */
+  private frontierItemProcessDraining(frontierItemId: string): boolean {
+    for (const entry of this.registry.listActive()) {
+      const task = this.engine.getTask(entry.task_id);
+      if (task?.frontier_item_id === frontierItemId
+          && task.status !== 'running' && task.status !== 'pending') {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1002,6 +1030,14 @@ export class TaskExecutionService {
       // interrupted this task, but gating here guarantees no aborted-campaign worker
       // ever spawns even if a future abort path forgets the sweep.
       if (task.campaign_id && this.engine.getCampaign(task.campaign_id)?.status === 'aborted') {
+        continue;
+      }
+      // Don't launch a pending agent onto a frontier item whose PRIOR holder went
+      // terminal but is still draining its OS process — that would run two live
+      // processes on the same item. Skip this tick; a later drain proceeds once
+      // reconcileTerminatedTasks reaps the orphan. (The guard excludes this pending
+      // task itself, so it never blocks its own item.)
+      if (task.frontier_item_id && this.frontierItemProcessDraining(task.frontier_item_id)) {
         continue;
       }
       if (

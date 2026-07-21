@@ -159,6 +159,42 @@ describe('TaskExecutionService', () => {
     expect(launched).not.toContain('pending-aborted');
   });
 
+  it('does not re-lease a frontier item while the prior holder process is still draining', () => {
+    const launch = vi.spyOn(svc as any, 'launchHeadless').mockImplementation(() => {});
+    (svc as any).endpoint = { url: 'http://127.0.0.1:9/mcp' };
+    (svc as any).running = true;
+
+    // Prior holder A: went terminal (lease released), but its `claude -p` is still tracked.
+    engine.registerAgent(runningTask({ id: 'holder-A', backend: 'headless_mcp', frontier_item_id: 'item-X' }));
+    engine.updateAgentStatus('holder-A', 'interrupted', 'cancelled');
+    (svc as any).registry.register('holder-A', {} as never);
+
+    // Successor B: queued on the SAME item.
+    engine.registerAgent({
+      id: 'succ-B', agent_id: 'a-b', assigned_at: new Date().toISOString(),
+      status: 'pending', subgraph_node_ids: [], backend: 'headless_mcp', frontier_item_id: 'item-X',
+    } as never);
+
+    // Draining guard blocks B's PROCESS from spawning while A is still draining —
+    // that is the double-execution guarantee (two live `claude -p` on one item).
+    expect((svc as any).frontierItemProcessDraining('item-X')).toBe(true);
+    (svc as any).drainHeadless();
+    expect(launch.mock.calls.map(c => (c[0] as AgentTask).id)).not.toContain('succ-B');
+
+    // Once A's process is reaped, the next drain launches B.
+    (svc as any).registry.unregister('holder-A');
+    expect((svc as any).frontierItemProcessDraining('item-X')).toBe(false);
+    (svc as any).drainHeadless();
+    expect(launch.mock.calls.map(c => (c[0] as AgentTask).id)).toContain('succ-B');
+  });
+
+  it('draining guard never blocks a live (running/pending) holder — only terminal ones', () => {
+    engine.registerAgent(runningTask({ id: 'live-A', backend: 'headless_mcp', frontier_item_id: 'item-Y' }));
+    (svc as any).registry.register('live-A', {} as never);
+    // A is still running → its own item is not "draining".
+    expect((svc as any).frontierItemProcessDraining('item-Y')).toBe(false);
+  });
+
   it('does not start scripted, headless, or orchestrator work while persistence is read-only', async () => {
     engine.registerAgent(runningTask({
       id: 'degraded-scripted',
