@@ -172,7 +172,27 @@ const ExactAgentTaskSchema = z.object({
   assigned_at: z.string().min(1),
   status: z.enum(['pending', 'running', 'completed', 'failed', 'interrupted']),
   subgraph_node_ids: z.array(z.string()),
-}).passthrough();
+  // Enumerate the full AgentTask surface so unknown, caller-supplied fields are
+  // STRIPPED (zod's default) rather than passed through into durable agent state.
+  frontier_item_id: z.string().optional(),
+  campaign_id: z.string().optional(),
+  skill: z.string().optional(),
+  completed_at: z.string().optional(),
+  result_summary: z.string().optional(),
+  heartbeat_at: z.string().optional(),
+  heartbeat_ttl_seconds: z.number().optional(),
+  backend: z.enum(['scripted', 'headless_mcp', 'manual']).optional(),
+  role: z.string().optional(),
+  archetype: z.string().optional(),
+  objective: z.string().optional(),
+  work: z.unknown().optional(),
+  application_command_id: z.string().optional(),
+  model: z.string().optional(),
+  no_retry: z.boolean().optional(),
+  reoffered: z.boolean().optional(),
+  orchestrator: z.boolean().optional(),
+  claudeBinary: z.string().optional(),
+});
 
 const ExactAgentRegisterInputSchema = z.object({
   task: ExactAgentTaskSchema,

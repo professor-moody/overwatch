@@ -154,6 +154,16 @@ function registerMockServiceMutation(
     }
   }
 
+  // Broadcast the graph delta explicitly: standalone addNode/addEdge journal durably
+  // but don't fire an incremental graph_update, so without this the node/edge only
+  // surface on the next full state_refresh (invisible to a pure delta consumer).
+  const newEdges: string[] = [];
+  if (operator_edge.added && operator_edge.edge_id) newEdges.push(operator_edge.edge_id);
+  if (runs_on_edge.added && runs_on_edge.edge_id) newEdges.push(runs_on_edge.edge_id);
+  if (isNew || newEdges.length > 0) {
+    engine.persist({ ...(isNew ? { new_nodes: [id] } : {}), ...(newEdges.length > 0 ? { new_edges: newEdges } : {}) });
+  }
+
   const event = engine.logActionEvent({
     description: isNew
       ? `Mock service registered: ${purpose} on ${bind_host}:${bind_port}`

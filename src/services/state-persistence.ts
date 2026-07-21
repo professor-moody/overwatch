@@ -397,6 +397,9 @@ export class StatePersistence {
     let initialLogicalOnDiskSeq = 0;
     let initialPhysicalFrameSeq = 0;
     if (journal) {
+      // Reclaim any journal temp files orphaned by a crash mid-compaction/repair.
+      // Best effort and pid-gated; never blocks or fails recovery.
+      try { journal.sweepOrphanTempArtifacts(); } catch { /* disk hygiene only */ }
       try {
         initialLogicalOnDiskSeq = journal.getHighestPhysicalSeq();
         initialPhysicalFrameSeq = journal.getHighestPhysicalFrameSeq();

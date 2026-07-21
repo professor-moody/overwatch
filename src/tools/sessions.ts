@@ -1192,6 +1192,9 @@ Use SIGINT to cancel a running command, SIGTERM/SIGKILL to force-terminate.`,
             ...node,
             stopped_at: result.metadata.closed_at ?? new Date().toISOString(),
           });
+          // addNode (merge) journals durably but emits no incremental delta; broadcast
+          // the attribute change so delta consumers see the listener go non-live.
+          engine.persist({ updated_nodes: [mockId] });
         }
       }
 

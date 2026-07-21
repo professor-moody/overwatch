@@ -98,6 +98,32 @@ afterEach(() => {
   rmSync(testDir, { recursive: true, force: true });
 });
 
+describe('MutationJournal — orphan temp-file sweep', () => {
+  it('reclaims dead-pid stale/repair/quarantine temps but keeps live-pid temps and the forensic quarantine', () => {
+    const journal = new MutationJournal(TEST_STATE);
+    const deadPid = 2147480000; // implausibly high → not alive
+    const livePid = process.pid;
+    const staleDead = `${JOURNAL_PATH}.stale-${deadPid}-abc`;
+    const repairDead = `${JOURNAL_PATH}.repair-${deadPid}-def`;
+    const quarantineTmpDead = `${JOURNAL_PATH}.quarantine-deadbeef.jsonl.tmp-${deadPid}`;
+    const staleLive = `${JOURNAL_PATH}.stale-${livePid}-ghi`;
+    const quarantineKeep = `${JOURNAL_PATH}.quarantine-deadbeef.jsonl`; // permanent forensic copy
+    for (const f of [staleDead, repairDead, quarantineTmpDead, staleLive, quarantineKeep]) {
+      writeFileSync(f, 'x');
+    }
+
+    journal.sweepOrphanTempArtifacts();
+
+    expect(existsSync(staleDead)).toBe(false);
+    expect(existsSync(repairDead)).toBe(false);
+    expect(existsSync(quarantineTmpDead)).toBe(false);
+    // A temp owned by a still-alive pid (a concurrent process mid-op) is left alone.
+    expect(existsSync(staleLive)).toBe(true);
+    // The permanent quarantine artifact (no .tmp- suffix) is preserved.
+    expect(existsSync(quarantineKeep)).toBe(true);
+  });
+});
+
 describe('MutationJournal (P2.1)', () => {
   it('rejects an externalized graph audit without its matching activity append', () => {
     expect(validateTransactionOperationRelationships([{

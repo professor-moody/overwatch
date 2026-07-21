@@ -10,7 +10,7 @@ import type { FileHandle } from 'fs/promises';
 import { extname, join } from 'path';
 import { tmpdir } from 'os';
 import { pipeline } from 'stream/promises';
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { z } from 'zod';
 import type { GraphEngine } from './graph-engine.js';
 import type { DaemonLifecyclePhase } from './daemon-instance-lease.js';
@@ -434,7 +434,7 @@ export class DashboardServer {
       if (!this.isLoopback(this.host)) {
         const token = url.searchParams.get('token');
         const expected = process.env.OVERWATCH_DASHBOARD_TOKEN;
-        if (!expected || token !== expected) {
+        if (!expected || !this.tokenMatches(token, expected)) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
           socket.destroy();
           return;
@@ -3465,6 +3465,16 @@ export class DashboardServer {
    * /api/history, /api/sessions, /api/agents, /api/graph/export and friends
    * would expose engagement data to anyone who can reach the host.
    */
+  /** Constant-time comparison of a presented token against the configured secret, so
+   *  the bearer secret gating remote access isn't leaked through an early-exit compare. */
+  private tokenMatches(presented: string | null | undefined, expected: string): boolean {
+    if (typeof presented !== 'string') return false;
+    const a = Buffer.from(presented);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  }
+
   private checkReadAuth(req: IncomingMessage, res: ServerResponse): boolean {
     if (this.isLoopback(this.host)) return true;
     const expected = process.env.OVERWATCH_DASHBOARD_TOKEN;
@@ -3479,7 +3489,7 @@ export class DashboardServer {
     try {
       urlToken = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).searchParams.get('token');
     } catch { /* malformed URL — fall through, header check below decides */ }
-    if (headerToken !== expected && urlToken !== expected) {
+    if (!this.tokenMatches(headerToken, expected) && !this.tokenMatches(urlToken, expected)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized' }));
       return false;
@@ -3510,7 +3520,7 @@ export class DashboardServer {
     const authHeader = req.headers.authorization;
     const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const urlToken = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).searchParams.get('token');
-    if (headerToken !== expected && urlToken !== expected) {
+    if (!this.tokenMatches(headerToken, expected) && !this.tokenMatches(urlToken, expected)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized' }));
       return false;
