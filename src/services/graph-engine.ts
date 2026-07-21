@@ -2043,19 +2043,22 @@ export class GraphEngine {
   }
 
   /**
-   * Enforce the invariant that an ABORTED campaign has no running agents: mark every
-   * running agent whose campaign is aborted `no_retry` (a deliberate stop → the Phase
-   * 3.1 re-offer sweep must not auto-re-dispatch their work) + `interrupted`. Keyed on
+   * Enforce the invariant that an ABORTED campaign has no ACTIVE agents: mark every
+   * non-terminal agent (running OR pending/queued) whose campaign is aborted `no_retry`
+   * (a deliberate stop → the Phase 3.1 re-offer sweep must not auto-re-dispatch their
+   * work) + `interrupted`. Pending agents MUST be included: a queued agent left `pending`
+   * would otherwise be launched by TaskExecutionService.drainHeadless on the next drain,
+   * running target actions for a campaign the operator explicitly aborted. Keyed on
    * campaign STATUS (not a single id) so it naturally covers the whole subtree, since
    * `campaignPlanner.abortCampaign` cascades the abort to child campaigns. The OS
-   * process is killed by TaskExecutionService.reconcileTerminatedTasks on the next
-   * watchdog tick (it kills any tracked process whose task is no longer running).
-   * Returns the count stopped.
+   * process (if any) is killed by TaskExecutionService.reconcileTerminatedTasks on the
+   * next watchdog tick; `pending → interrupted` is a permitted transition that also
+   * releases the agent's frontier lease. Returns the count stopped.
    */
-  private stopRunningAgentsOfAbortedCampaigns(reason: string): number {
+  private stopActiveAgentsOfAbortedCampaigns(reason: string): number {
     let stopped = 0;
     for (const agent of this.agentMgr.getAll()) {
-      if (agent.status !== 'running' || !agent.campaign_id) continue;
+      if ((agent.status !== 'running' && agent.status !== 'pending') || !agent.campaign_id) continue;
       if (this.getCampaign(agent.campaign_id)?.status === 'aborted') {
         agent.no_retry = true;
         this.agentMgr.updateStatus(agent.id, 'interrupted', reason);
@@ -2081,7 +2084,7 @@ export class GraphEngine {
       // (The automatic abort-conditions path already does this; this closes the gap
       // for the operator-initiated /api/campaigns/:id/action { action: "abort" }, and
       // covers cascaded child campaigns too.)
-      this.stopRunningAgentsOfAbortedCampaigns('Campaign aborted by operator');
+      this.stopActiveAgentsOfAbortedCampaigns('Campaign aborted by operator');
       this.persist();
     }
     return c;
@@ -5045,7 +5048,7 @@ export class GraphEngine {
           this.campaignPlanner.abortCampaign(task.campaign_id);
           // Stop the remaining running agents of the now-aborted campaign(s). The task
           // that triggered this is already terminal (completed/failed), so it's skipped.
-          this.stopRunningAgentsOfAbortedCampaigns(`Campaign aborted: ${abort.reason}`);
+          this.stopActiveAgentsOfAbortedCampaigns(`Campaign aborted: ${abort.reason}`);
         }
       }
       this.persist();

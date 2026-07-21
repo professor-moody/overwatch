@@ -130,6 +130,35 @@ describe('TaskExecutionService', () => {
     expect(settled).toBe(true);
   });
 
+  it('drainHeadless never launches an agent for an aborted campaign', () => {
+    const active = engine.createCampaign({ name: 'active', strategy: 'enumeration', item_ids: ['fi-a'], abort_conditions: [] });
+    engine.activateCampaign(active.id);
+    const aborted = engine.createCampaign({ name: 'aborted', strategy: 'enumeration', item_ids: ['fi-b'], abort_conditions: [] });
+    engine.activateCampaign(aborted.id);
+    engine.abortCampaign(aborted.id);
+
+    const launch = vi.spyOn(svc as any, 'launchHeadless').mockImplementation(() => {});
+    (svc as any).endpoint = { url: 'http://127.0.0.1:9/mcp' };
+    (svc as any).running = true;
+
+    // Queued headless agents (no frontier item → skip the lease gate). One belongs to an
+    // active campaign (launch-eligible), one to the aborted campaign (must be skipped).
+    engine.registerAgent({
+      id: 'pending-active', agent_id: 'a-active', assigned_at: new Date().toISOString(),
+      status: 'pending', subgraph_node_ids: [], backend: 'headless_mcp', campaign_id: active.id,
+    } as never);
+    engine.registerAgent({
+      id: 'pending-aborted', agent_id: 'a-aborted', assigned_at: new Date().toISOString(),
+      status: 'pending', subgraph_node_ids: [], backend: 'headless_mcp', campaign_id: aborted.id,
+    } as never);
+
+    (svc as any).drainHeadless();
+
+    const launched = launch.mock.calls.map(call => (call[0] as AgentTask).id);
+    expect(launched).toContain('pending-active');
+    expect(launched).not.toContain('pending-aborted');
+  });
+
   it('does not start scripted, headless, or orchestrator work while persistence is read-only', async () => {
     engine.registerAgent(runningTask({
       id: 'degraded-scripted',

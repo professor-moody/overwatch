@@ -997,6 +997,13 @@ export class TaskExecutionService {
     if (!this.running || !this.engine.isPersistenceWritable()) return;
     for (const task of this.engine.getAgentTasks()) {
       if (task.status !== 'running' && task.status !== 'pending') continue;
+      // Defense in depth: never launch an agent for a campaign the operator aborted.
+      // The engine sweep (stopActiveAgentsOfAbortedCampaigns) should already have
+      // interrupted this task, but gating here guarantees no aborted-campaign worker
+      // ever spawns even if a future abort path forgets the sweep.
+      if (task.campaign_id && this.engine.getCampaign(task.campaign_id)?.status === 'aborted') {
+        continue;
+      }
       if (
         task.status === 'pending'
         && task.frontier_item_id
