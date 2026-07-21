@@ -814,6 +814,14 @@ export class ApplicationCommandService {
       );
     } catch (error) {
       if (error !== domainError) throw error;
+      // A retryable domain failure from a fully rolled-back sync command applied NO
+      // durable effect, so DON'T freeze a `failed` receipt under the idempotency key —
+      // that would poison the key forever (e.g. a transient dispatch-cap 429 could
+      // never succeed even after capacity frees). Re-throw and leave the key free; a
+      // later retry re-executes and can succeed. Terminal failures still record and
+      // replay. Invariant: no receipt iff no durable effect — only errors thrown from a
+      // rolled-back execute() may set `retryable`.
+      if ((domainError as { retryable?: unknown })?.retryable === true) throw domainError;
       return this.recordFailedExecution<T>(
         options.command_kind,
         identity,

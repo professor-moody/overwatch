@@ -105,6 +105,20 @@ export interface DispatchCommandPort extends ApplicationCommandHost {
   };
 }
 
+/**
+ * Dispatch failures whose cause is transient CAPACITY/CONCURRENCY, not the input:
+ * the cap frees as workers finish, and a leased item becomes actionable once its
+ * lease releases. These are raised from a fully rolled-back synchronous command, so
+ * ApplicationCommandService leaves the idempotency key FREE to retry rather than
+ * freezing a `failed` receipt under it. Every other code (NOT_FOUND, UNSCOPED,
+ * ALREADY_*, CAMPAIGN_NOT_DISPATCHABLE, validation) is terminal for the same input.
+ */
+const RETRYABLE_DISPATCH_CODES: ReadonlySet<string> = new Set([
+  'DISPATCH_CAP_EXCEEDED',
+  'DISPATCH_REFUSED',
+  'FRONTIER_NOT_ACTIONABLE',
+]);
+
 export class DispatchCommandError extends Error {
   constructor(
     message: string,
@@ -114,6 +128,11 @@ export class DispatchCommandError extends Error {
   ) {
     super(message);
     this.name = 'DispatchCommandError';
+  }
+
+  /** True when a same-key retry can succeed once capacity/leases free (see above). */
+  get retryable(): boolean {
+    return RETRYABLE_DISPATCH_CODES.has(this.code);
   }
 }
 
