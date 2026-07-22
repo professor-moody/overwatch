@@ -1,5 +1,6 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import type { GraphEngine } from './graph-engine.js';
+import { sendOrDrop, startWebSocketHeartbeat } from './dashboard-ws-liveness.js';
 import {
   ActionOutputWebSocketEventSchema,
   type ActionOutputWebSocketEvent,
@@ -8,12 +9,14 @@ import {
 export class DashboardActionOutputWebSocketHub {
   readonly server = new WebSocketServer({ noServer: true });
   pollers = new Map<WebSocket, ReturnType<typeof setInterval>>();
+  private readonly stopHeartbeat: () => void;
 
   constructor(
     private readonly engine: GraphEngine,
     private readonly pollMs = 100,
   ) {
     this.server.on('error', () => { /* connection-local errors are handled below */ });
+    this.stopHeartbeat = startWebSocketHeartbeat(this.server);
   }
 
   handleConnection(ws: WebSocket, actionId: string): void {
@@ -77,6 +80,7 @@ export class DashboardActionOutputWebSocketHub {
   }
 
   closeServer(): Promise<void> {
+    this.stopHeartbeat();
     this.closeConnections();
     return new Promise(resolve => this.server.close(() => resolve()));
   }
@@ -88,6 +92,6 @@ export class DashboardActionOutputWebSocketHub {
   }
 
   private send(ws: WebSocket, event: ActionOutputWebSocketEvent): void {
-    ws.send(JSON.stringify(ActionOutputWebSocketEventSchema.parse(event)));
+    sendOrDrop(ws, JSON.stringify(ActionOutputWebSocketEventSchema.parse(event)));
   }
 }

@@ -18,7 +18,7 @@ import { AgentThread } from './AgentThread';
 import { AddTargetsModal } from './AddTargetsModal';
 import { DeployModal } from './DeployModal';
 import { AgentDetailPanel, type AgentContext } from '../agents/AgentDetailPanel';
-import { cn, formatTimestamp } from '../../lib/utils';
+import { cn, formatTimestamp, agentElapsedMs } from '../../lib/utils';
 import { ActionButton, FilterBar, MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
 type ConsoleFilter = 'all' | 'primary' | 'subagents' | AgentConsoleKind | 'errors';
@@ -126,7 +126,7 @@ export function AgentsPanel() {
   );
   const elapsedById = useMemo(() => {
     const m = new Map<string, number | undefined>();
-    for (const a of agents) m.set(api.canonicalAgentTaskId(a), a.elapsed_ms);
+    for (const a of agents) m.set(api.canonicalAgentTaskId(a), agentElapsedMs(a));
     return m;
   }, [agents]);
   const activeAgent = activeAgentId === 'all'

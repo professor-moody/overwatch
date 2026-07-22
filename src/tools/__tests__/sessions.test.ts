@@ -107,6 +107,7 @@ function buildHandlers(options: {
     },
     addEdge: () => ({ id: 'edge-1', isNew: true }),
     logActionEvent: () => ({ event_id: 'event-1' }),
+    persist: () => {},
   } as unknown as GraphEngine;
 
   registerSessionTools(fakeServer, sessionManager as any, engine);

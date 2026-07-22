@@ -322,7 +322,7 @@ to pull just the completions you haven't acted on — these never scroll out of
         agent_id: z.string().optional().describe('Filter by specific agent'),
         event_type: z.string().optional().describe('Filter by a single event_type (e.g. action_validated, finding_reported)'),
         event_types: z.array(z.string()).optional().describe('Filter by ANY of these event_types (OR). Combined with event_type if both are given.'),
-        since: z.string().optional().describe('ISO timestamp — return only entries strictly newer than this (e.g. your last poll time). Invalid/unparseable values are ignored.'),
+        since: z.string().optional().describe('ISO timestamp — return only entries at or after this (e.g. your last poll time). The boundary millisecond is inclusive so batched events sharing one timestamp are never dropped. Invalid/unparseable values are ignored.'),
         cursor: z.string().optional().describe('event_id cursor — fetch entries after this event'),
         direction: z.enum(['oldest_first', 'newest_first']).default('oldest_first').describe('Traversal direction'),
       },
@@ -346,7 +346,10 @@ to pull just the completions you haven't acted on — these never scroll out of
       if (since) {
         const sinceMs = Date.parse(since);
         if (!Number.isNaN(sinceMs)) {
-          history = history.filter(h => Date.parse(h.timestamp) > sinceMs);
+          // Inclusive boundary: batched appliers share one timestamp, so a strict `>`
+          // drops events landing exactly at `sinceMs` when the caller pages by feeding a
+          // prior event timestamp back as `since`.
+          history = history.filter(h => Date.parse(h.timestamp) >= sinceMs);
         }
       }
 

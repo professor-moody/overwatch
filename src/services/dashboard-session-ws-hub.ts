@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
+import { sendOrDrop, startWebSocketHeartbeat } from './dashboard-ws-liveness.js';
 import type { GraphEngine } from './graph-engine.js';
 import type { SessionManager } from './session-manager.js';
 import type { DaemonLifecyclePhase } from './daemon-instance-lease.js';
@@ -38,6 +39,7 @@ export class DashboardSessionWebSocketHub {
   pollers = new Map<WebSocket, ReturnType<typeof setInterval>>();
   private readonly mutationBoundary: ApplicationCommandService;
   private runtimePhaseProvider: () => DaemonLifecyclePhase = () => 'ready';
+  private readonly stopHeartbeat: () => void;
 
   constructor(
     private readonly engine: GraphEngine,
@@ -46,6 +48,7 @@ export class DashboardSessionWebSocketHub {
   ) {
     this.mutationBoundary = new ApplicationCommandService(engine);
     this.server.on('error', () => { /* connection-local errors are handled below */ });
+    this.stopHeartbeat = startWebSocketHeartbeat(this.server);
   }
 
   setSessionManager(sessionManager: SessionManager | null): void {
@@ -340,6 +343,7 @@ export class DashboardSessionWebSocketHub {
   }
 
   closeServer(): Promise<void> {
+    this.stopHeartbeat();
     this.closeConnections();
     return new Promise(resolve => this.server.close(() => resolve()));
   }
@@ -351,7 +355,7 @@ export class DashboardSessionWebSocketHub {
   }
 
   private send(ws: WebSocket, event: unknown): void {
-    ws.send(JSON.stringify(SessionWebSocketServerEventSchema.parse(event)));
+    sendOrDrop(ws, JSON.stringify(SessionWebSocketServerEventSchema.parse(event)));
   }
 
   private parse(raw: unknown): unknown {

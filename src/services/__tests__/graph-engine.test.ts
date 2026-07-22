@@ -264,6 +264,28 @@ describe('GraphEngine', () => {
       expect(after).toHaveLength(0);
     });
 
+    it('an edge-attribute merge invalidates the path-graph cache (find_paths reflects the new weight)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.addNode({ id: 'ph-s', type: 'host', label: 's' } as never);
+      engine.addNode({ id: 'ph-m', type: 'host', label: 'm' } as never);
+      engine.addNode({ id: 'ph-t', type: 'host', label: 't' } as never);
+      // Direct route S->T (low confidence => high weight) vs a 2-hop detour
+      // S->M->T (high confidence => lower total weight): the detour wins initially.
+      engine.addEdge('ph-s', 'ph-t', { type: 'ADMIN_TO', confidence: 0.1 } as never);
+      engine.addEdge('ph-s', 'ph-m', { type: 'ADMIN_TO', confidence: 0.95 } as never);
+      engine.addEdge('ph-m', 'ph-t', { type: 'ADMIN_TO', confidence: 0.95 } as never);
+
+      // Prime the path-graph cache.
+      expect(engine.findPaths('ph-s', 'ph-t')[0]?.nodes).toEqual(['ph-s', 'ph-m', 'ph-t']);
+
+      // Re-add the direct edge at full confidence — this hits the addEdge MERGE branch
+      // (same identity), collapsing its weight. Before the fix the stale path graph kept
+      // the old weight and find_paths still returned the detour.
+      engine.addEdge('ph-s', 'ph-t', { type: 'ADMIN_TO', confidence: 1.0 } as never);
+
+      expect(engine.findPaths('ph-s', 'ph-t')[0]?.nodes).toEqual(['ph-s', 'ph-t']);
+    });
+
     it('exportGraph populates source_trust only when opted in (default omits it)', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({

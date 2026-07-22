@@ -29,7 +29,7 @@
 //     graph; it's a typed stream.
 // ============================================================
 
-import { existsSync, openSync, fsyncSync, closeSync, writeSync, readFileSync, renameSync, statSync, unlinkSync } from 'fs';
+import { existsSync, openSync, fsyncSync, closeSync, writeSync, readFileSync, renameSync, statSync, unlinkSync, readdirSync } from 'fs';
 import { dirname, join, basename, resolve } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
@@ -120,6 +120,19 @@ export function writeAllSync(
       );
     }
     offset += written;
+  }
+}
+
+/** Cross-process liveness probe used to gate orphan-temp-file reclamation: signal 0
+ *  performs permission/existence checks without delivering a signal. EPERM means the
+ *  process exists but is owned by another user (still alive). */
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM';
   }
 }
 
@@ -2785,6 +2798,40 @@ export class MutationJournal {
     fsyncDirectory(dirname(this.journalPath));
     unlinkSync(stale);
     fsyncDirectory(dirname(this.journalPath));
+  }
+
+  /**
+   * Best-effort removal of orphaned compaction/repair/quarantine TEMP files left when a
+   * crash interrupts the rename→unlink (truncate) or write→rename (repair/quarantine)
+   * sequences. Without this they accumulate forever (recovery only ever reads the active
+   * journal, so correctness is unaffected — this is pure disk hygiene). Only removes an
+   * artifact whose embedded pid is no longer alive, so a concurrent cooperating process
+   * mid-operation is never disturbed; the permanent `.quarantine-<digest>.jsonl` forensic
+   * copy (no `.tmp-` suffix) is preserved.
+   */
+  sweepOrphanTempArtifacts(): void {
+    const dir = dirname(this.journalPath);
+    const prefix = basename(this.journalPath);
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.startsWith(`${prefix}.`)) continue;
+      const suffix = entry.slice(prefix.length + 1);
+      // <journal>.stale-<pid>-<uuid>, .repair-<pid>-<uuid>, .quarantine-<digest>.jsonl.tmp-<pid>
+      const match = /^(?:stale|repair)-(\d+)-|\.tmp-(\d+)$/.exec(suffix);
+      if (!match) continue;
+      const pid = Number(match[1] ?? match[2]);
+      if (Number.isInteger(pid) && pidIsAlive(pid)) continue;
+      try {
+        unlinkSync(join(dir, entry));
+      } catch {
+        // Already gone or raced with the owning process — nothing to reclaim.
+      }
+    }
   }
 
   /**

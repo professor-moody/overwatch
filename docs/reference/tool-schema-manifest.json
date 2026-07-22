@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "tool_count": 95,
-  "registry_sha256": "b64ba41aab7ee1b8d3c85e84f088e7aa0d195dd5e0cfbdcd3817a8dae434d00d",
+  "registry_sha256": "38fef4ce6f8f7c8bef884f1ecb5af7a490d1ba990c9a87cf73eb11bd413d5f0f",
   "categories": [
     {
       "id": "state-readiness",
@@ -2636,14 +2636,14 @@
             "type": "integer"
           },
           "since": {
-            "description": "ISO timestamp — return only entries strictly newer than this (e.g. your last poll time). Invalid/unparseable values are ignored.",
+            "description": "ISO timestamp — return only entries at or after this (e.g. your last poll time). The boundary millisecond is inclusive so batched events sharing one timestamp are never dropped. Invalid/unparseable values are ignored.",
             "type": "string"
           }
         },
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "e472d6d2870fd5c48735b656d0a82e7efd296533c7b322e6ebbb5f6485a02d53",
+      "input_schema_sha256": "cf0cf5046adf5e49207f84fe7b41ce494d63f1139eb2a6db7e58b16b558d7c1a",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/get-history.md",

@@ -2259,9 +2259,11 @@ describe('DashboardServer', () => {
       expect(data.total).toBe(2);
       expect(data.agents).toHaveLength(2);
 
+      // elapsed_ms is no longer projected server-side (the client derives it from
+      // assigned_at); the projection carries assigned_at instead.
       const running = data.agents.find((a: any) => a.id === task.id);
-      expect(running.elapsed_ms).toBeTypeOf('number');
-      expect(running.elapsed_ms).toBeGreaterThanOrEqual(0);
+      expect(running.elapsed_ms).toBeUndefined();
+      expect(running.assigned_at).toBeTypeOf('string');
 
       const completed = data.agents.find((a: any) => a.id === 'task-completed');
       expect(completed.elapsed_ms).toBeUndefined();

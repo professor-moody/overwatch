@@ -497,8 +497,15 @@ async function withLifecycleLock(operation) {
           );
         }
       }
-      unlinkSync(path);
-      fsyncDirectory(dirname(path));
+      // Reclaim the stale lock. Two concurrent commands can both observe the same
+      // dead owner and race to unlink it; the loser sees ENOENT, which is success
+      // (the lock is gone), so the next loop iteration re-attempts openSync(wx).
+      try {
+        unlinkSync(path);
+        fsyncDirectory(dirname(path));
+      } catch (unlinkError) {
+        if (unlinkError?.code !== 'ENOENT') throw unlinkError;
+      }
     }
   }
   if (!acquired) throw new Error(`Could not acquire lifecycle lock ${path}.`);

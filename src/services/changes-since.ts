@@ -28,7 +28,12 @@ export interface ChangesSinceDigest {
 export function computeChangesSince(history: ActivityLogEntry[], since: string): ChangesSinceDigest | null {
   const sinceMs = Date.parse(since);
   if (Number.isNaN(sinceMs)) return null;
-  const recent = history.filter(h => Date.parse(h.timestamp) > sinceMs);
+  // Inclusive of the boundary millisecond: batched appliers stamp many events with one
+  // timestamp, and the caller feeds a prior timestamp back as `since`, so a strict `>`
+  // permanently drops an event landing exactly at `sinceMs` (the digest is a coarse
+  // count, so at worst a boundary event is re-announced once — far better than a
+  // silently missed completion).
+  const recent = history.filter(h => Date.parse(h.timestamp) >= sinceMs);
   const isFinding = (h: ActivityLogEntry) =>
     h.category === 'finding' || (h.event_type ?? '').startsWith('finding');
   const findings = recent.filter(isFinding).length;

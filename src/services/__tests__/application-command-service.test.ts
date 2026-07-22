@@ -318,6 +318,60 @@ describe('ApplicationCommandService', () => {
     });
   });
 
+  it('does NOT freeze a receipt for a retryable clean-rollback failure — the key stays free to retry', () => {
+    const engine = open();
+    const commands = new ApplicationCommandService(engine);
+    let attempts = 0;
+    const run = () => commands.executeSync({
+      command_kind: 'agent.dispatch',
+      input: { node_ids: ['node-transient'], label: 'transient' },
+      schema: dispatchSchema,
+      metadata: { command_id: 'cmd-transient', idempotency_key: 'transient-key' },
+      state_keys: ['agents'],
+      execute: () => {
+        attempts++;
+        if (attempts === 1) {
+          // A transient capacity failure: rolled back, retryable.
+          throw Object.assign(new Error('at capacity'), { code: 'DISPATCH_CAP_EXCEEDED', retryable: true });
+        }
+        return { deployed: true };
+      },
+    });
+
+    // First attempt: the retryable error propagates and NOTHING is persisted under the key.
+    expect(() => run()).toThrow('at capacity');
+    expect(engine.getApplicationCommandById('cmd-transient')).toBeFalsy();
+
+    // Second attempt with the SAME key succeeds (capacity freed) — not frozen.
+    const retried = run();
+    expect(retried.status).toBe('succeeded');
+    expect(retried.result).toMatchObject({ deployed: true });
+    expect(engine.getApplicationCommandById('cmd-transient')).toMatchObject({ status: 'succeeded' });
+  });
+
+  it('still freezes a receipt for a terminal (non-retryable) failure and replays it', () => {
+    const engine = open();
+    const commands = new ApplicationCommandService(engine);
+    const run = () => commands.executeSync({
+      command_kind: 'agent.dispatch',
+      input: { node_ids: ['node-terminal'], label: 'terminal' },
+      schema: dispatchSchema,
+      metadata: { command_id: 'cmd-terminal', idempotency_key: 'terminal-key' },
+      state_keys: ['agents'],
+      execute: () => {
+        throw Object.assign(new Error('frontier item not found'), { code: 'FRONTIER_NOT_FOUND' });
+      },
+    });
+
+    const first = run();
+    expect(first.status).toBe('failed');
+    expect(engine.getApplicationCommandById('cmd-terminal')).toMatchObject({ status: 'failed' });
+    // Replayed on the same key without re-executing.
+    const replay = run();
+    expect(replay.status).toBe('failed');
+    expect(replay.replayed).toBe(true);
+  });
+
   it('rolls back reservation effects before recording a failed accepted command', () => {
     const engine = open();
     const commands = new ApplicationCommandService(engine);

@@ -132,6 +132,28 @@ describe('Campaign fixes — manual abort stops in-flight agents', () => {
     expect(engine.getTask('task-other')?.status).toBe('running');
   });
 
+  it('abortCampaign also interrupts PENDING (queued) campaign agents and releases their lease', () => {
+    const { engine, campaignId } = buildEngineWithCampaign(['fi-1']);
+    // A queued agent that hasn't launched yet (e.g. waiting behind the headless
+    // concurrency cap). Before the fix this stayed `pending` and drainHeadless would
+    // launch it AFTER the abort, running target actions for the aborted campaign.
+    engine.registerAgent({
+      id: 'task-pending', agent_id: 'a-pending', assigned_at: new Date().toISOString(),
+      status: 'pending', subgraph_node_ids: [], campaign_id: campaignId, frontier_item_id: 'fi-1',
+    } as never);
+    expect(engine.ensurePendingAgentFrontierLease('task-pending')).toBe(true);
+    expect(engine.getActiveFrontierLease('fi-1')?.task_id).toBe('task-pending');
+
+    engine.abortCampaign(campaignId);
+
+    const pending = engine.getTask('task-pending');
+    expect(pending?.status).toBe('interrupted');
+    expect(pending?.no_retry).toBe(true);
+    // Its frontier lease is released (transition releases the lease on terminal status),
+    // so the item does not stay blocked for legitimate re-dispatch.
+    expect(engine.getActiveFrontierLease('fi-1')).toBeNull();
+  });
+
   it('aborting a parent campaign also stops agents of cascaded child campaigns', () => {
     const { engine, campaignId } = buildEngineWithCampaign(['fi-1', 'fi-2']);
     const children = engine.splitCampaign(campaignId, 2);

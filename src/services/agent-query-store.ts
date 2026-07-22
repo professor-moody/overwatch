@@ -71,7 +71,15 @@ export class AgentQueryStore {
   private trimRecords(): void {
     if (this.queries.size <= RECORD_CAP) return;
     const removable = [...this.queries.values()]
-      .filter(query => query.status !== 'open')
+      .filter(query => {
+        if (query.status === 'open') return false;
+        // An answered query the agent hasn't acknowledged yet is a PENDING delivery:
+        // getAnswerForTask still owes it to the agent. Evicting it would silently
+        // discard the operator's answer (getAnswerForTask returns null forever, and
+        // the agent waits out its full TTL for an answer already given). Keep it.
+        if (query.status === 'answered' && query.acknowledged_at === undefined) return false;
+        return true;
+      })
       .sort((a, b) =>
         (a.acknowledged_at ?? a.expired_at ?? a.answered_at ?? a.expires_at)
         - (b.acknowledged_at ?? b.expired_at ?? b.answered_at ?? b.expires_at));
