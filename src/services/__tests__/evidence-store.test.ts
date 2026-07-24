@@ -117,6 +117,30 @@ describe('EvidenceStore', () => {
     expect(store.getContent(id)).toBe(content);
   });
 
+  it('M1: indexes evidence by node_id and lists it back (durable node→evidence index)', () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const id = store.store({
+      evidence_type: 'command_output',
+      content: 'uid=0(root)',
+      action_id: 'act-node',
+      finding_id: 'finding-node',
+      node_ids: ['host-10-10-10-5', 'svc-10-10-10-5-445'],
+    });
+    expect(store.getRecord(id)!.node_ids).toEqual(['host-10-10-10-5', 'svc-10-10-10-5-445']);
+    // Retrievable by any indexed node, independent of the (bounded) activity log.
+    expect(store.list({ node_id: 'host-10-10-10-5' }).map(r => r.evidence_id)).toContain(id);
+    expect(store.list({ node_id: 'svc-10-10-10-5-445' }).map(r => r.evidence_id)).toContain(id);
+    expect(store.list({ node_id: 'host-does-not-exist' })).toHaveLength(0);
+  });
+
+  it('M1: node_ids do not disturb content-hash dedup', () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const a = store.store({ evidence_type: 'command_output', content: 'same bytes', node_ids: ['host-a'] });
+    const b = store.store({ evidence_type: 'command_output', content: 'same bytes', node_ids: ['host-b'] });
+    // Identical content → same content-addressed blob/id despite different node_ids.
+    expect(b).toBe(a);
+  });
+
   it('stores and retrieves raw_output', () => {
     const store = new EvidenceStore(TEST_STATE);
     const rawOutput = 'root@target:~# id\nuid=0(root) gid=0(root)';

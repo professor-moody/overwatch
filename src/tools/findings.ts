@@ -211,6 +211,10 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         storedEvidenceId = store.store({
           action_id: normalizedActionId,
           finding_id: finding.id,
+          // M1: durable node→evidence index — persist which nodes this evidence
+          // supports so a report can still find the blob after the activity log
+          // that referenced it has rolled over.
+          node_ids: prepared.finding.nodes.map(n => n.id),
           evidence_type: evidence?.type || 'command_output',
           filename: evidence?.filename,
           content: evidence?.content,

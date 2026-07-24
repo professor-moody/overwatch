@@ -193,6 +193,10 @@ export interface EvidenceChain {
   derivation?: string;
   /** Joined reasoning (3d): log_thought/decision entries tied to this action. */
   reasoning?: string[];
+  /** M1: this chain was recovered from the durable node→evidence index because its
+   * activity-log window had rolled over. Signals the report never asserts "no
+   * evidence" for a truncated window. */
+  evidence_window_truncated?: boolean;
 }
 
 /** A matched-signal excerpt as surfaced in a report: the captured span plus, when a
@@ -274,6 +278,21 @@ export interface ReportOptions {
    * against the source blob. Maps to EvidenceStore.getRawOutputSlice. */
   evidence_slice_loader?: (evidenceId: string, offset: number, maxBytes: number) =>
     { text: string; total_bytes: number } | null;
+  /** M1: durable node→evidence index. Returns evidence-store records for a node,
+   * surviving activity-log rollover. Maps to EvidenceStore.list({node_id}). Lets a
+   * report cite a blob whose activity events have aged out instead of asserting
+   * "no evidence". */
+  evidence_by_node_loader?: (nodeId: string) => Array<{
+    evidence_id: string;
+    content_hash?: string;
+    evidence_type?: string;
+    filename?: string;
+    action_id?: string;
+    finding_id?: string;
+    timestamp?: string;
+    content_length?: number;
+    raw_output_length?: number;
+  }>;
   /** Bytes of head + tail to show in the inline preview (default 8 KiB). */
   evidence_preview_bytes?: number;
   report_profile?: ReportProfile;
@@ -314,6 +333,7 @@ type EvidenceBuildOptions = {
   evidenceLoader?: (id: string) => string | null;
   evidenceRecordLoader?: ReportOptions['evidence_record_loader'];
   sliceLoader?: ReportOptions['evidence_slice_loader'];
+  evidenceByNode?: ReportOptions['evidence_by_node_loader'];
   previewBytes?: number;
 };
 
@@ -730,6 +750,7 @@ export function buildEvidenceChainsForNode(
   const loader = opts?.evidenceLoader;
   const recordLoader = opts?.evidenceRecordLoader;
   const sliceLoader = opts?.sliceLoader;
+  const evidenceByNode = opts?.evidenceByNode;
 
   // 1. Find activity log entries that reference this node
   const relatedEntries = history.filter(entry => {
@@ -1031,6 +1052,49 @@ export function buildEvidenceChainsForNode(
       source_trust: inferredBy ? 'inferred' : 'observed',
       ...(inferredBy ? { derivation: `Produced by inference rule ${String(inferredBy)}.` } : {}),
     });
+  }
+
+  // 4. Durable node→evidence index fallback (M1). The activity log is bounded; once
+  // a finding's events roll off, sections 1-3 find nothing and a report would assert
+  // "no evidence" for a node whose blob is still on disk. The evidence store is
+  // unbounded, so cite any record indexed to this node that no existing chain already
+  // covers (by action_id or evidence_id) — proof survives the rollover.
+  if (evidenceByNode) {
+    const coveredActions = new Set(chains.map(c => c.action_id).filter(Boolean) as string[]);
+    const coveredBlobs = new Set(
+      chains.flatMap(c => [c.stdout_evidence_id, c.stderr_evidence_id, c.evidence_id].filter(Boolean) as string[]),
+    );
+    let records: ReturnType<NonNullable<EvidenceBuildOptions['evidenceByNode']>> = [];
+    try { records = evidenceByNode(nodeId) ?? []; } catch { records = []; }
+    for (const rec of records) {
+      if (coveredBlobs.has(rec.evidence_id)) continue;
+      if (rec.action_id && coveredActions.has(rec.action_id)) continue;
+      const bytes = (rec.content_length ?? 0) + (rec.raw_output_length ?? 0);
+      const chain: EvidenceChain = {
+        claim: `Captured evidence${rec.filename ? ` (${rec.filename})` : ''} retained for this asset`,
+        action_id: rec.action_id,
+        timestamp: rec.timestamp,
+        source_event_type: 'durable_evidence_index',
+        source_nodes: [],
+        target_nodes: [nodeId],
+        linked_findings: rec.finding_id ? [rec.finding_id] : undefined,
+        evidence_id: rec.evidence_id,
+        evidence_type: rec.evidence_type,
+        evidence_filename: rec.filename,
+        content_hash: rec.content_hash,
+        content_bytes: bytes > 0 ? bytes : undefined,
+        source_trust: 'observed',
+        // Flag that this proof was recovered from the durable index because its
+        // activity-log window had rolled over — so the report never silently
+        // asserts "no evidence" for a truncated window.
+        evidence_window_truncated: true,
+      };
+      // Best-effort head preview + excerpt-less proof; the blob is still fetchable.
+      if (loader) {
+        try { const full = loader(rec.evidence_id); if (full !== null) chain.stdout_preview = formatPreview(full, previewBytes); } catch { /* best-effort */ }
+      }
+      chains.push(chain);
+    }
   }
 
   return chains;
@@ -2096,11 +2160,12 @@ export function buildReportFindingModel(
   input: ReportInput,
   options: ReportOptions = {},
 ): ReportFindingModel {
-  const evidenceOpts: EvidenceBuildOptions | undefined = options.evidence_loader || options.evidence_record_loader || options.evidence_slice_loader
+  const evidenceOpts: EvidenceBuildOptions | undefined = options.evidence_loader || options.evidence_record_loader || options.evidence_slice_loader || options.evidence_by_node_loader
     ? {
       evidenceLoader: options.evidence_loader,
       evidenceRecordLoader: options.evidence_record_loader,
       sliceLoader: options.evidence_slice_loader,
+      evidenceByNode: options.evidence_by_node_loader,
       previewBytes: options.evidence_preview_bytes,
     }
     : undefined;

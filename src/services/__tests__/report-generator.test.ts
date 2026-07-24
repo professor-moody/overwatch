@@ -566,6 +566,44 @@ describe('client-safe matched-signal excerpts (3f)', () => {
   });
 });
 
+// ============================================================
+// M1 — durable node→evidence index fallback (survives log rollover)
+// ============================================================
+describe('durable node→evidence index fallback (M1)', () => {
+  it('cites a store blob for a node whose activity log has rolled over', () => {
+    // Empty history — simulate the finding's events having aged out of the bounded log.
+    const chains = buildEvidenceChainsForNode('host-gone', makeGraph(), [] as never, {
+      evidenceByNode: (id: string) => id === 'host-gone' ? [{
+        evidence_id: 'ev-durable', content_hash: 'deadbeefcafe', evidence_type: 'command_output',
+        action_id: 'act-old', finding_id: 'finding-old', timestamp: '2026-01-01T00:00:00Z',
+        content_length: 40, raw_output_length: 0,
+      }] : [],
+      evidenceLoader: (id: string) => id === 'ev-durable' ? 'uid=0(root)' : null,
+    });
+    const chain = chains.find(c => c.evidence_id === 'ev-durable');
+    expect(chain).toBeDefined();
+    expect(chain!.evidence_window_truncated).toBe(true);
+    expect(chain!.content_hash).toBe('deadbeefcafe');
+    expect(chain!.source_trust).toBe('observed');
+    // A proof card is produced (so the report never says "no evidence").
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.evidence_id).toBe('ev-durable');
+  });
+
+  it('does not duplicate a blob already covered by an activity chain', () => {
+    const history = [{
+      event_id: 'ev-a', timestamp: '2026-01-01T00:00:00Z', description: 'Command run',
+      event_type: 'action_completed', action_id: 'act-live', target_node_ids: ['host-live'],
+      details: { command: 'id', exit_code: 0, stdout_evidence_id: 'ev-live' },
+    }] as never;
+    const chains = buildEvidenceChainsForNode('host-live', makeGraph(), history, {
+      evidenceByNode: () => [{ evidence_id: 'ev-live', action_id: 'act-live', content_length: 10, raw_output_length: 0 }],
+    });
+    // The store record for ev-live/act-live is already covered — no duplicate chain.
+    expect(chains.filter(c => c.evidence_id === 'ev-live' && c.evidence_window_truncated)).toHaveLength(0);
+  });
+});
+
 describe('buildAllEvidenceChains', () => {
   it('builds chains for all interesting node types', () => {
     const allChains = buildAllEvidenceChains(makeGraph(), makeHistory());
