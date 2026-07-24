@@ -225,6 +225,43 @@ describe('report QA fixture outputs', () => {
     }
   });
 
+  it('3e: emits a report-level integrity attestation (markdown, HTML, JSON)', () => {
+    const qa = fixture();
+    const md = assembleReport(qa.engine, qa.skills, { format: 'markdown', profile: 'operator' }).content;
+    const html = assembleReport(qa.engine, qa.skills, { format: 'html', profile: 'operator' }).content;
+    const json = JSON.parse(assembleReport(qa.engine, qa.skills, { format: 'json', profile: 'operator' }).content) as {
+      integrity?: { chain_valid: boolean; chained_count: number; attestation: string; summary: string };
+    };
+
+    expect(md).toContain('## Integrity Attestation');
+    expect(md).toMatch(/Chain-verified|Signed & verified|Checkpoint-bound/);
+    expect(html).toContain('id="integrity"');
+
+    expect(json.integrity).toBeDefined();
+    expect(json.integrity!.chain_valid).toBe(true);
+    expect(json.integrity!.chained_count).toBeGreaterThan(0);
+    expect(['chain_only', 'checkpoint_bound', 'signed_verified']).toContain(json.integrity!.attestation);
+    expect(json.integrity!.summary).toContain('hash chain verified');
+  });
+
+  it('3e: a tampered activity event breaks the attestation', () => {
+    const qa = fixture();
+    // Rewrite a chained event's description in the engine's OWN log WITHOUT
+    // recomputing its event_hash — exactly what a naive post-hoc log edit does.
+    // (getFullHistory returns a detached deep copy, so we tamper the source.)
+    const internalLog = (qa.engine as unknown as { ctx: { activityLog: Array<{ event_hash?: string; description: string }> } }).ctx.activityLog;
+    const victim = internalLog.find(e => e.event_hash !== undefined);
+    expect(victim).toBeDefined();
+    victim!.description = 'TAMPERED — falsified evidence line';
+
+    const json = JSON.parse(assembleReport(qa.engine, qa.skills, { format: 'json', profile: 'operator' }).content) as {
+      integrity?: { chain_valid: boolean; attestation: string; summary: string };
+    };
+    expect(json.integrity!.chain_valid).toBe(false);
+    expect(json.integrity!.attestation).toBe('broken');
+    expect(json.integrity!.summary).toContain('INTEGRITY WARNING');
+  });
+
   // Puppeteer render can exceed 30s under CI load (cold Chromium + parallel
   // suites). Give it headroom + one retry so a transient slow render doesn't
   // fail the run; a genuine hang still fails after the retry.

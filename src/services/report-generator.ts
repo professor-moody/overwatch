@@ -278,6 +278,9 @@ export interface ReportOptions {
   report_profile?: ReportProfile;
   evidence_style?: EvidenceStyle;
   trust_signals?: TrustSignalDto[];
+  /** Report-level integrity attestation (3e), computed by the assembler from the
+   * activity hash chain + checkpoints. Rendered as an "Integrity Attestation" section. */
+  integrity?: ReportIntegrity;
 }
 
 export interface ReportInput {
@@ -1933,6 +1936,27 @@ function sourceKindLabel(kind: EvidenceProofCard['source_kind']): string {
   }
 }
 
+function renderIntegrityMarkdown(integrity: ReportIntegrity): string[] {
+  const lines: string[] = [];
+  const badge = integrity.attestation === 'broken' ? '❌ BROKEN'
+    : integrity.attestation === 'signed_verified' ? '✅ Signed & verified'
+    : integrity.attestation === 'checkpoint_bound' ? '✅ Checkpoint-bound'
+    : '✔ Chain-verified';
+  lines.push('## Integrity Attestation');
+  lines.push('');
+  lines.push(`**Status:** ${badge}`);
+  lines.push('');
+  lines.push(integrity.summary);
+  lines.push('');
+  lines.push('| Check | Result |');
+  lines.push('|-------|--------|');
+  lines.push(`| Activity hash chain | ${integrity.chain_valid ? `valid (${integrity.chained_count.toLocaleString()} events)` : `BROKEN (${integrity.chain_breaks} break(s))`} |`);
+  lines.push(`| Checkpoints | ${integrity.checkpoints_total} total${integrity.checkpoints_total > 0 ? `, ${integrity.checkpoints_bound ? 'bound to log' : 'DO NOT bind'}` : ''} |`);
+  lines.push(`| Ed25519 signatures | ${integrity.signatures_configured ? (integrity.signatures_valid ? 'verified' : 'CONFIGURED BUT INVALID') : 'no verifier key configured'} |`);
+  lines.push('');
+  return lines;
+}
+
 function renderExecutiveSummaryMarkdown(summary: ReportExecutiveSummary, counts: Record<FindingSeverity, number>): string[] {
   const lines: string[] = [];
   lines.push(summary.headline);
@@ -2029,10 +2053,26 @@ export interface ReportFindingModel {
   evidenceCount: number;
 }
 
+/** Report-level integrity attestation (3e): the tamper-evidence for the whole
+ * report — the activity hash chain over the events the findings are drawn from,
+ * plus checkpoint binding and Ed25519 signature verification when configured. */
+export interface ReportIntegrity {
+  chain_valid: boolean;
+  chained_count: number;
+  chain_breaks: number;
+  checkpoints_total: number;
+  checkpoints_bound: boolean;
+  signatures_configured: boolean;
+  signatures_valid: boolean | null;
+  attestation: 'signed_verified' | 'checkpoint_bound' | 'chain_only' | 'broken';
+  summary: string;
+}
+
 export interface ReportDocumentModel extends ReportFindingModel {
   executiveSummary: ReportExecutiveSummary;
   actionPlan: ReportActionPlanItem[];
   severityCounts: Record<FindingSeverity, number>;
+  integrity?: ReportIntegrity;
 }
 
 export function buildReportFindingModel(
@@ -2081,6 +2121,7 @@ export function buildReportDocumentModel(
     severityCounts,
     executiveSummary: buildExecutiveSummary(summaryInput),
     actionPlan: buildActionPlan(summaryInput),
+    ...(options.integrity ? { integrity: options.integrity } : {}),
   };
 }
 
@@ -2163,6 +2204,9 @@ export function renderFullReportFromModel(
   lines.push('## Executive Summary');
   lines.push('');
   lines.push(...renderExecutiveSummaryMarkdown(executiveSummary, severityCounts));
+
+  // === Integrity Attestation (3e) ===
+  if (model.integrity) lines.push(...renderIntegrityMarkdown(model.integrity));
 
   // === Scope ===
   lines.push('## Scope');
