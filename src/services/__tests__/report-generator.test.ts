@@ -535,6 +535,37 @@ describe('derivation & honesty (3d)', () => {
   });
 });
 
+// ============================================================
+// 3f — client-safe excerpts: mask, don't delete
+// ============================================================
+describe('client-safe matched-signal excerpts (3f)', () => {
+  const chainWithSecretExcerpt = () => ([{
+    claim: 'Dumped local SAM',
+    action_id: 'act-sam', command: 'secretsdump.py', stdout_evidence_id: 'ev-sam',
+    source_nodes: [], target_nodes: ['host-1'], timestamp: '2026-01-01T00:00:00Z',
+    excerpts: [{
+      node_id: 'host-1', byte_start: 0, byte_end: 80, matched_by: 'secretsdump',
+      snippet: 'Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::',
+    }],
+  }] as any);
+
+  it('masks the secret in the excerpt for the client profile (keeps the span + structure)', () => {
+    const [card] = buildProofCardsForFinding({ evidence: chainWithSecretExcerpt() } as never, 'client');
+    const ex = card.excerpts![0];
+    expect(ex.snippet).not.toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
+    expect(ex.snippet).toContain('Administrator:');   // real, probative structure survives
+    expect(ex.snippet).toContain('<redacted>');
+    // Offsets/verification handles are preserved so the client can still audit.
+    expect(ex.byte_start).toBe(0);
+    expect(ex.byte_end).toBe(80);
+  });
+
+  it('leaves the excerpt intact for the operator profile', () => {
+    const [card] = buildProofCardsForFinding({ evidence: chainWithSecretExcerpt() } as never, 'operator');
+    expect(card.excerpts![0].snippet).toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
+  });
+});
+
 describe('buildAllEvidenceChains', () => {
   it('builds chains for all interesting node types', () => {
     const allChains = buildAllEvidenceChains(makeGraph(), makeHistory());

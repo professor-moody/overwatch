@@ -161,6 +161,33 @@ export function sanitizeCommandForClient(cmd: string | undefined | null, opts: R
   return redactInlineCredentials(out);
 }
 
+/**
+ * Mask secrets in a free-text evidence excerpt / output preview for CLIENT
+ * delivery while preserving structure, length, and non-secret context (3f).
+ * Unlike blanking the whole preview, this keeps the probative shape — the client
+ * sees `Administrator:<redacted NTLM>:::` at the same span — so a report proves
+ * something instead of asserting it. Composes the inline-credential and
+ * command-flag redactors with structured `key: value` and NTLM/SAM-dump masking.
+ * A no-op when not client_safe.
+ */
+export function maskEvidenceTextForClient(text: string | undefined | null, opts: RedactionOptions = { client_safe: true }): string | null {
+  if (text == null) return null;
+  if (!opts.client_safe) return text;
+  // Inline creds (user:pass@host, Bearer …) + CLI secret flags (-p, --hashes, …).
+  let out = sanitizeCommandForClient(text, opts) ?? text;
+  // secretsdump / pwdump line: user:rid:lmhash:nthash::: — mask the hash fields.
+  out = out.replace(
+    /\b([A-Za-z0-9._$\\-]{1,128}):(\d{1,7}):([a-fA-F0-9]{32}):([a-fA-F0-9]{32}):::/g,
+    (_m, user) => `${user}:<redacted>:${REDACTED_PLACEHOLDER}:${REDACTED_PLACEHOLDER}:::`,
+  );
+  // Structured secret assignments: key: value / key=value (quote-aware value).
+  out = out.replace(
+    /\b(cred_value|password|passwd|nt_hash|lm_hash|ntlm|aes256_hash|aes128_hash|krb5_hash|secret|api_key|apikey|private_key|access_key|secret_key|session_key)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi,
+    (_m, key, sep) => `${key}${sep}${REDACTED_PLACEHOLDER}`,
+  );
+  return out;
+}
+
 function walkAndRedact(value: unknown): unknown {
   if (value == null) return value;
   if (Array.isArray(value)) return value.map(walkAndRedact);
