@@ -1220,6 +1220,15 @@ async function runInstrumentedProcessCore(
   // along inside a multi-target invocation. We dedupe per (kind,value),
   // run validateAction once per target, and aggregate errors/warnings.
   let noiseEstimate = noiseOverride;
+  // SECURITY: the operator approval gate must run even when `validate:false`.
+  // These are hoisted out of the validation block so the gate below can run
+  // unconditionally — `validate:false` means "skip scope/OPSEC *checks*", NOT
+  // "skip operator approval". Previously the entire gate lived inside
+  // `if (shouldValidate)`, so a caller passing validate:false executed with no
+  // approval prompt and no action_validated event, leaving the timeline unable to
+  // distinguish "approved" from "approval never requested".
+  let approvalOpsecContext: ReturnType<typeof engine.validateAction>['opsec_context'] | undefined;
+  let approvalValidationResult: 'valid' | 'warning_only' = 'valid';
   if (shouldValidate) {
     const validationTargets: Array<Parameters<typeof engine.validateAction>[0]> = [];
     for (const id of allTargetNodeIds) validationTargets.push({ target_node: id, technique, allow_unverified_scope });
@@ -1395,6 +1404,9 @@ async function runInstrumentedProcessCore(
       }
     }
     const validationResult = !v.valid ? 'invalid' : v.warnings.length > 0 ? 'warning_only' : 'valid';
+    // Publish to the hoisted approval gate below.
+    approvalOpsecContext = v.opsec_context;
+    approvalValidationResult = validationResult === 'warning_only' ? 'warning_only' : 'valid';
 
     engine.logActionEvent({
       description: resolvedDescription,
@@ -1450,103 +1462,110 @@ async function runInstrumentedProcessCore(
       };
     }
 
-    // Approval gate
-    const queue = engine.getPendingActionQueue();
-    // P4.1: pass the phase-effective approval config so per-phase overrides
-    // (e.g., approve-all during exploitation) are honored. The action context
-    // (target ip/node/technique) also lets operator-policy approval rules
-    // escalate the mode (e.g. approve-all on a production subnet).
-    if (queue.needsApproval(v.opsec_context, technique, engine.getEffectiveApprovalConfig({ ip: target_ip, nodeId: target_node, technique }))) {
-      const pendingApproval = {
-        action_id: normalizedActionId,
-        technique,
-        target_node,
-        target_ip,
-        target_cidr,
-        description: resolvedDescription,
-        opsec_context: v.opsec_context,
-        validation_result: validationResult as 'valid' | 'warning_only',
-        frontier_item_id,
-        task_id: ownerTaskId,
-        agent_label: ownerAgentLabel,
-        agent_id: ownerAgentLabel,
-      };
-      engine.recordApprovalRequest(pendingApproval);
-      opts.onExecutionState?.('awaiting_approval');
-      // Approval can remain pending for minutes. Couple that wait to the live
-      // persistence gate as well as the MCP caller signal so an invocation
-      // cannot resume and spawn after durability has gone read-only.
-      const approvalAbort = createExecutionAbortMonitor(engine, abortSignal);
-      let approval: Awaited<ReturnType<typeof queue.submit>>;
-      try {
-        approval = await queue.submit(pendingApproval, { signal: approvalAbort.signal });
-      } finally {
-        approvalAbort.dispose();
-      }
-      if (approvalAbort.persistenceInterrupted() || !engine.isPersistenceWritable()) {
-        return persistenceInterruptedResponse(engine, normalizedActionId, {
-          approval_status: approval.status,
-        });
-      }
-      engine.resolveApprovalRequest(approval);
+  }
 
+  // ---- 1b. Operator approval gate (runs even when validate:false) ----
+  // SECURITY: this gate is deliberately OUTSIDE the shouldValidate block. When scope
+  // validation is skipped we still need an opsec_context to decide whether approval is
+  // required, so derive one without any target (no scope check is performed here).
+  if (!approvalOpsecContext) {
+    approvalOpsecContext = engine.validateAction({ technique, allow_unverified_scope }).opsec_context;
+  }
+  const queue = engine.getPendingActionQueue();
+  // P4.1: pass the phase-effective approval config so per-phase overrides
+  // (e.g., approve-all during exploitation) are honored. The action context
+  // (target ip/node/technique) also lets operator-policy approval rules
+  // escalate the mode (e.g. approve-all on a production subnet).
+  if (queue.needsApproval(approvalOpsecContext, technique, engine.getEffectiveApprovalConfig({ ip: target_ip, nodeId: target_node, technique }))) {
+    const pendingApproval = {
+      action_id: normalizedActionId,
+      technique,
+      target_node,
+      target_ip,
+      target_cidr,
+      description: resolvedDescription,
+      opsec_context: approvalOpsecContext,
+      validation_result: approvalValidationResult,
+      frontier_item_id,
+      task_id: ownerTaskId,
+      agent_label: ownerAgentLabel,
+      agent_id: ownerAgentLabel,
+    };
+    engine.recordApprovalRequest(pendingApproval);
+    opts.onExecutionState?.('awaiting_approval');
+    // Approval can remain pending for minutes. Couple that wait to the live
+    // persistence gate as well as the MCP caller signal so an invocation
+    // cannot resume and spawn after durability has gone read-only.
+    const approvalAbort = createExecutionAbortMonitor(engine, abortSignal);
+    let approval: Awaited<ReturnType<typeof queue.submit>>;
+    try {
+      approval = await queue.submit(pendingApproval, { signal: approvalAbort.signal });
+    } finally {
+      approvalAbort.dispose();
+    }
+    if (approvalAbort.persistenceInterrupted() || !engine.isPersistenceWritable()) {
+      return persistenceInterruptedResponse(engine, normalizedActionId, {
+        approval_status: approval.status,
+      });
+    }
+    engine.resolveApprovalRequest(approval);
+
+    engine.logActionEvent({
+      description: approval.unattended_execute
+        ? `Action auto-approved on timeout (unattended): ${resolvedDescription}`
+        : `Action ${approval.status}: ${resolvedDescription}`,
+      agent_id,
+      linked_agent_task_id: ownerTaskId,
+      action_id: normalizedActionId,
+      event_type: 'action_validated',
+      category: 'frontier',
+      frontier_item_id,
+      result_classification: approval.status === 'denied' || approval.status === 'aborted' ? 'failure' : 'success',
+      details: {
+        approval_status: approval.status,
+        operator_notes: approval.operator_notes,
+        reason: approval.reason,
+        auto_approved: approval.auto_approved,
+        unattended_execute: approval.unattended_execute,
+      },
+    });
+
+    // Both 'denied' (operator decision) and 'aborted' (client disconnected
+    // before a decision) block execution — the command must not run.
+    if (approval.status === 'denied' || approval.status === 'aborted') {
+      const aborted = approval.status === 'aborted';
       engine.logActionEvent({
-        description: approval.unattended_execute
-          ? `Action auto-approved on timeout (unattended): ${resolvedDescription}`
-          : `Action ${approval.status}: ${resolvedDescription}`,
+        description: aborted
+          ? `Approval aborted (client disconnected): ${resolvedDescription}`
+          : `Operator denied: ${resolvedDescription}`,
         agent_id,
         linked_agent_task_id: ownerTaskId,
         action_id: normalizedActionId,
-        event_type: 'action_validated',
+        event_type: 'action_failed',
         category: 'frontier',
         frontier_item_id,
-        result_classification: approval.status === 'denied' || approval.status === 'aborted' ? 'failure' : 'success',
-        details: {
-          approval_status: approval.status,
-          operator_notes: approval.operator_notes,
-          reason: approval.reason,
-          auto_approved: approval.auto_approved,
-          unattended_execute: approval.unattended_execute,
-        },
+        tool_name,
+        technique,
+        target_cidrs: targetCidrsForEvents(),
+        result_classification: 'failure',
+        details: aborted
+          ? { reason: 'approval_aborted', approval_reason: approval.reason }
+          : { reason: 'operator_denied', approval_reason: approval.reason },
       });
-
-      // Both 'denied' (operator decision) and 'aborted' (client disconnected
-      // before a decision) block execution — the command must not run.
-      if (approval.status === 'denied' || approval.status === 'aborted') {
-        const aborted = approval.status === 'aborted';
-        engine.logActionEvent({
-          description: aborted
-            ? `Approval aborted (client disconnected): ${resolvedDescription}`
-            : `Operator denied: ${resolvedDescription}`,
-          agent_id,
-          linked_agent_task_id: ownerTaskId,
-          action_id: normalizedActionId,
-          event_type: 'action_failed',
-          category: 'frontier',
-          frontier_item_id,
-          tool_name,
-          technique,
-          target_cidrs: targetCidrsForEvents(),
-          result_classification: 'failure',
-          details: aborted
-            ? { reason: 'approval_aborted', approval_reason: approval.reason }
-            : { reason: 'operator_denied', approval_reason: approval.reason },
-        });
-        engine.persist();
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              action_id: normalizedActionId,
-              executed: false,
-              approval_status: approval.status,
-              ...(aborted ? { interrupted: true, code: 'COMMAND_INTERRUPTED' } : {}),
-              reason: approval.reason,
-            }, null, 2),
-          }],
-          isError: true,
-        };
-      }
+      engine.persist();
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            action_id: normalizedActionId,
+            executed: false,
+            approval_status: approval.status,
+            ...(aborted ? { interrupted: true, code: 'COMMAND_INTERRUPTED' } : {}),
+            reason: approval.reason,
+          }, null, 2),
+        }],
+        isError: true,
+      };
     }
   }
 
