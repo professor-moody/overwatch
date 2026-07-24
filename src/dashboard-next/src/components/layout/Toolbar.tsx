@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useWs } from '../../providers/ws-provider';
 import { cn } from '../../lib/utils';

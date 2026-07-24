@@ -20,7 +20,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { cn } from '../../lib/utils';
 import { useEngagementStore } from '../../stores/engagement-store';
 import type { PanelId } from './OperatorLayout';

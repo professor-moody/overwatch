@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useToastStore } from '../../stores/toast-store';
 import * as api from '../../lib/api';

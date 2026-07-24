@@ -7,7 +7,7 @@ import {
   type ComponentType,
   type LazyExoticComponent,
 } from 'react';
-import { useNavigate, useLocation, useParams } from 'react-router-dom';
+import { useNavigate, useLocation, useParams } from 'react-router';
 import { Sidebar } from './Sidebar';
 import { Toolbar } from './Toolbar';
 import { Breadcrumb } from './Breadcrumb';

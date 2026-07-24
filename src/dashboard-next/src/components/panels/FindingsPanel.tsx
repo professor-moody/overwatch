@@ -9,7 +9,7 @@
 // ============================================================
 
 import { useEffect, useState, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import * as api from '../../lib/api';
 import type { FindingDto, ReportRecord } from '../../lib/api';
 import type { FindingContextResponse } from '../../lib/types';
