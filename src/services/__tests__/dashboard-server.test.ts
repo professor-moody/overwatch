@@ -1440,11 +1440,37 @@ describe('DashboardServer', () => {
   });
 
   it('normalizes same-origin authorities while rejecting foreign ports and non-HTTP schemes', () => {
-    expect((dashboard as any).isAllowedWsOrigin('https://ops.example.test', 'ops.example.test:443')).toBe(true);
-    expect((dashboard as any).isAllowedWsOrigin('https://ops.example.test', 'ops.example.test')).toBe(true);
+    // Loopback names are trusted when bound to loopback (the default 127.0.0.1 here).
+    expect((dashboard as any).isAllowedWsOrigin('http://127.0.0.1:3000', 'localhost:8384')).toBe(true);
     expect((dashboard as any).isAllowedWsOrigin('https://ops.example.test:444', 'ops.example.test:443')).toBe(false);
     expect((dashboard as any).isAllowedWsOrigin('ftp://ops.example.test', 'ops.example.test')).toBe(false);
-    expect((dashboard as any).isAllowedWsOrigin('http://127.0.0.1:3000', 'localhost:8384')).toBe(true);
+  });
+
+  it('M13: rejects an unallowlisted Host header even when Origin matches it (DNS rebinding)', () => {
+    // The classic rebinding shape: attacker page at evil.test, browser rebinds it to
+    // 127.0.0.1 and sends a matching Origin+Host pair. Without a Host allowlist the
+    // Origin==Host comparison passes tautologically; it must not.
+    expect((dashboard as any).isAllowedRequestHost('evil.test')).toBe(false);
+    expect((dashboard as any).isAllowedWsOrigin('http://evil.test', 'evil.test')).toBe(false);
+    // Loopback Host on a loopback bind is legitimately served.
+    expect((dashboard as any).isAllowedRequestHost('localhost:8384')).toBe(true);
+    expect((dashboard as any).isAllowedRequestHost('127.0.0.1:8384')).toBe(true);
+  });
+
+  it('M13: trusts a reverse-proxy hostname only when explicitly allowlisted', () => {
+    const prev = process.env.OVERWATCH_DASHBOARD_ALLOWED_HOSTS;
+    process.env.OVERWATCH_DASHBOARD_ALLOWED_HOSTS = 'ops.example.test';
+    const proxied = new DashboardServer(engine, 0);
+    try {
+      expect((proxied as any).isAllowedRequestHost('ops.example.test:443')).toBe(true);
+      expect((proxied as any).isAllowedWsOrigin('https://ops.example.test', 'ops.example.test:443')).toBe(true);
+      // A different, non-allowlisted host is still rejected.
+      expect((proxied as any).isAllowedRequestHost('other.example.test')).toBe(false);
+      expect((proxied as any).isAllowedWsOrigin('https://other.example.test', 'other.example.test')).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.OVERWATCH_DASHBOARD_ALLOWED_HOSTS;
+      else process.env.OVERWATCH_DASHBOARD_ALLOWED_HOSTS = prev;
+    }
   });
 
   // ---- Terminal Multiplexer (WS bridge) ----
@@ -3025,11 +3051,15 @@ describe('DashboardServer', () => {
     beforeEach(() => {
       nlState = join(testStateDir, 'state-test-dashboard-nl.json');
       nlEngine = trackedEngine(makeConfig({ id: 'test-dashboard-nl' }), nlState);
+      // M13: a reverse-proxy hostname must now be explicitly allowlisted to be trusted
+      // as the request authority. These are the proxy hosts this block's requests use.
+      process.env.OVERWATCH_DASHBOARD_ALLOWED_HOSTS = 'ops.example.test,example.com';
       nlDashboard = new DashboardServer(nlEngine, 0, '0.0.0.0');
     });
 
     afterEach(async () => {
       delete process.env.OVERWATCH_DASHBOARD_TOKEN;
+      delete process.env.OVERWATCH_DASHBOARD_ALLOWED_HOSTS;
       await nlDashboard.stop().catch(() => {});
     });
 

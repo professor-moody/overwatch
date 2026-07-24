@@ -77,6 +77,19 @@ function scrubMarkdownForClient(md: string): string {
     /(<summary>(?:Raw[^<]*|Evidence[^<]*|Output[^<]*)<\/summary>\s*\n+\s*)```[\s\S]*?```/gi,
     '$1```\n<redacted for client delivery — full evidence available in operator report>\n```',
   );
+  // M14 (defense-in-depth): the `full_inline` proof-card style renders a BARE
+  // 2-space-indented fence with no label (report-generator renderProofCardsMarkdown),
+  // which the label-based rules above never match. Those indented fences are always
+  // proof-card evidence/command bodies in the client deliverable, so redact any that
+  // still carries content. (The model layer already blanks raw_preview for client
+  // reports — this ensures the text scrub is not itself fail-open.)
+  out = out.replace(
+    /^(  ```[^\n]*\n)([\s\S]*?)(^  ```$)/gm,
+    (full, open: string, body: string, close: string) =>
+      body.includes('redacted for client delivery')
+        ? full
+        : `${open}  <redacted for client delivery — full evidence available in operator report>\n${close}`,
+  );
   out = out.replace(
     /\b(cred_value|password|nt_hash|lm_hash|aes256_hash|aes128_hash|secret|token|bearer|api_key|private_key)\s*[:=]\s*([^\s,'"`<>{}]+)/gi,
     (_m, k) => `${k}: <redacted>`,
@@ -214,8 +227,16 @@ export function assembleReport(
     evidence_style = 'proof_cards',
   } = opts;
 
-  const profile: ReportProfile = opts.profile ?? (client_safe ? 'client' : 'operator');
-  const effectiveClientSafe = client_safe || profile === 'client';
+  const requestedProfile: ReportProfile = opts.profile ?? (client_safe ? 'client' : 'operator');
+  const effectiveClientSafe = client_safe || requestedProfile === 'client';
+  // SECURITY (H8): a client-safe report IS a client report. Previously `profile` and
+  // `client_safe` were independent, so `client_safe:true, profile:'operator'` produced
+  // effectiveClientSafe=true but profile='operator' — and the per-finding proof-card
+  // redaction keys off PROFILE, so raw stdout previews (NTLM/shadow hashes, cloud keys)
+  // survived byte-for-byte into a file labelled report.client-safe.json. Collapsing the
+  // profile to 'client' whenever the report is client-safe makes every downstream
+  // `profile === 'client'` redaction decision correct by construction.
+  const profile: ReportProfile = effectiveClientSafe ? 'client' : requestedProfile;
   const redactionOpts = { client_safe: effectiveClientSafe };
   const config = engine.getConfig();
   const graph = engine.exportGraph();

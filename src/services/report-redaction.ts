@@ -98,7 +98,7 @@ const SECRET_KEYS = new Set([
   'tgt', 'tgs', 'st',
 ]);
 
-const BLOB_KEYS = new Set(['raw_output', 'evidence_content', 'stdout_preview', 'stderr_preview', 'content']);
+const BLOB_KEYS = new Set(['raw_output', 'evidence_content', 'stdout_preview', 'stderr_preview', 'content', 'raw_preview']);
 
 // Keys whose string value is a shell/tool command — secrets ride in the ARGS
 // (flags + connection strings), not under a dedicated secret key, so SECRET_KEYS

@@ -121,6 +121,20 @@ describe('generate_report tool', () => {
     );
   });
 
+  it('H8: rejects the contradictory client_safe:true + profile:operator combination', async () => {
+    const { handlers } = buildHandlers();
+    const result = await handlers.generate_report({
+      format: 'json',
+      client_safe: true,
+      profile: 'operator',
+    });
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.code).toBe('REPORT_PROFILE_CONFLICT');
+    // The contradictory request must never reach the assembler.
+    expect(assembleReport).not.toHaveBeenCalled();
+  });
+
   it('passes render options to the shared assembler', async () => {
     const { handlers, engine } = buildHandlers();
 
