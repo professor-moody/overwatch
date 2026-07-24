@@ -293,6 +293,10 @@ activity log details.evidence_id fields.`,
         action_id: z.string().optional().describe('List evidence for a specific action'),
         finding_id: z.string().optional().describe('List evidence for a specific finding'),
         list_only: z.boolean().default(false).describe('If true, return manifest records without content'),
+        max_bytes: z.number().int().positive().max(4 * 1024 * 1024).default(256 * 1024)
+          .describe('Cap on returned content/raw_output bytes (default 256 KiB). Evidence blobs can be arbitrarily large; a full read on a poll can pin the daemon.'),
+        offset: z.number().int().nonnegative().default(0)
+          .describe('Byte offset into raw_output for paging; the response returns next_offset + truncated to continue.'),
       },
       annotations: {
         readOnlyHint: true,
@@ -301,8 +305,12 @@ activity log details.evidence_id fields.`,
         openWorldHint: false,
       },
     },
-    withErrorBoundary('get_evidence', async ({ evidence_id, action_id, finding_id, list_only }) => {
+    withErrorBoundary('get_evidence', async ({ evidence_id, action_id, finding_id, list_only, max_bytes, offset }) => {
       const store = engine.getEvidenceStore();
+      // Defensive defaults: the MCP layer applies the zod defaults, but direct callers
+      // (and tests) may omit them; a 0-byte cap would silently return no content.
+      const capBytes = max_bytes ?? 256 * 1024;
+      const readOffset = offset ?? 0;
 
       if (evidence_id) {
         const record = store.getRecord(evidence_id);
@@ -315,13 +323,22 @@ activity log details.evidence_id fields.`,
         if (list_only) {
           return { content: [{ type: 'text', text: JSON.stringify(record, null, 2) }] };
         }
+        // M11: bounded read. A full getRawOutput/getContent on an arbitrarily large blob
+        // (called on a poll) can pin the daemon. Read a bounded raw slice from `offset`
+        // and expose next_offset + truncated so callers can page.
+        const slice = store.getRawOutputSlice(evidence_id, readOffset, capBytes);
+        const rawTruncated = slice ? !slice.eof : false;
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
               ...record,
-              content: store.getContent(evidence_id),
-              raw_output: store.getRawOutput(evidence_id),
+              content: store.getContent(evidence_id, { max_bytes: capBytes }),
+              raw_output: slice?.text ?? null,
+              raw_output_total_bytes: slice?.total_bytes,
+              raw_output_offset: slice?.offset ?? readOffset,
+              raw_output_truncated: rawTruncated,
+              ...(rawTruncated && slice ? { next_offset: slice.offset + slice.bytes_read } : {}),
             }, null, 2),
           }],
         };

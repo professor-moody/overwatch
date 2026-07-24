@@ -135,6 +135,33 @@ describe('finding tools', () => {
     expect(payload.raw_output).toBe('raw output here');
   });
 
+  // M11: get_evidence must bound the raw_output read and expose paging metadata so a
+  // large blob (fetched on a poll) cannot pin the daemon.
+  it('M11: bounds get_evidence raw_output and pages via next_offset', async () => {
+    const big = 'A'.repeat(1000);
+    const finding = await handlers.report_finding({
+      agent_id: 'agent-big', tool_name: 'manual',
+      nodes: [{ id: 'host-10-10-10-9', type: 'host', label: '10.10.10.9', properties: { ip: '10.10.10.9' } }],
+      edges: [],
+      raw_output: big,
+    });
+    const evidenceId = JSON.parse(finding.content[0].text).evidence_id;
+
+    const first = JSON.parse((await handlers.get_evidence({ evidence_id: evidenceId, max_bytes: 400 })).content[0].text);
+    expect(first.raw_output).toHaveLength(400);
+    expect(first.raw_output_truncated).toBe(true);
+    expect(first.raw_output_total_bytes).toBe(1000);
+    expect(first.next_offset).toBe(400);
+
+    const second = JSON.parse((await handlers.get_evidence({ evidence_id: evidenceId, offset: 400, max_bytes: 400 })).content[0].text);
+    expect(second.raw_output).toHaveLength(400);
+    expect(second.raw_output_offset).toBe(400);
+
+    const last = JSON.parse((await handlers.get_evidence({ evidence_id: evidenceId, offset: 800, max_bytes: 400 })).content[0].text);
+    expect(last.raw_output).toHaveLength(200);
+    expect(last.raw_output_truncated).toBe(false);
+  });
+
   it('get_evidence with invalid ID returns error', async () => {
     const result = await handlers.get_evidence({
       evidence_id: 'nonexistent-evidence-id',

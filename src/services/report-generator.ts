@@ -134,6 +134,11 @@ export interface EvidenceChain {
    * IDs and inline a head/tail snippet of the content. */
   stdout_evidence_id?: string;
   stderr_evidence_id?: string;
+  /** Generic evidence-store id from a non-command source (M9): report_finding writes
+   * its durable blob to details.evidence_id, and send_to_session/parse_output can too.
+   * Without lifting it here the durable proof was orphaned — the chain read only the
+   * stdout/stderr ids. Proof cards and the appendix cite this when no stream id exists. */
+  evidence_id?: string;
   stdout_content_hash?: string;
   stderr_content_hash?: string;
   stdout_bytes?: number;
@@ -700,6 +705,9 @@ export function buildEvidenceChainsForNode(
     // Later lifecycle events (finding_ingested, action_completed) are more
     // likely to carry the actual evidence than early ones (action_validated).
     const EVIDENCE_PRIORITY: Record<string, number> = {
+      // finding_reported (report_finding) carries the durable evidence_id + the inline
+      // evidence the operator attached, so it must outrank the generic lifecycle events.
+      finding_reported: 4,
       finding_ingested: 3,
       action_completed: 2,
       action_validated: 1,
@@ -709,7 +717,7 @@ export function buildEvidenceChainsForNode(
     for (const entry of allEntries) {
       const det = entry.details as Record<string, unknown> | undefined;
       if (!det) continue;
-      if (det.evidence_type || det.evidence_content || det.evidence_filename || det.raw_output) {
+      if (det.evidence_type || det.evidence_content || det.evidence_filename || det.raw_output || det.evidence_id) {
         const prio = EVIDENCE_PRIORITY[entry.event_type ?? ''] ?? 0;
         if (prio > bestPriority) {
           bestEvidence = det;
@@ -729,11 +737,15 @@ export function buildEvidenceChainsForNode(
     let evidenceCaptureError: string | undefined;
     let partial: boolean | undefined;
     let partialReason: string | undefined;
+    let genericEvidenceId: string | undefined;
     for (const entry of allEntries) {
       const det = entry.details as Record<string, unknown> | undefined;
       if (!det) continue;
       if (typeof det.stdout_evidence_id === 'string') stdoutEvidenceId = det.stdout_evidence_id;
       if (typeof det.stderr_evidence_id === 'string') stderrEvidenceId = det.stderr_evidence_id;
+      // M9: report_finding / send_to_session / parse_output persist a durable blob under
+      // details.evidence_id — lift it so the chain and proof cards can cite it.
+      if (typeof det.evidence_id === 'string') genericEvidenceId = det.evidence_id;
       if (typeof det.stdout_truncated === 'boolean') stdoutTruncated = det.stdout_truncated;
       if (typeof det.stdout_dropped_bytes === 'number') stdoutDropped = det.stdout_dropped_bytes;
       if (typeof det.stdout_total_bytes === 'number') stdoutTotal = det.stdout_total_bytes;
@@ -778,6 +790,7 @@ export function buildEvidenceChainsForNode(
     if (d?.raw_output) chain.raw_output = d.raw_output as string;
     if (stdoutEvidenceId) chain.stdout_evidence_id = stdoutEvidenceId;
     if (stderrEvidenceId) chain.stderr_evidence_id = stderrEvidenceId;
+    if (genericEvidenceId) chain.evidence_id = genericEvidenceId;
     if (stdoutTruncated !== undefined) chain.stdout_truncated = stdoutTruncated;
     if (stdoutDropped !== undefined) chain.stdout_dropped_bytes = stdoutDropped;
     if (stdoutTotal !== undefined) chain.stdout_total_bytes = stdoutTotal;
@@ -798,9 +811,13 @@ export function buildEvidenceChainsForNode(
 
     // Lazily resolve a head/tail preview of stdout from the evidence store
     // so reports show what the parser actually saw without bloating output.
-    if (loader && stdoutEvidenceId) {
+    // Prefer a stdout stream preview; fall back to the generic evidence blob (M9) so a
+    // report_finding / send_to_session finding still shows a real head preview instead
+    // of nothing. Never fail report generation on a missing blob.
+    const previewSourceId = stdoutEvidenceId ?? genericEvidenceId;
+    if (loader && previewSourceId && !chain.stdout_preview) {
       try {
-        const full = loader(stdoutEvidenceId);
+        const full = loader(previewSourceId);
         if (full !== null) {
           chain.stdout_preview = formatPreview(full, previewBytes);
         }
@@ -885,7 +902,7 @@ function stableProofId(prefix: string, value: string): string {
 }
 
 function sourceKindForEvidence(ev: EvidenceChain): EvidenceProofCard['source_kind'] {
-  if (ev.stdout_evidence_id || ev.stderr_evidence_id || ev.raw_output || ev.evidence_content || ev.command) {
+  if (ev.stdout_evidence_id || ev.stderr_evidence_id || ev.evidence_id || ev.raw_output || ev.evidence_content || ev.command) {
     return 'direct_output';
   }
   if (ev.source_event_type === 'finding_ingested' || /ingest|parsed|parser/i.test(ev.claim)) {
@@ -935,6 +952,7 @@ function parsedSummaryForEvidence(ev: EvidenceChain): string | undefined {
 function evidenceKey(ev: EvidenceChain): string {
   return ev.stdout_evidence_id
     || ev.stderr_evidence_id
+    || ev.evidence_id
     || ev.action_id
     || ev.evidence_filename
     || stableProofId('activity', `${ev.timestamp || ''}|${ev.claim}`);
@@ -971,7 +989,7 @@ function proofCardForEvidence(ev: EvidenceChain, profile: ReportProfile): Eviden
     command: ev.command,
     timestamp: ev.timestamp,
     action_id: ev.action_id,
-    evidence_id: ev.stdout_evidence_id || ev.stderr_evidence_id,
+    evidence_id: ev.stdout_evidence_id || ev.stderr_evidence_id || ev.evidence_id,
     content_hash: ev.stdout_content_hash || ev.stderr_content_hash,
     evidence_bytes: evidenceBytes(ev),
     evidence_type: ev.evidence_type,

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   buildFindings,
   buildEvidenceChainsForNode,
+  buildProofCardsForFinding,
   buildAllEvidenceChains,
   buildAttackNarrative,
   buildReportEvidenceModel,
@@ -273,6 +274,42 @@ describe('buildEvidenceChainsForNode', () => {
   it('returns empty chains for node with no evidence', () => {
     const chains = buildEvidenceChainsForNode('domain-corp', makeGraph(), makeHistory());
     expect(chains).toHaveLength(0);
+  });
+
+  // M9: report_finding writes its durable blob id to details.evidence_id (not a
+  // stdout/stderr stream id). The chain builder used to read only the stream ids, so
+  // the durable proof was orphaned. The chain and its proof card must now cite it, with
+  // an evidenceLoader head preview.
+  it('M9: surfaces report_finding evidence_id (generic durable blob) into the chain', () => {
+    const history = [{
+      event_id: 'ev-rf', timestamp: '2026-01-01T00:00:00Z',
+      description: 'Finding reported: exposed admin panel',
+      event_type: 'finding_reported',
+      action_id: 'act-rf',
+      target_node_ids: ['host-x'],
+      details: {
+        ingested_node_ids: ['host-x'],
+        evidence_id: 'blob-abc123',
+        evidence_type: 'command_output',
+      },
+    }] as never;
+
+    const loaded: string[] = [];
+    const chains = buildEvidenceChainsForNode('host-x', makeGraph(), history, {
+      evidenceLoader: (id: string) => { loaded.push(id); return 'HTTP/1.1 200 OK\nadmin panel body'; },
+    });
+
+    const chain = chains.find(c => c.action_id === 'act-rf');
+    expect(chain).toBeDefined();
+    expect(chain!.evidence_id).toBe('blob-abc123');
+
+    // The proof card cites the same durable id (it is direct_output, not a bare activity line).
+    const cards = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    const card = cards.find(c => c.action_id === 'act-rf');
+    expect(card?.evidence_id).toBe('blob-abc123');
+    expect(card?.source_kind).toBe('direct_output');
+    // The loader was consulted for the generic id.
+    expect(loaded).toContain('blob-abc123');
   });
 });
 

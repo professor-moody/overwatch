@@ -4427,7 +4427,7 @@ export class DashboardServer {
     const graph = this.engine.exportGraph();
     const history = this.engine.getFullHistory();
     const evidenceLoader = (id: string): string | null => {
-      try { return this.engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
+      try { return this.engine.getEvidenceStore().getRawOutputHead(id, 256 * 1024)?.text ?? null; } catch { return null; }
     };
     const findings = buildFindings(graph, history, config, { evidenceLoader });
     const classifications = classifyAllFindings(findings, graph);
@@ -4823,7 +4823,7 @@ export class DashboardServer {
       const history = this.engine.getFullHistory();
       const config = this.engine.getConfig();
       const evidenceLoader = (id: string): string | null => {
-        try { return this.engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
+        try { return this.engine.getEvidenceStore().getRawOutputHead(id, 256 * 1024)?.text ?? null; } catch { return null; }
       };
       const findings = buildFindings(graph, history, config, { evidenceLoader });
       const payload = buildTrustSignalsResponse({
@@ -4982,7 +4982,7 @@ export class DashboardServer {
     const graph = this.engine.exportGraph();
     const history = this.engine.getFullHistory();
     const evidenceLoader = (id: string): string | null => {
-      try { return this.engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
+      try { return this.engine.getEvidenceStore().getRawOutputHead(id, 256 * 1024)?.text ?? null; } catch { return null; }
     };
     const findings = buildFindings(graph, history, config, { evidenceLoader });
     const classifications = classifyAllFindings(findings, graph);

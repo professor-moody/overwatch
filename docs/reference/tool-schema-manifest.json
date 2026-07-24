@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "tool_count": 95,
-  "registry_sha256": "b64ba41aab7ee1b8d3c85e84f088e7aa0d195dd5e0cfbdcd3817a8dae434d00d",
+  "registry_sha256": "05316e50f9f30cd622c0c01684f17960eb0c5186ee8bd834e24fe917d6cf5955",
   "categories": [
     {
       "id": "state-readiness",
@@ -2516,12 +2516,25 @@
             "default": false,
             "description": "If true, return manifest records without content",
             "type": "boolean"
+          },
+          "max_bytes": {
+            "default": 262144,
+            "description": "Cap on returned content/raw_output bytes (default 256 KiB). Evidence blobs can be arbitrarily large; a full read on a poll can pin the daemon.",
+            "exclusiveMinimum": 0,
+            "maximum": 4194304,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Byte offset into raw_output for paging; the response returns next_offset + truncated to continue.",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "c2c03818a00912e1c74d2e43729f172eafbf7547c969b97c0d3219c5f3da3a7d",
+      "input_schema_sha256": "330d9aff1b7c091ffd3f809096c92b6e8e1bab459f5077b559effe77e7eb309a",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/get-evidence.md",
