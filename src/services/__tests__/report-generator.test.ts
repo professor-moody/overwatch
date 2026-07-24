@@ -313,6 +313,103 @@ describe('buildEvidenceChainsForNode', () => {
   });
 });
 
+// ============================================================
+// 3b — proof text composed from mechanical facts + provenance lift
+// ============================================================
+describe('proof cards — composed proof (3b)', () => {
+  it('composes proof from command + exit code + blob id + hash + bytes (not a canned sentence)', () => {
+    const chains = [{
+      claim: 'SMB signing not required',
+      action_id: 'act-1',
+      command: 'nmap -p445 --script smb2-security-mode 10.10.10.1',
+      exit_code: 0,
+      duration_ms: 1420,
+      agent_id: 'agent-recon-3',
+      stdout_evidence_id: 'ev-7f3a',
+      stdout_content_hash: 'ab12cd34ef56aa00',
+      stdout_bytes: 4300,
+      source_nodes: [],
+      target_nodes: ['host-1'],
+      timestamp: '2026-01-01T00:00:00Z',
+    }] as any;
+
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.proof_status).toBe('full');
+    // Real, verifiable proof — the exact command, its result, and a citable handle.
+    expect(card.proof).toContain('nmap -p445 --script smb2-security-mode 10.10.10.1');
+    expect(card.proof).toContain('exited 0 (success)');
+    expect(card.proof).toContain('blob ev-7f3a');
+    expect(card.proof).toContain('sha256 ab12cd34ef56');
+    expect(card.proof).toContain('4.2 KB captured');
+    // NOT the retired canned sentence.
+    expect(card.proof).not.toContain('supports the claimed state change');
+    // Provenance is lifted onto the card so a reader can see who ran it and how it ended.
+    expect(card.agent_id).toBe('agent-recon-3');
+    expect(card.exit_code).toBe(0);
+    expect(card.duration_ms).toBe(1420);
+  });
+
+  it('reports a non-zero exit honestly instead of a success sentence', () => {
+    const chains = [{
+      claim: 'Auth attempt',
+      action_id: 'act-2',
+      command: 'crackmapexec smb 10.10.10.2 -u admin -p bad',
+      exit_code: 1,
+      stdout_evidence_id: 'ev-9',
+      source_nodes: [], target_nodes: ['host-2'], timestamp: '2026-01-01T00:00:00Z',
+    }] as any;
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.proof).toContain('exited 1');
+    expect(card.exit_code).toBe(1);
+  });
+
+  it('marks an activity-only chain as proof_status "none" and says so in the proof text', () => {
+    const chains = [{
+      claim: 'Host referenced during sweep',
+      source_nodes: [], target_nodes: ['host-3'], timestamp: '2026-01-01T00:00:00Z',
+      source_event_type: 'recon_sweep',
+    }] as any;
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.proof_status).toBe('none');
+    expect(card.source_kind).toBe('activity');
+    // Must not imply evidence exists.
+    expect(card.proof.toLowerCase()).toContain('proof: none');
+    expect(card.proof).not.toContain('supports the claimed state change');
+  });
+
+  it('lifts provenance from the terminal action event details (agent, exit, argv)', () => {
+    const history = [{
+      event_id: 'ev-run', timestamp: '2026-01-01T00:00:00Z',
+      description: 'Service enumerated',
+      event_type: 'action_completed',
+      action_id: 'act-run',
+      agent_id: 'agent-x',
+      target_node_ids: ['host-x'],
+      details: {
+        exit_code: 0,
+        signal: null,
+        duration_ms: 900,
+        binary: 'nmap',
+        args: ['-sV', '-p445', '10.10.10.5'],
+        stdout_evidence_id: 'ev-out',
+      },
+    }] as never;
+
+    const chain = buildEvidenceChainsForNode('host-x', makeGraph(), history)
+      .find(c => c.action_id === 'act-run');
+    expect(chain).toBeDefined();
+    expect(chain!.exit_code).toBe(0);
+    expect(chain!.agent_id).toBe('agent-x');
+    expect(chain!.binary).toBe('nmap');
+    expect(chain!.args).toEqual(['-sV', '-p445', '10.10.10.5']);
+
+    // With no command_repr, the card composes the command from binary + args.
+    const [card] = buildProofCardsForFinding({ evidence: [chain] } as never, 'operator');
+    expect(card.command).toBe('nmap -sV -p445 10.10.10.5');
+    expect(card.proof).toContain('nmap -sV -p445 10.10.10.5');
+  });
+});
+
 describe('buildAllEvidenceChains', () => {
   it('builds chains for all interesting node types', () => {
     const allChains = buildAllEvidenceChains(makeGraph(), makeHistory());
