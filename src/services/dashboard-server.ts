@@ -221,6 +221,7 @@ export class DashboardServer {
   private set clients(value: Set<WebSocket>) { this.mainHub.clients = value; }
 
   private host: string;
+  private allowedHosts: Set<string> = new Set();
   private engagementManager: EngagementManager | null = null;
   private configPath?: string;
   /**
@@ -375,6 +376,16 @@ export class DashboardServer {
     this.playbookCommands = new PlaybookCommandService(engine);
     this.port = port;
     this.host = host || process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
+    // SECURITY (M13): explicit extra Host names this server should answer to (e.g. the
+    // public hostname when behind a reverse proxy). Used to validate the Host header
+    // before it is trusted as the authority to match Origin against — without this an
+    // attacker-controlled Host (DNS rebinding) makes the Origin==Host check tautological.
+    this.allowedHosts = new Set(
+      (process.env.OVERWATCH_DASHBOARD_ALLOWED_HOSTS || '')
+        .split(',')
+        .map(h => h.trim().toLowerCase())
+        .filter(Boolean),
+    );
     this.sessionManager = sessionManager || null;
     this.configPath = configPath;
     if (dashboardStaticDir) this.dashboardDir = dashboardStaticDir;
@@ -584,13 +595,44 @@ export class DashboardServer {
   private get dashboardDir(): string | null { return this.staticServer.dashboardDir; }
   private set dashboardDir(value: string | null) { this.staticServer.dashboardDir = value; }
 
+  /**
+   * SECURITY (M13): validate a request's Host header before it is trusted anywhere.
+   * The Origin==Host CSRF/CSWSH comparison is only sound if Host is an authority this
+   * server legitimately answers to; otherwise a DNS-rebinding attacker sends a matching
+   * Origin+Host pair for their own domain and the check passes tautologically. A Host is
+   * allowed when its hostname is the configured bind host, a loopback name (when bound to
+   * loopback), or an explicitly configured proxy hostname (OVERWATCH_DASHBOARD_ALLOWED_HOSTS).
+   */
+  private isAllowedRequestHost(hostHeader: string): boolean {
+    try {
+      const u = new URL(`http://${hostHeader}`);
+      const name = u.hostname.toLowerCase();
+      const boundHost = this.host.toLowerCase().replace(/^\[|\]$/g, '');
+      if (name === boundHost) return true;
+      // A loopback Host is legitimate against a loopback bind AND against a wildcard
+      // bind (0.0.0.0 / ::), which always answers on 127.0.0.1. A non-loopback Host on
+      // a wildcard bind (a LAN IP or a public name) still requires an explicit allowlist
+      // entry, so DNS rebinding to an attacker hostname is refused.
+      const wildcardBind = boundHost === '0.0.0.0' || boundHost === '::';
+      if (this.isLoopback(name) && (this.isLoopback(this.host) || wildcardBind)) return true;
+      return this.allowedHosts.has(name);
+    } catch {
+      return false;
+    }
+  }
+
   /** True when an Origin header matches the request Host.
    *  Shared by the HTTP CORS gate and the WebSocket upgrade CSWSH check. */
   private isAllowedWsOrigin(origin: string, requestHost?: string): boolean {
     try {
       const originUrl = new URL(origin);
       if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') return false;
-      const effectiveRequestHost = requestHost || `${this.host}:${this.port}`;
+      // Only trust the caller-supplied Host if it is an authority we actually serve;
+      // otherwise fall back to our own bind authority so a rebinding Host cannot make
+      // the Origin==Host comparison tautological.
+      const effectiveRequestHost = (requestHost && this.isAllowedRequestHost(requestHost))
+        ? requestHost
+        : `${this.host}:${this.port}`;
       // Interpret Host using the Origin scheme so default ports normalize
       // correctly (https://host and Host: host:443 are the same authority).
       const requestUrl = new URL(`${originUrl.protocol}//${effectiveRequestHost}`);
