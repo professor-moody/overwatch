@@ -37,6 +37,7 @@ import {
   PlaybookRunResponseSchema,
   PlaybookStepClaimResponseSchema,
 } from '../../contracts/dashboard-v1.js';
+import { responseSchemaFor, DashboardHttpRegistry } from '../../contracts/dashboard-api-v1.js';
 import { PlaybookRunService } from '../playbook-run-service.js';
 import { buildToolDescriptor } from '../tool-descriptor-registry.js';
 import { InProcessTapeController } from '../in-process-tape.js';
@@ -1478,10 +1479,45 @@ describe('GET /api/paths/:objectiveId', () => {
 });
 
 describe('GET /api/evidence-chains/:nodeId', () => {
-  it('returns chains array for a known node id (empty when no findings link)', async () => {
-    const { status, body } = await getJson<{ chains?: unknown[] }>('/api/evidence-chains/cloud-id-power');
-    expect([200, 404]).toContain(status);
-    if (status === 200) expect(body).toBeTypeOf('object');
+  // REGRESSION (H1): the previous version of this test queried a node with NO
+  // correlated activity, so `chains` was always [] — the one response shape that
+  // cannot violate the contract. That hid a defect where every NON-EMPTY chain was
+  // rejected by installResponseContract and rewritten to HTTP 500, meaning the
+  // endpoint only ever succeeded when there was nothing to show. Assert the
+  // non-empty path, validated through the real response schema.
+  it('returns a NON-EMPTY chain that satisfies the response contract', async () => {
+    // `cred-oidc` is referenced by a seeded action event's target_node_ids.
+    const { status, body } = await getJson<{ node_id: string; chains: unknown[]; count: number }>(
+      '/api/evidence-chains/cred-oidc',
+    );
+    expect(status).toBe(200);
+    expect(Array.isArray(body.chains)).toBe(true);
+    expect(body.chains.length).toBeGreaterThan(0);
+    expect(body.count).toBe(body.chains.length);
+
+    // Every element must carry the contract-required identity/description fields.
+    for (const chain of body.chains as Array<Record<string, unknown>>) {
+      expect(typeof chain.activity_id).toBe('string');
+      expect((chain.activity_id as string).length).toBeGreaterThan(0);
+      expect(typeof chain.description).toBe('string');
+      expect(typeof chain.timestamp).toBe('string');
+    }
+
+    // And the payload must round-trip the published response schema — this is the
+    // exact validation installResponseContract applies before sending.
+    const schema = responseSchemaFor(DashboardHttpRegistry.getEvidenceChains, 200);
+    expect(schema).toBeDefined();
+    const parsed = schema!.safeParse(body);
+    expect(parsed.success ? null : parsed.error.issues).toBeNull();
+  });
+
+  it('returns an empty chain set (still 200) for a node with no correlated activity', async () => {
+    const { status, body } = await getJson<{ chains: unknown[]; count: number }>(
+      '/api/evidence-chains/cloud-id-power',
+    );
+    expect(status).toBe(200);
+    expect(body.chains).toEqual([]);
+    expect(body.count).toBe(0);
   });
 });
 

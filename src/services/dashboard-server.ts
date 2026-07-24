@@ -200,6 +200,24 @@ interface CapturedDashboardResponse {
   body: string;
 }
 
+/**
+ * One evidence-chain element as served by GET /api/evidence-chains/{node_id}.
+ * `activity_id`, `timestamp`, and `description` are REQUIRED by
+ * EvidenceChainsResponseSchema (contracts/dashboard-api-v1.ts) — naming the shape
+ * here keeps the producer and the published contract from drifting apart again.
+ */
+interface DashboardEvidenceChainEntry {
+  activity_id: string;
+  timestamp: string;
+  description: string;
+  event_type?: string;
+  action_id?: string;
+  agent_id?: string;
+  tool?: string;
+  command?: string;
+  snippet?: string;
+}
+
 export class DashboardServer {
   private httpServer: ReturnType<typeof createServer>;
   private wss: WebSocketServer;
@@ -4250,14 +4268,14 @@ export class DashboardServer {
 
   private buildEvidenceChain(nodeId: string): {
     node_id: string;
-    chains: Array<{ action_id?: string; agent_id?: string; event_type?: string; tool?: string; command?: string; timestamp: string; snippet?: string }>;
+    chains: DashboardEvidenceChainEntry[];
     count: number;
     node_props?: Record<string, unknown>;
     findings?: Array<{ finding_type?: string; severity?: string; technique_id?: string; description?: string }>;
   } {
     // Build evidence chains for a node from the activity log
     const history = this.engine.getFullHistory();
-    const chains: Array<{ action_id?: string; agent_id?: string; event_type?: string; tool?: string; command?: string; timestamp: string; snippet?: string }> = [];
+    const chains: DashboardEvidenceChainEntry[] = [];
 
     for (const entry of history) {
       // Match entries that explicitly reference this node via structured fields
@@ -4278,12 +4296,21 @@ export class DashboardServer {
         || (typeof det?.command === 'string' ? det.command : undefined);
 
       chains.push({
+        // `activity_id` and `description` are REQUIRED by EvidenceChainsResponseSchema
+        // (contracts/dashboard-api-v1.ts). Omitting them made installResponseContract
+        // reject every NON-EMPTY chain and rewrite it to HTTP 500 — so this endpoint
+        // only ever succeeded when there was no evidence to show, and the UI rendered
+        // that failure as "No evidence found". Both fields are required on
+        // ActivityLogEntry, so this is a pure mapping with no new data.
+        activity_id: entry.event_id,
+        description: entry.description,
         action_id: e.action_id as string | undefined,
         agent_id: e.agent_id as string | undefined,
         event_type: e.event_type as string | undefined,
         tool: e.tool_name as string | undefined || e.action_type as string | undefined,
         command: commandRepr,
         timestamp: entry.timestamp,
+        // Retained for back-compat with existing consumers (schema is .passthrough()).
         snippet: e.description as string | undefined || e.summary as string | undefined,
       });
     }

@@ -15,7 +15,7 @@ import { ActionButton, StatusPill } from '../shared/primitives';
 import type { EvidenceChainResponse } from '../../lib/types';
 import { computeActionRisk } from '../../lib/action-queue';
 import { formatFrontierScore, getFrontierPrimaryNodeId } from '../../lib/frontier-workspace';
-import { cn, formatRelativeTime } from '../../lib/utils';
+import { cn, formatRelativeTime, describeEvidenceError } from '../../lib/utils';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { trustSignalsForNode } from '../../lib/trust-signals';
 import { TrustSignalList } from '../shared/TrustSignals';
@@ -43,6 +43,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
   const [trustSignals, setTrustSignals] = useState<TrustSignalDto[]>([]);
   const [evidence, setEvidence] = useState<EvidenceChainResponse | null>(null);
   const [evidenceStatus, setEvidenceStatus] = useState<EvidenceStatus>('idle');
+  const [evidenceError, setEvidenceError] = useState<string>('');
   const [deploying, setDeploying] = useState(false);
   const addToast = useToastStore(s => s.addToast);
 
@@ -74,6 +75,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
     }
     let cancelled = false;
     setEvidence(null);
+    setEvidenceError('');
     setEvidenceStatus('loading');
     getEvidenceChains(nodeId)
       .then(data => {
@@ -81,10 +83,11 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
         setEvidence(data);
         setEvidenceStatus(data.count > 0 ? 'ready' : 'empty');
       })
-      .catch(() => {
+      .catch(err => {
         if (cancelled) return;
         setEvidence(null);
         setEvidenceStatus('error');
+        setEvidenceError(describeEvidenceError(err));
       });
     return () => { cancelled = true; };
   }, [nodeId]);
@@ -295,7 +298,14 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
 
         <InspectorSection title="Evidence" count={evidence?.count ?? 0} actionLabel="Open" onAction={() => navigateToEvidence(nodeId)}>
           {evidenceStatus === 'loading' && <EmptyLine>Loading evidence chain...</EmptyLine>}
-          {(evidenceStatus === 'empty' || evidenceStatus === 'error') && <EmptyLine>No evidence chain loaded for this node.</EmptyLine>}
+          {evidenceStatus === 'empty' && <EmptyLine>No evidence chain loaded for this node.</EmptyLine>}
+          {/* A failed fetch is NOT an empty chain — render it as an error so a server
+              fault can never be read as "this node has no evidence". */}
+          {evidenceStatus === 'error' && (
+            <p role="alert" className="text-xs text-destructive border border-destructive/40 rounded px-2 py-1">
+              {evidenceError || 'Evidence could not be loaded.'}
+            </p>
+          )}
           {evidenceStatus === 'ready' && evidence && (
             <div className="space-y-1.5">
               {evidence.chains.slice(0, 3).map((entry, index) => (

@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
-import { cn, formatTimestamp } from '../../lib/utils';
+import { cn, formatTimestamp, describeEvidenceError } from '../../lib/utils';
 import { getEvidenceChains, getFindings, type FindingDto } from '../../lib/api';
 import type { EvidenceChainResponse } from '../../lib/types';
 import { ActionButton, EmptyPanelState, PageHeader, PanelSection } from '../shared/primitives';
@@ -54,8 +54,10 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
       const resolved = resolveEvidenceQuery(q, graph, findings) || q;
       const resp = await getEvidenceChains(resolved);
       if (requestGeneration.current === generation) setData(resp);
-    } catch {
-      if (requestGeneration.current === generation) setError('No evidence found');
+    } catch (err) {
+      // A fetch/contract failure is NOT "no evidence" — reporting it as such is how a
+      // server-side 500 masqueraded as an empty result for an entire engagement.
+      if (requestGeneration.current === generation) setError(describeEvidenceError(err));
     } finally {
       if (requestGeneration.current === generation) setLoading(false);
     }
@@ -72,8 +74,8 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
       .then(resp => {
         if (requestGeneration.current === generation) setData(resp);
       })
-      .catch(() => {
-        if (requestGeneration.current === generation) setError('No evidence found');
+      .catch(err => {
+        if (requestGeneration.current === generation) setError(describeEvidenceError(err));
       })
       .finally(() => {
         if (requestGeneration.current === generation) setLoading(false);
@@ -109,7 +111,13 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
       </div>
 
       {loading && <p className="text-xs text-muted-foreground">Searching…</p>}
-      {error && <p className="text-xs text-muted-foreground">{error}</p>}
+      {/* Rendered as a real error, NOT in muted "empty result" styling — a failed
+          fetch must be visually distinguishable from "this node has no evidence". */}
+      {error && (
+        <p role="alert" className="text-xs text-destructive border border-destructive/40 rounded px-2 py-1">
+          {error}
+        </p>
+      )}
 
       {/* Guided empty state: landing here without a node param (e.g. the sidebar
           nav) used to show a blank search box. Explain the node-centric model and
