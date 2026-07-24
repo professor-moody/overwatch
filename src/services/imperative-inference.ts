@@ -90,7 +90,7 @@ export function inferPivotReachability(host: ImperativeInferenceHost, triggerHos
       if (peerAttrs.type !== 'host' || !peerAttrs.ip) return;
       if (!isIpInCidr(peerAttrs.ip, subnetCidr)) return;
 
-      const existing = host.ctx.graph.edges(triggerHostId, peerId);
+      const existing = host.ctx.graph.outEdges(triggerHostId, peerId);
       if (existing.some((e: string) => host.ctx.graph.getEdgeAttributes(e).type === 'REACHABLE')) return;
 
       const { id: edgeId } = host.addEdge(triggerHostId, peerId, {
@@ -146,7 +146,7 @@ export function inferDefaultCredentials(host: ImperativeInferenceHost, webappNod
       });
     }
 
-    const existing = host.ctx.graph.edges(credId, nodeId);
+    const existing = host.ctx.graph.outEdges(credId, nodeId);
     if (existing.some((e: string) => host.ctx.graph.getEdgeAttributes(e).type === 'POTENTIAL_AUTH')) continue;
 
     const { id: edgeId } = host.addEdge(credId, nodeId, {
@@ -204,7 +204,7 @@ export function inferImdsv1Ssrf(host: ImperativeInferenceHost, webappNodeIds: Se
           host.ctx.graph.forEachOutEdge(tgt, (_e2: string, a2, _s2: string, identityId: string) => {
             if (a2.type !== 'MANAGED_BY') return;
             for (const vulnId of ssrfVulns) {
-              const existing = host.ctx.graph.edges(vulnId, identityId);
+              const existing = host.ctx.graph.outEdges(vulnId, identityId);
               if (existing.some((ex: string) => host.ctx.graph.getEdgeAttributes(ex).type === 'EXPLOITS')) return;
 
               const { id: edgeId } = host.addEdge(vulnId, identityId, {
@@ -250,7 +250,7 @@ export function inferManagedIdentityPivot(host: ImperativeInferenceHost, hostNod
         if (a2.type !== 'MANAGED_BY') return;
 
         for (const holder of sessionHolders) {
-          const existing = host.ctx.graph.edges(holder, identityId);
+          const existing = host.ctx.graph.outEdges(holder, identityId);
           if (existing.some((ex: string) => host.ctx.graph.getEdgeAttributes(ex).type === 'POTENTIAL_AUTH')) continue;
 
           const { id: edgeId } = host.addEdge(holder, identityId, {
