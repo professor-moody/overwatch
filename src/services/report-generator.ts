@@ -76,10 +76,18 @@ export interface EvidenceProofCard {
   appendix_ref: string;
   claim: string;
   proof: string;
+  /** Whether `proof` cites a retrievable blob/excerpt ('full'/'excerpt') or is an
+   * explicit "no proof recorded" statement ('none'). Lets renderers flag unproven
+   * findings instead of treating every card as evidence. */
+  proof_status?: 'none' | 'excerpt' | 'full';
   source_kind: 'direct_output' | 'parsed_result' | 'provenance' | 'activity';
   tool?: string;
   technique?: string;
   command?: string;
+  /** Provenance (3b): who ran it and how it ended. Lifted from the terminal event. */
+  agent_id?: string;
+  exit_code?: number;
+  duration_ms?: number;
   timestamp?: string;
   action_id?: string;
   evidence_id?: string;
@@ -129,6 +137,16 @@ export interface EvidenceChain {
   raw_output?: string;
   source_event_type?: string;
   result_classification?: string;
+  /** Provenance lifted from the terminal action event (3b). These were persisted
+   * all along (_process-runner terminal event details) but never read into the
+   * chain, so a report could not say WHO ran the command, whether it SUCCEEDED,
+   * or how long it took. Composed into real proof text instead of a canned sentence. */
+  agent_id?: string;
+  exit_code?: number;
+  signal?: string;
+  duration_ms?: number;
+  binary?: string;
+  args?: string[];
   /** Evidence-store IDs for full-fidelity stdout/stderr capture from
    * the terminal action that produced this finding. Reports cite these
    * IDs and inline a head/tail snippet of the content. */
@@ -143,6 +161,10 @@ export interface EvidenceChain {
   stderr_content_hash?: string;
   stdout_bytes?: number;
   stderr_bytes?: number;
+  /** Content hash + byte count of the generic (non-stream) evidence_id blob —
+   * e.g. report_finding's durable capture. Lets that proof be tamper-evident too. */
+  content_hash?: string;
+  content_bytes?: number;
   /** Truncation / capture diagnostics from the streamed evidence sink. */
   stdout_truncated?: boolean;
   stdout_dropped_bytes?: number;
@@ -738,7 +760,20 @@ export function buildEvidenceChainsForNode(
     let partial: boolean | undefined;
     let partialReason: string | undefined;
     let genericEvidenceId: string | undefined;
+    // Provenance (3b): lifted from the terminal action event so proof text can name the
+    // actor, outcome, and exact argv. Persisted all along, never previously read.
+    let exitCode: number | undefined;
+    let signal: string | undefined;
+    let durationMs: number | undefined;
+    let binary: string | undefined;
+    let args: string[] | undefined;
+    let agentId: string | undefined;
     for (const entry of allEntries) {
+      // agent_id is a top-level field, not in details. Prefer the first concrete
+      // actor that isn't the anonymous 'primary' session so the report names a real agent.
+      if (entry.agent_id && (agentId === undefined || (agentId === 'primary' && entry.agent_id !== 'primary'))) {
+        agentId = entry.agent_id;
+      }
       const det = entry.details as Record<string, unknown> | undefined;
       if (!det) continue;
       if (typeof det.stdout_evidence_id === 'string') stdoutEvidenceId = det.stdout_evidence_id;
@@ -750,6 +785,11 @@ export function buildEvidenceChainsForNode(
       if (typeof det.stdout_dropped_bytes === 'number') stdoutDropped = det.stdout_dropped_bytes;
       if (typeof det.stdout_total_bytes === 'number') stdoutTotal = det.stdout_total_bytes;
       if (typeof det.evidence_capture_error === 'string') evidenceCaptureError = det.evidence_capture_error;
+      if (typeof det.exit_code === 'number') exitCode = det.exit_code;
+      if (typeof det.signal === 'string') signal = det.signal;
+      if (typeof det.duration_ms === 'number') durationMs = det.duration_ms;
+      if (typeof det.binary === 'string') binary = det.binary;
+      if (Array.isArray(det.args) && det.args.every(a => typeof a === 'string')) args = det.args as string[];
       if (det.partial === true) partial = true;
       if (typeof det.partial_reason === 'string') partialReason = det.partial_reason;
       const ps = det.parse_summary as Record<string, unknown> | undefined;
@@ -788,6 +828,12 @@ export function buildEvidenceChainsForNode(
     if (d?.evidence_content) chain.evidence_content = d.evidence_content as string;
     if (d?.evidence_filename) chain.evidence_filename = d.evidence_filename as string;
     if (d?.raw_output) chain.raw_output = d.raw_output as string;
+    if (agentId) chain.agent_id = agentId;
+    if (exitCode !== undefined) chain.exit_code = exitCode;
+    if (signal) chain.signal = signal;
+    if (durationMs !== undefined) chain.duration_ms = durationMs;
+    if (binary) chain.binary = binary;
+    if (args) chain.args = args;
     if (stdoutEvidenceId) chain.stdout_evidence_id = stdoutEvidenceId;
     if (stderrEvidenceId) chain.stderr_evidence_id = stderrEvidenceId;
     if (genericEvidenceId) chain.evidence_id = genericEvidenceId;
@@ -807,6 +853,13 @@ export function buildEvidenceChainsForNode(
       const record = recordLoader(stderrEvidenceId);
       if (record?.content_hash) chain.stderr_content_hash = record.content_hash;
       if (record) chain.stderr_bytes = (record.raw_output_length ?? 0) + (record.content_length ?? 0);
+    }
+    // Resolve the generic (report_finding / send_to_session) blob's hash + size so its
+    // proof card is tamper-evident and can state real byte counts, not just an id.
+    if (recordLoader && genericEvidenceId && !stdoutEvidenceId) {
+      const record = recordLoader(genericEvidenceId);
+      if (record?.content_hash) chain.content_hash = record.content_hash;
+      if (record) chain.content_bytes = (record.raw_output_length ?? 0) + (record.content_length ?? 0);
     }
 
     // Lazily resolve a head/tail preview of stdout from the evidence store
@@ -923,20 +976,94 @@ function evidenceRank(kind: EvidenceProofCard['source_kind']): number {
   }
 }
 
+/** Whether the chain carries retrievable proof: a durable/inline blob ('full'),
+ * a captured matched excerpt ('excerpt' — populated in 3c), or nothing ('none').
+ * A finding with no real proof must SAY 'none' rather than emit a sentence that
+ * implies evidence exists. */
+function proofStatusForEvidence(ev: EvidenceChain): 'none' | 'excerpt' | 'full' {
+  const hasBlob = Boolean(ev.stdout_evidence_id || ev.stderr_evidence_id || ev.evidence_id);
+  const hasInline = Boolean(ev.stdout_preview || ev.raw_output || ev.evidence_content);
+  return hasBlob || hasInline ? 'full' : 'none';
+}
+
+function shortHash(h?: string): string | undefined {
+  return h ? h.slice(0, 12) : undefined;
+}
+
+function formatBytesHuman(n?: number): string | undefined {
+  if (n === undefined || n <= 0) return undefined;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function primaryEvidenceHash(ev: EvidenceChain): string | undefined {
+  return ev.stdout_content_hash || ev.stderr_content_hash || ev.content_hash;
+}
+
+/**
+ * Compose PROOF from the mechanical facts captured at execution time —
+ * the exact command/argv, exit code, a citable evidence-blob id, its content
+ * hash, and the byte count — instead of one of four canned sentences. The
+ * canned wording survives only as an explicitly-labelled "no proof recorded"
+ * fallback (proof_status: 'none'), so a reader can always tell a real handle
+ * from a timeline reference.
+ */
 function proofTextForEvidence(ev: EvidenceChain, kind: EvidenceProofCard['source_kind']): string {
-  if (kind === 'direct_output') {
-    if (ev.result_classification === 'failure') {
-      return 'Captured command output records the attempted validation and its failed result.';
-    }
-    return 'Captured command output is linked to this finding and supports the claimed state change.';
-  }
-  if (kind === 'parsed_result') {
-    return 'Parser or ingest output added graph artifacts that support this finding.';
-  }
+  // Graph-derived relationship (DERIVED_FROM/DUMPED_FROM): no command exists.
   if (kind === 'provenance') {
-    return 'Graph provenance links this asset to the source artifact or derived credential chain.';
+    return `Graph provenance: ${ev.claim}. Derived relationship recorded in the graph; no direct command output is attached.`;
   }
-  return 'The activity log references the affected asset during the engagement timeline.';
+
+  if (proofStatusForEvidence(ev) === 'none') {
+    if (kind === 'parsed_result') {
+      return `Parser/ingest step added graph artifacts, but no raw output blob was retained — no excerpt available to verify (proof: none).`;
+    }
+    return `No command output was captured for this step; the activity log records "${ev.claim}"${ev.timestamp ? ` at ${ev.timestamp}` : ''}. Timeline reference, not proof (proof: none).`;
+  }
+
+  const clauses: string[] = [];
+
+  // 1. What ran.
+  const cmd = ev.command || (ev.binary ? [ev.binary, ...(ev.args ?? [])].join(' ') : undefined);
+  if (cmd) {
+    clauses.push(`\`${cmd}\``);
+  } else if (ev.tool) {
+    clauses.push(`${ev.tool} output`);
+  } else {
+    clauses.push('Captured output');
+  }
+
+  // 2. Outcome (real exit status beats a classification label).
+  if (ev.exit_code !== undefined) {
+    clauses.push(
+      ev.exit_code === 0
+        ? 'exited 0 (success)'
+        : `exited ${ev.exit_code}${ev.signal ? ` (signal ${ev.signal})` : ''}`,
+    );
+  } else if (ev.result_classification) {
+    clauses.push(`result: ${ev.result_classification}`);
+  }
+  if (ev.duration_ms !== undefined) {
+    clauses.push(`in ${ev.duration_ms.toLocaleString()} ms`);
+  }
+
+  // 3. Citable evidence handle: blob id + content hash + captured bytes.
+  const handle: string[] = [];
+  const evId = ev.stdout_evidence_id || ev.stderr_evidence_id || ev.evidence_id;
+  if (evId) handle.push(`blob ${evId}`);
+  const hash = primaryEvidenceHash(ev);
+  if (hash) handle.push(`sha256 ${shortHash(hash)}…`);
+  const bytes = formatBytesHuman(evidenceBytes(ev));
+  if (bytes) handle.push(`${bytes} captured`);
+
+  let sentence = clauses.join(' ');
+  if (handle.length > 0) sentence += ` — ${handle.join(', ')}`;
+  sentence += '.';
+  if (ev.stdout_truncated || ev.partial) {
+    sentence += ' Output was truncated at capture — fetch the full blob via its evidence ID to verify the excerpt in context.';
+  }
+  return sentence;
 }
 
 function parsedSummaryForEvidence(ev: EvidenceChain): string | undefined {
@@ -962,6 +1089,7 @@ function evidenceBytes(ev: EvidenceChain): number | undefined {
   const total = (ev.stdout_bytes ?? 0) + (ev.stderr_bytes ?? 0);
   if (total > 0) return total;
   if (ev.stdout_total_bytes && ev.stdout_total_bytes > 0) return ev.stdout_total_bytes;
+  if (ev.content_bytes && ev.content_bytes > 0) return ev.content_bytes;
   return undefined;
 }
 
@@ -978,19 +1106,24 @@ function proofCardForEvidence(ev: EvidenceChain, profile: ReportProfile): Eviden
   const key = evidenceKey(ev);
   const kind = sourceKindForEvidence(ev);
   const raw = rawPreviewForEvidence(ev, profile);
+  const command = ev.command || (ev.binary ? [ev.binary, ...(ev.args ?? [])].join(' ') : undefined);
   return {
     id: stableProofId('proof', `${key}|${ev.claim}`),
     appendix_ref: stableProofId('ev', key),
     claim: ev.claim,
     proof: proofTextForEvidence(ev, kind),
+    proof_status: proofStatusForEvidence(ev),
     source_kind: kind,
     tool: ev.tool,
     technique: ev.technique,
-    command: ev.command,
+    command,
+    agent_id: ev.agent_id,
+    exit_code: ev.exit_code,
+    duration_ms: ev.duration_ms,
     timestamp: ev.timestamp,
     action_id: ev.action_id,
     evidence_id: ev.stdout_evidence_id || ev.stderr_evidence_id || ev.evidence_id,
-    content_hash: ev.stdout_content_hash || ev.stderr_content_hash,
+    content_hash: primaryEvidenceHash(ev),
     evidence_bytes: evidenceBytes(ev),
     evidence_type: ev.evidence_type,
     filename: ev.evidence_filename,
@@ -1483,10 +1616,14 @@ function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceSty
   }
 
   for (const card of cards.slice(0, 5)) {
+    const unproven = card.proof_status === 'none';
     lines.push(`- **${sourceKindLabel(card.source_kind)}:** ${card.claim}`);
-    lines.push(`  - Proof: ${card.proof}`);
+    lines.push(`  - ${unproven ? '⚠ Unproven — ' : ''}Proof: ${card.proof}`);
     const meta = [
       card.tool ? `tool: ${card.tool}` : undefined,
+      card.agent_id ? `agent: ${card.agent_id}` : undefined,
+      card.exit_code !== undefined ? `exit: ${card.exit_code}` : undefined,
+      card.duration_ms !== undefined ? `duration: ${card.duration_ms.toLocaleString()} ms` : undefined,
       card.timestamp ? `time: ${formatTimestamp(card.timestamp)}` : undefined,
       card.filename ? `file: ${card.filename}` : undefined,
     ].filter(Boolean);

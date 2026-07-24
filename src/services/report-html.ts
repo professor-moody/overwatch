@@ -488,8 +488,12 @@ function stableRenderId(prefix: string, value: string): string {
 }
 
 function renderProofCardHtml(card: EvidenceProofCard): string {
+  const unproven = card.proof_status === 'none';
   const meta = [
     card.tool ? `<span>${esc(card.tool)}</span>` : '',
+    card.agent_id ? `<span>agent: ${esc(card.agent_id)}</span>` : '',
+    card.exit_code !== undefined ? `<span>exit ${card.exit_code}</span>` : '',
+    card.duration_ms !== undefined ? `<span>${card.duration_ms.toLocaleString()} ms</span>` : '',
     card.timestamp ? `<span>${formatTs(card.timestamp)}</span>` : '',
     card.technique ? `<span>${esc(card.technique)}</span>` : '',
     card.evidence_type ? `<span>${esc(card.evidence_type)}</span>` : '',
@@ -497,15 +501,18 @@ function renderProofCardHtml(card: EvidenceProofCard): string {
   ].filter(Boolean).join('');
   const metadataRows = [
     card.action_id ? `<div><dt>Action ID</dt><dd><code>${esc(card.action_id)}</code></dd></div>` : '',
+    card.agent_id ? `<div><dt>Agent</dt><dd><code>${esc(card.agent_id)}</code></dd></div>` : '',
+    card.exit_code !== undefined ? `<div><dt>Exit Code</dt><dd>${card.exit_code}</dd></div>` : '',
     card.evidence_id ? `<div><dt>Evidence ID</dt><dd><code>${esc(card.evidence_id)}</code></dd></div>` : '',
     card.content_hash ? `<div><dt>SHA-256</dt><dd><code>${esc(card.content_hash)}</code></dd></div>` : '',
     card.appendix_ref ? `<div><dt>Archive Ref</dt><dd><code>${esc(card.appendix_ref)}</code></dd></div>` : '',
     card.evidence_bytes !== undefined ? `<div><dt>Size</dt><dd>${card.evidence_bytes.toLocaleString()} bytes</dd></div>` : '',
   ].filter(Boolean).join('');
   return `
-    <article class="proof-card" id="${esc(card.id)}">
+    <article class="proof-card${unproven ? ' proof-card-unproven' : ''}" id="${esc(card.id)}">
       <div class="proof-card-head">
         <span class="proof-kind proof-${esc(card.source_kind)}">${esc(sourceKindLabel(card.source_kind))}</span>
+        ${unproven ? '<span class="proof-unproven-badge">⚠ Unproven</span>' : ''}
       </div>
       <p class="proof-claim">${inlineMarkdownToHtml(card.claim)}</p>
       <p class="proof-text">${esc(card.proof)}</p>
@@ -1069,6 +1076,8 @@ const CSS_STYLES = `
   .risk-score { font-weight: 600; font-size: 0.85rem; }
   .proof-grid { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; }
   .proof-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem; background: var(--bg); break-inside: avoid; page-break-inside: avoid; }
+  .proof-card-unproven { border-style: dashed; opacity: 0.9; }
+  .proof-unproven-badge { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--warn, #b45309); border: 1px solid var(--warn, #b45309); border-radius: 4px; padding: 0.05rem 0.35rem; }
   .proof-card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
   .proof-kind { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--accent); }
   .proof-claim { font-weight: 600; margin-bottom: 0.35rem; }
