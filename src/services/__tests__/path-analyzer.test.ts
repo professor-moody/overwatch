@@ -149,24 +149,53 @@ describe('PathAnalyzer', () => {
       expect(missing.missing_nodes).toEqual(['ghost-node']);
     });
 
-    it('logs projection failures instead of swallowing malformed duplicate path edges', () => {
+    // H5: two edge types between the same ordered pair (the most common BloodHound
+    // shape) is NORMAL. The simple path graph holds one edge per pair, so this must
+    // project cleanly — NOT throw and write a durable, hash-chained WAL warning from
+    // this read path, which flooded the activity log on every get_state/frontier rebuild.
+    it('H5: multiple edge types between the same pair project without a durable projection warning', () => {
       const graph = makeGraph();
       addNode(graph, 'host-a', { type: 'host' });
       addNode(graph, 'host-b', { type: 'host' });
-      addEdge(graph, 'host-a', 'host-b', 'REACHABLE');
-      addEdge(graph, 'host-a', 'host-b', 'ADMIN_TO');
+      addEdge(graph, 'host-a', 'host-b', 'REACHABLE', { confidence: 0.5 });
+      addEdge(graph, 'host-a', 'host-b', 'ADMIN_TO', { confidence: 1.0 });   // cheaper (higher confidence)
 
       const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
+      const before = ctx.activityLog.length;
       const analyzer = new PathAnalyzer(ctx, BIDIR, () => ({ nodes: [], edges: [] }));
       const result = analyzer.findShortestPathDetailed('host-a', 'host-b');
 
       expect(result.status).toBe('found');
-      const warning = ctx.activityLog.find(entry =>
+      // No projection-failure warning is written (it must not touch durable state on read).
+      const warnings = ctx.activityLog.filter(entry =>
         entry.event_type === 'instrumentation_warning' &&
-        entry.description.includes('Path graph projection failed')
+        entry.description.includes('Path graph projection failed'),
       );
-      expect(warning).toBeDefined();
-      expect(warning?.details?.analysis_status).toBe('analysis_failed');
+      expect(warnings).toHaveLength(0);
+      expect(ctx.activityLog.length).toBe(before); // read path wrote nothing to the log
+    });
+
+    it('H5: keeps the CHEAPER weight so the direct hop is not masked by the expensive type', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-a', { type: 'host' });
+      addNode(graph, 'host-b', { type: 'host' });
+      addNode(graph, 'host-c', { type: 'host' });
+      // Direct a->b carries an EXPENSIVE type first, then a CHEAP one (same pair).
+      addEdge(graph, 'host-a', 'host-b', 'REACHABLE', { confidence: 0.1 }); // weight ~0.9
+      addEdge(graph, 'host-a', 'host-b', 'ADMIN_TO', { confidence: 1.0 });  // weight ~0.001
+      // A moderate detour a->c->b.
+      addEdge(graph, 'host-a', 'host-c', 'REACHABLE', { confidence: 0.9 }); // weight ~0.1
+      addEdge(graph, 'host-c', 'host-b', 'REACHABLE', { confidence: 0.9 }); // weight ~0.1 (detour ~0.2)
+
+      const ctx = new EngineContext(graph, makeConfig(), testSandbox.path('test-state.json'));
+      const analyzer = new PathAnalyzer(ctx, BIDIR, () => ({ nodes: [], edges: [] }));
+      const detailed = analyzer.findShortestPathDetailed('host-a', 'host-b', 'confidence');
+
+      // With the cheap ADMIN_TO weight retained, the DIRECT hop (~0.001) beats the
+      // detour (~0.2). Before the fix the cheap type was dropped and a->b kept weight
+      // ~0.9, so the detour a->c->b won instead.
+      expect(detailed.status).toBe('found');
+      expect(detailed.path).toEqual(['host-a', 'host-b']);
     });
 
     it('traverses bidirectional edges in reverse', () => {
