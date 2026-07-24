@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { Columns3, Copy, LayoutList, Pause, Play, Plus, RefreshCw, Scissors, Send, Square, Trash2 } from 'lucide-react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { cn, formatRelativeTime } from '../../lib/utils';

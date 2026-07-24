@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { recoveryPresentation } from '../../lib/recovery-presentation';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { cn } from '../../lib/utils';
