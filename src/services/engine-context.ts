@@ -1810,6 +1810,22 @@ export function tieredTruncate(log: ActivityLogEntry[], budget: number): Activit
   // entries → unbounded) while never dropping a chained entry from the middle.
   const keep = new Array(log.length).fill(false);
   let kept = 0;
+
+  // Tier 0 — a MOST-RECENT tail floor kept unconditionally, ahead of the tier fills.
+  // Without it, once the chained tier alone reaches `budget` (hash_chain_enabled is on
+  // by default and excludes only thought/heartbeat) it consumes the entire budget, so
+  // a freshly-appended NON-chained entry — thought, inference_generated,
+  // transcript_turn_ingested, operator-provenance — is evicted by the very truncate its
+  // own push triggered, silently and with no counter. Reserving the tail guarantees the
+  // just-appended entry and a recent window of every class survive. It preserves chain
+  // contiguity: the tail is a contiguous block at the end, so the chained entries it
+  // keeps are the most-recent chained, and the subsequent fill(chained) extends that
+  // suffix backward — the kept chained set is still a contiguous most-recent suffix.
+  const tailFloor = Math.min(Math.max(1, Math.floor(budget / 10)), budget);
+  for (let i = log.length - 1; i >= 0 && kept < tailFloor; i -= 1) {
+    keep[i] = true; kept += 1;
+  }
+
   const fill = (pred: (e: ActivityLogEntry) => boolean): void => {
     for (let i = log.length - 1; i >= 0 && kept < budget; i -= 1) {
       if (keep[i]) continue;

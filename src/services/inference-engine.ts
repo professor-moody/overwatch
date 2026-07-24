@@ -225,7 +225,7 @@ export class InferenceEngine {
         for (const tgt of targets) {
           if (src === tgt) continue;
           if (!this.ctx.graph.hasNode(src) || !this.ctx.graph.hasNode(tgt)) continue;
-          const existing = this.ctx.graph.edges(src, tgt);
+          const existing = this.ctx.graph.outEdges(src, tgt);
           const alreadyExists = existing.some((e: string) => {
             return this.ctx.graph.getEdgeAttributes(e).type === production.edge_type;
           });

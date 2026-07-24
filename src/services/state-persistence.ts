@@ -4396,7 +4396,7 @@ export class StatePersistence {
                   { suppress_derived_audit: p.audit_externalized === true },
                 );
               } else {
-                const existingEdges = ctx.graph.edges(p.source, p.target);
+                const existingEdges = ctx.graph.outEdges(p.source, p.target);
                 let merged = false;
                 for (const eid of existingEdges) {
                   const ea = ctx.graph.getEdgeAttributes(eid);
@@ -4451,7 +4451,7 @@ export class StatePersistence {
               }
               if (!edgeId && p.source && p.target && p.edge_type) {
                 const matches = ctx.graph.hasNode(p.source) && ctx.graph.hasNode(p.target)
-                  ? ctx.graph.edges(p.source, p.target).filter(candidate =>
+                  ? ctx.graph.outEdges(p.source, p.target).filter(candidate =>
                       ctx.graph.getEdgeAttributes(candidate).type === p.edge_type)
                   : [];
                 if (matches.length > 1) {
@@ -4546,7 +4546,7 @@ export class StatePersistence {
         || !this.ctx.graph.hasNode(source)
         || !this.ctx.graph.hasNode(target)
       ) return [];
-      return this.ctx.graph.edges(source, target)
+      return this.ctx.graph.outEdges(source, target)
         .filter(edgeId => edgeIdentityMatches(
           this.ctx.graph.getEdgeAttributes(edgeId),
           props as EdgeProperties,
@@ -4625,7 +4625,7 @@ export class StatePersistence {
             if (!hasExact && hasLegacyIdentity) {
               const matches = this.ctx.graph.hasNode(payload.source as string)
                 && this.ctx.graph.hasNode(payload.target as string)
-                ? this.ctx.graph.edges(payload.source as string, payload.target as string)
+                ? this.ctx.graph.outEdges(payload.source as string, payload.target as string)
                     .filter(edgeId => this.ctx.graph.getEdgeAttributes(edgeId).type === payload.edge_type)
                 : [];
               if (matches.length > 0) return undefined;

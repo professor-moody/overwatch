@@ -76,29 +76,48 @@ export class PathAnalyzer {
 
       const weight = this.computeEdgeWeight(attrs, optimize);
 
-      const fwdKey = `${source}--${attrs.type}--${target}`;
-      if (!pg.hasEdge(fwdKey)) {
-        try {
-          pg.addEdgeWithKey(fwdKey, source, target, { weight } as PathEdgeAttrs as unknown as EdgeProperties);
-        } catch (err) {
-          this.logProjectionFailure(fwdKey, source, target, err);
-        }
-      }
+      // H5: `pg` is a SIMPLE directed graph — at most one edge per ordered pair. The
+      // guard must therefore be keyed on the ORDERED PAIR, not the type-specific key:
+      // two edge types between the same pair (e.g. ADMIN_TO + CAN_RDPINTO, the most
+      // common BloodHound shape) both passed a `hasEdge(fwdKey)` key check, then
+      // addEdgeWithKey threw because the pair was already connected — and that throw was
+      // logged as a durable, hash-chained WAL warning from a READ path (get_state /
+      // frontier), flooding the activity log ~2.8 KB per rebuild. When the pair is
+      // already projected, keep the CHEAPER weight so shortest-path/OPSEC ranking uses
+      // the best available hop instead of silently dropping the second type's weight.
+      this.projectPathEdge(pg, `${source}--${attrs.type}--${target}`, source, target, weight);
 
       if (this.bidirectionalEdgeTypes.has(attrs.type)) {
-        const revKey = `${target}--${attrs.type}--${source}-rev`;
-        if (!pg.hasEdge(revKey)) {
-          try {
-            pg.addEdgeWithKey(revKey, target, source, { weight } as PathEdgeAttrs as unknown as EdgeProperties);
-          } catch (err) {
-            this.logProjectionFailure(revKey, target, source, err);
-          }
-        }
+        this.projectPathEdge(pg, `${target}--${attrs.type}--${source}-rev`, target, source, weight);
       }
     });
 
     this.ctx.pathGraphCache.set(optimize, pg);
     return pg;
+  }
+
+  /**
+   * Project one directed hop into the simple reachability graph, keyed on the ORDERED
+   * PAIR (a simple graph holds at most one edge per pair). If the pair is already
+   * projected by another edge type, keep whichever weight is lower — a lower weight is a
+   * better path, so this never lets a more-expensive edge type mask a cheaper one, and it
+   * never triggers the duplicate-add exception that used to write durable WAL warnings.
+   */
+  private projectPathEdge(pg: OverwatchGraph, key: string, source: string, target: string, weight: number): void {
+    if (!pg.hasEdge(source, target)) {
+      try {
+        pg.addEdgeWithKey(key, source, target, { weight } as PathEdgeAttrs as unknown as EdgeProperties);
+      } catch (err) {
+        // A genuine, non-collision failure (should be unreachable now). Kept as a
+        // fallback but no longer fires for the common multi-edge-type shape.
+        this.logProjectionFailure(key, source, target, err);
+      }
+      return;
+    }
+    const existingKey = pg.edge(source, target);
+    if (existingKey === undefined) return;
+    const existingWeight = (pg.getEdgeAttribute(existingKey, 'weight') as number | undefined) ?? Infinity;
+    if (weight < existingWeight) pg.setEdgeAttribute(existingKey, 'weight', weight);
   }
 
   private computeEdgeWeight(attrs: EdgeProperties, optimize: PathOptimize): number {
