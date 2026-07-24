@@ -162,6 +162,32 @@ describe('finding tools', () => {
     expect(last.raw_output_truncated).toBe(false);
   });
 
+  it('report_finding persists matched-signal excerpts and backfills evidence_id (3c)', async () => {
+    const result = await handlers.report_finding({
+      agent_id: 'agent-ex',
+      action_id: 'act-ex',
+      tool_name: 'manual',
+      nodes: [{ id: 'host-10-10-10-8', type: 'host', label: '10.10.10.8', properties: { ip: '10.10.10.8' } }],
+      edges: [],
+      evidence: { type: 'command_output', content: 'uid=0(root) gid=0(root)' },
+      excerpts: [
+        { node_id: 'host-10-10-10-8', byte_start: 0, byte_end: 11, matched_by: 'agent', snippet: 'uid=0(root)' },
+        // malformed span — must be dropped with a warning, not persisted.
+        { node_id: 'host-10-10-10-8', byte_start: 8, byte_end: 3, matched_by: 'agent' },
+      ],
+    });
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+
+    const event = engine.getFullHistory().find(e => e.action_id === 'act-ex' && e.event_type === 'finding_reported');
+    const excerpts = (event?.details as any)?.excerpts;
+    expect(excerpts).toHaveLength(1);
+    expect(excerpts[0].byte_start).toBe(0);
+    // evidence_id backfilled to the finding's stored blob.
+    expect(excerpts[0].evidence_id).toBe(payload.evidence_id);
+    expect(payload.warnings?.some((w: string) => /invalid byte range/i.test(w))).toBe(true);
+  });
+
   it('get_evidence with invalid ID returns error', async () => {
     const result = await handlers.get_evidence({
       evidence_id: 'nonexistent-evidence-id',

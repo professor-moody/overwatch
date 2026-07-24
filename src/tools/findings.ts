@@ -55,7 +55,16 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
           content: z.string(),
           filename: z.string().optional()
         }).optional().describe('Supporting evidence'),
-        raw_output: z.string().optional().describe('Raw command/tool output for logging')
+        raw_output: z.string().optional().describe('Raw command/tool output for logging'),
+        excerpts: z.array(z.object({
+          evidence_id: z.string().optional().describe('Evidence blob the offsets index into; defaults to this finding\'s evidence blob'),
+          node_id: z.string().optional().describe('Graph node this excerpt justifies'),
+          edge_key: z.string().optional().describe('Graph edge this excerpt justifies'),
+          byte_start: z.number().int().min(0).describe('Start byte offset into the evidence blob (inclusive)'),
+          byte_end: z.number().int().min(0).describe('End byte offset into the evidence blob (exclusive)'),
+          matched_by: z.string().optional().describe('What recognized the signal (rule/regex/parser/agent)'),
+          snippet: z.string().optional().describe('The matched text captured at conclusion time'),
+        })).optional().describe('Matched-signal excerpts: the specific byte range(s) of the evidence that justify this finding, so a reader can verify how it was found.')
       },
       annotations: {
         readOnlyHint: false,
@@ -64,7 +73,7 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('report_finding', async ({ agent_id, action_id, tool_name: rawToolName, tool, target_node_ids = [], frontier_item_id, nodes, edges, evidence, raw_output }) => {
+    withErrorBoundary('report_finding', async ({ agent_id, action_id, tool_name: rawToolName, tool, target_node_ids = [], frontier_item_id, nodes, edges, evidence, raw_output, excerpts }) => {
       const tool_name = rawToolName || tool;
       const normalizedActionId = action_id || uuidv4();
       const warnings: string[] = [];
@@ -92,7 +101,8 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
           }
         })),
         evidence,
-        raw_output
+        raw_output,
+        excerpts,
       };
 
       const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
@@ -195,9 +205,10 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         edge_count: prepared.finding.edges.length,
         ingested_node_ids: prepared.finding.nodes.map(n => n.id),
       };
+      let storedEvidenceId: string | undefined;
       if (evidence || raw_output) {
         const store = engine.getEvidenceStore();
-        const evidenceId = store.store({
+        storedEvidenceId = store.store({
           action_id: normalizedActionId,
           finding_id: finding.id,
           evidence_type: evidence?.type || 'command_output',
@@ -205,7 +216,7 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
           content: evidence?.content,
           raw_output,
         });
-        evidenceDetails.evidence_id = evidenceId;
+        evidenceDetails.evidence_id = storedEvidenceId;
       }
       if (evidence) {
         evidenceDetails.evidence_type = evidence.type;
@@ -214,6 +225,22 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
       }
       if (raw_output) {
         evidenceDetails.raw_output = raw_output.slice(0, 8192);
+      }
+
+      // 3c: persist matched-signal excerpts. Backfill evidence_id to this finding's
+      // durable blob when omitted, drop malformed spans (end must exceed start) with
+      // a loud warning so a bad locator never silently claims to prove something.
+      if (excerpts && excerpts.length > 0) {
+        const validExcerpts = excerpts
+          .map(ex => ({ ...ex, evidence_id: ex.evidence_id ?? storedEvidenceId }))
+          .filter(ex => {
+            const ok = ex.byte_end > ex.byte_start && (ex.evidence_id !== undefined || ex.snippet !== undefined);
+            if (!ok) {
+              warnings.push(`Dropped an excerpt with an invalid byte range (${ex.byte_start}-${ex.byte_end}) or no blob/snippet.`);
+            }
+            return ok;
+          });
+        if (validExcerpts.length > 0) evidenceDetails.excerpts = validExcerpts;
       }
 
       const result = engine.ingestFinding(prepared.finding);

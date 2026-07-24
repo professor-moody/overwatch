@@ -4,6 +4,35 @@
 // ============================================================
 
 import { createHash } from 'crypto';
+import type { EvidenceExcerpt } from '../types.js';
+
+/**
+ * Derive a matched-signal excerpt (3c): locate `matched` inside the raw parser
+ * `source` and return its byte range so a report can quote exactly which bytes
+ * justified a graph artifact and a reader can re-read + verify them against the
+ * captured blob. Byte offsets (not char offsets) so they index the stored blob
+ * correctly for multi-byte UTF-8. Returns undefined when the text isn't found —
+ * callers should simply omit the excerpt rather than emit a bogus locator.
+ */
+export function deriveExcerpt(
+  source: string,
+  matched: string,
+  opts: { node_id?: string; edge_key?: string; matched_by?: string; from?: number } = {},
+): EvidenceExcerpt | undefined {
+  if (!matched) return undefined;
+  const idx = source.indexOf(matched, opts.from ?? 0);
+  if (idx < 0) return undefined;
+  const byte_start = Buffer.byteLength(source.slice(0, idx), 'utf8');
+  const byte_end = byte_start + Buffer.byteLength(matched, 'utf8');
+  return {
+    node_id: opts.node_id,
+    edge_key: opts.edge_key,
+    byte_start,
+    byte_end,
+    matched_by: opts.matched_by,
+    snippet: matched,
+  };
+}
 
 export function normalizeKeyPart(value: string): string {
   return value

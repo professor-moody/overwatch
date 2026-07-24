@@ -410,6 +410,62 @@ describe('proof cards — composed proof (3b)', () => {
   });
 });
 
+// ============================================================
+// 3c — matched-signal excerpts: lift, verify, render
+// ============================================================
+describe('matched-signal excerpts (3c)', () => {
+  const historyWithExcerpt = (snippet: string) => [{
+    event_id: 'ev-x', timestamp: '2026-01-01T00:00:00Z',
+    description: 'SMB signing not required',
+    event_type: 'action_completed',
+    action_id: 'act-x',
+    target_node_ids: ['host-x'],
+    details: {
+      stdout_evidence_id: 'ev-blob',
+      exit_code: 0,
+      command: 'nmap -p445 --script smb2-security-mode 10.10.10.1',
+      excerpts: [{ node_id: 'host-x', byte_start: 5, byte_end: 30, matched_by: 'nmap', snippet }],
+    },
+  }] as never;
+
+  it('lifts excerpts, backfills evidence_id, resolves + verifies against the blob', () => {
+    const chains = buildEvidenceChainsForNode('host-x', makeGraph(), historyWithExcerpt('445/tcp open microsoft-ds'), {
+      sliceLoader: (id: string) => id === 'ev-blob' ? { text: '445/tcp open microsoft-ds', total_bytes: 100 } : null,
+    });
+    const chain = chains.find(c => c.action_id === 'act-x');
+    expect(chain?.excerpts).toHaveLength(1);
+    expect(chain!.excerpts![0].evidence_id).toBe('ev-blob'); // backfilled from stdout_evidence_id
+    expect(chain!.excerpts![0].verified).toBe(true);
+    expect(chain!.excerpts![0].resolved_snippet).toBe('445/tcp open microsoft-ds');
+
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.proof_status).toBe('excerpt');
+    expect(card.proof).toContain('Matched:');
+    expect(card.proof).toContain('445/tcp open microsoft-ds');
+    expect(card.proof).toContain('✓ verified');
+  });
+
+  it('flags a mismatch when resolved bytes differ from the captured snippet', () => {
+    const chains = buildEvidenceChainsForNode('host-x', makeGraph(), historyWithExcerpt('445/tcp open microsoft-ds'), {
+      sliceLoader: () => ({ text: 'TAMPERED CONTENT', total_bytes: 100 }),
+    });
+    const chain = chains.find(c => c.action_id === 'act-x');
+    expect(chain!.excerpts![0].verified).toBe(false);
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.proof).toContain('✗ MISMATCH');
+  });
+
+  it('drops a malformed excerpt span (end <= start)', () => {
+    const history = [{
+      event_id: 'ev-y', timestamp: '2026-01-01T00:00:00Z', description: 'x',
+      event_type: 'action_completed', action_id: 'act-y', target_node_ids: ['host-x'],
+      details: { stdout_evidence_id: 'ev-blob', excerpts: [{ byte_start: 10, byte_end: 10, matched_by: 'x' }] },
+    }] as never;
+    const chain = buildEvidenceChainsForNode('host-x', makeGraph(), history).find(c => c.action_id === 'act-y');
+    expect(chain?.excerpts).toBeUndefined();
+  });
+});
+
 describe('buildAllEvidenceChains', () => {
   it('builds chains for all interesting node types', () => {
     const allChains = buildAllEvidenceChains(makeGraph(), makeHistory());

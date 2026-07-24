@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "tool_count": 95,
-  "registry_sha256": "05316e50f9f30cd622c0c01684f17960eb0c5186ee8bd834e24fe917d6cf5955",
+  "registry_sha256": "f7753e09a27feea49241df47c914828d7425271538f8665de29fcc44c7cdfa52",
   "categories": [
     {
       "id": "state-readiness",
@@ -6126,6 +6126,50 @@
             ],
             "type": "object"
           },
+          "excerpts": {
+            "description": "Matched-signal excerpts: the specific byte range(s) of the evidence that justify this finding, so a reader can verify how it was found.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "byte_end": {
+                  "description": "End byte offset into the evidence blob (exclusive)",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "byte_start": {
+                  "description": "Start byte offset into the evidence blob (inclusive)",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "edge_key": {
+                  "description": "Graph edge this excerpt justifies",
+                  "type": "string"
+                },
+                "evidence_id": {
+                  "description": "Evidence blob the offsets index into; defaults to this finding's evidence blob",
+                  "type": "string"
+                },
+                "matched_by": {
+                  "description": "What recognized the signal (rule/regex/parser/agent)",
+                  "type": "string"
+                },
+                "node_id": {
+                  "description": "Graph node this excerpt justifies",
+                  "type": "string"
+                },
+                "snippet": {
+                  "description": "The matched text captured at conclusion time",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "byte_end",
+                "byte_start"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "frontier_item_id": {
             "description": "Frontier item this finding came from",
             "type": "string"
@@ -6229,7 +6273,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "ca3475d43dbd2d67ef4424c9c9f9851283c5d372dcfbde5ca3ce3b9eba8b0d9e",
+      "input_schema_sha256": "bc09b96063633298bdb1cd329de30e27d3b4ffeeab641b1f93771c0bae41772d",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/report-finding.md",
