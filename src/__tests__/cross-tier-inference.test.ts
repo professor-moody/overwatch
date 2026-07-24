@@ -124,6 +124,11 @@ describe('SSRF_REACHES_IMDS', () => {
     const host = buildHost(graph, makeConfig());
     const r = runCrossTierInference(host);
     expect(r.ssrf_reaches_imds).toBe(1);
+    // 3d: the edge must be labelled inferred_by_rule so source_trust reads 'inferred'
+    // (previously only a non-canonical `rule` prop, so it was never labelled inferred).
+    const edge = graph.edges('webapp-1', 'res-ec2').find(e => graph.getEdgeAttributes(e).type === 'CAN_REACH');
+    expect(edge).toBeDefined();
+    expect(graph.getEdgeAttributes(edge!).inferred_by_rule).toBe('ssrf_reaches_imds');
   });
 
   it('does NOT fire when IMDSv2 is required', () => {

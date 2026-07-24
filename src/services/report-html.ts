@@ -510,7 +510,15 @@ function renderExcerptsHtml(excerpts?: ProofExcerpt[]): string {
 }
 
 function renderProofCardHtml(card: EvidenceProofCard): string {
-  const unproven = card.proof_status === 'none';
+  // 3d: an inferred card is a derivation, not an unproven claim.
+  const inferred = card.source_trust === 'inferred';
+  const unproven = card.proof_status === 'none' && !inferred;
+  const trustBadge = card.source_trust
+    ? `<span class="proof-trust proof-trust-${card.source_trust}">${esc(card.source_trust)}</span>`
+    : '';
+  const reasoning = card.reasoning && card.reasoning.length > 0
+    ? `<div class="proof-reasoning"><span class="proof-reasoning-label">Reasoning</span><ul>${card.reasoning.slice(0, 3).map(r => `<li>${esc(r)}</li>`).join('')}</ul></div>`
+    : '';
   const meta = [
     card.tool ? `<span>${esc(card.tool)}</span>` : '',
     card.agent_id ? `<span>agent: ${esc(card.agent_id)}</span>` : '',
@@ -531,14 +539,16 @@ function renderProofCardHtml(card: EvidenceProofCard): string {
     card.evidence_bytes !== undefined ? `<div><dt>Size</dt><dd>${card.evidence_bytes.toLocaleString()} bytes</dd></div>` : '',
   ].filter(Boolean).join('');
   return `
-    <article class="proof-card${unproven ? ' proof-card-unproven' : ''}" id="${esc(card.id)}">
+    <article class="proof-card${unproven ? ' proof-card-unproven' : ''}${inferred ? ' proof-card-inferred' : ''}" id="${esc(card.id)}">
       <div class="proof-card-head">
         <span class="proof-kind proof-${esc(card.source_kind)}">${esc(sourceKindLabel(card.source_kind))}</span>
+        ${trustBadge}
         ${unproven ? '<span class="proof-unproven-badge">⚠ Unproven</span>' : ''}
       </div>
       <p class="proof-claim">${inlineMarkdownToHtml(card.claim)}</p>
       <p class="proof-text">${esc(card.proof)}</p>
       ${meta ? `<div class="proof-meta">${meta}</div>` : ''}
+      ${reasoning}
       ${card.parsed_summary ? `<div class="proof-summary">${esc(card.parsed_summary)}</div>` : ''}
       ${renderExcerptsHtml(card.excerpts)}
       ${card.command ? `<pre class="evidence-command">${esc(card.command)}</pre>` : ''}
@@ -1101,6 +1111,14 @@ const CSS_STYLES = `
   .proof-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem; background: var(--bg); break-inside: avoid; page-break-inside: avoid; }
   .proof-card-unproven { border-style: dashed; opacity: 0.9; }
   .proof-unproven-badge { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--warn, #b45309); border: 1px solid var(--warn, #b45309); border-radius: 4px; padding: 0.05rem 0.35rem; }
+  .proof-trust { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; border-radius: 4px; padding: 0.05rem 0.35rem; }
+  .proof-trust-observed { color: var(--ok, #15803d); border: 1px solid var(--ok, #15803d); }
+  .proof-trust-inferred { color: var(--accent); border: 1px solid var(--accent); }
+  .proof-trust-asserted { color: var(--info); border: 1px solid var(--info); }
+  .proof-card-inferred { border-left: 3px solid var(--accent); }
+  .proof-reasoning { margin: 0.4rem 0; font-size: 0.82rem; }
+  .proof-reasoning-label { font-size: 0.68rem; text-transform: uppercase; color: var(--info); font-weight: 700; }
+  .proof-reasoning ul { margin: 0.2rem 0 0 1rem; }
   .proof-excerpts { margin: 0.45rem 0; border-left: 3px solid var(--accent); padding-left: 0.6rem; }
   .proof-excerpts > summary { cursor: pointer; color: var(--accent); font-size: 0.82rem; font-weight: 600; }
   .excerpt { margin-top: 0.4rem; }

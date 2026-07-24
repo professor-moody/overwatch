@@ -9,7 +9,7 @@ import type {
   ExportedGraph, ExportedGraphEdge,
   AgentTask, InferenceRuleSuggestion, SkillGapReport,
   ContextImprovementReport, TraceQualityReport,
-  EvidenceExcerpt,
+  EvidenceExcerpt, SourceTrust,
 } from '../types.js';
 import type { ActivityLogEntry } from './engine-context.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
@@ -99,6 +99,10 @@ export interface EvidenceProofCard {
   parsed_summary?: string;
   /** Matched-signal excerpts (3c) — the specific bytes that justify the claim. */
   excerpts?: ProofExcerpt[];
+  /** Honesty + derivation + reasoning (3d). */
+  source_trust?: SourceTrust;
+  derivation?: string;
+  reasoning?: string[];
   raw_preview?: string;
   raw_preview_redacted?: boolean;
 }
@@ -181,6 +185,13 @@ export interface EvidenceChain {
   /** Matched-signal excerpts (3c) — the specific bytes that justify the finding,
    * resolved and verified against the source blob where a slice loader is available. */
   excerpts?: ProofExcerpt[];
+  /** Honesty label (3d): observed (direct capture) / asserted (claimed, no capture) /
+   * inferred (produced by a rule). Lets a report distinguish proof from hypothesis. */
+  source_trust?: SourceTrust;
+  /** For inferred chains (3d): the rule that fired and the premises that satisfied it. */
+  derivation?: string;
+  /** Joined reasoning (3d): log_thought/decision entries tied to this action. */
+  reasoning?: string[];
 }
 
 /** A matched-signal excerpt as surfaced in a report: the captured span plus, when a
@@ -952,13 +963,35 @@ export function buildEvidenceChainsForNode(
       if (chain.excerpts.length === 0) delete chain.excerpts;
     }
 
+    // 3d: join reasoning (log_thought/decision) tied to this action, and stamp the
+    // honesty label so a reader can tell observed proof from an asserted claim.
+    const reasoning = joinReasoning(history, actionId);
+    if (reasoning.length > 0) chain.reasoning = reasoning;
+    chain.source_trust = sourceTrustForChain(chain);
+
     chains.push(chain);
   }
 
-  // 2. Entries without action_id — direct mentions
+  // 2. Entries without action_id — direct mentions (incl. inferred edges, 3d)
   const unlinkedEntries = relatedEntries.filter(e => !e.action_id);
-  for (const entry of unlinkedEntries.slice(0, 5)) {
-    chains.push({
+  for (const entry of unlinkedEntries.slice(0, 8)) {
+    // An inference_generated event carries the rule + premises that produced the
+    // edge — surface them as a derivation so an inferred finding states WHY it holds
+    // rather than implying direct observation.
+    if (entry.event_type === 'inference_generated') {
+      const derivation = formatDerivation(entry.details as Record<string, unknown> | undefined);
+      chains.push({
+        claim: entry.description,
+        timestamp: entry.timestamp,
+        source_event_type: 'inference_generated',
+        source_nodes: [],
+        target_nodes: [nodeId],
+        source_trust: 'inferred',
+        ...(derivation ? { derivation } : {}),
+      });
+      continue;
+    }
+    const chain: EvidenceChain = {
       claim: entry.description,
       timestamp: entry.timestamp,
       tool: entry.tool_name,
@@ -967,7 +1000,9 @@ export function buildEvidenceChainsForNode(
       result_classification: entry.result_classification || entry.outcome,
       source_nodes: [],
       target_nodes: [nodeId],
-    });
+    };
+    chain.source_trust = sourceTrustForChain(chain);
+    chains.push(chain);
   }
 
   // 3. Edge provenance — DERIVED_FROM, DUMPED_FROM chains
@@ -979,6 +1014,9 @@ export function buildEvidenceChainsForNode(
   for (const edge of derivationEdges) {
     const sourceLabel = nodeMap.get(edge.source)?.label || edge.source;
     const targetLabel = nodeMap.get(edge.target)?.label || edge.target;
+    // A DERIVED_FROM/DUMPED_FROM edge is an observed relationship unless it was
+    // itself produced by an inference rule (3d honesty label).
+    const inferredBy = (edge.properties as Record<string, unknown>).inferred_by_rule;
     chains.push({
       claim: `${edge.properties.type}: ${sourceLabel} → ${targetLabel}` +
         (edge.properties.derivation_method ? ` (method: ${edge.properties.derivation_method})` : ''),
@@ -986,6 +1024,8 @@ export function buildEvidenceChainsForNode(
       source_event_type: 'graph_provenance',
       source_nodes: [edge.source],
       target_nodes: [edge.target],
+      source_trust: inferredBy ? 'inferred' : 'observed',
+      ...(inferredBy ? { derivation: `Produced by inference rule ${String(inferredBy)}.` } : {}),
     });
   }
 
@@ -1050,6 +1090,55 @@ function evidenceRank(kind: EvidenceProofCard['source_kind']): number {
   }
 }
 
+/** 3d: honesty label for a chain — observed (direct capture), inferred (rule
+ * output / derivation), or asserted (claimed with no retained capture). */
+function sourceTrustForChain(ev: EvidenceChain): SourceTrust {
+  if (ev.source_trust) return ev.source_trust;
+  if (ev.derivation || ev.source_event_type === 'inference_generated') return 'inferred';
+  if (ev.excerpts?.length || ev.stdout_evidence_id || ev.stderr_evidence_id || ev.evidence_id || ev.raw_output || ev.evidence_content) return 'observed';
+  return 'asserted';
+}
+
+/** 3d: pull log_thought/decision entries tied to an action into short reasoning
+ * lines, so a report can show the operator/agent rationale next to the proof. */
+function joinReasoning(history: ActivityLogEntry[], actionId: string): string[] {
+  const out: string[] = [];
+  for (const entry of history) {
+    if (entry.event_type !== 'thought') continue;
+    const det = entry.details as Record<string, unknown> | undefined;
+    const related = Array.isArray(det?.related_action_ids) ? det!.related_action_ids as string[] : [];
+    if (entry.action_id !== actionId && !related.includes(actionId)) continue;
+    const kind = typeof det?.kind === 'string' ? det.kind : 'note';
+    const alts = Array.isArray(det?.considered_alternatives) && (det!.considered_alternatives as unknown[]).length > 0
+      ? ` (considered: ${(det!.considered_alternatives as string[]).slice(0, 3).join(', ')})`
+      : '';
+    out.push(`[${kind}] ${entry.description}${alts}`);
+    if (out.length >= 5) break;
+  }
+  return out;
+}
+
+/** 3d: render an inference event's premises into a one-line derivation, so an
+ * inferred finding states which rule fired on which facts — not just the edge. */
+function formatDerivation(det?: Record<string, unknown>): string | undefined {
+  if (!det) return undefined;
+  const ruleName = (typeof det.rule_name === 'string' && det.rule_name) || (typeof det.rule_id === 'string' && det.rule_id);
+  if (!ruleName) return undefined;
+  const parts: string[] = [`Inference rule ${ruleName}`];
+  if (typeof det.rule_description === 'string' && det.rule_description) parts.push(`(${det.rule_description})`);
+  if (typeof det.trigger_node_id === 'string') parts.push(`fired on ${det.trigger_node_id}`);
+  const pm = det.trigger_property_match as Record<string, unknown> | undefined;
+  if (pm && Object.keys(pm).length > 0) {
+    parts.push(`matching ${Object.entries(pm).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ')}`);
+  }
+  const re = det.requires_edge as Record<string, unknown> | undefined;
+  if (re && re.type) parts.push(`with a ${re.direction ?? ''} ${Array.isArray(re.type) ? re.type.join('/') : re.type} edge`.replace(/\s+/g, ' '));
+  if (typeof det.premise_source === 'string' && typeof det.premise_target === 'string') {
+    parts.push(`producing ${det.premise_source} → ${det.premise_target}`);
+  }
+  return parts.join(' ') + '.';
+}
+
 /** Whether the chain carries retrievable proof: a durable/inline blob ('full'),
  * a captured matched excerpt ('excerpt' — populated in 3c), or nothing ('none').
  * A finding with no real proof must SAY 'none' rather than emit a sentence that
@@ -1099,6 +1188,12 @@ function primaryEvidenceHash(ev: EvidenceChain): string | undefined {
  * from a timeline reference.
  */
 function proofTextForEvidence(ev: EvidenceChain, kind: EvidenceProofCard['source_kind']): string {
+  // Inferred relationship (3d): state the derivation honestly — which rule fired on
+  // which premises — rather than implying direct observation or "no proof".
+  if (ev.derivation) {
+    return `Derivation: ${ev.derivation} This relationship is INFERRED by rule, not directly observed.`;
+  }
+
   // Graph-derived relationship (DERIVED_FROM/DUMPED_FROM): no command exists.
   if (kind === 'provenance') {
     return `Graph provenance: ${ev.claim}. Derived relationship recorded in the graph; no direct command output is attached.`;
@@ -1226,6 +1321,9 @@ function proofCardForEvidence(ev: EvidenceChain, profile: ReportProfile): Eviden
     filename: ev.evidence_filename,
     parsed_summary: parsedSummaryForEvidence(ev),
     excerpts: ev.excerpts,
+    source_trust: ev.source_trust ?? sourceTrustForChain(ev),
+    derivation: ev.derivation,
+    reasoning: ev.reasoning,
     raw_preview: raw.preview,
     raw_preview_redacted: raw.redacted,
   };
@@ -1714,9 +1812,13 @@ function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceSty
   }
 
   for (const card of cards.slice(0, 5)) {
-    const unproven = card.proof_status === 'none';
-    lines.push(`- **${sourceKindLabel(card.source_kind)}:** ${card.claim}`);
-    lines.push(`  - ${unproven ? '⚠ Unproven — ' : ''}Proof: ${card.proof}`);
+    // 3d: an inferred card is not "unproven" — it is a derivation. Only flag a card
+    // that both lacks retrievable proof AND is not an honest inference.
+    const inferred = card.source_trust === 'inferred';
+    const unproven = card.proof_status === 'none' && !inferred;
+    const trustTag = card.source_trust ? ` _(${card.source_trust})_` : '';
+    lines.push(`- **${sourceKindLabel(card.source_kind)}:**${trustTag} ${card.claim}`);
+    lines.push(`  - ${unproven ? '⚠ Unproven — ' : inferred ? '⊢ Inferred — ' : ''}Proof: ${card.proof}`);
     const meta = [
       card.tool ? `tool: ${card.tool}` : undefined,
       card.agent_id ? `agent: ${card.agent_id}` : undefined,
@@ -1726,6 +1828,10 @@ function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceSty
       card.filename ? `file: ${card.filename}` : undefined,
     ].filter(Boolean);
     if (meta.length > 0) lines.push(`  - ${meta.join(' | ')}`);
+    // 3d: joined reasoning (log_thought/decision) tied to this action.
+    if (card.reasoning && card.reasoning.length > 0) {
+      for (const r of card.reasoning.slice(0, 3)) lines.push(`  - Reasoning: ${r}`);
+    }
     const evidenceMeta = [
       card.action_id ? `action: ${card.action_id}` : undefined,
       card.evidence_id ? `evidence: ${card.evidence_id}` : undefined,

@@ -270,6 +270,24 @@ describe('InferenceEngine', () => {
       expect(forward.some(e => graph.getEdgeAttributes(e).type === 'MEMBER_OF_DOMAIN')).toBe(true);
     });
 
+    it('3d: stamps the premise back-pointer (inferred_trigger_node_id + inferred_by_rule) on the inferred edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'domain-test-local', { type: 'domain', domain_name: 'test.local' });
+      addNode(graph, 'host-10-10-10-1', { type: 'host', ip: '10.10.10.1', hostname: 'dc01.test.local' });
+      addNode(graph, 'svc-kerb', { type: 'service', service_name: 'kerberos', port: 88 });
+      addEdge(graph, 'host-10-10-10-1', 'svc-kerb', 'RUNS');
+
+      const engine = buildEngine(graph, [RULE_KERBEROS_DOMAIN]);
+      engine.runRules('svc-kerb');
+
+      const edge = graph.outEdges('host-10-10-10-1', 'domain-test-local')
+        .find(e => graph.getEdgeAttributes(e).type === 'MEMBER_OF_DOMAIN');
+      expect(edge).toBeDefined();
+      const attrs = graph.getEdgeAttributes(edge!) as Record<string, unknown>;
+      expect(attrs.inferred_by_rule).toBe('rule-kerberos-domain');
+      expect(attrs.inferred_trigger_node_id).toBe('svc-kerb');
+    });
+
     it('does NOT infer MEMBER_OF_DOMAIN without matching hostname', () => {
       const graph = makeGraph();
       addNode(graph, 'domain-test-local', { type: 'domain', domain_name: 'test.local' });
