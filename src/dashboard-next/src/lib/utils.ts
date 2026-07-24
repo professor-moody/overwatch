@@ -5,6 +5,24 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * Describe an evidence-fetch failure so it can never be mistaken for "there is no
+ * evidence". Collapsing a transport/contract error into the empty state is exactly how
+ * a server-side 500 on every non-empty evidence chain went undiagnosed in a live
+ * engagement. Duck-typed on DashboardApiError's shape to avoid importing generated code.
+ */
+export function describeEvidenceError(err: unknown): string {
+  const e = err as { status?: number; code?: string; message?: string } | undefined;
+  if (e && typeof e.status === 'number') {
+    if (e.code === 'DASHBOARD_RESPONSE_CONTRACT_FAILED') {
+      return `Evidence could not be loaded — the server response failed its API contract (HTTP ${e.status}). `
+        + 'This is a server error, not an absence of evidence.';
+    }
+    return `Evidence could not be loaded — request failed (HTTP ${e.status}${e.code ? ` · ${e.code}` : ''}).`;
+  }
+  return `Evidence could not be loaded — ${e?.message || 'the request failed'}.`;
+}
+
 export function formatElapsed(ms: number | undefined | null): string {
   if (!ms || ms < 0) return '—';
   const s = Math.floor(ms / 1000);

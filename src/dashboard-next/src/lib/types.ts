@@ -389,7 +389,8 @@ export interface AccessSummary {
 export interface EvidenceChainEntry {
   activity_id: string;
   timestamp: string;
-  event_type: string;
+  /** Optional: mirrors ActivityLogEntry.event_type, which is optional server-side. */
+  event_type?: string;
   description: string;
   action_id?: string;
   agent_id?: string;
