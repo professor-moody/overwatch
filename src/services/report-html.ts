@@ -5,7 +5,7 @@
 // ============================================================
 
 import { createHash } from 'crypto';
-import type { ReportFinding, NarrativePhase, FindingSeverity, EvidenceProofCard, EvidenceAppendixEntry } from './report-generator.js';
+import type { ReportFinding, NarrativePhase, FindingSeverity, EvidenceProofCard, EvidenceAppendixEntry, ProofExcerpt } from './report-generator.js';
 import type { EngagementConfig, ExportedGraph } from '../types.js';
 import type { CredentialChain } from './retrospective.js';
 import type { TrustSignalDto } from './trust-signal-summary.js';
@@ -487,6 +487,28 @@ function stableRenderId(prefix: string, value: string): string {
   return `${prefix}-${createHash('sha256').update(value).digest('hex').slice(0, 12)}`;
 }
 
+/** Render the matched-signal excerpts (3c): quoted bytes + byte range + blob id +
+ * a verification mark when the span was re-read from the store and compared. */
+function renderExcerptsHtml(excerpts?: ProofExcerpt[]): string {
+  if (!excerpts || excerpts.length === 0) return '';
+  const rows = excerpts.slice(0, 5).map(ex => {
+    const text = (ex.snippet ?? ex.resolved_snippet ?? '').replace(/\r/g, '');
+    const range = `bytes ${ex.byte_start.toLocaleString()}–${ex.byte_end.toLocaleString()}`;
+    const where = ex.evidence_id ? ` of ${esc(ex.evidence_id)}` : '';
+    const by = ex.matched_by ? ` · matched by ${esc(ex.matched_by)}` : '';
+    const verify = ex.verified === true
+      ? '<span class="excerpt-verified">✓ verified</span>'
+      : ex.verified === false
+        ? '<span class="excerpt-mismatch">✗ mismatch vs blob</span>'
+        : '';
+    return `<div class="excerpt">
+      <div class="excerpt-meta">${range}${where}${by} ${verify}</div>
+      ${text ? `<pre class="excerpt-text">${esc(limitPreview(text, 2048, 20))}</pre>` : ''}
+    </div>`;
+  }).join('');
+  return `<details class="proof-excerpts" open><summary>Matched signal (${excerpts.length})</summary>${rows}</details>`;
+}
+
 function renderProofCardHtml(card: EvidenceProofCard): string {
   const unproven = card.proof_status === 'none';
   const meta = [
@@ -518,6 +540,7 @@ function renderProofCardHtml(card: EvidenceProofCard): string {
       <p class="proof-text">${esc(card.proof)}</p>
       ${meta ? `<div class="proof-meta">${meta}</div>` : ''}
       ${card.parsed_summary ? `<div class="proof-summary">${esc(card.parsed_summary)}</div>` : ''}
+      ${renderExcerptsHtml(card.excerpts)}
       ${card.command ? `<pre class="evidence-command">${esc(card.command)}</pre>` : ''}
       ${metadataRows ? `<details class="proof-metadata"><summary>Evidence metadata</summary><dl>${metadataRows}</dl></details>` : ''}
       ${card.raw_preview_redacted ? `<div class="evidence-warning">Raw output preview redacted for this report profile.</div>` : ''}
@@ -1078,6 +1101,13 @@ const CSS_STYLES = `
   .proof-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem; background: var(--bg); break-inside: avoid; page-break-inside: avoid; }
   .proof-card-unproven { border-style: dashed; opacity: 0.9; }
   .proof-unproven-badge { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--warn, #b45309); border: 1px solid var(--warn, #b45309); border-radius: 4px; padding: 0.05rem 0.35rem; }
+  .proof-excerpts { margin: 0.45rem 0; border-left: 3px solid var(--accent); padding-left: 0.6rem; }
+  .proof-excerpts > summary { cursor: pointer; color: var(--accent); font-size: 0.82rem; font-weight: 600; }
+  .excerpt { margin-top: 0.4rem; }
+  .excerpt-meta { font-size: 0.72rem; color: var(--info); }
+  .excerpt-text { background: var(--card-bg); border: 1px solid var(--border); padding: 0.5rem; border-radius: 4px; font-size: 0.78rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 0.25rem; }
+  .excerpt-verified { color: var(--ok, #15803d); font-weight: 700; }
+  .excerpt-mismatch { color: var(--danger, #b91c1c); font-weight: 700; }
   .proof-card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
   .proof-kind { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--accent); }
   .proof-claim { font-weight: 600; margin-bottom: 0.35rem; }

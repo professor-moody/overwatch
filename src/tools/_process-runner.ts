@@ -2067,6 +2067,9 @@ async function runInstrumentedProcessCore(
         parse_outcome: parse_summary?.parse_outcome,
         parse_finding_id: parse_summary?.finding_id,
         parse_campaign_id: parse_summary?.campaign_id,
+        // 3c: matched-signal excerpts index the stdout blob captured for this action,
+        // so the chain builder can backfill evidence_id and verify the bytes.
+        excerpts: parse_summary?.excerpts,
         command: command_repr,
         binary,
         args: loggedArgs,

@@ -9,6 +9,7 @@ import type {
   ExportedGraph, ExportedGraphEdge,
   AgentTask, InferenceRuleSuggestion, SkillGapReport,
   ContextImprovementReport, TraceQualityReport,
+  EvidenceExcerpt,
 } from '../types.js';
 import type { ActivityLogEntry } from './engine-context.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
@@ -96,6 +97,8 @@ export interface EvidenceProofCard {
   evidence_type?: string;
   filename?: string;
   parsed_summary?: string;
+  /** Matched-signal excerpts (3c) — the specific bytes that justify the claim. */
+  excerpts?: ProofExcerpt[];
   raw_preview?: string;
   raw_preview_redacted?: boolean;
 }
@@ -175,6 +178,29 @@ export interface EvidenceChain {
   partial_reason?: string;
   /** Optional inline preview of stdout (head/tail with elision marker). */
   stdout_preview?: string;
+  /** Matched-signal excerpts (3c) — the specific bytes that justify the finding,
+   * resolved and verified against the source blob where a slice loader is available. */
+  excerpts?: ProofExcerpt[];
+}
+
+/** A matched-signal excerpt as surfaced in a report: the captured span plus, when a
+ * slice loader resolved it, the bytes re-read from the store and a verification flag. */
+export interface ProofExcerpt {
+  evidence_id?: string;
+  node_id?: string;
+  edge_key?: string;
+  byte_start: number;
+  byte_end: number;
+  matched_by?: string;
+  /** Text captured at conclusion time (what the agent/parser said it matched). */
+  snippet?: string;
+  /** Bytes re-read from the evidence store for [byte_start, byte_end). */
+  resolved_snippet?: string;
+  /** true/false when both a captured snippet and a resolved snippet exist and were
+   * compared; undefined when no loader ran or nothing to compare against. */
+  verified?: boolean;
+  /** Total size of the source blob, for offset context. */
+  total_bytes?: number;
 }
 
 export interface NarrativePhase {
@@ -232,6 +258,10 @@ export interface ReportOptions {
     content_length?: number;
     raw_output_length?: number;
   } | undefined;
+  /** Byte-range reader for resolving/verifying matched-signal excerpts (3c)
+   * against the source blob. Maps to EvidenceStore.getRawOutputSlice. */
+  evidence_slice_loader?: (evidenceId: string, offset: number, maxBytes: number) =>
+    { text: string; total_bytes: number } | null;
   /** Bytes of head + tail to show in the inline preview (default 8 KiB). */
   evidence_preview_bytes?: number;
   report_profile?: ReportProfile;
@@ -268,6 +298,7 @@ export interface ReportInput {
 type EvidenceBuildOptions = {
   evidenceLoader?: (id: string) => string | null;
   evidenceRecordLoader?: ReportOptions['evidence_record_loader'];
+  sliceLoader?: ReportOptions['evidence_slice_loader'];
   previewBytes?: number;
 };
 
@@ -683,6 +714,7 @@ export function buildEvidenceChainsForNode(
   const previewBytes = opts?.previewBytes ?? 8 * 1024;
   const loader = opts?.evidenceLoader;
   const recordLoader = opts?.evidenceRecordLoader;
+  const sliceLoader = opts?.sliceLoader;
 
   // 1. Find activity log entries that reference this node
   const relatedEntries = history.filter(entry => {
@@ -760,6 +792,7 @@ export function buildEvidenceChainsForNode(
     let partial: boolean | undefined;
     let partialReason: string | undefined;
     let genericEvidenceId: string | undefined;
+    let rawExcerpts: EvidenceExcerpt[] | undefined;
     // Provenance (3b): lifted from the terminal action event so proof text can name the
     // actor, outcome, and exact argv. Persisted all along, never previously read.
     let exitCode: number | undefined;
@@ -790,6 +823,10 @@ export function buildEvidenceChainsForNode(
       if (typeof det.duration_ms === 'number') durationMs = det.duration_ms;
       if (typeof det.binary === 'string') binary = det.binary;
       if (Array.isArray(det.args) && det.args.every(a => typeof a === 'string')) args = det.args as string[];
+      // 3c: matched-signal excerpts persisted by report_finding / _process-runner.
+      if (Array.isArray(det.excerpts) && det.excerpts.length > 0) {
+        rawExcerpts = det.excerpts as EvidenceExcerpt[];
+      }
       if (det.partial === true) partial = true;
       if (typeof det.partial_reason === 'string') partialReason = det.partial_reason;
       const ps = det.parse_summary as Record<string, unknown> | undefined;
@@ -878,6 +915,43 @@ export function buildEvidenceChainsForNode(
         // best-effort — never fail report generation on a missing blob
       }
     }
+
+    // 3c: attach matched-signal excerpts. Backfill evidence_id to the action's stdout
+    // blob (or the generic report_finding blob), and — when a slice loader is available —
+    // re-read the exact byte range and verify it against the captured snippet so a
+    // reader can trust the excerpt is genuinely from the cited blob.
+    if (rawExcerpts && rawExcerpts.length > 0) {
+      const defaultBlob = stdoutEvidenceId ?? genericEvidenceId;
+      chain.excerpts = rawExcerpts
+        .filter(ex => ex.byte_end > ex.byte_start)
+        .map(ex => {
+          const evidence_id = ex.evidence_id ?? defaultBlob;
+          const out: ProofExcerpt = {
+            evidence_id,
+            node_id: ex.node_id,
+            edge_key: ex.edge_key,
+            byte_start: ex.byte_start,
+            byte_end: ex.byte_end,
+            matched_by: ex.matched_by,
+            snippet: ex.snippet,
+          };
+          if (sliceLoader && evidence_id) {
+            try {
+              const slice = sliceLoader(evidence_id, ex.byte_start, ex.byte_end - ex.byte_start);
+              if (slice) {
+                out.resolved_snippet = slice.text;
+                out.total_bytes = slice.total_bytes;
+                if (ex.snippet !== undefined) out.verified = slice.text === ex.snippet;
+              }
+            } catch {
+              // best-effort — a missing/short blob leaves the excerpt unresolved, not fatal
+            }
+          }
+          return out;
+        });
+      if (chain.excerpts.length === 0) delete chain.excerpts;
+    }
+
     chains.push(chain);
   }
 
@@ -981,9 +1055,24 @@ function evidenceRank(kind: EvidenceProofCard['source_kind']): number {
  * A finding with no real proof must SAY 'none' rather than emit a sentence that
  * implies evidence exists. */
 function proofStatusForEvidence(ev: EvidenceChain): 'none' | 'excerpt' | 'full' {
+  if (ev.excerpts && ev.excerpts.length > 0) return 'excerpt';
   const hasBlob = Boolean(ev.stdout_evidence_id || ev.stderr_evidence_id || ev.evidence_id);
   const hasInline = Boolean(ev.stdout_preview || ev.raw_output || ev.evidence_content);
   return hasBlob || hasInline ? 'full' : 'none';
+}
+
+/** One-line rendering of a matched-signal excerpt: the matched text, its byte
+ * range, blob id, and a ✓/✗ verification mark when it was re-read from the store. */
+function formatExcerpt(ex: ProofExcerpt): string {
+  const text = (ex.snippet ?? ex.resolved_snippet ?? '').replace(/\s+/g, ' ').trim();
+  const quoted = text ? `\`${text.length > 200 ? text.slice(0, 200) + '…' : text}\`` : 'matched bytes';
+  const range = `bytes ${ex.byte_start.toLocaleString()}–${ex.byte_end.toLocaleString()}`;
+  const where = ex.evidence_id ? ` of ${ex.evidence_id}` : '';
+  const by = ex.matched_by ? ` [matched by ${ex.matched_by}]` : '';
+  const verify = ex.verified === true ? ' ✓ verified against blob'
+    : ex.verified === false ? ' ✗ MISMATCH vs blob'
+    : '';
+  return `${quoted} at ${range}${where}${by}${verify}`;
 }
 
 function shortHash(h?: string): string | undefined {
@@ -1060,6 +1149,14 @@ function proofTextForEvidence(ev: EvidenceChain, kind: EvidenceProofCard['source
   let sentence = clauses.join(' ');
   if (handle.length > 0) sentence += ` — ${handle.join(', ')}`;
   sentence += '.';
+
+  // 4. The matched signal: the specific bytes that justified the claim (3c).
+  // This is the "how it was found" — lead with it when present.
+  if (ev.excerpts && ev.excerpts.length > 0) {
+    const shown = ev.excerpts.slice(0, 3).map(formatExcerpt).join('; ');
+    const more = ev.excerpts.length > 3 ? ` (+${ev.excerpts.length - 3} more)` : '';
+    sentence += ` Matched: ${shown}${more}.`;
+  }
   if (ev.stdout_truncated || ev.partial) {
     sentence += ' Output was truncated at capture — fetch the full blob via its evidence ID to verify the excerpt in context.';
   }
@@ -1128,6 +1225,7 @@ function proofCardForEvidence(ev: EvidenceChain, profile: ReportProfile): Eviden
     evidence_type: ev.evidence_type,
     filename: ev.evidence_filename,
     parsed_summary: parsedSummaryForEvidence(ev),
+    excerpts: ev.excerpts,
     raw_preview: raw.preview,
     raw_preview_redacted: raw.redacted,
   };
@@ -1640,6 +1738,12 @@ function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceSty
       lines.push('  - Evidence metadata: recorded in the structured report archive.');
     }
     if (card.parsed_summary) lines.push(`  - Result: ${card.parsed_summary}`);
+    // Matched-signal excerpts — the specific bytes that justify the claim (3c).
+    if (card.excerpts && card.excerpts.length > 0) {
+      for (const ex of card.excerpts.slice(0, 5)) {
+        lines.push(`  - Matched signal: ${formatExcerpt(ex)}`);
+      }
+    }
     if (card.command) {
       lines.push('  ```bash');
       lines.push(`  ${card.command}`);
@@ -1829,10 +1933,11 @@ export function buildReportFindingModel(
   input: ReportInput,
   options: ReportOptions = {},
 ): ReportFindingModel {
-  const evidenceOpts: EvidenceBuildOptions | undefined = options.evidence_loader || options.evidence_record_loader
+  const evidenceOpts: EvidenceBuildOptions | undefined = options.evidence_loader || options.evidence_record_loader || options.evidence_slice_loader
     ? {
       evidenceLoader: options.evidence_loader,
       evidenceRecordLoader: options.evidence_record_loader,
+      sliceLoader: options.evidence_slice_loader,
       previewBytes: options.evidence_preview_bytes,
     }
     : undefined;

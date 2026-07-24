@@ -8,8 +8,8 @@
 // match cleanly.
 // ============================================================
 
-import type { Finding, ParseContext } from '../../types.js';
-import { cloudIdentityId } from '../parser-utils.js';
+import type { Finding, ParseContext, EvidenceExcerpt } from '../../types.js';
+import { cloudIdentityId, deriveExcerpt } from '../parser-utils.js';
 
 interface CallerIdentity {
   UserId?: string;
@@ -116,5 +116,21 @@ export function parseAwsStsIdentity(
     });
   }
 
-  return { id: `aws-sts-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  // 3c: capture the matched signal — the exact ARN bytes in the output that
+  // identify this principal — so the report can show and verify how it was found.
+  const excerpts: EvidenceExcerpt[] = [];
+  const arnExcerpt = deriveExcerpt(output, identity.Arn, {
+    node_id: cloudId,
+    matched_by: 'aws-sts-caller-identity',
+  });
+  if (arnExcerpt) excerpts.push(arnExcerpt);
+
+  return {
+    id: `aws-sts-${Date.now()}`,
+    agent_id: agentId,
+    timestamp: now,
+    nodes,
+    edges,
+    ...(excerpts.length > 0 ? { excerpts } : {}),
+  };
 }

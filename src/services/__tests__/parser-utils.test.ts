@@ -1,5 +1,46 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeKeyPart, domainId, userId, credentialId, hostId, caId, certTemplateId, pkiStoreId, splitQualifiedAccount, resolveDomainName, apexDomain } from '../parser-utils.js';
+import { normalizeKeyPart, domainId, userId, credentialId, hostId, caId, certTemplateId, pkiStoreId, splitQualifiedAccount, resolveDomainName, apexDomain, deriveExcerpt } from '../parser-utils.js';
+import { parseAwsStsIdentity } from '../parsers/aws-sts-identity.js';
+
+describe('deriveExcerpt (3c)', () => {
+  it('computes byte offsets of the matched text and round-trips via a byte slice', () => {
+    const source = 'line one\n445/tcp open microsoft-ds\nline three';
+    const ex = deriveExcerpt(source, '445/tcp open microsoft-ds', { node_id: 'svc-1', matched_by: 'nmap' });
+    expect(ex).toBeDefined();
+    expect(ex!.snippet).toBe('445/tcp open microsoft-ds');
+    expect(ex!.node_id).toBe('svc-1');
+    // Byte range re-reads exactly the matched text from the source buffer.
+    const buf = Buffer.from(source, 'utf8');
+    expect(buf.subarray(ex!.byte_start, ex!.byte_end).toString('utf8')).toBe('445/tcp open microsoft-ds');
+  });
+
+  it('uses BYTE offsets, not char offsets, for multi-byte prefixes', () => {
+    const source = 'café ☕ token=abc123'; // multi-byte before the match
+    const ex = deriveExcerpt(source, 'token=abc123');
+    const buf = Buffer.from(source, 'utf8');
+    expect(buf.subarray(ex!.byte_start, ex!.byte_end).toString('utf8')).toBe('token=abc123');
+    // char index of 'token' is less than its byte index because of café + ☕.
+    expect(ex!.byte_start).toBeGreaterThan(source.indexOf('token='));
+  });
+
+  it('returns undefined when the text is not present (no bogus locator)', () => {
+    expect(deriveExcerpt('abc', 'xyz')).toBeUndefined();
+    expect(deriveExcerpt('abc', '')).toBeUndefined();
+  });
+});
+
+describe('aws-sts-identity parser emits the matched ARN excerpt (3c)', () => {
+  it('captures the ARN byte range from the caller-identity JSON', () => {
+    const arn = 'arn:aws:iam::123456789012:user/svc-deploy';
+    const output = JSON.stringify({ UserId: 'AIDAEXAMPLE', Account: '123456789012', Arn: arn });
+    const finding = parseAwsStsIdentity(output);
+    expect(finding.excerpts).toBeDefined();
+    expect(finding.excerpts).toHaveLength(1);
+    const ex = finding.excerpts![0];
+    expect(ex.matched_by).toBe('aws-sts-caller-identity');
+    expect(Buffer.from(output, 'utf8').subarray(ex.byte_start, ex.byte_end).toString('utf8')).toBe(arn);
+  });
+});
 
 describe('apexDomain', () => {
   it('plain TLD → last two labels (unchanged from the naive version)', () => {

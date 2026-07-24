@@ -1215,6 +1215,28 @@ export interface AgentDirective {
 
 // --- Finding (reported by agents) ---
 
+/**
+ * A matched-signal excerpt: the specific byte range of an evidence blob that
+ * justifies a finding (3c). Captured at conclusion time. `byte_start`/`byte_end`
+ * are offsets into `evidence_id`'s raw blob (half-open: [start, end)). `snippet`
+ * is the matched text as seen at capture; a report resolves the same range from
+ * the store and can flag whether the two still agree (tamper/verification).
+ */
+export interface EvidenceExcerpt {
+  /** Evidence-store blob these offsets index into. Defaults to the finding's own
+   * evidence blob when omitted. */
+  evidence_id?: string;
+  /** Graph artifact this excerpt supports (a node id or an edge key). */
+  node_id?: string;
+  edge_key?: string;
+  byte_start: number;
+  byte_end: number;
+  /** What recognized the signal — a rule name, regex label, parser, or 'agent'. */
+  matched_by?: string;
+  /** The matched text captured at conclusion time (verifiable against the blob). */
+  snippet?: string;
+}
+
 export interface Finding {
   id: string;
   agent_id: string;
@@ -1235,6 +1257,11 @@ export interface Finding {
     filename?: string;
   };
   raw_output?: string;
+  /** The specific bytes that justified this finding — the matched signal (3c).
+   * Captured at the moment the conclusion is drawn so a report can show WHICH
+   * output caused the claim, and a reader can fetch the full blob and verify the
+   * excerpt is genuinely from it (offsets index into the referenced evidence blob). */
+  excerpts?: EvidenceExcerpt[];
   /** Parser-owned, non-secret semantic details for callers that must decide a
    * post-parse side effect (for example whether an authenticated cookie jar is
    * safe to publish). These details are not graph mutations. */

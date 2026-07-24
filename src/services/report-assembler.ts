@@ -287,12 +287,20 @@ export function assembleReport(
   const evidenceRecordLoader: NonNullable<ReportOptions['evidence_record_loader']> = (id: string) => {
     try { return engine.getEvidenceStore().getRecord(id); } catch { return undefined; }
   };
+  // 3c: byte-range reader so matched-signal excerpts resolve and verify against the blob.
+  const evidenceSliceLoader: NonNullable<ReportOptions['evidence_slice_loader']> = (id, offset, maxBytes) => {
+    try {
+      const slice = engine.getEvidenceStore().getRawOutputSlice(id, offset, maxBytes);
+      return slice ? { text: slice.text, total_bytes: slice.total_bytes } : null;
+    } catch { return null; }
+  };
 
   const renderOptions = {
     include_evidence, include_narrative, include_retrospective,
     include_compliance, include_attack_navigator, include_gap_analysis,
     evidence_loader: evidenceLoader,
     evidence_record_loader: evidenceRecordLoader,
+    evidence_slice_loader: evidenceSliceLoader,
     report_profile: profile,
     evidence_style,
   };
