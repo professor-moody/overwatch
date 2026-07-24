@@ -57,6 +57,15 @@ export interface EvidenceRecord {
   action_id?: string;
   finding_id?: string;
   /**
+   * M1: durable node→evidence index. The graph node ids this evidence supports,
+   * persisted on the (unbounded, never-pruned) evidence record so proof survives
+   * the bounded activity log's rollover. Without it, once a finding's activity
+   * events age out, a report asserts "no evidence was captured" for that node
+   * even though the blob is still on disk. Does NOT affect content_hash/dedup
+   * (the hash covers content+raw only). Optional for backward-compat.
+   */
+  node_ids?: string[];
+  /**
    * Actor attribution: which agent/sub-agent task produced this evidence. Lets
    * the operator console + audit trail answer "who captured this" when multiple
    * headless sub-agents run concurrently. Optional for backward-compat.
@@ -1044,6 +1053,7 @@ export class EvidenceStore {
     finding_id?: string;
     agent_id?: string;
     task_id?: string;
+    node_ids?: string[];
     evidence_type: 'screenshot' | 'log' | 'file' | 'command_output';
     filename?: string;
     content?: string;
@@ -1076,6 +1086,7 @@ export class EvidenceStore {
             content_hash: contentHash,
             action_id: opts.action_id,
             finding_id: opts.finding_id,
+            ...(opts.node_ids?.length ? { node_ids: opts.node_ids } : {}),
             agent_id: opts.agent_id,
             task_id: opts.task_id,
             timestamp: new Date().toISOString(),
@@ -1127,6 +1138,7 @@ export class EvidenceStore {
         content_hash: contentHash,
         action_id: opts.action_id,
         finding_id: opts.finding_id,
+        ...(opts.node_ids?.length ? { node_ids: opts.node_ids } : {}),
         agent_id: opts.agent_id,
         task_id: opts.task_id,
         timestamp,
@@ -1554,12 +1566,14 @@ export class EvidenceStore {
     return this.resolveRecord(idOrHash);
   }
 
-  /** List all evidence records, optionally filtered by action_id or finding_id. */
-  list(filter?: { action_id?: string; finding_id?: string }): EvidenceRecord[] {
+  /** List all evidence records, optionally filtered by action_id, finding_id, or
+   * node_id (M1: the durable node→evidence index, resilient to activity-log rollover). */
+  list(filter?: { action_id?: string; finding_id?: string; node_id?: string }): EvidenceRecord[] {
     if (!filter) return [...this.manifest];
     return this.manifest.filter(r => {
       if (filter.action_id && r.action_id !== filter.action_id) return false;
       if (filter.finding_id && r.finding_id !== filter.finding_id) return false;
+      if (filter.node_id && !(r.node_ids?.includes(filter.node_id))) return false;
       return true;
     });
   }

@@ -349,6 +349,10 @@ export function assembleReport(
       return slice ? { text: slice.text, total_bytes: slice.total_bytes } : null;
     } catch { return null; }
   };
+  // M1: durable node→evidence index so proof survives activity-log rollover.
+  const evidenceByNodeLoader: NonNullable<ReportOptions['evidence_by_node_loader']> = (nodeId) => {
+    try { return engine.getEvidenceStore().list({ node_id: nodeId }); } catch { return []; }
+  };
 
   const renderOptions = {
     include_evidence, include_narrative, include_retrospective,
@@ -356,6 +360,7 @@ export function assembleReport(
     evidence_loader: evidenceLoader,
     evidence_record_loader: evidenceRecordLoader,
     evidence_slice_loader: evidenceSliceLoader,
+    evidence_by_node_loader: evidenceByNodeLoader,
     report_profile: profile,
     evidence_style,
   };
