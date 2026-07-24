@@ -15,10 +15,12 @@
 //
 // Refresh token values are NEVER written to the activity log description
 // — the body is constructed at execution time from the credential node's
-// cred_value. The runner's existing redaction handles `Authorization` /
-// bearer arguments; for POST bodies we additionally instruct the
-// operator to use `--data-urlencode` flags (kept off the command_repr
-// where possible).
+// cred_value. The runner does NOT auto-redact bearer/Authorization arguments:
+// `command_repr` is redacted by the caller, but the raw argv reaches the durable
+// hash-chained log via `loggedArgs` unless the caller passes
+// `redact_args_in_log: true` + `redact_secrets: [<token>]` (see token-replay.ts).
+// Any command carrying a token here must set those, and use `--data-urlencode`
+// for POST bodies (kept off command_repr where possible).
 // ============================================================
 
 import { z } from 'zod';

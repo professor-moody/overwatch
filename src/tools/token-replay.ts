@@ -274,6 +274,12 @@ Sensitive token values are NEVER logged in plain text — the action description
         const result = await runInstrumentedProcess(engine, {
           binary: 'aws',
           args: stsArgs,
+          // SECURITY (M12): stsArgs carries the raw --web-identity-token value; without
+          // this the runner persists it in the durable, hash-chained action log
+          // (loggedArgs = args). Drop argv from the log and scrub the token from any
+          // captured stdout/stderr. command_repr already uses the redacted tokenLabel.
+          redact_args_in_log: true,
+          redact_secrets: [tokenValue],
           command_repr: commandRepr,
           action_id: params.action_id,
           frontier_item_id: params.frontier_item_id,
@@ -308,6 +314,10 @@ Sensitive token values are NEVER logged in plain text — the action description
       const result = await runInstrumentedProcess(engine, {
         binary: 'curl',
         args: curlArgs,
+        // SECURITY (M12): curlArgs carries the raw bearer/SSWS token; keep it out of the
+        // durable hash-chained log and scrub it from captured output.
+        redact_args_in_log: true,
+        redact_secrets: [tokenValue],
         command_repr: commandRepr,
         action_id: params.action_id,
         frontier_item_id: params.frontier_item_id,
