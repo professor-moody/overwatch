@@ -72,7 +72,7 @@ export function buildFindingReadiness(engine: GraphEngine, finding_id?: string):
   const history = engine.getFullHistory();
   const config = engine.getConfig();
   const evidenceLoader = (id: string): string | null => {
-    try { return engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
+    try { return engine.getEvidenceStore().getRawOutputHead(id, 256 * 1024)?.text ?? null; } catch { return null; }
   };
   let findings = buildFindings(graph, history, config, { evidenceLoader });
   const classifications = classifyAllFindings(findings, graph);
