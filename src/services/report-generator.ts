@@ -27,6 +27,7 @@ import {
   presentFinding,
   type FindingPresentation,
 } from './finding-presentation.js';
+import { maskEvidenceTextForClient } from './report-redaction.js';
 import {
   buildActionPlan,
   buildExecutiveSummary,
@@ -1297,6 +1298,20 @@ function rawPreviewForEvidence(ev: EvidenceChain, profile: ReportProfile): { pre
   return preview ? { preview } : {};
 }
 
+/** 3f: for client delivery, keep matched-signal excerpts but MASK their secrets
+ * (mask, don't delete) so the client sees real evidence — same span, byte range,
+ * hash, and structure — with credential material redacted. Also closes a leak:
+ * excerpt text is in no redaction key set, so an unmasked secret excerpt would
+ * otherwise reach a client report byte-for-byte. Operator profile is untouched. */
+function maskExcerptsForProfile(excerpts: ProofExcerpt[] | undefined, profile: ReportProfile): ProofExcerpt[] | undefined {
+  if (!excerpts || profile !== 'client') return excerpts;
+  return excerpts.map(ex => ({
+    ...ex,
+    snippet: ex.snippet !== undefined ? maskEvidenceTextForClient(ex.snippet) ?? undefined : undefined,
+    resolved_snippet: ex.resolved_snippet !== undefined ? maskEvidenceTextForClient(ex.resolved_snippet) ?? undefined : undefined,
+  }));
+}
+
 function proofCardForEvidence(ev: EvidenceChain, profile: ReportProfile): EvidenceProofCard {
   const key = evidenceKey(ev);
   const kind = sourceKindForEvidence(ev);
@@ -1323,7 +1338,7 @@ function proofCardForEvidence(ev: EvidenceChain, profile: ReportProfile): Eviden
     evidence_type: ev.evidence_type,
     filename: ev.evidence_filename,
     parsed_summary: parsedSummaryForEvidence(ev),
-    excerpts: ev.excerpts,
+    excerpts: maskExcerptsForProfile(ev.excerpts, profile),
     source_trust: ev.source_trust ?? sourceTrustForChain(ev),
     derivation: ev.derivation,
     reasoning: ev.reasoning,
@@ -1802,7 +1817,7 @@ export function renderAttackPathsSection(paths: AttackPath[]): string {
   return lines.join('\n');
 }
 
-function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceStyle, profile: ReportProfile): string[] {
+function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceStyle, _profile: ReportProfile): string[] {
   const lines: string[] = [];
   if (cards.length === 0) return lines;
   if (style === 'appendix') {
@@ -1841,10 +1856,12 @@ function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceSty
       card.content_hash ? `sha256: ${card.content_hash}` : undefined,
       card.appendix_ref ? `archive ref: ${card.appendix_ref}` : undefined,
     ].filter(Boolean);
-    if (profile === 'operator' && evidenceMeta.length > 0) {
-      lines.push(`  - Evidence metadata: ${evidenceMeta.join(' | ')}`);
-    } else if (profile === 'client' && evidenceMeta.length > 0) {
-      lines.push('  - Evidence metadata: recorded in the structured report archive.');
+    // 3f: the action/evidence ids + content hash are non-secret AUDIT handles — the
+    // client needs them to request or verify the underlying artifact. The old client
+    // branch printed a false sentence ("recorded in the structured report archive")
+    // and suppressed them, destroying auditability for no security benefit.
+    if (evidenceMeta.length > 0) {
+      lines.push(`  - Evidence reference: ${evidenceMeta.join(' | ')}`);
     }
     if (card.parsed_summary) lines.push(`  - Result: ${card.parsed_summary}`);
     // Matched-signal excerpts — the specific bytes that justify the claim (3c).
