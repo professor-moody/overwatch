@@ -126,6 +126,25 @@ describe('report QA fixture outputs', () => {
     }
   });
 
+  // SECURITY REGRESSION (M14): the full_inline proof-card style emits a bare indented
+  // fence with no label, which the client markdown scrub's label-based rules never
+  // matched — a fail-open last line. The model layer now blanks raw_preview for client
+  // reports, and the scrub redacts bare indented fences as defense-in-depth.
+  it('M14: a full_inline client-safe markdown report leaks no raw secret markers', () => {
+    const qa = fixture();
+    const md = assembleReport(qa.engine, qa.skills, {
+      format: 'markdown',
+      client_safe: true,
+      evidence_style: 'full_inline',
+      include_evidence: true,
+      include_attack_paths: true,
+    }).content;
+    expect(md).toContain('redacted');
+    for (const marker of REPORT_QA_SECRET_MARKERS) {
+      expect(md).not.toContain(marker);
+    }
+  });
+
   it('renders operator HTML and Markdown with evidence IDs, hashes, action IDs, and raw previews', () => {
     const qa = fixture();
     const operatorHtml = assembleReport(qa.engine, qa.skills, {

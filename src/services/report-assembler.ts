@@ -77,6 +77,19 @@ function scrubMarkdownForClient(md: string): string {
     /(<summary>(?:Raw[^<]*|Evidence[^<]*|Output[^<]*)<\/summary>\s*\n+\s*)```[\s\S]*?```/gi,
     '$1```\n<redacted for client delivery — full evidence available in operator report>\n```',
   );
+  // M14 (defense-in-depth): the `full_inline` proof-card style renders a BARE
+  // 2-space-indented fence with no label (report-generator renderProofCardsMarkdown),
+  // which the label-based rules above never match. Those indented fences are always
+  // proof-card evidence/command bodies in the client deliverable, so redact any that
+  // still carries content. (The model layer already blanks raw_preview for client
+  // reports — this ensures the text scrub is not itself fail-open.)
+  out = out.replace(
+    /^(  ```[^\n]*\n)([\s\S]*?)(^  ```$)/gm,
+    (full, open: string, body: string, close: string) =>
+      body.includes('redacted for client delivery')
+        ? full
+        : `${open}  <redacted for client delivery — full evidence available in operator report>\n${close}`,
+  );
   out = out.replace(
     /\b(cred_value|password|nt_hash|lm_hash|aes256_hash|aes128_hash|secret|token|bearer|api_key|private_key)\s*[:=]\s*([^\s,'"`<>{}]+)/gi,
     (_m, k) => `${k}: <redacted>`,
