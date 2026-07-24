@@ -18,7 +18,11 @@ import {
   buildReportDocumentModel,
   renderFullReportFromModel,
 } from './report-generator.js';
-import type { ReportInput, AttackPath, ReportProfile, EvidenceStyle, ReportOptions } from './report-generator.js';
+import type { ReportInput, AttackPath, ReportProfile, EvidenceStyle, ReportOptions, ReportIntegrity } from './report-generator.js';
+import {
+  verifyChain, verifyCheckpoints, verifyCheckpointSignatures,
+  attestCheckpointSignatures, loadCheckpointKeyring, deriveChainSeed,
+} from './activity-chain.js';
 import type { HtmlPlaybookSummary, HtmlReportData, HtmlTimelineEntry } from './report-html.js';
 import type { PersistedDurablePlaybookRunV1 } from './persisted-state.js';
 import type { HtmlComplianceMapping } from './report-html.js';
@@ -207,6 +211,57 @@ function appendPlaybookSummary(md: string, playbooks: HtmlPlaybookSummary): stri
  * Assemble a rendered report from current engine state + options.
  * Pure function — does not write to disk or persist to archive.
  */
+/**
+ * 3e: report-level integrity attestation. The evidence machinery (hash-chained
+ * activity log, checkpoint binding, Ed25519 signatures) already existed but was
+ * reachable only from the verify_activity_chain tool — a generated report made no
+ * claim about whether the events it drew from were intact. This wires the same
+ * verification into report assembly so the document carries tamper-evidence.
+ */
+function buildReportIntegrity(engine: GraphEngine): ReportIntegrity {
+  const log = engine.getFullHistory();
+  // Seed from the rolling-window boundary (tieredTruncate drops the oldest prefix),
+  // matching verify_activity_chain — tampering is still caught by recomputed hashes.
+  const chain = verifyChain(log, deriveChainSeed(log));
+  const checkpoints = engine.getChainCheckpoints();
+  const binding = verifyCheckpoints(log, checkpoints);
+  const keyring = loadCheckpointKeyring();
+  const signaturesConfigured = Object.keys(keyring).length > 0;
+
+  let signaturesValid: boolean | null = null;
+  if (signaturesConfigured) {
+    signaturesValid = checkpoints.length > 0
+      && attestCheckpointSignatures(verifyCheckpointSignatures(checkpoints, keyring)).ok;
+  }
+
+  let attestation: ReportIntegrity['attestation'];
+  if (!chain.valid) attestation = 'broken';
+  else if (signaturesConfigured && signaturesValid) attestation = 'signed_verified';
+  else if (checkpoints.length > 0 && binding.valid) attestation = 'checkpoint_bound';
+  else attestation = 'chain_only';
+
+  const summary =
+    attestation === 'broken'
+      ? `INTEGRITY WARNING: the activity hash chain has ${chain.breaks.length} break(s) — the evidence timeline this report draws from may have been altered.`
+    : attestation === 'signed_verified'
+      ? `Activity hash chain verified over ${chain.chained_count.toLocaleString()} events and Ed25519-attested across ${checkpoints.length} checkpoint(s).`
+    : attestation === 'checkpoint_bound'
+      ? `Activity hash chain verified over ${chain.chained_count.toLocaleString()} events; ${checkpoints.length} checkpoint(s) bind to the log. No verifier key configured, so signatures were not checked.`
+      : `Activity hash chain verified over ${chain.chained_count.toLocaleString()} events. No checkpoints or signing key configured for this engagement.`;
+
+  return {
+    chain_valid: chain.valid,
+    chained_count: chain.chained_count,
+    chain_breaks: chain.breaks.length,
+    checkpoints_total: checkpoints.length,
+    checkpoints_bound: binding.valid,
+    signatures_configured: signaturesConfigured,
+    signatures_valid: signaturesValid,
+    attestation,
+    summary,
+  };
+}
+
 export function assembleReport(
   engine: GraphEngine,
   skills: SkillIndex,
@@ -308,9 +363,11 @@ export function assembleReport(
   const findingModel = buildReportFindingModel(reportInput, renderOptions);
   const findings = findingModel.findings;
   const trustSignalSummary = buildTrustSignalsResponse({ history, findings });
+  const integrity = buildReportIntegrity(engine);
   const documentModel = buildReportDocumentModel(reportInput, {
     ...renderOptions,
     trust_signals: trustSignalSummary.signals,
+    integrity,
   }, findingModel);
   const { executiveSummary, actionPlan } = documentModel;
   const severitySummary = { ...documentModel.severityCounts };
@@ -331,6 +388,7 @@ export function assembleReport(
       report_profile: profile,
       evidence_style,
       executive_summary: executiveSummary,
+      integrity,
       action_plan: actionPlan,
       evidence_appendix: documentModel.appendix,
       trust_signals: trustSignalSummary.signals,
@@ -384,6 +442,7 @@ export function assembleReport(
       evidenceAppendix: documentModel.appendix,
       reportProfile: profile,
       evidenceStyle: evidence_style,
+      integrity,
     };
 
     if (findings.length > 0) {

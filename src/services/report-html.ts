@@ -5,7 +5,7 @@
 // ============================================================
 
 import { createHash } from 'crypto';
-import type { ReportFinding, NarrativePhase, FindingSeverity, EvidenceProofCard, EvidenceAppendixEntry, ProofExcerpt } from './report-generator.js';
+import type { ReportFinding, NarrativePhase, FindingSeverity, EvidenceProofCard, EvidenceAppendixEntry, ProofExcerpt, ReportIntegrity } from './report-generator.js';
 import type { EngagementConfig, ExportedGraph } from '../types.js';
 import type { CredentialChain } from './retrospective.js';
 import type { TrustSignalDto } from './trust-signal-summary.js';
@@ -90,6 +90,7 @@ export interface HtmlReportData {
   evidenceAppendix?: EvidenceAppendixEntry[];
   reportProfile?: 'operator' | 'client';
   evidenceStyle?: 'proof_cards' | 'appendix' | 'full_inline';
+  integrity?: ReportIntegrity;
 }
 
 export interface HtmlHeatmapData {
@@ -175,6 +176,8 @@ ${renderExecutiveSummaryHtml(data, {
   low: lowCount,
   info: infoCount,
 }, objectivesAchieved)}
+
+${data.integrity ? renderIntegrityHtml(data.integrity) : ''}
 
   <section id="scope">
     <h2>Scope</h2>
@@ -303,6 +306,25 @@ function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data:
       ${data.recommendations && data.recommendations.length > 0 ? '<li><a href="#recommendations">Recommendations</a></li>' : ''}
     </ol>
   </nav>`;
+}
+
+function renderIntegrityHtml(integrity: ReportIntegrity): string {
+  const badge = integrity.attestation === 'broken' ? '❌ Broken'
+    : integrity.attestation === 'signed_verified' ? '✅ Signed &amp; verified'
+    : integrity.attestation === 'checkpoint_bound' ? '✅ Checkpoint-bound'
+    : '✔ Chain-verified';
+  const cls = integrity.attestation === 'broken' ? 'integrity-broken' : 'integrity-ok';
+  return `
+  <section id="integrity" class="integrity ${cls}">
+    <h2>Integrity Attestation</h2>
+    <p class="integrity-status">${badge}</p>
+    <p>${esc(integrity.summary)}</p>
+    <dl class="integrity-checks">
+      <div><dt>Activity hash chain</dt><dd>${integrity.chain_valid ? `valid (${integrity.chained_count.toLocaleString()} events)` : `<strong>BROKEN — ${integrity.chain_breaks} break(s)</strong>`}</dd></div>
+      <div><dt>Checkpoints</dt><dd>${integrity.checkpoints_total}${integrity.checkpoints_total > 0 ? ` (${integrity.checkpoints_bound ? 'bound to log' : 'DO NOT bind'})` : ''}</dd></div>
+      <div><dt>Ed25519 signatures</dt><dd>${integrity.signatures_configured ? (integrity.signatures_valid ? 'verified' : 'CONFIGURED BUT INVALID') : 'no verifier key configured'}</dd></div>
+    </dl>
+  </section>`;
 }
 
 function renderExecutiveSummaryHtml(
@@ -1111,6 +1133,13 @@ const CSS_STYLES = `
   .proof-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem; background: var(--bg); break-inside: avoid; page-break-inside: avoid; }
   .proof-card-unproven { border-style: dashed; opacity: 0.9; }
   .proof-unproven-badge { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--warn, #b45309); border: 1px solid var(--warn, #b45309); border-radius: 4px; padding: 0.05rem 0.35rem; }
+  .integrity { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem 1rem; margin: 1rem 0; }
+  .integrity-ok { border-left: 4px solid var(--ok, #15803d); }
+  .integrity-broken { border-left: 4px solid var(--danger, #b91c1c); }
+  .integrity-status { font-weight: 700; margin-bottom: 0.35rem; }
+  .integrity-checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.4rem 0.75rem; margin-top: 0.5rem; }
+  .integrity-checks dt { color: var(--info); font-size: 0.68rem; text-transform: uppercase; }
+  .integrity-checks dd { font-size: 0.85rem; }
   .proof-trust { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; border-radius: 4px; padding: 0.05rem 0.35rem; }
   .proof-trust-observed { color: var(--ok, #15803d); border: 1px solid var(--ok, #15803d); }
   .proof-trust-inferred { color: var(--accent); border: 1px solid var(--accent); }
