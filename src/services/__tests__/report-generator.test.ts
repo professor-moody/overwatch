@@ -466,6 +466,75 @@ describe('matched-signal excerpts (3c)', () => {
   });
 });
 
+// ============================================================
+// 3d — derivation & honesty: source_trust, inference premises, reasoning join
+// ============================================================
+describe('derivation & honesty (3d)', () => {
+  it('surfaces an inference_generated event as an INFERRED derivation chain', () => {
+    const history = [{
+      event_id: 'ev-inf', timestamp: '2026-01-01T00:00:00Z',
+      description: 'Inferred edge [Kerberos implies domain membership]: host-1 --[MEMBER_OF_DOMAIN]--> domain-x',
+      event_type: 'inference_generated',
+      target_node_ids: ['host-1', 'domain-x'],
+      details: {
+        rule_id: 'rule-kerberos-domain',
+        rule_name: 'Kerberos implies domain membership',
+        rule_description: 'A host running Kerberos is a domain member',
+        trigger_node_id: 'svc-kerb',
+        premise_source: 'host-1',
+        premise_target: 'domain-x',
+        trigger_property_match: { service_name: 'kerberos' },
+      },
+    }] as never;
+    const chains = buildEvidenceChainsForNode('host-1', makeGraph(), history);
+    const chain = chains.find(c => c.source_event_type === 'inference_generated');
+    expect(chain).toBeDefined();
+    expect(chain!.source_trust).toBe('inferred');
+    expect(chain!.derivation).toContain('Kerberos implies domain membership');
+    expect(chain!.derivation).toContain('fired on svc-kerb');
+    expect(chain!.derivation).toContain('service_name');
+
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.source_trust).toBe('inferred');
+    expect(card.proof).toContain('INFERRED');
+    // An inferred card is a derivation, not "proof: none".
+    expect(card.proof).not.toContain('proof: none');
+  });
+
+  it('joins log_thought reasoning tied to the action into the chain', () => {
+    const history = [
+      {
+        event_id: 'ev-act', timestamp: '2026-01-01T00:00:00Z', description: 'Command run',
+        event_type: 'action_completed', action_id: 'act-r', target_node_ids: ['host-2'],
+        details: { command: 'id', exit_code: 0, stdout_evidence_id: 'ev-b' },
+      },
+      {
+        event_id: 'ev-th', timestamp: '2026-01-01T00:00:01Z',
+        description: 'Chose to escalate via sudo because uid=0 was reachable',
+        event_type: 'thought', action_id: 'act-r',
+        details: { kind: 'decision', considered_alternatives: ['pkexec', 'suid binary'] },
+      },
+    ] as never;
+    const chains = buildEvidenceChainsForNode('host-2', makeGraph(), history);
+    const chain = chains.find(c => c.action_id === 'act-r');
+    expect(chain?.reasoning?.[0]).toContain('escalate via sudo');
+    expect(chain?.reasoning?.[0]).toContain('decision');
+    expect(chain?.reasoning?.[0]).toContain('considered: pkexec');
+    // A direct command chain is 'observed'.
+    expect(chain?.source_trust).toBe('observed');
+  });
+
+  it('labels a bare activity mention as asserted (no capture)', () => {
+    const history = [{
+      event_id: 'ev-bare', timestamp: '2026-01-01T00:00:00Z', description: 'Host mentioned',
+      event_type: 'note', target_node_ids: ['host-3'],
+    }] as never;
+    const chains = buildEvidenceChainsForNode('host-3', makeGraph(), history);
+    const chain = chains.find(c => c.target_nodes.includes('host-3'));
+    expect(chain?.source_trust).toBe('asserted');
+  });
+});
+
 describe('buildAllEvidenceChains', () => {
   it('builds chains for all interesting node types', () => {
     const allChains = buildAllEvidenceChains(makeGraph(), makeHistory());

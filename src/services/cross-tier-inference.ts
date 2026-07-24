@@ -128,6 +128,8 @@ function ssrfReachesImds(host: CrossTierInferenceHost, agentId: string): number 
         discovered_at: now,
         discovered_by: agentId,
         rule: 'ssrf_reaches_imds',
+        inferred_by_rule: 'ssrf_reaches_imds',
+        inferred_at: now,
         notes: 'SSRF vulnerability + non-IMDSv2 backing — IMDS reachable via SSRF',
       });
       if (result.isNew) added++;
@@ -233,6 +235,8 @@ function oidcFederationPivot(host: CrossTierInferenceHost, agentId: string): num
           discovered_at: now,
           discovered_by: agentId,
           rule: 'oidc_federation_pivot',
+          inferred_by_rule: 'oidc_federation_pivot',
+          inferred_at: now,
           notes: `Captured token for ${aud ?? clientId} → cloud identity via OIDC federation`,
         });
         if (result.isNew) added++;
@@ -289,6 +293,8 @@ function hybridIdentityPivot(host: CrossTierInferenceHost, agentId: string): num
           discovered_at: now,
           discovered_by: agentId,
           rule: 'hybrid_identity_pivot',
+          inferred_by_rule: 'hybrid_identity_pivot',
+          inferred_at: now,
           notes: `Domain credential ${credDomain}\\${credUser} → federated idp_principal via ${fed.idp_kind ?? 'idp'} federation`,
         });
         if (result.isNew) added++;
@@ -403,6 +409,8 @@ function samlRoundTrip(host: CrossTierInferenceHost, agentId: string): number {
         discovered_at: now,
         discovered_by: agentId,
         rule: 'saml_round_trip',
+        inferred_by_rule: 'saml_round_trip',
+        inferred_at: now,
         notes: `Captured SAML assertion audience matches idp_application ${aud ?? cid}`,
       });
       if (result.isNew) added++;
