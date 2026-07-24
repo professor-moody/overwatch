@@ -276,6 +276,25 @@ function dropsValue(flag: string, bin: string): boolean {
   return DROP_VALUE_GLOBAL.has(flag) || (DROP_VALUE_BY_BIN[bin]?.has(flag) ?? false);
 }
 
+/**
+ * Flags whose VALUE designates the target set in a form this scanner cannot resolve
+ * into scope-checkable targets — `nmap -iL <file>` (read targets from a file) and
+ * `nmap -iR <n>` (pick n random internet hosts). The value itself is still dropped
+ * (it is a path or a count, not a target), but the action MUST FAIL CLOSED: we
+ * cannot prove the real targets are in scope, and with no targets extracted
+ * GraphEngine.validateAction performs no scope check at all.
+ *
+ * Deliberately independent of HOST_FIRST_BINARIES, which excludes scanners — that
+ * is why the existing unresolvedHostOperand guard could never fire for nmap.
+ */
+const TARGET_BEARING_VALUE_FLAGS: Record<string, Set<string>> = {
+  nmap: new Set(['-iL', '-iR']),
+};
+
+function bearsUnresolvableTargets(flag: string, bin: string): boolean {
+  return TARGET_BEARING_VALUE_FLAGS[bin]?.has(flag) ?? false;
+}
+
 /** True when a token looks like a concrete egress target (IP, CIDR, or URL). A
  *  MAYBE-value flag never skips a target-looking value — so a value-flag can't
  *  hide the real target that follows it (fail-open guard). Uses String.match
@@ -438,11 +457,14 @@ function extractImplicitTargets(commandRepr: string, forceAllSegments = false): 
         if (eq > 0) {
           const flag = t.slice(0, eq);
           const val = t.slice(eq + 1);
+          // Fail closed: the real targets live behind this flag and are unresolvable here.
+          if (bearsUnresolvableTargets(flag, bin)) unresolvedHostOperand = true;
           if (dropsValue(flag, bin)) { /* drop unconditionally */ }
           else if (maybeValue(flag, bin) && !looksLikeTarget(val)) { /* drop non-target value */ }
           else scanTokenForTargets(val, acc);
         } else {
           const nxt = tokens[j + 1];
+          if (bearsUnresolvableTargets(t, bin)) unresolvedHostOperand = true;
           if (dropsValue(t, bin)) {
             if (nxt !== undefined) j += 1; // drop the value unconditionally
           } else if (maybeValue(t, bin) && nxt !== undefined && !looksLikeTarget(nxt)) {
