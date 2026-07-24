@@ -88,6 +88,25 @@ post-commit compatibility mirrors.`,
       profile, evidence_style,
       include_attack_paths, max_paths_per_objective, persist_to_archive,
     }) => {
+      // SECURITY (H8): reject the contradictory combination rather than silently
+      // coercing it. A report cannot be both a full-metadata operator report and a
+      // client-safe deliverable; accepting it produced a file labelled client-safe
+      // that still contained raw NTLM/shadow hashes and cloud keys. (The assembler
+      // also coerces defensively, but an explicit request deserves an explicit error.)
+      if (client_safe === true && profile === 'operator') {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'client_safe:true is incompatible with profile:"operator". '
+                + 'A client-safe report is a client report — omit profile, or set profile:"client". '
+                + 'For a full-metadata operator report, set client_safe:false.',
+              code: 'REPORT_PROFILE_CONFLICT',
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
       const config = engine.getConfig();
       const format = (rawFormat === 'md' ? 'markdown' : rawFormat) as ReportFormat | 'pdf';
       const assembleFormat: ReportFormat = format === 'pdf' ? 'html' : format;

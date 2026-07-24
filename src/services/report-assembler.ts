@@ -214,8 +214,16 @@ export function assembleReport(
     evidence_style = 'proof_cards',
   } = opts;
 
-  const profile: ReportProfile = opts.profile ?? (client_safe ? 'client' : 'operator');
-  const effectiveClientSafe = client_safe || profile === 'client';
+  const requestedProfile: ReportProfile = opts.profile ?? (client_safe ? 'client' : 'operator');
+  const effectiveClientSafe = client_safe || requestedProfile === 'client';
+  // SECURITY (H8): a client-safe report IS a client report. Previously `profile` and
+  // `client_safe` were independent, so `client_safe:true, profile:'operator'` produced
+  // effectiveClientSafe=true but profile='operator' — and the per-finding proof-card
+  // redaction keys off PROFILE, so raw stdout previews (NTLM/shadow hashes, cloud keys)
+  // survived byte-for-byte into a file labelled report.client-safe.json. Collapsing the
+  // profile to 'client' whenever the report is client-safe makes every downstream
+  // `profile === 'client'` redaction decision correct by construction.
+  const profile: ReportProfile = effectiveClientSafe ? 'client' : requestedProfile;
   const redactionOpts = { client_safe: effectiveClientSafe };
   const config = engine.getConfig();
   const graph = engine.exportGraph();
