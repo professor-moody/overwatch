@@ -11,6 +11,7 @@ import {
   allowedToolsFor,
   buildHeadlessClaudeEnv,
   inspectHeadlessClaudeCompatibility,
+  shouldReprobeCompatibility,
 } from '../headless-mcp-runner.js';
 import { HeadlessProcessRegistry } from '../headless-process-registry.js';
 import {
@@ -250,6 +251,25 @@ describe('Headless runner mechanics (injected spawn)', () => {
       '--setting-sources',
       '--no-session-persistence',
     ].join('\n'))).toEqual({ ok: true, missing_flags: [] });
+  });
+
+  it('M8: re-probes a transient compatibility failure but caches success / deterministic verdicts', () => {
+    // No cached verdict → probe.
+    expect(shouldReprobeCompatibility(null)).toBe(true);
+    // A transient probe FAILURE (error set, e.g. spawn EAGAIN/ETIMEDOUT) must NOT
+    // stick — otherwise one blip permanently fails every headless agent.
+    expect(shouldReprobeCompatibility({ ok: false, missing_flags: [], error: 'spawn EAGAIN' })).toBe(true);
+    // A success is stable.
+    expect(shouldReprobeCompatibility({ ok: true, missing_flags: [] })).toBe(false);
+    // A deterministic missing-flag verdict (wrong/old binary, no error) is stable too.
+    expect(shouldReprobeCompatibility({ ok: false, missing_flags: ['--setting-sources'] })).toBe(false);
+
+    // A throwing inspector surfaces as a transient failure (error set) — combined with
+    // shouldReprobe, the next dispatch retries instead of latching the daemon broken.
+    const thrown = inspectHeadlessClaudeCompatibility('claude', () => { throw new Error('ETIMEDOUT'); });
+    expect(thrown.ok).toBe(false);
+    expect(thrown.error).toContain('ETIMEDOUT');
+    expect(shouldReprobeCompatibility(thrown)).toBe(true);
   });
 
   afterEach(() => {

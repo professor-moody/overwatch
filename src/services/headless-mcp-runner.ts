@@ -86,6 +86,17 @@ export function inspectHeadlessClaudeCompatibility(
   }
 }
 
+/**
+ * M8: decide whether a cached compatibility verdict must be re-probed. A transient
+ * probe failure (spawn EAGAIN/ETIMEDOUT → `error` set) must NEVER stick — caching it
+ * would permanently fail every headless agent for the daemon's lifetime after one
+ * blip. A success, or a deterministic missing-flag verdict (ok:false, no error), is
+ * stable and kept.
+ */
+export function shouldReprobeCompatibility(cached: HeadlessClaudeCompatibility | null): boolean {
+  return !cached || cached.error !== undefined;
+}
+
 export interface HeadlessMcpRunnerOptions {
   /** Path/name of the Claude Code CLI. Default 'claude'. Tests inject a fake. */
   claudeBinary?: string;
@@ -279,11 +290,17 @@ export class HeadlessMcpRunner {
       this.opts.spawnFn === undefined
       && /^(?:claude|claude\.exe)$/i.test(basename(binary))
     ) {
-      this.compatibility ??= inspectHeadlessClaudeCompatibility(binary);
-      if (!this.compatibility.ok) {
-        const detail = this.compatibility.error
-          ? `could not inspect ${binary}: ${this.compatibility.error}`
-          : `${binary} is missing ${this.compatibility.missing_flags.join(', ')}`;
+      // M8: cache a SUCCESS (and a deterministic missing-flag verdict) forever, but
+      // NEVER cache a transient probe failure — re-probe on the next dispatch instead.
+      // shouldReprobeCompatibility(null) is true, so `compatibility` is always set here.
+      if (shouldReprobeCompatibility(this.compatibility)) {
+        this.compatibility = inspectHeadlessClaudeCompatibility(binary);
+      }
+      const compatibility = this.compatibility!;
+      if (!compatibility.ok) {
+        const detail = compatibility.error
+          ? `could not inspect ${binary}: ${compatibility.error}`
+          : `${binary} is missing ${compatibility.missing_flags.join(', ')}`;
         const message = `Claude Code cannot run managed Overwatch agents: ${detail}. Update Claude Code and run npm run doctor.`;
         this.failOwnedCommand(task, 'PLANNER_RUNTIME_INCOMPATIBLE', message);
         if (this.mutationAllowed()) {
@@ -297,7 +314,7 @@ export class HeadlessMcpRunner {
             linked_agent_task_id: task.id,
             details: {
               reason: 'headless_claude_incompatible',
-              missing_flags: this.compatibility.missing_flags,
+              missing_flags: compatibility.missing_flags,
             },
           });
         }
