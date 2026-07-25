@@ -92,6 +92,36 @@ describe('run_tool', () => {
     }));
   });
 
+  it('L4: the durable receipt carries action_id while the process is still in-flight', async () => {
+    // Slow child so we can observe the 'running' receipt before it completes.
+    const pending = handlers.run_tool({
+      binary: process.execPath,
+      args: ['-e', "setTimeout(() => process.stdout.write('done'), 250)"],
+      validate: false,
+      command_id: 'inflight-action-id',
+      idempotency_key: 'inflight-action-id-key',
+    });
+
+    // Poll for the in-flight ('running') receipt and capture its action_id.
+    let runningActionId: unknown;
+    for (let i = 0; i < 100; i++) {
+      const rec = engine.getApplicationCommandById('inflight-action-id') as any;
+      if (rec && (rec.status === 'running' || rec.status === 'accepted')) {
+        runningActionId = rec.action_id;
+        if (runningActionId) break;
+      }
+      await new Promise(r => setTimeout(r, 10));
+    }
+    // Pre-fix: the in-flight receipt has no action_id (undefined) — a running command
+    // can't be correlated to its action.
+    expect(typeof runningActionId).toBe('string');
+    expect(runningActionId).toBeTruthy();
+
+    const result = await pending;
+    // The in-flight receipt's action_id is the SAME as the completed action.
+    expect(parseTextResult(result).action_id).toBe(runningActionId);
+  });
+
   it('replays an explicit idempotency key after restart without spawning again', async () => {
     const config = makeConfig();
     const statePath = join(testDir, 'state.json');

@@ -997,6 +997,20 @@ export class TaskExecutionService {
     if (!this.running || !this.engine.isPersistenceWritable()) return;
     for (const task of this.engine.getAgentTasks()) {
       if (task.status !== 'running' && task.status !== 'pending') continue;
+      // L3: honor a pending STOP for a not-yet-live headless task. drainDirectives
+      // only stops agents with a live OS process, so a stop issued while the agent
+      // is still queued (pending, or capacity-blocked) was a no-op — the agent got
+      // launched and did target-facing work anyway. Check BEFORE the frontier-lease
+      // gate so a lease-blocked pending task is covered too.
+      if (!this.registry.has(task.id) && !this.launched.has(task.id)) {
+        const pendingStop = this.engine.getPendingAgentDirective(task.id);
+        if (pendingStop?.kind === 'stop' && this.resolveBackend(task) === 'headless_mcp') {
+          this.engine.acknowledgeAgentDirective(task.id, pendingStop.id);
+          this.engine.updateAgentSchedulerFlags(task.id, { no_retry: true });
+          this.cancelHeadless(task.id, `stop directive (${pendingStop.id})`);
+          continue;
+        }
+      }
       if (
         task.status === 'pending'
         && task.frontier_item_id

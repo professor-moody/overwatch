@@ -2172,6 +2172,25 @@ export async function runInstrumentedProcess(
   if (!engine.isPersistenceWritable()) {
     return persistenceInterruptedResponse(engine, opts.action_id);
   }
+  // L4: resolve the action_id ONCE, up front, so the durable receipt carries it
+  // while the process is in-flight (reserve + 'running' transitions) — not only
+  // after completion. Callers omit action_id on the normal path, so previously the
+  // core callback derived it too late and an in-flight command had no action_id to
+  // correlate. Derived AFTER the writable guard (a read-only engine must reject
+  // without consuming a sequence); core short-circuits on the truthy value so no
+  // second deterministic sequence is consumed. Inputs mirror the core derivation.
+  const idConfig = engine.getConfig();
+  const resolvedActionId = opts.action_id || actionIdOrUuid(
+    idConfig.engagement_nonce
+      ? {
+        engagement_nonce: idConfig.engagement_nonce,
+        agent_id: opts.agent_id,
+        timestamp: engine.now(),
+        command_signature: opts.command_repr,
+        sequence: engine.nextDeterministicSeq(),
+      }
+      : null,
+  );
   const requestShape = {
     invoking_tool: opts.invoking_tool,
     binary: opts.binary,
@@ -2205,6 +2224,11 @@ export async function runInstrumentedProcess(
   };
   const descriptor = {
     invoking_tool: opts.invoking_tool,
+    // action_id stays UNSET here: the descriptor is hashed into input_sha256 for
+    // idempotency, and resolvedActionId is non-deterministic across replays (uuid /
+    // nonce+seq), so including it would flip input_sha256 and self-conflict on replay.
+    // The receipt's action_id is carried via the execute metadata below, which lands
+    // on the record through identity.action_id — not part of input_sha256.
     action_id: opts.action_id,
     frontier_item_id: opts.frontier_item_id,
     agent_id: opts.agent_id,
@@ -2246,7 +2270,7 @@ export async function runInstrumentedProcess(
       : null;
   return processCommandServiceFor(engine).execute(
     descriptor,
-    () => runInstrumentedProcessCore(engine, opts),
+    () => runInstrumentedProcessCore(engine, { ...opts, action_id: resolvedActionId }),
     (receipt, storedResponse) =>
       replayStoredProcessResponse(opts, receipt, storedResponse),
     {
@@ -2254,7 +2278,7 @@ export async function runInstrumentedProcess(
       idempotency_key: opts.idempotency_key,
       transport: opts.command_transport,
       actor_task_id: actorTaskId,
-      action_id: opts.action_id,
+      action_id: resolvedActionId,
       frontier_item_id: opts.frontier_item_id,
     },
   );
