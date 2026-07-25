@@ -137,6 +137,27 @@ describe('state tools', () => {
     expect(badSince.total_entries).toBeGreaterThanOrEqual(2);
   });
 
+  it('get_history includes an event landing exactly on the since boundary (inclusive)', async () => {
+    engine.logActionEvent({ description: 'boundary-evt', event_type: 'action_started', category: 'frontier' });
+    const all = JSON.parse((await handlers.get_history({ limit: 200 })).content[0].text);
+    const evt = all.entries.find((e: { description?: string }) => e.description === 'boundary-evt') as { timestamp: string };
+    expect(evt).toBeDefined();
+    // since == the event's own timestamp must NOT drop it (batched events share one ms).
+    const atBoundary = JSON.parse((await handlers.get_history({ limit: 200, since: evt.timestamp })).content[0].text);
+    expect(atBoundary.entries.some((e: { description?: string }) => e.description === 'boundary-evt')).toBe(true);
+  });
+
+  it('get_state changes_since counts an agent completion exactly on the boundary', async () => {
+    engine.logActionEvent({ description: 'done', event_type: 'agent_transcript_submitted', category: 'agent', agent_id: 'recon-boundary' });
+    const evt = engine.getFullHistory().find(
+      h => h.event_type === 'agent_transcript_submitted' && h.agent_id === 'recon-boundary',
+    )!;
+    const digest = JSON.parse(
+      (await handlers.get_state({ activity_count: 20, since: evt.timestamp })).content[0].text,
+    ).changes_since;
+    expect(digest.completed_agent_ids).toContain('recon-boundary');
+  });
+
   it('get_state changes_since digests new findings + completed agents since a timestamp', async () => {
     engine.logActionEvent({ description: 'found a cred', event_type: 'finding_reported', category: 'finding' });
     engine.logActionEvent({ description: 'agent wrapped up', event_type: 'agent_transcript_submitted', category: 'agent', agent_id: 'recon-7' });

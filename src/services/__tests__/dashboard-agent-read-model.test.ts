@@ -97,17 +97,20 @@ describe('DashboardAgentReadModel', () => {
         agent_label: 'shared-label',
         lifecycle: 'live',
         live: true,
-        elapsed_ms: 300_000,
+        // elapsed_ms is no longer projected (client derives it from assigned_at); the
+        // injected clock still drives liveness (lifecycle/live) below.
+        assigned_at: running.assigned_at,
         campaign: { id: 'campaign-1', name: 'Agent campaign' },
       }],
     });
+    expect(listed.agents[0]).not.toHaveProperty('elapsed_ms');
 
     const context = reads.getAgentContext('task-1');
     expect(context?.task).toMatchObject({
       task_id: 'task-1',
       lifecycle: 'live',
-      elapsed_ms: 300_000,
     });
+    expect(context?.task).not.toHaveProperty('elapsed_ms');
     expect(context?.subgraph.nodes).toHaveLength(1);
     expect(getSubgraphForAgent).toHaveBeenCalledWith(['host-1'], { hops: 2 });
   });

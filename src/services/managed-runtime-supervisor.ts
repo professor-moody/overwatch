@@ -249,8 +249,10 @@ process.on('message', (message) => {
       signal,
     });
     // Keep the stable supervisor group leader alive through TERM, then remove
-    // the entire group. This is fail-closed: no unowned descendant survives a
-    // one-shot action that attempted to daemonize.
+    // the entire process group. This contains descendants that stayed in the
+    // group; a descendant that deliberately re-groups (setsid/setpgid) or a
+    // compiled tool that self-backgrounds can still escape group-kill on POSIX —
+    // best-effort containment, not a hard guarantee.
     if (process.platform === 'win32') {
       const descendants = windowsDescendantPids([process.pid, target.pid]);
       for (const pid of descendants) {

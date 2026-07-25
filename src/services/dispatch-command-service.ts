@@ -105,6 +105,20 @@ export interface DispatchCommandPort extends ApplicationCommandHost {
   };
 }
 
+/**
+ * Dispatch failures whose cause is transient CAPACITY/CONCURRENCY, not the input:
+ * the cap frees as workers finish, and a leased item becomes actionable once its
+ * lease releases. These are raised from a fully rolled-back synchronous command, so
+ * ApplicationCommandService leaves the idempotency key FREE to retry rather than
+ * freezing a `failed` receipt under it. Every other code (NOT_FOUND, UNSCOPED,
+ * ALREADY_*, CAMPAIGN_NOT_DISPATCHABLE, validation) is terminal for the same input.
+ */
+const RETRYABLE_DISPATCH_CODES: ReadonlySet<string> = new Set([
+  'DISPATCH_CAP_EXCEEDED',
+  'DISPATCH_REFUSED',
+  'FRONTIER_NOT_ACTIONABLE',
+]);
+
 export class DispatchCommandError extends Error {
   constructor(
     message: string,
@@ -114,6 +128,11 @@ export class DispatchCommandError extends Error {
   ) {
     super(message);
     this.name = 'DispatchCommandError';
+  }
+
+  /** True when a same-key retry can succeed once capacity/leases free (see above). */
+  get retryable(): boolean {
+    return RETRYABLE_DISPATCH_CODES.has(this.code);
   }
 }
 
@@ -153,7 +172,27 @@ const ExactAgentTaskSchema = z.object({
   assigned_at: z.string().min(1),
   status: z.enum(['pending', 'running', 'completed', 'failed', 'interrupted']),
   subgraph_node_ids: z.array(z.string()),
-}).passthrough();
+  // Enumerate the full AgentTask surface so unknown, caller-supplied fields are
+  // STRIPPED (zod's default) rather than passed through into durable agent state.
+  frontier_item_id: z.string().optional(),
+  campaign_id: z.string().optional(),
+  skill: z.string().optional(),
+  completed_at: z.string().optional(),
+  result_summary: z.string().optional(),
+  heartbeat_at: z.string().optional(),
+  heartbeat_ttl_seconds: z.number().optional(),
+  backend: z.enum(['scripted', 'headless_mcp', 'manual']).optional(),
+  role: z.string().optional(),
+  archetype: z.string().optional(),
+  objective: z.string().optional(),
+  work: z.unknown().optional(),
+  application_command_id: z.string().optional(),
+  model: z.string().optional(),
+  no_retry: z.boolean().optional(),
+  reoffered: z.boolean().optional(),
+  orchestrator: z.boolean().optional(),
+  claudeBinary: z.string().optional(),
+});
 
 const ExactAgentRegisterInputSchema = z.object({
   task: ExactAgentTaskSchema,

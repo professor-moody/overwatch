@@ -12,6 +12,7 @@ import {
   type DashboardState,
 } from './dashboard-projectors.js';
 import { MainWebSocketEventSchema } from '../contracts/dashboard-v1.js';
+import { sendOrDrop, startWebSocketHeartbeat } from './dashboard-ws-liveness.js';
 import { PlaybookRunService } from './playbook-run-service.js';
 import type { RuntimeBuildInfo } from './runtime-build-info.js';
 import type { ExportedGraph } from '../types.js';
@@ -62,6 +63,7 @@ export class DashboardMainWebSocketHub {
       this.attachConnection(ws, contract);
     });
 
+    this.disposers.push(startWebSocketHeartbeat(this.server));
     this.disposers.push(engine.onUpdate(detail => this.onGraphUpdate(detail)));
     this.disposers.push(engine.getAgentQueryStore().onChange(() => {
       if (this.clients.size === 0) return;
@@ -158,12 +160,9 @@ export class DashboardMainWebSocketHub {
     for (const ws of this.clients) {
       if (this.contractFilter !== undefined
         && (this.clientContracts.get(ws) ?? 1) !== this.contractFilter) continue;
-      if (ws.readyState !== WebSocket.OPEN) continue;
-      try {
-        ws.send(message);
-      } catch {
-        ws.close();
-      }
+      // Drops (and terminates) a closed or non-draining client so a slow/dead reader
+      // cannot grow the send buffer without bound; forget it from our tracking set.
+      if (!sendOrDrop(ws, message)) this.clients.delete(ws);
     }
   }
 

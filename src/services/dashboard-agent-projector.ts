@@ -118,10 +118,10 @@ export function projectAgentDtos(
     const taskId = taskIdOf(task);
     const agentLabel = agentLabelOf(task);
     const latest = task.status === 'running' ? latestByTask.get(taskId) : undefined;
-    const assignedAt = new Date(task.assigned_at).getTime();
-    const elapsed = task.status === 'running' && Number.isFinite(assignedAt) && now >= assignedAt
-      ? now - assignedAt
-      : undefined;
+    // NOTE: elapsed runtime is intentionally NOT projected here. It is a value that
+    // changes every tick, so emitting it marked every running agent "changed" on each
+    // projection and defeated the bounded/keyed agent patch. The client derives it from
+    // `assigned_at` (see agentElapsedMs in dashboard-next lib/utils).
     const campaign = task.campaign_id ? campaignById.get(task.campaign_id) : undefined;
     const heartbeatAt = task.heartbeat_at ? new Date(task.heartbeat_at).getTime() : NaN;
     const heartbeatTtlMs = (task.heartbeat_ttl_seconds ?? 120) * 1_000;
@@ -145,7 +145,6 @@ export function projectAgentDtos(
       queued: task.status === 'pending',
       lifecycle,
       live: lifecycle === 'live',
-      ...(elapsed !== undefined ? { elapsed_ms: elapsed } : {}),
       ...(campaign ? { campaign: { id: campaign.id, name: campaign.name, strategy: campaign.strategy } } : {}),
       ...(latest ? {
         current_action: latest.description,

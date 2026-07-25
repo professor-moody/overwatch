@@ -64,6 +64,17 @@ describe('dashboard agent projector', () => {
     expect(projected[0].current_action).toBe('Found an exposed endpoint');
   });
 
+  it('projects a running agent identically across ticks (no per-tick time churn)', () => {
+    const running = task({ id: 'task-1', status: 'running' });
+    // Two projections 30s apart with nothing else changed. Because elapsed runtime is
+    // no longer emitted (the client derives it), the DTO is byte-identical, so the
+    // keyed/bounded agent patch stays empty instead of re-sending every running agent.
+    const first = projectAgentDtos([running], [], [], NOW);
+    const second = projectAgentDtos([running], [], [], NOW + 30_000);
+    expect(JSON.stringify(second[0])).toBe(JSON.stringify(first[0]));
+    expect(second[0]).not.toHaveProperty('elapsed_ms');
+  });
+
   it('uses exact task attribution and refuses ambiguous legacy labels', () => {
     const tasks = [task(), task({ id: 'task-2' })];
     const projected = projectAgentDtos(tasks, [

@@ -283,11 +283,14 @@ export function projectDashboardStatePatch<TState extends {
   next: TState,
 ): DashboardStatePatch<TState> {
   if (!previous) {
-    const { agents, active_agents, frontier, ...state } = next;
+    // `active_agents` is destructured only to keep it OUT of the generic `state` spread.
+    // We intentionally do NOT emit an active_agents patch: the client reads `agents` and
+    // `frontier` only, so shipping a second full copy of the agent list each refresh was
+    // dead bandwidth (the patch schema keeps the field optional for back-compat).
+    const { agents, active_agents: _activeAgents, frontier, ...state } = next;
     return {
       state: structuredClone(state) as DashboardStatePatch<TState>['state'],
       agents: { upsert: [], remove: [], moves: [], total: agents.length, replace: structuredClone(agents) } as DashboardStatePatch<TState>['agents'],
-      active_agents: { upsert: [], remove: [], moves: [], total: active_agents.length, replace: structuredClone(active_agents) } as DashboardStatePatch<TState>['active_agents'],
       frontier: { upsert: [], remove: [], moves: [], total: frontier.length, replace: structuredClone(frontier) } as unknown as DashboardStatePatch<TState>['frontier'],
     };
   }
@@ -317,14 +320,8 @@ export function projectDashboardStatePatch<TState extends {
       return record.task_id ?? record.id ?? '';
     },
   );
-  const activeAgents = indexedCollectionPatch(
-    previous.active_agents,
-    next.active_agents,
-    value => {
-      const record = value as { task_id?: string; id?: string; agent_id?: string };
-      return record.task_id ?? record.id ?? record.agent_id ?? '';
-    },
-  );
+  // active_agents patch intentionally not computed/emitted — the client never reads it
+  // (see the full-state branch above).
   const frontier = indexedCollectionPatch(previous.frontier, next.frontier, value => value.id);
   return {
     ...(Object.keys(state).length > 0
@@ -332,9 +329,6 @@ export function projectDashboardStatePatch<TState extends {
       : {}),
     ...(unset.length > 0 ? { unset } : {}),
     ...(agents ? { agents: agents as DashboardStatePatch<TState>['agents'] } : {}),
-    ...(activeAgents
-      ? { active_agents: activeAgents as DashboardStatePatch<TState>['active_agents'] }
-      : {}),
     ...(frontier ? { frontier: frontier as DashboardStatePatch<TState>['frontier'] } : {}),
   };
 }

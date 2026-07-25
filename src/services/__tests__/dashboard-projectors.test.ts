@@ -97,12 +97,7 @@ describe('dashboard pure projectors', () => {
         moves: [{ id: 'task-c', index: 0 }],
         total: 2,
       },
-      active_agents: {
-        upsert: [{ task_id: 'task-c' }],
-        remove: ['task-a'],
-        moves: [{ id: 'task-c', index: 0 }],
-        total: 1,
-      },
+      // active_agents is intentionally NOT emitted (the client reads agents/frontier only).
       frontier: {
         upsert: [{ id: 'fi-b', value: 2 }, { id: 'fi-c', value: 1 }],
         remove: ['fi-a'],
