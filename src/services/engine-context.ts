@@ -1605,6 +1605,17 @@ export class EngineContext {
     this.actionFrontierMap.clear();
     for (const entry of this.activityLog) {
       if (entry.action_id && entry.frontier_item_id) {
+        // M7: apply the SAME first-writer-wins collision guard as the live writer
+        // (appendActivityEventInMemory). Without it, a cross-agent action_id collision
+        // resolves to the LAST writer on rebuild — the opposite of the live map — so
+        // a JSON-snapshot restore silently flips frontier attribution. We must NOT
+        // re-emit an instrumentation_warning here: the original is already in the log
+        // being iterated, and appending mid-restore would desync the chain tail that
+        // rebuildChainTail() rebuilds immediately after.
+        const existing = this.actionFrontierMap.get(entry.action_id);
+        if (existing && existing.agent_id && entry.agent_id && existing.agent_id !== entry.agent_id) {
+          continue;
+        }
         this.actionFrontierMap.set(entry.action_id, {
           frontier_item_id: entry.frontier_item_id,
           agent_id: entry.agent_id,

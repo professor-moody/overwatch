@@ -99,6 +99,32 @@ describe('agent console helpers', () => {
     expect(buildOperatorConsoleEvents(entries, [task], { after: 'old' })
       .map(event => event.id)).toEqual(['middle', 'new']);
   });
+
+  // L2: an expired/foreign positional cursor (event aged out of the bounded log)
+  // must re-sync the full window — NOT compare an ISO timestamp against an id, which
+  // returned every row or zero rows by lexicographic accident.
+  it('L2: re-syncs the full window for an expired id cursor whose leading char > "2"', () => {
+    const entries = [
+      entry({ event_id: 'old', timestamp: '2026-06-12T10:01:00Z' }),
+      entry({ event_id: 'middle', timestamp: '2026-06-12T10:02:00Z' }),
+      entry({ event_id: 'new', timestamp: '2026-06-12T10:03:00Z' }),
+    ];
+    // Pre-fix: 'evt-gone' > every ISO timestamp lexicographically → filter returns []
+    // (silent stall). Post-fix: full window.
+    expect(buildAgentConsoleEvents(entries, task, { after: 'evt-gone' })
+      .map(event => event.id)).toEqual(['old', 'middle', 'new']);
+  });
+
+  it('L2: re-syncs the full window for an expired id cursor whose leading char < "2"', () => {
+    const entries = [
+      entry({ event_id: 'old', timestamp: '2026-06-12T10:01:00Z' }),
+      entry({ event_id: 'new', timestamp: '2026-06-12T10:03:00Z' }),
+    ];
+    // '0-expired' < every ISO timestamp → pre-fix returned all rows by accident;
+    // post-fix returns the same deterministic full window (now by design).
+    expect(buildAgentConsoleEvents(entries, task, { after: '0-expired-id' })
+      .map(event => event.id)).toEqual(['old', 'new']);
+  });
 });
 
 describe('activityToAgentConsoleEvent — WS-path attribution (3A.3)', () => {

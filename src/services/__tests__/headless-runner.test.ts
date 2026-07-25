@@ -1927,6 +1927,35 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(engine.getPendingAgentDirective('h-stopdir')).toBeNull();
   });
 
+  it('L3: honors a stop for a QUEUED (not-yet-launched) agent instead of dispatching it later', async () => {
+    svc = makeService({ maxConcurrentHeadless: 1 });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    // Occupy the only worker slot so the next agent stays queued (pending, unlaunched).
+    engine.registerAgent(headlessTask({ id: 'blocker' }));
+    engine.registerAgent(headlessTask({ id: 'h-queued-stop', status: 'pending' }));
+    await settle();
+    expect(spawned).toHaveLength(1);
+    expect((svc as any).registry.has('h-queued-stop')).toBe(false);
+
+    // Stop the still-queued agent. Pre-fix this is a no-op (no live process), so it
+    // gets launched once the slot frees.
+    engine.issueAgentDirective({ task_id: 'h-queued-stop', kind: 'stop', issued_by: 'operator' });
+    await settle();
+
+    expect(engine.getPendingAgentDirective('h-queued-stop')).toBeNull();     // acknowledged
+    expect(engine.getTask('h-queued-stop')?.status).toBe('interrupted');
+    expect(liveTask('h-queued-stop').no_retry).toBe(true);                    // not re-offered
+
+    // Free the slot; the stopped agent must NEVER be dispatched.
+    engine.updateAgentStatus('blocker', 'completed', 'done');
+    spawned[0].simulateExit(0);
+    spawned[0].simulateClose(0);
+    await settle();
+    expect(spawned).toHaveLength(1);
+    expect((svc as any).registry.has('h-queued-stop')).toBe(false);
+  });
+
   it('does NOT act on pause/resume/steering directives — those are agent-observed', async () => {
     svc = makeService();
     svc.start();

@@ -190,6 +190,24 @@ describe('EngineContext', () => {
         frontier_type: 'untested_edge',
       });
     });
+
+    it('M7: preserves the first-writer mapping on rebuild when different agents collide', () => {
+      const ctx = makeCtx();
+      // The live writer keeps agent-A's fi-1 (first-writer-wins) but still appends
+      // agent-B's colliding event to the log. A JSON-snapshot restore then reruns
+      // rebuild over that log — which must resolve to the SAME first writer, not the last.
+      ctx.logEvent({ description: 'A', action_id: 'act-collision', frontier_item_id: 'fi-1', agent_id: 'agent-A' });
+      ctx.logEvent({ description: 'B', action_id: 'act-collision', frontier_item_id: 'fi-2', agent_id: 'agent-B' });
+
+      ctx.actionFrontierMap.clear();
+      ctx.rebuildActionFrontierMap();
+
+      expect(ctx.actionFrontierMap.get('act-collision')).toEqual({
+        frontier_item_id: 'fi-1',
+        agent_id: 'agent-A',
+        frontier_type: undefined,
+      });
+    });
   });
 
   describe('log convenience method', () => {
