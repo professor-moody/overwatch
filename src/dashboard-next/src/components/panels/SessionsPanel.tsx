@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { useEngagementStore } from '../../stores/engagement-store';
 import * as api from '../../lib/api';
 import { cn, formatRelativeTime } from '../../lib/utils';

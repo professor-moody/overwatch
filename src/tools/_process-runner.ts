@@ -276,6 +276,25 @@ function dropsValue(flag: string, bin: string): boolean {
   return DROP_VALUE_GLOBAL.has(flag) || (DROP_VALUE_BY_BIN[bin]?.has(flag) ?? false);
 }
 
+/**
+ * Flags whose VALUE designates the target set in a form this scanner cannot resolve
+ * into scope-checkable targets — `nmap -iL <file>` (read targets from a file) and
+ * `nmap -iR <n>` (pick n random internet hosts). The value itself is still dropped
+ * (it is a path or a count, not a target), but the action MUST FAIL CLOSED: we
+ * cannot prove the real targets are in scope, and with no targets extracted
+ * GraphEngine.validateAction performs no scope check at all.
+ *
+ * Deliberately independent of HOST_FIRST_BINARIES, which excludes scanners — that
+ * is why the existing unresolvedHostOperand guard could never fire for nmap.
+ */
+const TARGET_BEARING_VALUE_FLAGS: Record<string, Set<string>> = {
+  nmap: new Set(['-iL', '-iR']),
+};
+
+function bearsUnresolvableTargets(flag: string, bin: string): boolean {
+  return TARGET_BEARING_VALUE_FLAGS[bin]?.has(flag) ?? false;
+}
+
 /** True when a token looks like a concrete egress target (IP, CIDR, or URL). A
  *  MAYBE-value flag never skips a target-looking value — so a value-flag can't
  *  hide the real target that follows it (fail-open guard). Uses String.match
@@ -438,11 +457,14 @@ function extractImplicitTargets(commandRepr: string, forceAllSegments = false): 
         if (eq > 0) {
           const flag = t.slice(0, eq);
           const val = t.slice(eq + 1);
+          // Fail closed: the real targets live behind this flag and are unresolvable here.
+          if (bearsUnresolvableTargets(flag, bin)) unresolvedHostOperand = true;
           if (dropsValue(flag, bin)) { /* drop unconditionally */ }
           else if (maybeValue(flag, bin) && !looksLikeTarget(val)) { /* drop non-target value */ }
           else scanTokenForTargets(val, acc);
         } else {
           const nxt = tokens[j + 1];
+          if (bearsUnresolvableTargets(t, bin)) unresolvedHostOperand = true;
           if (dropsValue(t, bin)) {
             if (nxt !== undefined) j += 1; // drop the value unconditionally
           } else if (maybeValue(t, bin) && nxt !== undefined && !looksLikeTarget(nxt)) {
@@ -1220,6 +1242,15 @@ async function runInstrumentedProcessCore(
   // along inside a multi-target invocation. We dedupe per (kind,value),
   // run validateAction once per target, and aggregate errors/warnings.
   let noiseEstimate = noiseOverride;
+  // SECURITY: the operator approval gate must run even when `validate:false`.
+  // These are hoisted out of the validation block so the gate below can run
+  // unconditionally — `validate:false` means "skip scope/OPSEC *checks*", NOT
+  // "skip operator approval". Previously the entire gate lived inside
+  // `if (shouldValidate)`, so a caller passing validate:false executed with no
+  // approval prompt and no action_validated event, leaving the timeline unable to
+  // distinguish "approved" from "approval never requested".
+  let approvalOpsecContext: ReturnType<typeof engine.validateAction>['opsec_context'] | undefined;
+  let approvalValidationResult: 'valid' | 'warning_only' = 'valid';
   if (shouldValidate) {
     const validationTargets: Array<Parameters<typeof engine.validateAction>[0]> = [];
     for (const id of allTargetNodeIds) validationTargets.push({ target_node: id, technique, allow_unverified_scope });
@@ -1395,6 +1426,9 @@ async function runInstrumentedProcessCore(
       }
     }
     const validationResult = !v.valid ? 'invalid' : v.warnings.length > 0 ? 'warning_only' : 'valid';
+    // Publish to the hoisted approval gate below.
+    approvalOpsecContext = v.opsec_context;
+    approvalValidationResult = validationResult === 'warning_only' ? 'warning_only' : 'valid';
 
     engine.logActionEvent({
       description: resolvedDescription,
@@ -1450,103 +1484,110 @@ async function runInstrumentedProcessCore(
       };
     }
 
-    // Approval gate
-    const queue = engine.getPendingActionQueue();
-    // P4.1: pass the phase-effective approval config so per-phase overrides
-    // (e.g., approve-all during exploitation) are honored. The action context
-    // (target ip/node/technique) also lets operator-policy approval rules
-    // escalate the mode (e.g. approve-all on a production subnet).
-    if (queue.needsApproval(v.opsec_context, technique, engine.getEffectiveApprovalConfig({ ip: target_ip, nodeId: target_node, technique }))) {
-      const pendingApproval = {
-        action_id: normalizedActionId,
-        technique,
-        target_node,
-        target_ip,
-        target_cidr,
-        description: resolvedDescription,
-        opsec_context: v.opsec_context,
-        validation_result: validationResult as 'valid' | 'warning_only',
-        frontier_item_id,
-        task_id: ownerTaskId,
-        agent_label: ownerAgentLabel,
-        agent_id: ownerAgentLabel,
-      };
-      engine.recordApprovalRequest(pendingApproval);
-      opts.onExecutionState?.('awaiting_approval');
-      // Approval can remain pending for minutes. Couple that wait to the live
-      // persistence gate as well as the MCP caller signal so an invocation
-      // cannot resume and spawn after durability has gone read-only.
-      const approvalAbort = createExecutionAbortMonitor(engine, abortSignal);
-      let approval: Awaited<ReturnType<typeof queue.submit>>;
-      try {
-        approval = await queue.submit(pendingApproval, { signal: approvalAbort.signal });
-      } finally {
-        approvalAbort.dispose();
-      }
-      if (approvalAbort.persistenceInterrupted() || !engine.isPersistenceWritable()) {
-        return persistenceInterruptedResponse(engine, normalizedActionId, {
-          approval_status: approval.status,
-        });
-      }
-      engine.resolveApprovalRequest(approval);
+  }
 
+  // ---- 1b. Operator approval gate (runs even when validate:false) ----
+  // SECURITY: this gate is deliberately OUTSIDE the shouldValidate block. When scope
+  // validation is skipped we still need an opsec_context to decide whether approval is
+  // required, so derive one without any target (no scope check is performed here).
+  if (!approvalOpsecContext) {
+    approvalOpsecContext = engine.validateAction({ technique, allow_unverified_scope }).opsec_context;
+  }
+  const queue = engine.getPendingActionQueue();
+  // P4.1: pass the phase-effective approval config so per-phase overrides
+  // (e.g., approve-all during exploitation) are honored. The action context
+  // (target ip/node/technique) also lets operator-policy approval rules
+  // escalate the mode (e.g. approve-all on a production subnet).
+  if (queue.needsApproval(approvalOpsecContext, technique, engine.getEffectiveApprovalConfig({ ip: target_ip, nodeId: target_node, technique }))) {
+    const pendingApproval = {
+      action_id: normalizedActionId,
+      technique,
+      target_node,
+      target_ip,
+      target_cidr,
+      description: resolvedDescription,
+      opsec_context: approvalOpsecContext,
+      validation_result: approvalValidationResult,
+      frontier_item_id,
+      task_id: ownerTaskId,
+      agent_label: ownerAgentLabel,
+      agent_id: ownerAgentLabel,
+    };
+    engine.recordApprovalRequest(pendingApproval);
+    opts.onExecutionState?.('awaiting_approval');
+    // Approval can remain pending for minutes. Couple that wait to the live
+    // persistence gate as well as the MCP caller signal so an invocation
+    // cannot resume and spawn after durability has gone read-only.
+    const approvalAbort = createExecutionAbortMonitor(engine, abortSignal);
+    let approval: Awaited<ReturnType<typeof queue.submit>>;
+    try {
+      approval = await queue.submit(pendingApproval, { signal: approvalAbort.signal });
+    } finally {
+      approvalAbort.dispose();
+    }
+    if (approvalAbort.persistenceInterrupted() || !engine.isPersistenceWritable()) {
+      return persistenceInterruptedResponse(engine, normalizedActionId, {
+        approval_status: approval.status,
+      });
+    }
+    engine.resolveApprovalRequest(approval);
+
+    engine.logActionEvent({
+      description: approval.unattended_execute
+        ? `Action auto-approved on timeout (unattended): ${resolvedDescription}`
+        : `Action ${approval.status}: ${resolvedDescription}`,
+      agent_id,
+      linked_agent_task_id: ownerTaskId,
+      action_id: normalizedActionId,
+      event_type: 'action_validated',
+      category: 'frontier',
+      frontier_item_id,
+      result_classification: approval.status === 'denied' || approval.status === 'aborted' ? 'failure' : 'success',
+      details: {
+        approval_status: approval.status,
+        operator_notes: approval.operator_notes,
+        reason: approval.reason,
+        auto_approved: approval.auto_approved,
+        unattended_execute: approval.unattended_execute,
+      },
+    });
+
+    // Both 'denied' (operator decision) and 'aborted' (client disconnected
+    // before a decision) block execution — the command must not run.
+    if (approval.status === 'denied' || approval.status === 'aborted') {
+      const aborted = approval.status === 'aborted';
       engine.logActionEvent({
-        description: approval.unattended_execute
-          ? `Action auto-approved on timeout (unattended): ${resolvedDescription}`
-          : `Action ${approval.status}: ${resolvedDescription}`,
+        description: aborted
+          ? `Approval aborted (client disconnected): ${resolvedDescription}`
+          : `Operator denied: ${resolvedDescription}`,
         agent_id,
         linked_agent_task_id: ownerTaskId,
         action_id: normalizedActionId,
-        event_type: 'action_validated',
+        event_type: 'action_failed',
         category: 'frontier',
         frontier_item_id,
-        result_classification: approval.status === 'denied' || approval.status === 'aborted' ? 'failure' : 'success',
-        details: {
-          approval_status: approval.status,
-          operator_notes: approval.operator_notes,
-          reason: approval.reason,
-          auto_approved: approval.auto_approved,
-          unattended_execute: approval.unattended_execute,
-        },
+        tool_name,
+        technique,
+        target_cidrs: targetCidrsForEvents(),
+        result_classification: 'failure',
+        details: aborted
+          ? { reason: 'approval_aborted', approval_reason: approval.reason }
+          : { reason: 'operator_denied', approval_reason: approval.reason },
       });
-
-      // Both 'denied' (operator decision) and 'aborted' (client disconnected
-      // before a decision) block execution — the command must not run.
-      if (approval.status === 'denied' || approval.status === 'aborted') {
-        const aborted = approval.status === 'aborted';
-        engine.logActionEvent({
-          description: aborted
-            ? `Approval aborted (client disconnected): ${resolvedDescription}`
-            : `Operator denied: ${resolvedDescription}`,
-          agent_id,
-          linked_agent_task_id: ownerTaskId,
-          action_id: normalizedActionId,
-          event_type: 'action_failed',
-          category: 'frontier',
-          frontier_item_id,
-          tool_name,
-          technique,
-          target_cidrs: targetCidrsForEvents(),
-          result_classification: 'failure',
-          details: aborted
-            ? { reason: 'approval_aborted', approval_reason: approval.reason }
-            : { reason: 'operator_denied', approval_reason: approval.reason },
-        });
-        engine.persist();
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              action_id: normalizedActionId,
-              executed: false,
-              approval_status: approval.status,
-              ...(aborted ? { interrupted: true, code: 'COMMAND_INTERRUPTED' } : {}),
-              reason: approval.reason,
-            }, null, 2),
-          }],
-          isError: true,
-        };
-      }
+      engine.persist();
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            action_id: normalizedActionId,
+            executed: false,
+            approval_status: approval.status,
+            ...(aborted ? { interrupted: true, code: 'COMMAND_INTERRUPTED' } : {}),
+            reason: approval.reason,
+          }, null, 2),
+        }],
+        isError: true,
+      };
     }
   }
 
@@ -2026,6 +2067,9 @@ async function runInstrumentedProcessCore(
         parse_outcome: parse_summary?.parse_outcome,
         parse_finding_id: parse_summary?.finding_id,
         parse_campaign_id: parse_summary?.campaign_id,
+        // 3c: matched-signal excerpts index the stdout blob captured for this action,
+        // so the chain builder can backfill evidence_id and verify the bytes.
+        excerpts: parse_summary?.excerpts,
         command: command_repr,
         binary,
         args: loggedArgs,
@@ -2128,6 +2172,25 @@ export async function runInstrumentedProcess(
   if (!engine.isPersistenceWritable()) {
     return persistenceInterruptedResponse(engine, opts.action_id);
   }
+  // L4: resolve the action_id ONCE, up front, so the durable receipt carries it
+  // while the process is in-flight (reserve + 'running' transitions) — not only
+  // after completion. Callers omit action_id on the normal path, so previously the
+  // core callback derived it too late and an in-flight command had no action_id to
+  // correlate. Derived AFTER the writable guard (a read-only engine must reject
+  // without consuming a sequence); core short-circuits on the truthy value so no
+  // second deterministic sequence is consumed. Inputs mirror the core derivation.
+  const idConfig = engine.getConfig();
+  const resolvedActionId = opts.action_id || actionIdOrUuid(
+    idConfig.engagement_nonce
+      ? {
+        engagement_nonce: idConfig.engagement_nonce,
+        agent_id: opts.agent_id,
+        timestamp: engine.now(),
+        command_signature: opts.command_repr,
+        sequence: engine.nextDeterministicSeq(),
+      }
+      : null,
+  );
   const requestShape = {
     invoking_tool: opts.invoking_tool,
     binary: opts.binary,
@@ -2161,6 +2224,11 @@ export async function runInstrumentedProcess(
   };
   const descriptor = {
     invoking_tool: opts.invoking_tool,
+    // action_id stays UNSET here: the descriptor is hashed into input_sha256 for
+    // idempotency, and resolvedActionId is non-deterministic across replays (uuid /
+    // nonce+seq), so including it would flip input_sha256 and self-conflict on replay.
+    // The receipt's action_id is carried via the execute metadata below, which lands
+    // on the record through identity.action_id — not part of input_sha256.
     action_id: opts.action_id,
     frontier_item_id: opts.frontier_item_id,
     agent_id: opts.agent_id,
@@ -2202,7 +2270,7 @@ export async function runInstrumentedProcess(
       : null;
   return processCommandServiceFor(engine).execute(
     descriptor,
-    () => runInstrumentedProcessCore(engine, opts),
+    () => runInstrumentedProcessCore(engine, { ...opts, action_id: resolvedActionId }),
     (receipt, storedResponse) =>
       replayStoredProcessResponse(opts, receipt, storedResponse),
     {
@@ -2210,7 +2278,7 @@ export async function runInstrumentedProcess(
       idempotency_key: opts.idempotency_key,
       transport: opts.command_transport,
       actor_task_id: actorTaskId,
-      action_id: opts.action_id,
+      action_id: resolvedActionId,
       frontier_item_id: opts.frontier_item_id,
     },
   );

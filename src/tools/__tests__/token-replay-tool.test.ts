@@ -56,6 +56,10 @@ describe('validate_token_credential', () => {
       args: expect.arrayContaining([`Authorization: Bearer ${jwt}`]),
       command_repr: expect.not.stringContaining(jwt),
       parse_with: 'token_replay_okta',
+      // SECURITY (M12): the raw token is in `args`; the runner must be told to keep it
+      // out of the durable hash-chained log and scrub it from captured output.
+      redact_args_in_log: true,
+      redact_secrets: expect.arrayContaining([jwt]),
     }));
   });
 
@@ -83,6 +87,8 @@ describe('validate_token_credential', () => {
       args: expect.arrayContaining([`Authorization: SSWS ${apiToken}`]),
       command_repr: expect.not.stringContaining(apiToken),
       parse_with: 'token_replay_okta',
+      redact_args_in_log: true,
+      redact_secrets: expect.arrayContaining([apiToken]),
     }));
   });
 
@@ -110,7 +116,11 @@ describe('validate_token_credential', () => {
       target_cloud_identity_id: canonicalId,
     });
     expect(runInstrumentedProcess).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      binary: 'aws',
       target_node: canonicalId,
+      // SECURITY (M12): the web-identity token is in argv.
+      redact_args_in_log: true,
+      redact_secrets: expect.arrayContaining(['header.payload.signature']),
       parser_context: expect.objectContaining({
         target_role_arn: roleArn, target_cloud_identity_id: canonicalId,
       }),

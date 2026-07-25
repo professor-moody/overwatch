@@ -797,6 +797,12 @@ Result fields include action_id, evidence_id, validation_result, plus completion
           timed_out: sendResult.timed_out,
           captured_bytes: sendResult.text?.length ?? 0,
           evidence_id,
+          // M10: also expose the capture as a stdout stream so evidence chains and proof
+          // cards pick it up with byte-count / truncation fidelity, not just the generic
+          // evidence_id. `evidence_id` is retained for the console/idempotency consumers.
+          ...(evidence_id ? { stdout_evidence_id: evidence_id } : {}),
+          stdout_total_bytes: sendResult.text?.length ?? 0,
+          stdout_truncated: sendResult.truncated,
           start_pos: sendResult.start_pos,
           end_pos: sendResult.end_pos,
           truncated: sendResult.truncated,

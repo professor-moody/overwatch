@@ -18,7 +18,11 @@ import {
   buildReportDocumentModel,
   renderFullReportFromModel,
 } from './report-generator.js';
-import type { ReportInput, AttackPath, ReportProfile, EvidenceStyle, ReportOptions } from './report-generator.js';
+import type { ReportInput, AttackPath, ReportProfile, EvidenceStyle, ReportOptions, ReportIntegrity } from './report-generator.js';
+import {
+  verifyChain, verifyCheckpoints, verifyCheckpointSignatures,
+  attestCheckpointSignatures, loadCheckpointKeyring, deriveChainSeed,
+} from './activity-chain.js';
 import type { HtmlPlaybookSummary, HtmlReportData, HtmlTimelineEntry } from './report-html.js';
 import type { PersistedDurablePlaybookRunV1 } from './persisted-state.js';
 import type { HtmlComplianceMapping } from './report-html.js';
@@ -26,7 +30,7 @@ import { renderReportHtml } from './report-html.js';
 import { runRetrospective, buildCredentialChains } from './retrospective.js';
 import type { RetrospectiveInput } from './retrospective.js';
 import { classifyAllFindings, generateNavigatorLayer } from './finding-classifier.js';
-import { redactReportText, redactSecretKeys, sanitizeCommandForClient } from './report-redaction.js';
+import { redactReportText, redactSecretKeys, maskEvidenceTextForClient } from './report-redaction.js';
 import { buildTrustSignalsResponse } from './trust-signal-summary.js';
 import type { TrustSignalDto } from './trust-signal-summary.js';
 import { displayFindingCategory, displayFindingShortTitle, displayFindingTitle } from './finding-presentation.js';
@@ -77,14 +81,31 @@ function scrubMarkdownForClient(md: string): string {
     /(<summary>(?:Raw[^<]*|Evidence[^<]*|Output[^<]*)<\/summary>\s*\n+\s*)```[\s\S]*?```/gi,
     '$1```\n<redacted for client delivery — full evidence available in operator report>\n```',
   );
+  // M14 (defense-in-depth): the `full_inline` proof-card style renders a BARE
+  // 2-space-indented fence with no label (report-generator renderProofCardsMarkdown),
+  // which the label-based rules above never match. Those indented fences are always
+  // proof-card evidence/command bodies in the client deliverable, so redact any that
+  // still carries content. (The model layer already blanks raw_preview for client
+  // reports — this ensures the text scrub is not itself fail-open.)
+  out = out.replace(
+    /^(  ```[^\n]*\n)([\s\S]*?)(^  ```$)/gm,
+    (full, open: string, body: string, close: string) =>
+      body.includes('redacted for client delivery')
+        ? full
+        : `${open}  <redacted for client delivery — full evidence available in operator report>\n${close}`,
+  );
   out = out.replace(
     /\b(cred_value|password|nt_hash|lm_hash|aes256_hash|aes128_hash|secret|token|bearer|api_key|private_key)\s*[:=]\s*([^\s,'"`<>{}]+)/gi,
     (_m, k) => `${k}: <redacted>`,
   );
-  // Commands render into ```bash fences with their secrets in the args
-  // (-p/--password, --hashes, user:pass@host, Bearer …) — the label-based
-  // redactions above never see them. Sanitize the whole document.
-  out = sanitizeCommandForClient(out) ?? out;
+  // Commands render into ```bash fences AND timeline/methodology tables with their
+  // secrets in the args (-p/--password, --hashes, user:pass@host, Bearer …), and a
+  // command that echoes an NTLM/secretsdump line (user:rid:lm:nt:::) leaks the bare
+  // hash — the label-based redactions above never see either. maskEvidenceTextForClient
+  // is a superset of sanitizeCommandForClient that also masks NTLM/secretsdump lines and
+  // structured key:value secrets, applied whole-document as the final net. (Caught by
+  // dogfooding: a matched-signal command leaked an NTLM hash into a client timeline table.)
+  out = maskEvidenceTextForClient(out) ?? out;
   return out;
 }
 
@@ -194,6 +215,57 @@ function appendPlaybookSummary(md: string, playbooks: HtmlPlaybookSummary): stri
  * Assemble a rendered report from current engine state + options.
  * Pure function — does not write to disk or persist to archive.
  */
+/**
+ * 3e: report-level integrity attestation. The evidence machinery (hash-chained
+ * activity log, checkpoint binding, Ed25519 signatures) already existed but was
+ * reachable only from the verify_activity_chain tool — a generated report made no
+ * claim about whether the events it drew from were intact. This wires the same
+ * verification into report assembly so the document carries tamper-evidence.
+ */
+function buildReportIntegrity(engine: GraphEngine): ReportIntegrity {
+  const log = engine.getFullHistory();
+  // Seed from the rolling-window boundary (tieredTruncate drops the oldest prefix),
+  // matching verify_activity_chain — tampering is still caught by recomputed hashes.
+  const chain = verifyChain(log, deriveChainSeed(log));
+  const checkpoints = engine.getChainCheckpoints();
+  const binding = verifyCheckpoints(log, checkpoints);
+  const keyring = loadCheckpointKeyring();
+  const signaturesConfigured = Object.keys(keyring).length > 0;
+
+  let signaturesValid: boolean | null = null;
+  if (signaturesConfigured) {
+    signaturesValid = checkpoints.length > 0
+      && attestCheckpointSignatures(verifyCheckpointSignatures(checkpoints, keyring)).ok;
+  }
+
+  let attestation: ReportIntegrity['attestation'];
+  if (!chain.valid) attestation = 'broken';
+  else if (signaturesConfigured && signaturesValid) attestation = 'signed_verified';
+  else if (checkpoints.length > 0 && binding.valid) attestation = 'checkpoint_bound';
+  else attestation = 'chain_only';
+
+  const summary =
+    attestation === 'broken'
+      ? `INTEGRITY WARNING: the activity hash chain has ${chain.breaks.length} break(s) — the evidence timeline this report draws from may have been altered.`
+    : attestation === 'signed_verified'
+      ? `Activity hash chain verified over ${chain.chained_count.toLocaleString()} events and Ed25519-attested across ${checkpoints.length} checkpoint(s).`
+    : attestation === 'checkpoint_bound'
+      ? `Activity hash chain verified over ${chain.chained_count.toLocaleString()} events; ${checkpoints.length} checkpoint(s) bind to the log. No verifier key configured, so signatures were not checked.`
+      : `Activity hash chain verified over ${chain.chained_count.toLocaleString()} events. No checkpoints or signing key configured for this engagement.`;
+
+  return {
+    chain_valid: chain.valid,
+    chained_count: chain.chained_count,
+    chain_breaks: chain.breaks.length,
+    checkpoints_total: checkpoints.length,
+    checkpoints_bound: binding.valid,
+    signatures_configured: signaturesConfigured,
+    signatures_valid: signaturesValid,
+    attestation,
+    summary,
+  };
+}
+
 export function assembleReport(
   engine: GraphEngine,
   skills: SkillIndex,
@@ -214,8 +286,16 @@ export function assembleReport(
     evidence_style = 'proof_cards',
   } = opts;
 
-  const profile: ReportProfile = opts.profile ?? (client_safe ? 'client' : 'operator');
-  const effectiveClientSafe = client_safe || profile === 'client';
+  const requestedProfile: ReportProfile = opts.profile ?? (client_safe ? 'client' : 'operator');
+  const effectiveClientSafe = client_safe || requestedProfile === 'client';
+  // SECURITY (H8): a client-safe report IS a client report. Previously `profile` and
+  // `client_safe` were independent, so `client_safe:true, profile:'operator'` produced
+  // effectiveClientSafe=true but profile='operator' — and the per-finding proof-card
+  // redaction keys off PROFILE, so raw stdout previews (NTLM/shadow hashes, cloud keys)
+  // survived byte-for-byte into a file labelled report.client-safe.json. Collapsing the
+  // profile to 'client' whenever the report is client-safe makes every downstream
+  // `profile === 'client'` redaction decision correct by construction.
+  const profile: ReportProfile = effectiveClientSafe ? 'client' : requestedProfile;
   const redactionOpts = { client_safe: effectiveClientSafe };
   const config = engine.getConfig();
   const graph = engine.exportGraph();
@@ -266,12 +346,25 @@ export function assembleReport(
   const evidenceRecordLoader: NonNullable<ReportOptions['evidence_record_loader']> = (id: string) => {
     try { return engine.getEvidenceStore().getRecord(id); } catch { return undefined; }
   };
+  // 3c: byte-range reader so matched-signal excerpts resolve and verify against the blob.
+  const evidenceSliceLoader: NonNullable<ReportOptions['evidence_slice_loader']> = (id, offset, maxBytes) => {
+    try {
+      const slice = engine.getEvidenceStore().getRawOutputSlice(id, offset, maxBytes);
+      return slice ? { text: slice.text, total_bytes: slice.total_bytes } : null;
+    } catch { return null; }
+  };
+  // M1: durable node→evidence index so proof survives activity-log rollover.
+  const evidenceByNodeLoader: NonNullable<ReportOptions['evidence_by_node_loader']> = (nodeId) => {
+    try { return engine.getEvidenceStore().list({ node_id: nodeId }); } catch { return []; }
+  };
 
   const renderOptions = {
     include_evidence, include_narrative, include_retrospective,
     include_compliance, include_attack_navigator, include_gap_analysis,
     evidence_loader: evidenceLoader,
     evidence_record_loader: evidenceRecordLoader,
+    evidence_slice_loader: evidenceSliceLoader,
+    evidence_by_node_loader: evidenceByNodeLoader,
     report_profile: profile,
     evidence_style,
   };
@@ -279,9 +372,11 @@ export function assembleReport(
   const findingModel = buildReportFindingModel(reportInput, renderOptions);
   const findings = findingModel.findings;
   const trustSignalSummary = buildTrustSignalsResponse({ history, findings });
+  const integrity = buildReportIntegrity(engine);
   const documentModel = buildReportDocumentModel(reportInput, {
     ...renderOptions,
     trust_signals: trustSignalSummary.signals,
+    integrity,
   }, findingModel);
   const { executiveSummary, actionPlan } = documentModel;
   const severitySummary = { ...documentModel.severityCounts };
@@ -302,6 +397,7 @@ export function assembleReport(
       report_profile: profile,
       evidence_style,
       executive_summary: executiveSummary,
+      integrity,
       action_plan: actionPlan,
       evidence_appendix: documentModel.appendix,
       trust_signals: trustSignalSummary.signals,
@@ -355,6 +451,7 @@ export function assembleReport(
       evidenceAppendix: documentModel.appendix,
       reportProfile: profile,
       evidenceStyle: evidence_style,
+      integrity,
     };
 
     if (findings.length > 0) {

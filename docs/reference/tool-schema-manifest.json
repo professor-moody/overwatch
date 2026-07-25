@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "tool_count": 95,
-  "registry_sha256": "38fef4ce6f8f7c8bef884f1ecb5af7a490d1ba990c9a87cf73eb11bd413d5f0f",
+  "registry_sha256": "51bc95479cc2da2ff0d7a6bf2e63c4703b085b5cd07fea915bc41983b4755950",
   "categories": [
     {
       "id": "state-readiness",
@@ -2516,12 +2516,25 @@
             "default": false,
             "description": "If true, return manifest records without content",
             "type": "boolean"
+          },
+          "max_bytes": {
+            "default": 262144,
+            "description": "Cap on returned content/raw_output bytes (default 256 KiB). Evidence blobs can be arbitrarily large; a full read on a poll can pin the daemon.",
+            "exclusiveMinimum": 0,
+            "maximum": 4194304,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Byte offset into raw_output for paging; the response returns next_offset + truncated to continue.",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "c2c03818a00912e1c74d2e43729f172eafbf7547c969b97c0d3219c5f3da3a7d",
+      "input_schema_sha256": "330d9aff1b7c091ffd3f809096c92b6e8e1bab459f5077b559effe77e7eb309a",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/get-evidence.md",
@@ -6113,6 +6126,50 @@
             ],
             "type": "object"
           },
+          "excerpts": {
+            "description": "Matched-signal excerpts: the specific byte range(s) of the evidence that justify this finding, so a reader can verify how it was found.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "byte_end": {
+                  "description": "End byte offset into the evidence blob (exclusive)",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "byte_start": {
+                  "description": "Start byte offset into the evidence blob (inclusive)",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "edge_key": {
+                  "description": "Graph edge this excerpt justifies",
+                  "type": "string"
+                },
+                "evidence_id": {
+                  "description": "Evidence blob the offsets index into; defaults to this finding's evidence blob",
+                  "type": "string"
+                },
+                "matched_by": {
+                  "description": "What recognized the signal (rule/regex/parser/agent)",
+                  "type": "string"
+                },
+                "node_id": {
+                  "description": "Graph node this excerpt justifies",
+                  "type": "string"
+                },
+                "snippet": {
+                  "description": "The matched text captured at conclusion time",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "byte_end",
+                "byte_start"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "frontier_item_id": {
             "description": "Frontier item this finding came from",
             "type": "string"
@@ -6216,7 +6273,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "ca3475d43dbd2d67ef4424c9c9f9851283c5d372dcfbde5ca3ce3b9eba8b0d9e",
+      "input_schema_sha256": "bc09b96063633298bdb1cd329de30e27d3b4ffeeab641b1f93771c0bae41772d",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/report-finding.md",

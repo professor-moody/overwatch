@@ -17,6 +17,7 @@ import {
 import { createServer } from 'node:net';
 import { basename, dirname, join, parse, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { portAcceptsConnection } from './port-probe.mjs';
 import { inspectBuildFreshness, readBuildInfo } from './build-fingerprint.mjs';
 import {
   assertRuntimePathSeparation,
@@ -201,10 +202,13 @@ async function probeRuntime(expected, environment, override = {}) {
   const runtimePort = override.port ?? expected.runtimePort;
   const runtimeHost = override.host ?? expected.runtimeHost;
   if (!runtimeUrl) return { running: false, disabled: true };
-  // A managed record gives us an exact endpoint to probe. Binding a second
-  // socket is not a portable occupancy test for wildcard listeners (notably on
-  // macOS), so only use the bind probe during endpoint discovery.
-  if (!override.url && !(await portOccupied(runtimePort, runtimeHost))) return { running: false };
+  // A managed record gives us an exact endpoint to probe. During endpoint
+  // discovery we only pre-check that *something* is listening — L5: probe by
+  // CONNECTING, never by binding. Binding here would race the daemon child that
+  // is concurrently binding the same port (EADDRINUSE ~1%/start). A connect probe
+  // never holds the port. It still returns false when nothing is listening, so
+  // probeRuntime's { running: false } contract is unchanged.
+  if (!override.url && !(await portAcceptsConnection(runtimePort, runtimeHost))) return { running: false };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1_500);
   try {

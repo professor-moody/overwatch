@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
 import { WsProvider } from './providers/ws-provider';
 import { OperatorLayout } from './components/layout/OperatorLayout';
 import { ToastContainer } from './components/shared/ToastContainer';

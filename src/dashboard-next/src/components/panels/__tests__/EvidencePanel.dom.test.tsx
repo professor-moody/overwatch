@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { EvidencePanel } from '../EvidencePanel';
 import * as api from '../../../lib/api';

@@ -200,6 +200,24 @@ interface CapturedDashboardResponse {
   body: string;
 }
 
+/**
+ * One evidence-chain element as served by GET /api/evidence-chains/{node_id}.
+ * `activity_id`, `timestamp`, and `description` are REQUIRED by
+ * EvidenceChainsResponseSchema (contracts/dashboard-api-v1.ts) — naming the shape
+ * here keeps the producer and the published contract from drifting apart again.
+ */
+interface DashboardEvidenceChainEntry {
+  activity_id: string;
+  timestamp: string;
+  description: string;
+  event_type?: string;
+  action_id?: string;
+  agent_id?: string;
+  tool?: string;
+  command?: string;
+  snippet?: string;
+}
+
 export class DashboardServer {
   private httpServer: ReturnType<typeof createServer>;
   private wss: WebSocketServer;
@@ -221,6 +239,7 @@ export class DashboardServer {
   private set clients(value: Set<WebSocket>) { this.mainHub.clients = value; }
 
   private host: string;
+  private allowedHosts: Set<string> = new Set();
   private engagementManager: EngagementManager | null = null;
   private configPath?: string;
   /**
@@ -375,6 +394,16 @@ export class DashboardServer {
     this.playbookCommands = new PlaybookCommandService(engine);
     this.port = port;
     this.host = host || process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
+    // SECURITY (M13): explicit extra Host names this server should answer to (e.g. the
+    // public hostname when behind a reverse proxy). Used to validate the Host header
+    // before it is trusted as the authority to match Origin against — without this an
+    // attacker-controlled Host (DNS rebinding) makes the Origin==Host check tautological.
+    this.allowedHosts = new Set(
+      (process.env.OVERWATCH_DASHBOARD_ALLOWED_HOSTS || '')
+        .split(',')
+        .map(h => h.trim().toLowerCase())
+        .filter(Boolean),
+    );
     this.sessionManager = sessionManager || null;
     this.configPath = configPath;
     if (dashboardStaticDir) this.dashboardDir = dashboardStaticDir;
@@ -584,13 +613,44 @@ export class DashboardServer {
   private get dashboardDir(): string | null { return this.staticServer.dashboardDir; }
   private set dashboardDir(value: string | null) { this.staticServer.dashboardDir = value; }
 
+  /**
+   * SECURITY (M13): validate a request's Host header before it is trusted anywhere.
+   * The Origin==Host CSRF/CSWSH comparison is only sound if Host is an authority this
+   * server legitimately answers to; otherwise a DNS-rebinding attacker sends a matching
+   * Origin+Host pair for their own domain and the check passes tautologically. A Host is
+   * allowed when its hostname is the configured bind host, a loopback name (when bound to
+   * loopback), or an explicitly configured proxy hostname (OVERWATCH_DASHBOARD_ALLOWED_HOSTS).
+   */
+  private isAllowedRequestHost(hostHeader: string): boolean {
+    try {
+      const u = new URL(`http://${hostHeader}`);
+      const name = u.hostname.toLowerCase();
+      const boundHost = this.host.toLowerCase().replace(/^\[|\]$/g, '');
+      if (name === boundHost) return true;
+      // A loopback Host is legitimate against a loopback bind AND against a wildcard
+      // bind (0.0.0.0 / ::), which always answers on 127.0.0.1. A non-loopback Host on
+      // a wildcard bind (a LAN IP or a public name) still requires an explicit allowlist
+      // entry, so DNS rebinding to an attacker hostname is refused.
+      const wildcardBind = boundHost === '0.0.0.0' || boundHost === '::';
+      if (this.isLoopback(name) && (this.isLoopback(this.host) || wildcardBind)) return true;
+      return this.allowedHosts.has(name);
+    } catch {
+      return false;
+    }
+  }
+
   /** True when an Origin header matches the request Host.
    *  Shared by the HTTP CORS gate and the WebSocket upgrade CSWSH check. */
   private isAllowedWsOrigin(origin: string, requestHost?: string): boolean {
     try {
       const originUrl = new URL(origin);
       if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') return false;
-      const effectiveRequestHost = requestHost || `${this.host}:${this.port}`;
+      // Only trust the caller-supplied Host if it is an authority we actually serve;
+      // otherwise fall back to our own bind authority so a rebinding Host cannot make
+      // the Origin==Host comparison tautological.
+      const effectiveRequestHost = (requestHost && this.isAllowedRequestHost(requestHost))
+        ? requestHost
+        : `${this.host}:${this.port}`;
       // Interpret Host using the Origin scheme so default ports normalize
       // correctly (https://host and Host: host:443 are the same authority).
       const requestUrl = new URL(`${originUrl.protocol}//${effectiveRequestHost}`);
@@ -4260,14 +4320,14 @@ export class DashboardServer {
 
   private buildEvidenceChain(nodeId: string): {
     node_id: string;
-    chains: Array<{ action_id?: string; agent_id?: string; event_type?: string; tool?: string; command?: string; timestamp: string; snippet?: string }>;
+    chains: DashboardEvidenceChainEntry[];
     count: number;
     node_props?: Record<string, unknown>;
     findings?: Array<{ finding_type?: string; severity?: string; technique_id?: string; description?: string }>;
   } {
     // Build evidence chains for a node from the activity log
     const history = this.engine.getFullHistory();
-    const chains: Array<{ action_id?: string; agent_id?: string; event_type?: string; tool?: string; command?: string; timestamp: string; snippet?: string }> = [];
+    const chains: DashboardEvidenceChainEntry[] = [];
 
     for (const entry of history) {
       // Match entries that explicitly reference this node via structured fields
@@ -4288,12 +4348,21 @@ export class DashboardServer {
         || (typeof det?.command === 'string' ? det.command : undefined);
 
       chains.push({
+        // `activity_id` and `description` are REQUIRED by EvidenceChainsResponseSchema
+        // (contracts/dashboard-api-v1.ts). Omitting them made installResponseContract
+        // reject every NON-EMPTY chain and rewrite it to HTTP 500 — so this endpoint
+        // only ever succeeded when there was no evidence to show, and the UI rendered
+        // that failure as "No evidence found". Both fields are required on
+        // ActivityLogEntry, so this is a pure mapping with no new data.
+        activity_id: entry.event_id,
+        description: entry.description,
         action_id: e.action_id as string | undefined,
         agent_id: e.agent_id as string | undefined,
         event_type: e.event_type as string | undefined,
         tool: e.tool_name as string | undefined || e.action_type as string | undefined,
         command: commandRepr,
         timestamp: entry.timestamp,
+        // Retained for back-compat with existing consumers (schema is .passthrough()).
         snippet: e.description as string | undefined || e.summary as string | undefined,
       });
     }
@@ -4368,7 +4437,7 @@ export class DashboardServer {
     const graph = this.engine.exportGraph();
     const history = this.engine.getFullHistory();
     const evidenceLoader = (id: string): string | null => {
-      try { return this.engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
+      try { return this.engine.getEvidenceStore().getRawOutputHead(id, 256 * 1024)?.text ?? null; } catch { return null; }
     };
     const findings = buildFindings(graph, history, config, { evidenceLoader });
     const classifications = classifyAllFindings(findings, graph);
@@ -4764,7 +4833,7 @@ export class DashboardServer {
       const history = this.engine.getFullHistory();
       const config = this.engine.getConfig();
       const evidenceLoader = (id: string): string | null => {
-        try { return this.engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
+        try { return this.engine.getEvidenceStore().getRawOutputHead(id, 256 * 1024)?.text ?? null; } catch { return null; }
       };
       const findings = buildFindings(graph, history, config, { evidenceLoader });
       const payload = buildTrustSignalsResponse({
@@ -4923,7 +4992,7 @@ export class DashboardServer {
     const graph = this.engine.exportGraph();
     const history = this.engine.getFullHistory();
     const evidenceLoader = (id: string): string | null => {
-      try { return this.engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
+      try { return this.engine.getEvidenceStore().getRawOutputHead(id, 256 * 1024)?.text ?? null; } catch { return null; }
     };
     const findings = buildFindings(graph, history, config, { evidenceLoader });
     const classifications = classifyAllFindings(findings, graph);

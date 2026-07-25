@@ -59,6 +59,26 @@ describe('parseAndMaybeIngest canonical outcomes', () => {
     expect(engine.exportGraph().nodes).toEqual([]);
   });
 
+  it('carries parser-emitted matched-signal excerpts into the result and the audit event (3c)', () => {
+    disposers.push(__registerParserForTest('excerpt-parser', () => finding(
+      'finding-excerpt',
+      [{ id: 'host-excerpt', type: 'host', label: 'excerpt host', ip: '10.0.0.7', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 }],
+      { excerpts: [
+        { node_id: 'host-excerpt', byte_start: 10, byte_end: 24, matched_by: 'fixture', snippet: 'open microsoft' },
+        // malformed span (end <= start) must be dropped, never surfaced.
+        { node_id: 'host-excerpt', byte_start: 5, byte_end: 5, matched_by: 'fixture' },
+      ] },
+    )));
+    const result = parseAndMaybeIngest(engine, {
+      tool_name: 'excerpt-parser', outputText: 'fixture output open microsoft-ds', action_id: 'act-excerpt', ingest: true,
+    });
+    expect(result.excerpts).toHaveLength(1);
+    expect(result.excerpts?.[0]).toMatchObject({ byte_start: 10, byte_end: 24, matched_by: 'fixture' });
+    // Persisted on the parse event so the report chain builder can lift it.
+    const event = engine.getFullHistory().find(e => e.action_id === 'act-excerpt' && e.event_type === 'parse_output');
+    expect((event?.details as any)?.excerpts).toHaveLength(1);
+  });
+
   it('distinguishes parser exceptions from zero data', () => {
     disposers.push(__registerParserForTest('throwing-parser', () => {
       throw new Error('fixture parser exploded');

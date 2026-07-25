@@ -458,7 +458,10 @@ const EvidenceChainsResponseSchema = z.object({
   chains: z.array(z.object({
     activity_id: z.string(),
     timestamp: z.string(),
-    event_type: z.string(),
+    // OPTIONAL on ActivityLogEntry (engine-context.ts), so it must be optional here —
+    // requiring it meant any entry without an event_type failed the response contract
+    // and turned a valid 200 into a 500.
+    event_type: z.string().optional(),
     description: z.string(),
   }).passthrough()),
   count: z.number().int().nonnegative(),

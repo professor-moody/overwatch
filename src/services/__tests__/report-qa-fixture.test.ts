@@ -100,6 +100,51 @@ describe('report QA fixture outputs', () => {
     }
   });
 
+  // SECURITY REGRESSION (H8): client_safe:true with an explicit profile:'operator' used
+  // to produce effectiveClientSafe=true but profile='operator'. Proof-card redaction keyed
+  // off PROFILE, so raw stdout previews (NTLM/shadow hashes, cloud keys) survived verbatim
+  // into a report the assembler labelled redaction_mode:'client_safe'. The assembler now
+  // collapses the profile to 'client' whenever the report is client-safe.
+  it('H8: client_safe:true + profile:operator leaks NO raw secret markers in any format', () => {
+    for (const format of ['json', 'markdown', 'html'] as const) {
+      const qa = fixture();
+      const assembled = assembleReport(qa.engine, qa.skills, {
+        format,
+        client_safe: true,
+        profile: 'operator',          // <-- the contradictory combo under test
+        evidence_style: 'proof_cards',
+        include_evidence: true,
+        include_attack_paths: true,
+      });
+      // The report must declare itself client-safe...
+      expect(assembled.redaction_mode).toBe('client_safe');
+      expect(assembled.profile).toBe('client');
+      // ...and must not contain any known secret byte-sequence from the fixture.
+      for (const marker of REPORT_QA_SECRET_MARKERS) {
+        expect(assembled.content).not.toContain(marker);
+      }
+    }
+  });
+
+  // SECURITY REGRESSION (M14): the full_inline proof-card style emits a bare indented
+  // fence with no label, which the client markdown scrub's label-based rules never
+  // matched — a fail-open last line. The model layer now blanks raw_preview for client
+  // reports, and the scrub redacts bare indented fences as defense-in-depth.
+  it('M14: a full_inline client-safe markdown report leaks no raw secret markers', () => {
+    const qa = fixture();
+    const md = assembleReport(qa.engine, qa.skills, {
+      format: 'markdown',
+      client_safe: true,
+      evidence_style: 'full_inline',
+      include_evidence: true,
+      include_attack_paths: true,
+    }).content;
+    expect(md).toContain('redacted');
+    for (const marker of REPORT_QA_SECRET_MARKERS) {
+      expect(md).not.toContain(marker);
+    }
+  });
+
   it('renders operator HTML and Markdown with evidence IDs, hashes, action IDs, and raw previews', () => {
     const qa = fixture();
     const operatorHtml = assembleReport(qa.engine, qa.skills, {
@@ -178,6 +223,43 @@ describe('report QA fixture outputs', () => {
     for (const marker of REPORT_QA_SECRET_MARKERS) {
       expect(clientJsonText).not.toContain(marker);
     }
+  });
+
+  it('3e: emits a report-level integrity attestation (markdown, HTML, JSON)', () => {
+    const qa = fixture();
+    const md = assembleReport(qa.engine, qa.skills, { format: 'markdown', profile: 'operator' }).content;
+    const html = assembleReport(qa.engine, qa.skills, { format: 'html', profile: 'operator' }).content;
+    const json = JSON.parse(assembleReport(qa.engine, qa.skills, { format: 'json', profile: 'operator' }).content) as {
+      integrity?: { chain_valid: boolean; chained_count: number; attestation: string; summary: string };
+    };
+
+    expect(md).toContain('## Integrity Attestation');
+    expect(md).toMatch(/Chain-verified|Signed & verified|Checkpoint-bound/);
+    expect(html).toContain('id="integrity"');
+
+    expect(json.integrity).toBeDefined();
+    expect(json.integrity!.chain_valid).toBe(true);
+    expect(json.integrity!.chained_count).toBeGreaterThan(0);
+    expect(['chain_only', 'checkpoint_bound', 'signed_verified']).toContain(json.integrity!.attestation);
+    expect(json.integrity!.summary).toContain('hash chain verified');
+  });
+
+  it('3e: a tampered activity event breaks the attestation', () => {
+    const qa = fixture();
+    // Rewrite a chained event's description in the engine's OWN log WITHOUT
+    // recomputing its event_hash — exactly what a naive post-hoc log edit does.
+    // (getFullHistory returns a detached deep copy, so we tamper the source.)
+    const internalLog = (qa.engine as unknown as { ctx: { activityLog: Array<{ event_hash?: string; description: string }> } }).ctx.activityLog;
+    const victim = internalLog.find(e => e.event_hash !== undefined);
+    expect(victim).toBeDefined();
+    victim!.description = 'TAMPERED — falsified evidence line';
+
+    const json = JSON.parse(assembleReport(qa.engine, qa.skills, { format: 'json', profile: 'operator' }).content) as {
+      integrity?: { chain_valid: boolean; attestation: string; summary: string };
+    };
+    expect(json.integrity!.chain_valid).toBe(false);
+    expect(json.integrity!.attestation).toBe('broken');
+    expect(json.integrity!.summary).toContain('INTEGRITY WARNING');
   });
 
   // Puppeteer render can exceed 30s under CI load (cold Chromium + parallel

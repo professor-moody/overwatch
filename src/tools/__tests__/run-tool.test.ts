@@ -92,6 +92,36 @@ describe('run_tool', () => {
     }));
   });
 
+  it('L4: the durable receipt carries action_id while the process is still in-flight', async () => {
+    // Slow child so we can observe the 'running' receipt before it completes.
+    const pending = handlers.run_tool({
+      binary: process.execPath,
+      args: ['-e', "setTimeout(() => process.stdout.write('done'), 250)"],
+      validate: false,
+      command_id: 'inflight-action-id',
+      idempotency_key: 'inflight-action-id-key',
+    });
+
+    // Poll for the in-flight ('running') receipt and capture its action_id.
+    let runningActionId: unknown;
+    for (let i = 0; i < 100; i++) {
+      const rec = engine.getApplicationCommandById('inflight-action-id') as any;
+      if (rec && (rec.status === 'running' || rec.status === 'accepted')) {
+        runningActionId = rec.action_id;
+        if (runningActionId) break;
+      }
+      await new Promise(r => setTimeout(r, 10));
+    }
+    // Pre-fix: the in-flight receipt has no action_id (undefined) — a running command
+    // can't be correlated to its action.
+    expect(typeof runningActionId).toBe('string');
+    expect(runningActionId).toBeTruthy();
+
+    const result = await pending;
+    // The in-flight receipt's action_id is the SAME as the completed action.
+    expect(parseTextResult(result).action_id).toBe(runningActionId);
+  });
+
   it('replays an explicit idempotency key after restart without spawning again', async () => {
     const config = makeConfig();
     const statePath = join(testDir, 'state.json');
@@ -490,6 +520,38 @@ describe('run_tool', () => {
     } finally {
       gate.mockRestore();
     }
+  }, 10_000);
+
+  // SECURITY REGRESSION (H6): the operator approval gate used to live entirely
+  // inside `if (shouldValidate)`, so a caller passing `validate:false` executed with
+  // NO approval prompt and no action_validated event — the timeline could not
+  // distinguish "operator approved" from "approval was never requested".
+  // `validate:false` must mean "skip scope/OPSEC checks" ONLY.
+  it('still requires operator approval when validate:false (approval gate is not bypassable)', async () => {
+    engine.updateConfig({ opsec: { ...engine.getConfig().opsec, approval_mode: 'approve-all' } });
+
+    const pending = handlers.run_tool({
+      binary: 'echo',
+      args: ['should-await-approval'],
+      target_ip: '10.10.10.1',
+      technique: 'enum_smb',
+      validate: false,          // <-- the bypass under test
+    });
+
+    // The gate must have queued a pending approval despite validate:false.
+    for (let i = 0; i < 100 && engine.getPendingActionQueue().getPending().length === 0; i++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(engine.getPendingActionQueue().getPending()).toHaveLength(1);
+
+    // Deny it: the command must NOT execute.
+    const [queued] = engine.getPendingActionQueue().getPending();
+    engine.getPendingActionQueue().deny(queued.action_id, 'operator denied in test');
+
+    const result = await pending;
+    const payload = parseTextResult(result);
+    expect(payload).toMatchObject({ executed: false, approval_status: 'denied' });
+    expect(engine.getFullHistory().some(event => event.event_type === 'action_started')).toBe(false);
   }, 10_000);
 
   it('marks oversized stdout as truncated while preserving evidence linkage', async () => {

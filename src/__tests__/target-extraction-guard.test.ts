@@ -83,6 +83,54 @@ describe('Scope guard — implicit target extraction', () => {
     expect((payload.errors || []).join(' ')).toMatch(/target\.example\.com/);
   });
 
+  // SECURITY REGRESSION (H7): `-iL <file>` / `-iR <n>` put the real target set behind
+  // a flag whose value is unconditionally dropped, so NO targets were extracted — and
+  // with zero targets GraphEngine.validateAction performs no scope check at all. The
+  // existing fail-closed guard could never fire because unresolvedHostOperand was only
+  // set for HOST_FIRST_BINARIES, which deliberately excludes scanners. Result: an
+  // out-of-scope (or whole-internet) scan executed and was recorded as `valid`.
+  it('H7: refuses `nmap -iL <file>` — targets are unresolvable, so it must fail closed', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nmap',
+      args: ['-sS', '-iL', '/tmp/hosts.txt', '-oN', 'out.txt'],
+      command_repr: 'nmap -sS -iL /tmp/hosts.txt -oN out.txt',
+      technique: 'port_scan',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    const payload = JSON.parse(res.content[0].text);
+    expect(payload.executed).toBe(false);
+  });
+
+  it('H7: refuses `nmap -iR <n>` (random internet hosts)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nmap',
+      args: ['-iR', '1000', '-p', '445'],
+      command_repr: 'nmap -iR 1000 -p 445',
+      technique: 'port_scan',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).executed).toBe(false);
+  });
+
+  it('H7: `-iL` is still permitted under an explicit allow_unverified_scope override', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'echo', // stand-in so nothing real spawns; the guard runs on command_repr
+      args: ['-iL'],
+      command_repr: 'nmap -sS -iL /tmp/hosts.txt',
+      technique: 'port_scan',
+      invoking_tool: 'run_bash',
+      allow_unverified_scope: true,
+    });
+    // The fail-closed refusal must NOT be the reason it stops (operator opted in).
+    const payload = JSON.parse(res.content[0].text);
+    expect((payload.errors || []).join(' ')).not.toMatch(/unresolved host operand/i);
+  });
+
   it('does NOT treat a curl -c/-b cookie-jar file path as an implicit target host', async () => {
     // Regression: a `session_jar_id` login spawns `curl -c <jar> -b <jar> <url>`.
     // The jar path (session-jars/sess-1.jar) must NOT be scope-scanned as a host,

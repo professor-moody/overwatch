@@ -146,10 +146,25 @@ export function buildAgentConsoleEvents(
     .filter((event): event is AgentConsoleEvent => event !== null);
 }
 
+/** A genuine ISO-8601 cursor (anchored date-T shape), as opposed to a uuid /
+ * nonce event id or the synthesized `${timestamp}-${type}` console id. */
+function isIsoTimestampCursor(after: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T/.test(after) && !Number.isNaN(Date.parse(after));
+}
+
 /**
  * `after` accepts either the stable id/action id of a returned event or a
  * timestamp. IDs are positional cursors: exclude the matched event and return
  * everything after it. Timestamp cursors retain the compatibility comparison.
+ *
+ * L2: when a positional id cursor no longer matches any retained entry — because
+ * the referenced event aged out of the bounded activity log, or a cursor from one
+ * view was reused against a narrower view — the cursor is EXPIRED. Previously this
+ * fell through to `entry.timestamp > after`, comparing ISO timestamps against an
+ * opaque id and returning (by lexicographic accident) either every row (duplicate
+ * re-delivery) or zero rows (silent stall). Now the timestamp branch runs ONLY for
+ * a genuine ISO cursor; an expired/foreign id returns the full window as a
+ * deterministic re-sync.
  */
 function entriesAfterCursor(
   entries: ActivityLogEntry[],
@@ -160,7 +175,10 @@ function entriesAfterCursor(
     entry.event_id === after || entry.action_id === after
   );
   if (cursorIndex >= 0) return entries.slice(cursorIndex + 1);
-  return entries.filter(entry => entry.timestamp > after);
+  if (isIsoTimestampCursor(after)) return entries.filter(entry => entry.timestamp > after);
+  // Expired/foreign positional cursor: re-sync the full window instead of a
+  // nonsensical timestamp-vs-id comparison.
+  return entries;
 }
 
 export function activityToAgentConsoleEvent(entry: ActivityLogEntry, task?: AgentTask): AgentConsoleEvent | null {

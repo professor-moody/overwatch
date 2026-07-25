@@ -15,6 +15,8 @@ import {
   redactOperatorPaths,
   redactSecretKeys,
   sanitizeCommandForClient,
+  maskEvidenceTextForClient,
+  maskStructuredSecrets,
 } from '../services/report-redaction.js';
 
 describe('report-redaction primitives', () => {
@@ -114,6 +116,55 @@ describe('report-redaction primitives', () => {
     it('passes through unchanged when client_safe is false', () => {
       const cmd = 'nxc smb 10.0.0.1 -u admin -p Summer2024!';
       expect(sanitizeCommandForClient(cmd, { client_safe: false })).toBe(cmd);
+    });
+  });
+
+  describe('maskEvidenceTextForClient (3f — mask, do not delete)', () => {
+    it('masks NTLM/secretsdump hashes while keeping the username + structure', () => {
+      const line = 'Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::';
+      const out = maskEvidenceTextForClient(line)!;
+      expect(out).not.toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
+      expect(out).not.toContain('aad3b435b51404eeaad3b435b51404ee');
+      expect(out).toContain('Administrator:');      // structure preserved
+      expect(out).toContain('<redacted>');
+      expect(out.endsWith(':::')).toBe(true);
+    });
+
+    it('masks structured key: value / key=value secrets', () => {
+      expect(maskEvidenceTextForClient('password=Summer2024!')).not.toContain('Summer2024!');
+      expect(maskEvidenceTextForClient('nt_hash: 31d6cfe0d16ae931b73c59d7e0c089c0')).not.toContain('31d6cfe0');
+      expect(maskEvidenceTextForClient('api_key = AKIAIOSFODNN7EXAMPLE')).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    });
+
+    it('masks inline credentials but preserves surrounding non-secret text', () => {
+      const out = maskEvidenceTextForClient('Connected to postgres://svc:s3cret@db/x as svc')!;
+      expect(out).not.toContain('s3cret');
+      expect(out).toContain('svc:<redacted>@');
+      expect(out).toContain('Connected to');   // context kept — this is the point of masking vs deleting
+    });
+
+    it('is a no-op for operator profile (client_safe: false)', () => {
+      const line = 'Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::';
+      expect(maskEvidenceTextForClient(line, { client_safe: false })).toBe(line);
+    });
+
+    // Caught by dogfooding: a command that echoes an NTLM/secretsdump line leaked the
+    // bare hash into a client TIMELINE table and the client JSON (neither of which goes
+    // through the excerpt masker). maskStructuredSecrets + walkAndRedact close it.
+    it('maskStructuredSecrets masks NTLM lines + key:value in arbitrary text (no command context)', () => {
+      const cmd = "printf %s 'Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::'";
+      expect(maskStructuredSecrets(cmd)).not.toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
+      expect(maskStructuredSecrets('nt_hash: 31d6cfe0d16ae931b73c59d7e0c089c0')).not.toContain('31d6cfe0');
+      expect(maskStructuredSecrets('plain prose with no secrets')).toBe('plain prose with no secrets');
+    });
+
+    it('redactSecretKeys (client JSON) masks an NTLM line inside a command field and a generic field', () => {
+      const payload = {
+        command: "printf %s 'Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::'",
+        note: 'dumped Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::',
+      };
+      const out = JSON.stringify(redactSecretKeys(payload, { client_safe: true }));
+      expect(out).not.toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
     });
 
     it('sanitizes a command rendered inside a markdown bash fence', () => {

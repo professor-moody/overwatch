@@ -74,13 +74,47 @@ function writeAtomic(path: string, record: ManagedDaemonRecordV1): void {
   }
 }
 
+const MANAGED_DAEMON_PHASES = new Set<string>([
+  'recovering', 'binding', 'ready', 'ready_read_only', 'stopping', 'failed', 'stopped',
+]);
+
 function readCurrent(path: string): ManagedDaemonRecordV1 | undefined {
   if (!existsSync(path)) return undefined;
+  let parsed: unknown;
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as ManagedDaemonRecordV1;
+    parsed = JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
     throw new Error(`managed daemon record is unreadable: ${path}`, { cause: error });
   }
+  // L6: validate the shape before trusting it — its sibling owner/lease readers all
+  // do (parseOwner, readLeaseOwner, readStateMigrationIntent). Without this a torn
+  // or tampered record was trusted and rewritten. Reject non-conforming shapes with
+  // the same throw contract as the unreadable case.
+  const isString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+  const r = parsed as Partial<ManagedDaemonRecordV1>;
+  const valid =
+    parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+    && r.version === 1
+    && isString(r.management_nonce)
+    && typeof r.pid === 'number' && Number.isSafeInteger(r.pid) && r.pid > 0
+    && isString(r.process_start_identity)
+    && isString(r.daemon_instance_id)
+    && isString(r.runtime_instance_id)
+    && isString(r.runtime_started_at)
+    && isString(r.build_input_sha256)
+    && isString(r.engagement_id)
+    && isString(r.config_path)
+    && isString(r.state_file_path)
+    && isString(r.config_identity_sha256)
+    && isString(r.state_identity_sha256)
+    && isString(r.managed_at)
+    && isString(r.updated_at)
+    && r.transport === 'http'
+    && typeof r.phase === 'string' && MANAGED_DAEMON_PHASES.has(r.phase);
+  if (!valid) {
+    throw new Error(`managed daemon record is invalid: ${path}`);
+  }
+  return parsed as ManagedDaemonRecordV1;
 }
 
 export function publishManagedDaemonReady(input: {

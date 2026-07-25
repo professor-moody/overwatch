@@ -888,7 +888,7 @@ export class GraphEngine {
     }
     // Resolve merge-vs-add and the exact graph-wide edge key before appending.
     // Persisting that identity makes later drop/merge records replay-stable.
-    for (const edgeId of this.ctx.graph.edges(source, target)) {
+    for (const edgeId of this.ctx.graph.outEdges(source, target)) {
       const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
       if (!edgeIdentityMatches(attrs, props)) continue;
       let effectiveProps = props;
@@ -959,7 +959,7 @@ export class GraphEngine {
     if (!this.ctx.graph.hasNode(source) || !this.ctx.graph.hasNode(target)) {
       return null;
     }
-    const existingEdges = this.ctx.graph.edges(source, target);
+    const existingEdges = this.ctx.graph.outEdges(source, target);
     for (const edgeId of existingEdges) {
       const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
       if (attrs.type === type) return edgeId;
@@ -3906,7 +3906,7 @@ export class GraphEngine {
 
   private findEdgeInGraph(graph: OverwatchGraph, source: string, target: string, type: EdgeType): string | null {
     if (!graph.hasNode(source) || !graph.hasNode(target)) return null;
-    const matches = graph.edges(source, target).filter(edgeId =>
+    const matches = graph.outEdges(source, target).filter(edgeId =>
       graph.getEdgeAttributes(edgeId).type === type,
     );
     if (matches.length > 1) {
@@ -3924,7 +3924,7 @@ export class GraphEngine {
     props: EdgeProperties,
     occurredAt: string,
   ): string {
-    for (const edgeId of graph.edges(source, target)) {
+    for (const edgeId of graph.outEdges(source, target)) {
       const existing = graph.getEdgeAttributes(edgeId) as EdgeProperties;
       if (!edgeIdentityMatches(existing, props)) continue;
       const effective = existing.inferred_by_rule && !existing.confirmed_at && props.confidence >= 1
@@ -5946,7 +5946,7 @@ export class GraphEngine {
     const inference = new InferenceEngine(
       scratch,
       (source, target, props) => {
-        const existing = graph.edges(source, target).find(edgeId =>
+        const existing = graph.outEdges(source, target).find(edgeId =>
           edgeIdentityMatches(graph.getEdgeAttributes(edgeId) as EdgeProperties, props),
         );
         if (existing) return { id: existing, isNew: false };

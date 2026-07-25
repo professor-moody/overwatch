@@ -5,7 +5,7 @@
 // ============================================================
 
 import { createHash } from 'crypto';
-import type { ReportFinding, NarrativePhase, FindingSeverity, EvidenceProofCard, EvidenceAppendixEntry } from './report-generator.js';
+import type { ReportFinding, NarrativePhase, FindingSeverity, EvidenceProofCard, EvidenceAppendixEntry, ProofExcerpt, ReportIntegrity } from './report-generator.js';
 import type { EngagementConfig, ExportedGraph } from '../types.js';
 import type { CredentialChain } from './retrospective.js';
 import type { TrustSignalDto } from './trust-signal-summary.js';
@@ -90,6 +90,7 @@ export interface HtmlReportData {
   evidenceAppendix?: EvidenceAppendixEntry[];
   reportProfile?: 'operator' | 'client';
   evidenceStyle?: 'proof_cards' | 'appendix' | 'full_inline';
+  integrity?: ReportIntegrity;
 }
 
 export interface HtmlHeatmapData {
@@ -175,6 +176,8 @@ ${renderExecutiveSummaryHtml(data, {
   low: lowCount,
   info: infoCount,
 }, objectivesAchieved)}
+
+${data.integrity ? renderIntegrityHtml(data.integrity) : ''}
 
   <section id="scope">
     <h2>Scope</h2>
@@ -303,6 +306,25 @@ function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data:
       ${data.recommendations && data.recommendations.length > 0 ? '<li><a href="#recommendations">Recommendations</a></li>' : ''}
     </ol>
   </nav>`;
+}
+
+function renderIntegrityHtml(integrity: ReportIntegrity): string {
+  const badge = integrity.attestation === 'broken' ? '❌ Broken'
+    : integrity.attestation === 'signed_verified' ? '✅ Signed &amp; verified'
+    : integrity.attestation === 'checkpoint_bound' ? '✅ Checkpoint-bound'
+    : '✔ Chain-verified';
+  const cls = integrity.attestation === 'broken' ? 'integrity-broken' : 'integrity-ok';
+  return `
+  <section id="integrity" class="integrity ${cls}">
+    <h2>Integrity Attestation</h2>
+    <p class="integrity-status">${badge}</p>
+    <p>${esc(integrity.summary)}</p>
+    <dl class="integrity-checks">
+      <div><dt>Activity hash chain</dt><dd>${integrity.chain_valid ? `valid (${integrity.chained_count.toLocaleString()} events)` : `<strong>BROKEN — ${integrity.chain_breaks} break(s)</strong>`}</dd></div>
+      <div><dt>Checkpoints</dt><dd>${integrity.checkpoints_total}${integrity.checkpoints_total > 0 ? ` (${integrity.checkpoints_bound ? 'bound to log' : 'DO NOT bind'})` : ''}</dd></div>
+      <div><dt>Ed25519 signatures</dt><dd>${integrity.signatures_configured ? (integrity.signatures_valid ? 'verified' : 'CONFIGURED BUT INVALID') : 'no verifier key configured'}</dd></div>
+    </dl>
+  </section>`;
 }
 
 function renderExecutiveSummaryHtml(
@@ -487,9 +509,43 @@ function stableRenderId(prefix: string, value: string): string {
   return `${prefix}-${createHash('sha256').update(value).digest('hex').slice(0, 12)}`;
 }
 
+/** Render the matched-signal excerpts (3c): quoted bytes + byte range + blob id +
+ * a verification mark when the span was re-read from the store and compared. */
+function renderExcerptsHtml(excerpts?: ProofExcerpt[]): string {
+  if (!excerpts || excerpts.length === 0) return '';
+  const rows = excerpts.slice(0, 5).map(ex => {
+    const text = (ex.snippet ?? ex.resolved_snippet ?? '').replace(/\r/g, '');
+    const range = `bytes ${ex.byte_start.toLocaleString()}–${ex.byte_end.toLocaleString()}`;
+    const where = ex.evidence_id ? ` of ${esc(ex.evidence_id)}` : '';
+    const by = ex.matched_by ? ` · matched by ${esc(ex.matched_by)}` : '';
+    const verify = ex.verified === true
+      ? '<span class="excerpt-verified">✓ verified</span>'
+      : ex.verified === false
+        ? '<span class="excerpt-mismatch">✗ mismatch vs blob</span>'
+        : '';
+    return `<div class="excerpt">
+      <div class="excerpt-meta">${range}${where}${by} ${verify}</div>
+      ${text ? `<pre class="excerpt-text">${esc(limitPreview(text, 2048, 20))}</pre>` : ''}
+    </div>`;
+  }).join('');
+  return `<details class="proof-excerpts" open><summary>Matched signal (${excerpts.length})</summary>${rows}</details>`;
+}
+
 function renderProofCardHtml(card: EvidenceProofCard): string {
+  // 3d: an inferred card is a derivation, not an unproven claim.
+  const inferred = card.source_trust === 'inferred';
+  const unproven = card.proof_status === 'none' && !inferred;
+  const trustBadge = card.source_trust
+    ? `<span class="proof-trust proof-trust-${card.source_trust}">${esc(card.source_trust)}</span>`
+    : '';
+  const reasoning = card.reasoning && card.reasoning.length > 0
+    ? `<div class="proof-reasoning"><span class="proof-reasoning-label">Reasoning</span><ul>${card.reasoning.slice(0, 3).map(r => `<li>${esc(r)}</li>`).join('')}</ul></div>`
+    : '';
   const meta = [
     card.tool ? `<span>${esc(card.tool)}</span>` : '',
+    card.agent_id ? `<span>agent: ${esc(card.agent_id)}</span>` : '',
+    card.exit_code !== undefined ? `<span>exit ${card.exit_code}</span>` : '',
+    card.duration_ms !== undefined ? `<span>${card.duration_ms.toLocaleString()} ms</span>` : '',
     card.timestamp ? `<span>${formatTs(card.timestamp)}</span>` : '',
     card.technique ? `<span>${esc(card.technique)}</span>` : '',
     card.evidence_type ? `<span>${esc(card.evidence_type)}</span>` : '',
@@ -497,20 +553,26 @@ function renderProofCardHtml(card: EvidenceProofCard): string {
   ].filter(Boolean).join('');
   const metadataRows = [
     card.action_id ? `<div><dt>Action ID</dt><dd><code>${esc(card.action_id)}</code></dd></div>` : '',
+    card.agent_id ? `<div><dt>Agent</dt><dd><code>${esc(card.agent_id)}</code></dd></div>` : '',
+    card.exit_code !== undefined ? `<div><dt>Exit Code</dt><dd>${card.exit_code}</dd></div>` : '',
     card.evidence_id ? `<div><dt>Evidence ID</dt><dd><code>${esc(card.evidence_id)}</code></dd></div>` : '',
     card.content_hash ? `<div><dt>SHA-256</dt><dd><code>${esc(card.content_hash)}</code></dd></div>` : '',
     card.appendix_ref ? `<div><dt>Archive Ref</dt><dd><code>${esc(card.appendix_ref)}</code></dd></div>` : '',
     card.evidence_bytes !== undefined ? `<div><dt>Size</dt><dd>${card.evidence_bytes.toLocaleString()} bytes</dd></div>` : '',
   ].filter(Boolean).join('');
   return `
-    <article class="proof-card" id="${esc(card.id)}">
+    <article class="proof-card${unproven ? ' proof-card-unproven' : ''}${inferred ? ' proof-card-inferred' : ''}" id="${esc(card.id)}">
       <div class="proof-card-head">
         <span class="proof-kind proof-${esc(card.source_kind)}">${esc(sourceKindLabel(card.source_kind))}</span>
+        ${trustBadge}
+        ${unproven ? '<span class="proof-unproven-badge">⚠ Unproven</span>' : ''}
       </div>
       <p class="proof-claim">${inlineMarkdownToHtml(card.claim)}</p>
       <p class="proof-text">${esc(card.proof)}</p>
       ${meta ? `<div class="proof-meta">${meta}</div>` : ''}
+      ${reasoning}
       ${card.parsed_summary ? `<div class="proof-summary">${esc(card.parsed_summary)}</div>` : ''}
+      ${renderExcerptsHtml(card.excerpts)}
       ${card.command ? `<pre class="evidence-command">${esc(card.command)}</pre>` : ''}
       ${metadataRows ? `<details class="proof-metadata"><summary>Evidence metadata</summary><dl>${metadataRows}</dl></details>` : ''}
       ${card.raw_preview_redacted ? `<div class="evidence-warning">Raw output preview redacted for this report profile.</div>` : ''}
@@ -1069,6 +1131,30 @@ const CSS_STYLES = `
   .risk-score { font-weight: 600; font-size: 0.85rem; }
   .proof-grid { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; }
   .proof-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem; background: var(--bg); break-inside: avoid; page-break-inside: avoid; }
+  .proof-card-unproven { border-style: dashed; opacity: 0.9; }
+  .proof-unproven-badge { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--warn, #b45309); border: 1px solid var(--warn, #b45309); border-radius: 4px; padding: 0.05rem 0.35rem; }
+  .integrity { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem 1rem; margin: 1rem 0; }
+  .integrity-ok { border-left: 4px solid var(--ok, #15803d); }
+  .integrity-broken { border-left: 4px solid var(--danger, #b91c1c); }
+  .integrity-status { font-weight: 700; margin-bottom: 0.35rem; }
+  .integrity-checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.4rem 0.75rem; margin-top: 0.5rem; }
+  .integrity-checks dt { color: var(--info); font-size: 0.68rem; text-transform: uppercase; }
+  .integrity-checks dd { font-size: 0.85rem; }
+  .proof-trust { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; border-radius: 4px; padding: 0.05rem 0.35rem; }
+  .proof-trust-observed { color: var(--ok, #15803d); border: 1px solid var(--ok, #15803d); }
+  .proof-trust-inferred { color: var(--accent); border: 1px solid var(--accent); }
+  .proof-trust-asserted { color: var(--info); border: 1px solid var(--info); }
+  .proof-card-inferred { border-left: 3px solid var(--accent); }
+  .proof-reasoning { margin: 0.4rem 0; font-size: 0.82rem; }
+  .proof-reasoning-label { font-size: 0.68rem; text-transform: uppercase; color: var(--info); font-weight: 700; }
+  .proof-reasoning ul { margin: 0.2rem 0 0 1rem; }
+  .proof-excerpts { margin: 0.45rem 0; border-left: 3px solid var(--accent); padding-left: 0.6rem; }
+  .proof-excerpts > summary { cursor: pointer; color: var(--accent); font-size: 0.82rem; font-weight: 600; }
+  .excerpt { margin-top: 0.4rem; }
+  .excerpt-meta { font-size: 0.72rem; color: var(--info); }
+  .excerpt-text { background: var(--card-bg); border: 1px solid var(--border); padding: 0.5rem; border-radius: 4px; font-size: 0.78rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 0.25rem; }
+  .excerpt-verified { color: var(--ok, #15803d); font-weight: 700; }
+  .excerpt-mismatch { color: var(--danger, #b91c1c); font-weight: 700; }
   .proof-card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
   .proof-kind { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--accent); }
   .proof-claim { font-weight: 600; margin-bottom: 0.35rem; }

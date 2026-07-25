@@ -1605,6 +1605,17 @@ export class EngineContext {
     this.actionFrontierMap.clear();
     for (const entry of this.activityLog) {
       if (entry.action_id && entry.frontier_item_id) {
+        // M7: apply the SAME first-writer-wins collision guard as the live writer
+        // (appendActivityEventInMemory). Without it, a cross-agent action_id collision
+        // resolves to the LAST writer on rebuild — the opposite of the live map — so
+        // a JSON-snapshot restore silently flips frontier attribution. We must NOT
+        // re-emit an instrumentation_warning here: the original is already in the log
+        // being iterated, and appending mid-restore would desync the chain tail that
+        // rebuildChainTail() rebuilds immediately after.
+        const existing = this.actionFrontierMap.get(entry.action_id);
+        if (existing && existing.agent_id && entry.agent_id && existing.agent_id !== entry.agent_id) {
+          continue;
+        }
         this.actionFrontierMap.set(entry.action_id, {
           frontier_item_id: entry.frontier_item_id,
           agent_id: entry.agent_id,
@@ -1810,6 +1821,22 @@ export function tieredTruncate(log: ActivityLogEntry[], budget: number): Activit
   // entries → unbounded) while never dropping a chained entry from the middle.
   const keep = new Array(log.length).fill(false);
   let kept = 0;
+
+  // Tier 0 — a MOST-RECENT tail floor kept unconditionally, ahead of the tier fills.
+  // Without it, once the chained tier alone reaches `budget` (hash_chain_enabled is on
+  // by default and excludes only thought/heartbeat) it consumes the entire budget, so
+  // a freshly-appended NON-chained entry — thought, inference_generated,
+  // transcript_turn_ingested, operator-provenance — is evicted by the very truncate its
+  // own push triggered, silently and with no counter. Reserving the tail guarantees the
+  // just-appended entry and a recent window of every class survive. It preserves chain
+  // contiguity: the tail is a contiguous block at the end, so the chained entries it
+  // keeps are the most-recent chained, and the subsequent fill(chained) extends that
+  // suffix backward — the kept chained set is still a contiguous most-recent suffix.
+  const tailFloor = Math.min(Math.max(1, Math.floor(budget / 10)), budget);
+  for (let i = log.length - 1; i >= 0 && kept < tailFloor; i -= 1) {
+    keep[i] = true; kept += 1;
+  }
+
   const fill = (pred: (e: ActivityLogEntry) => boolean): void => {
     for (let i = log.length - 1; i >= 0 && kept < budget; i -= 1) {
       if (keep[i]) continue;

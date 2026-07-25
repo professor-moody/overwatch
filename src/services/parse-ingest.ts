@@ -7,7 +7,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type { GraphEngine } from './graph-engine.js';
-import { ParserContextSchema, type ParseContext } from '../types.js';
+import { ParserContextSchema, type ParseContext, type EvidenceExcerpt } from '../types.js';
 import { parseOutput, getSupportedParsers, isParserError } from './parsers/index.js';
 import { prepareFindingForIngest } from './finding-validation.js';
 
@@ -68,6 +68,10 @@ export interface ParseIngestResult {
   evidence_read_error?: string;
   exit_code?: number | null;
   parser_details?: Record<string, unknown>;
+  /** Matched-signal excerpts emitted by the parser (3c): byte ranges of the parsed
+   * output that justify specific graph artifacts. Offsets index the stdout blob;
+   * evidence_id is backfilled by the caller that owns the capture (_process-runner). */
+  excerpts?: EvidenceExcerpt[];
 }
 
 export type ParseIngestCommandCompletion = (
@@ -225,6 +229,12 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
     });
   }
 
+  // 3c: keep only well-formed matched-signal excerpts (end past start). Offsets are
+  // into the parsed stdout, which is the head of the captured blob, so they stay valid.
+  const findingExcerpts: EvidenceExcerpt[] = (finding.excerpts ?? []).filter(
+    ex => ex.byte_end > ex.byte_start,
+  );
+
   const parserMarkedPartialNode = finding.nodes.some(node => node.partial === true);
   const effectivePartial = opts.partial || finding.partial === true || parserMarkedPartialNode;
   const effectivePartialReason = opts.partial_reason
@@ -298,6 +308,7 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
       : undefined,
     warnings: warnings.length > 0 ? warnings : undefined,
     ...(finding.parser_details ? { parser_details: finding.parser_details } : {}),
+    ...(findingExcerpts.length > 0 ? { excerpts: findingExcerpts } : {}),
     ...findingQuality,
   });
   const buildSuccessAudit = (
@@ -327,6 +338,9 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
       new_edges: ingestResult?.new_edges.length ?? 0,
       inferred_edges: ingestResult?.inferred_edges.length ?? 0,
       parser_context: durableParserContext,
+      // 3c: persist matched-signal excerpts on the parse event so the chain builder
+      // lifts them even for the standalone parse_output path (no terminal event).
+      ...(findingExcerpts.length > 0 ? { excerpts: findingExcerpts } : {}),
       ...findingQuality,
     },
   });

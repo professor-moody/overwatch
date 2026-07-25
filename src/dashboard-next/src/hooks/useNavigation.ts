@@ -3,7 +3,7 @@
 // ============================================================
 
 import { useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import type { PanelId } from '../components/layout/OperatorLayout';
 import { buildGraphTargetPath, type GraphNavigationTarget } from '../lib/graph-target';
 

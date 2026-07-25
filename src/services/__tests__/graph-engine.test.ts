@@ -286,6 +286,51 @@ describe('GraphEngine', () => {
       expect(engine.findPaths('ph-s', 'ph-t')[0]?.nodes).toEqual(['ph-s', 'ph-t']);
     });
 
+    it('H2: bidirectional edges of the same type are NOT collapsed into one', () => {
+      // graph.edges(a,b) is direction-agnostic on a directed multigraph, so the addEdge
+      // merge loop used to find the REVERSE edge and merge into it — a bidirectional AD
+      // trust (TrustDirection=3) collapsed to a single edge whose direction/attributes
+      // were corrupted by the opposite observation. The lookup is now outEdges(a,b).
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.addNode({ id: 'dom-a', type: 'domain', label: 'A', discovered_at: new Date().toISOString(), confidence: 1 });
+      engine.addNode({ id: 'dom-b', type: 'domain', label: 'B', discovered_at: new Date().toISOString(), confidence: 1 });
+
+      const fwd = engine.addEdge('dom-a', 'dom-b', { type: 'TRUSTS', confidence: 1 } as never);
+      const rev = engine.addEdge('dom-b', 'dom-a', { type: 'TRUSTS', confidence: 1 } as never);
+
+      expect(fwd.isNew).toBe(true);
+      expect(rev.isNew).toBe(true);           // the reverse observation is a NEW edge, not a merge
+      expect(rev.id).not.toBe(fwd.id);
+
+      const trusts = engine.exportGraph().edges.filter(e => e.properties.type === 'TRUSTS');
+      expect(trusts).toHaveLength(2);
+      expect(trusts.some(e => e.source === 'dom-a' && e.target === 'dom-b')).toBe(true);
+      expect(trusts.some(e => e.source === 'dom-b' && e.target === 'dom-a')).toBe(true);
+    });
+
+    it('H3: a reversed drop_edge correction is refused, not silently applied to the real edge', () => {
+      // Only H1 --HAS_SESSION--> U1 exists. A correction naming U1 -> H1 targets an edge
+      // that does not exist; direction-agnostic lookup used to resolve it onto the real
+      // forward edge and destroy it while reporting dropped_edges: [<real edge>].
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.addNode({ id: 'host-h1', type: 'host', label: 'H1', discovered_at: new Date().toISOString(), confidence: 1 });
+      engine.addNode({ id: 'user-u1', type: 'user', label: 'U1', discovered_at: new Date().toISOString(), confidence: 1 });
+      engine.addEdge('host-h1', 'user-u1', { type: 'HAS_SESSION', confidence: 1 } as never);
+
+      // The reversed identity resolves to nothing, so the correction is REFUSED loudly
+      // (edge does not exist) rather than silently resolving onto — and destroying —
+      // the real forward edge.
+      expect(() => engine.correctGraph('typo fix', [
+        { kind: 'drop_edge', source_id: 'user-u1', target_id: 'host-h1', edge_type: 'HAS_SESSION' } as never,
+      ])).toThrow(/does not exist/i);
+
+      // The real forward edge survives untouched.
+      const sessions = engine.exportGraph().edges.filter(e => e.properties.type === 'HAS_SESSION');
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].source).toBe('host-h1');
+      expect(sessions[0].target).toBe('user-u1');
+    });
+
     it('exportGraph populates source_trust only when opted in (default omits it)', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({

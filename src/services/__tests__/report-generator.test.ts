@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   buildFindings,
   buildEvidenceChainsForNode,
+  buildProofCardsForFinding,
   buildAllEvidenceChains,
   buildAttackNarrative,
   buildReportEvidenceModel,
@@ -273,6 +274,345 @@ describe('buildEvidenceChainsForNode', () => {
   it('returns empty chains for node with no evidence', () => {
     const chains = buildEvidenceChainsForNode('domain-corp', makeGraph(), makeHistory());
     expect(chains).toHaveLength(0);
+  });
+
+  // M9: report_finding writes its durable blob id to details.evidence_id (not a
+  // stdout/stderr stream id). The chain builder used to read only the stream ids, so
+  // the durable proof was orphaned. The chain and its proof card must now cite it, with
+  // an evidenceLoader head preview.
+  it('M9: surfaces report_finding evidence_id (generic durable blob) into the chain', () => {
+    const history = [{
+      event_id: 'ev-rf', timestamp: '2026-01-01T00:00:00Z',
+      description: 'Finding reported: exposed admin panel',
+      event_type: 'finding_reported',
+      action_id: 'act-rf',
+      target_node_ids: ['host-x'],
+      details: {
+        ingested_node_ids: ['host-x'],
+        evidence_id: 'blob-abc123',
+        evidence_type: 'command_output',
+      },
+    }] as never;
+
+    const loaded: string[] = [];
+    const chains = buildEvidenceChainsForNode('host-x', makeGraph(), history, {
+      evidenceLoader: (id: string) => { loaded.push(id); return 'HTTP/1.1 200 OK\nadmin panel body'; },
+    });
+
+    const chain = chains.find(c => c.action_id === 'act-rf');
+    expect(chain).toBeDefined();
+    expect(chain!.evidence_id).toBe('blob-abc123');
+
+    // The proof card cites the same durable id (it is direct_output, not a bare activity line).
+    const cards = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    const card = cards.find(c => c.action_id === 'act-rf');
+    expect(card?.evidence_id).toBe('blob-abc123');
+    expect(card?.source_kind).toBe('direct_output');
+    // The loader was consulted for the generic id.
+    expect(loaded).toContain('blob-abc123');
+  });
+});
+
+// ============================================================
+// 3b — proof text composed from mechanical facts + provenance lift
+// ============================================================
+describe('proof cards — composed proof (3b)', () => {
+  it('composes proof from command + exit code + blob id + hash + bytes (not a canned sentence)', () => {
+    const chains = [{
+      claim: 'SMB signing not required',
+      action_id: 'act-1',
+      command: 'nmap -p445 --script smb2-security-mode 10.10.10.1',
+      exit_code: 0,
+      duration_ms: 1420,
+      agent_id: 'agent-recon-3',
+      stdout_evidence_id: 'ev-7f3a',
+      stdout_content_hash: 'ab12cd34ef56aa00',
+      stdout_bytes: 4300,
+      source_nodes: [],
+      target_nodes: ['host-1'],
+      timestamp: '2026-01-01T00:00:00Z',
+    }] as any;
+
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.proof_status).toBe('full');
+    // Real, verifiable proof — the exact command, its result, and a citable handle.
+    expect(card.proof).toContain('nmap -p445 --script smb2-security-mode 10.10.10.1');
+    expect(card.proof).toContain('exited 0 (success)');
+    expect(card.proof).toContain('blob ev-7f3a');
+    expect(card.proof).toContain('sha256 ab12cd34ef56');
+    expect(card.proof).toContain('4.2 KB captured');
+    // NOT the retired canned sentence.
+    expect(card.proof).not.toContain('supports the claimed state change');
+    // Provenance is lifted onto the card so a reader can see who ran it and how it ended.
+    expect(card.agent_id).toBe('agent-recon-3');
+    expect(card.exit_code).toBe(0);
+    expect(card.duration_ms).toBe(1420);
+  });
+
+  it('reports a non-zero exit honestly instead of a success sentence', () => {
+    const chains = [{
+      claim: 'Auth attempt',
+      action_id: 'act-2',
+      command: 'crackmapexec smb 10.10.10.2 -u admin -p bad',
+      exit_code: 1,
+      stdout_evidence_id: 'ev-9',
+      source_nodes: [], target_nodes: ['host-2'], timestamp: '2026-01-01T00:00:00Z',
+    }] as any;
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.proof).toContain('exited 1');
+    expect(card.exit_code).toBe(1);
+  });
+
+  it('marks an activity-only chain as proof_status "none" and says so in the proof text', () => {
+    const chains = [{
+      claim: 'Host referenced during sweep',
+      source_nodes: [], target_nodes: ['host-3'], timestamp: '2026-01-01T00:00:00Z',
+      source_event_type: 'recon_sweep',
+    }] as any;
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.proof_status).toBe('none');
+    expect(card.source_kind).toBe('activity');
+    // Must not imply evidence exists.
+    expect(card.proof.toLowerCase()).toContain('proof: none');
+    expect(card.proof).not.toContain('supports the claimed state change');
+  });
+
+  it('lifts provenance from the terminal action event details (agent, exit, argv)', () => {
+    const history = [{
+      event_id: 'ev-run', timestamp: '2026-01-01T00:00:00Z',
+      description: 'Service enumerated',
+      event_type: 'action_completed',
+      action_id: 'act-run',
+      agent_id: 'agent-x',
+      target_node_ids: ['host-x'],
+      details: {
+        exit_code: 0,
+        signal: null,
+        duration_ms: 900,
+        binary: 'nmap',
+        args: ['-sV', '-p445', '10.10.10.5'],
+        stdout_evidence_id: 'ev-out',
+      },
+    }] as never;
+
+    const chain = buildEvidenceChainsForNode('host-x', makeGraph(), history)
+      .find(c => c.action_id === 'act-run');
+    expect(chain).toBeDefined();
+    expect(chain!.exit_code).toBe(0);
+    expect(chain!.agent_id).toBe('agent-x');
+    expect(chain!.binary).toBe('nmap');
+    expect(chain!.args).toEqual(['-sV', '-p445', '10.10.10.5']);
+
+    // With no command_repr, the card composes the command from binary + args.
+    const [card] = buildProofCardsForFinding({ evidence: [chain] } as never, 'operator');
+    expect(card.command).toBe('nmap -sV -p445 10.10.10.5');
+    expect(card.proof).toContain('nmap -sV -p445 10.10.10.5');
+  });
+});
+
+// ============================================================
+// 3c — matched-signal excerpts: lift, verify, render
+// ============================================================
+describe('matched-signal excerpts (3c)', () => {
+  const historyWithExcerpt = (snippet: string) => [{
+    event_id: 'ev-x', timestamp: '2026-01-01T00:00:00Z',
+    description: 'SMB signing not required',
+    event_type: 'action_completed',
+    action_id: 'act-x',
+    target_node_ids: ['host-x'],
+    details: {
+      stdout_evidence_id: 'ev-blob',
+      exit_code: 0,
+      command: 'nmap -p445 --script smb2-security-mode 10.10.10.1',
+      excerpts: [{ node_id: 'host-x', byte_start: 5, byte_end: 30, matched_by: 'nmap', snippet }],
+    },
+  }] as never;
+
+  it('lifts excerpts, backfills evidence_id, resolves + verifies against the blob', () => {
+    const chains = buildEvidenceChainsForNode('host-x', makeGraph(), historyWithExcerpt('445/tcp open microsoft-ds'), {
+      sliceLoader: (id: string) => id === 'ev-blob' ? { text: '445/tcp open microsoft-ds', total_bytes: 100 } : null,
+    });
+    const chain = chains.find(c => c.action_id === 'act-x');
+    expect(chain?.excerpts).toHaveLength(1);
+    expect(chain!.excerpts![0].evidence_id).toBe('ev-blob'); // backfilled from stdout_evidence_id
+    expect(chain!.excerpts![0].verified).toBe(true);
+    expect(chain!.excerpts![0].resolved_snippet).toBe('445/tcp open microsoft-ds');
+
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.proof_status).toBe('excerpt');
+    expect(card.proof).toContain('Matched:');
+    expect(card.proof).toContain('445/tcp open microsoft-ds');
+    expect(card.proof).toContain('✓ verified');
+  });
+
+  it('flags a mismatch when resolved bytes differ from the captured snippet', () => {
+    const chains = buildEvidenceChainsForNode('host-x', makeGraph(), historyWithExcerpt('445/tcp open microsoft-ds'), {
+      sliceLoader: () => ({ text: 'TAMPERED CONTENT', total_bytes: 100 }),
+    });
+    const chain = chains.find(c => c.action_id === 'act-x');
+    expect(chain!.excerpts![0].verified).toBe(false);
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.proof).toContain('✗ MISMATCH');
+  });
+
+  it('drops a malformed excerpt span (end <= start)', () => {
+    const history = [{
+      event_id: 'ev-y', timestamp: '2026-01-01T00:00:00Z', description: 'x',
+      event_type: 'action_completed', action_id: 'act-y', target_node_ids: ['host-x'],
+      details: { stdout_evidence_id: 'ev-blob', excerpts: [{ byte_start: 10, byte_end: 10, matched_by: 'x' }] },
+    }] as never;
+    const chain = buildEvidenceChainsForNode('host-x', makeGraph(), history).find(c => c.action_id === 'act-y');
+    expect(chain?.excerpts).toBeUndefined();
+  });
+});
+
+// ============================================================
+// 3d — derivation & honesty: source_trust, inference premises, reasoning join
+// ============================================================
+describe('derivation & honesty (3d)', () => {
+  it('surfaces an inference_generated event as an INFERRED derivation chain', () => {
+    const history = [{
+      event_id: 'ev-inf', timestamp: '2026-01-01T00:00:00Z',
+      description: 'Inferred edge [Kerberos implies domain membership]: host-1 --[MEMBER_OF_DOMAIN]--> domain-x',
+      event_type: 'inference_generated',
+      target_node_ids: ['host-1', 'domain-x'],
+      details: {
+        rule_id: 'rule-kerberos-domain',
+        rule_name: 'Kerberos implies domain membership',
+        rule_description: 'A host running Kerberos is a domain member',
+        trigger_node_id: 'svc-kerb',
+        premise_source: 'host-1',
+        premise_target: 'domain-x',
+        trigger_property_match: { service_name: 'kerberos' },
+      },
+    }] as never;
+    const chains = buildEvidenceChainsForNode('host-1', makeGraph(), history);
+    const chain = chains.find(c => c.source_event_type === 'inference_generated');
+    expect(chain).toBeDefined();
+    expect(chain!.source_trust).toBe('inferred');
+    expect(chain!.derivation).toContain('Kerberos implies domain membership');
+    expect(chain!.derivation).toContain('fired on svc-kerb');
+    expect(chain!.derivation).toContain('service_name');
+
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.source_trust).toBe('inferred');
+    expect(card.proof).toContain('INFERRED');
+    // An inferred card is a derivation, not "proof: none".
+    expect(card.proof).not.toContain('proof: none');
+  });
+
+  it('joins log_thought reasoning tied to the action into the chain', () => {
+    const history = [
+      {
+        event_id: 'ev-act', timestamp: '2026-01-01T00:00:00Z', description: 'Command run',
+        event_type: 'action_completed', action_id: 'act-r', target_node_ids: ['host-2'],
+        details: { command: 'id', exit_code: 0, stdout_evidence_id: 'ev-b' },
+      },
+      {
+        event_id: 'ev-th', timestamp: '2026-01-01T00:00:01Z',
+        description: 'Chose to escalate via sudo because uid=0 was reachable',
+        event_type: 'thought', action_id: 'act-r',
+        details: { kind: 'decision', considered_alternatives: ['pkexec', 'suid binary'] },
+      },
+    ] as never;
+    const chains = buildEvidenceChainsForNode('host-2', makeGraph(), history);
+    const chain = chains.find(c => c.action_id === 'act-r');
+    expect(chain?.reasoning?.[0]).toContain('escalate via sudo');
+    expect(chain?.reasoning?.[0]).toContain('decision');
+    expect(chain?.reasoning?.[0]).toContain('considered: pkexec');
+    // A direct command chain is 'observed'.
+    expect(chain?.source_trust).toBe('observed');
+  });
+
+  it('labels a bare activity mention as asserted (no capture)', () => {
+    const history = [{
+      event_id: 'ev-bare', timestamp: '2026-01-01T00:00:00Z', description: 'Host mentioned',
+      event_type: 'note', target_node_ids: ['host-3'],
+    }] as never;
+    const chains = buildEvidenceChainsForNode('host-3', makeGraph(), history);
+    const chain = chains.find(c => c.target_nodes.includes('host-3'));
+    expect(chain?.source_trust).toBe('asserted');
+  });
+});
+
+// ============================================================
+// 3f — client-safe excerpts: mask, don't delete
+// ============================================================
+describe('client-safe matched-signal excerpts (3f)', () => {
+  const chainWithSecretExcerpt = () => ([{
+    claim: 'Dumped local SAM',
+    action_id: 'act-sam', command: 'secretsdump.py', stdout_evidence_id: 'ev-sam',
+    source_nodes: [], target_nodes: ['host-1'], timestamp: '2026-01-01T00:00:00Z',
+    excerpts: [{
+      node_id: 'host-1', byte_start: 0, byte_end: 80, matched_by: 'secretsdump',
+      snippet: 'Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::',
+    }],
+  }] as any);
+
+  it('masks the secret in the excerpt for the client profile (keeps the span + structure)', () => {
+    const [card] = buildProofCardsForFinding({ evidence: chainWithSecretExcerpt() } as never, 'client');
+    const ex = card.excerpts![0];
+    expect(ex.snippet).not.toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
+    expect(ex.snippet).toContain('Administrator:');   // real, probative structure survives
+    expect(ex.snippet).toContain('<redacted>');
+    // Offsets/verification handles are preserved so the client can still audit.
+    expect(ex.byte_start).toBe(0);
+    expect(ex.byte_end).toBe(80);
+  });
+
+  it('leaves the excerpt intact for the operator profile', () => {
+    const [card] = buildProofCardsForFinding({ evidence: chainWithSecretExcerpt() } as never, 'operator');
+    expect(card.excerpts![0].snippet).toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
+  });
+
+  it('also masks the secret in the composed PROOF STRING for client (not just the excerpts field)', () => {
+    // Regression: proofTextForEvidence composes "Matched: <snippet>" INTO the proof
+    // string, so masking only card.excerpts left the secret in card.proof — which leaked
+    // an NTLM/secretsdump line into the client report. (Caught by dogfooding.)
+    const [clientCard] = buildProofCardsForFinding({ evidence: chainWithSecretExcerpt() } as never, 'client');
+    expect(clientCard.proof).not.toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
+    expect(clientCard.proof).toContain('<redacted>');
+    // Operator proof keeps the real bytes.
+    const [operatorCard] = buildProofCardsForFinding({ evidence: chainWithSecretExcerpt() } as never, 'operator');
+    expect(operatorCard.proof).toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
+  });
+});
+
+// ============================================================
+// M1 — durable node→evidence index fallback (survives log rollover)
+// ============================================================
+describe('durable node→evidence index fallback (M1)', () => {
+  it('cites a store blob for a node whose activity log has rolled over', () => {
+    // Empty history — simulate the finding's events having aged out of the bounded log.
+    const chains = buildEvidenceChainsForNode('host-gone', makeGraph(), [] as never, {
+      evidenceByNode: (id: string) => id === 'host-gone' ? [{
+        evidence_id: 'ev-durable', content_hash: 'deadbeefcafe', evidence_type: 'command_output',
+        action_id: 'act-old', finding_id: 'finding-old', timestamp: '2026-01-01T00:00:00Z',
+        content_length: 40, raw_output_length: 0,
+      }] : [],
+      evidenceLoader: (id: string) => id === 'ev-durable' ? 'uid=0(root)' : null,
+    });
+    const chain = chains.find(c => c.evidence_id === 'ev-durable');
+    expect(chain).toBeDefined();
+    expect(chain!.evidence_window_truncated).toBe(true);
+    expect(chain!.content_hash).toBe('deadbeefcafe');
+    expect(chain!.source_trust).toBe('observed');
+    // A proof card is produced (so the report never says "no evidence").
+    const [card] = buildProofCardsForFinding({ evidence: chains } as never, 'operator');
+    expect(card.evidence_id).toBe('ev-durable');
+  });
+
+  it('does not duplicate a blob already covered by an activity chain', () => {
+    const history = [{
+      event_id: 'ev-a', timestamp: '2026-01-01T00:00:00Z', description: 'Command run',
+      event_type: 'action_completed', action_id: 'act-live', target_node_ids: ['host-live'],
+      details: { command: 'id', exit_code: 0, stdout_evidence_id: 'ev-live' },
+    }] as never;
+    const chains = buildEvidenceChainsForNode('host-live', makeGraph(), history, {
+      evidenceByNode: () => [{ evidence_id: 'ev-live', action_id: 'act-live', content_length: 10, raw_output_length: 0 }],
+    });
+    // The store record for ev-live/act-live is already covered — no duplicate chain.
+    expect(chains.filter(c => c.evidence_id === 'ev-live' && c.evidence_window_truncated)).toHaveLength(0);
   });
 });
 

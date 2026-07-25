@@ -6,7 +6,7 @@ import { useToastStore, type Toast } from '../../stores/toast-store';
 import { cn } from '../../lib/utils';
 import { useNavigation } from '../../hooks/useNavigation';
 import type { PanelId } from '../layout/OperatorLayout';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 import { useDashboardUiStore } from '../../stores/dashboard-ui-store';
 
 const TYPE_STYLES: Record<string, string> = {

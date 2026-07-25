@@ -286,7 +286,7 @@ function matchingEdgeIds(
     || !ctx.graph.hasNode(source)
     || !ctx.graph.hasNode(target)
   ) return [];
-  return ctx.graph.edges(source, target).filter(edgeId =>
+  return ctx.graph.outEdges(source, target).filter(edgeId =>
     edgeIdentityMatches(ctx.graph.getEdgeAttributes(edgeId), props as EdgeProperties));
 }
 
@@ -526,7 +526,7 @@ export class BoundedTransactionFootprintCapture implements EngineOperationDraftO
           && this.ctx.graph.hasNode(payload.source)
           && this.ctx.graph.hasNode(payload.target)
         ) {
-          for (const edgeId of this.ctx.graph.edges(payload.source, payload.target)) {
+          for (const edgeId of this.ctx.graph.outEdges(payload.source, payload.target)) {
             if (this.ctx.graph.getEdgeAttributes(edgeId).type === payload.edge_type) edgeIds.add(edgeId);
           }
         }

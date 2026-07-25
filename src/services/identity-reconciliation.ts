@@ -408,7 +408,7 @@ function addEdgeToPlanningGraph(
   if (!graph.hasNode(source) || !graph.hasNode(target)) {
     throw new Error(`Cannot plan identity edge with missing endpoint(s): ${source} -> ${target}`);
   }
-  for (const edgeId of graph.edges(source, target)) {
+  for (const edgeId of graph.outEdges(source, target)) {
     const existing = graph.getEdgeAttributes(edgeId) as EdgeProperties;
     if (!edgeIdentityMatches(existing, props)) continue;
     const effectiveProps = existing.inferred_by_rule

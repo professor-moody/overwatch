@@ -225,7 +225,7 @@ export class InferenceEngine {
         for (const tgt of targets) {
           if (src === tgt) continue;
           if (!this.ctx.graph.hasNode(src) || !this.ctx.graph.hasNode(tgt)) continue;
-          const existing = this.ctx.graph.edges(src, tgt);
+          const existing = this.ctx.graph.outEdges(src, tgt);
           const alreadyExists = existing.some((e: string) => {
             return this.ctx.graph.getEdgeAttributes(e).type === production.edge_type;
           });
@@ -239,6 +239,9 @@ export class InferenceEngine {
             tested: false,
             inferred_by_rule: rule.id,
             inferred_at: now,
+            // 3d: back-pointer to the fact that triggered this inference, so a report
+            // can answer "rule R fired BECAUSE of node T", not just "R produced this edge".
+            inferred_trigger_node_id: triggerNodeId,
           });
           inferred.push(edgeId);
           this.ctx.logEvent({
@@ -247,7 +250,21 @@ export class InferenceEngine {
             event_type: 'inference_generated',
             result_classification: 'success',
             target_node_ids: [src, tgt],
-            details: { rule_id: rule.id, edge_type: production.edge_type },
+            // 3d: record the PREMISES — which rule fired on which trigger, the property
+            // values it required, and the satisfying-peer requirement — so an inferred
+            // finding can state its derivation instead of only its conclusion.
+            details: {
+              rule_id: rule.id,
+              rule_name: rule.name,
+              rule_description: rule.description,
+              edge_type: production.edge_type,
+              trigger_node_id: triggerNodeId,
+              premise_source: src,
+              premise_target: tgt,
+              ...(rule.trigger.node_type ? { trigger_node_type: rule.trigger.node_type } : {}),
+              ...(rule.trigger.property_match ? { trigger_property_match: rule.trigger.property_match } : {}),
+              ...(rule.trigger.requires_edge ? { requires_edge: rule.trigger.requires_edge } : {}),
+            },
           });
         }
       }

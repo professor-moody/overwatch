@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import { cn, formatRelativeTime } from '../../lib/utils';

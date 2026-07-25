@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import Graph from 'graphology';
-import type { OverwatchGraph } from '../engine-context.js';
+import type { OverwatchGraph, ActivityLogEntry } from '../engine-context.js';
 import {
   EngineContext,
   MAX_ACTIVITY_LOG_ENTRIES,
@@ -124,6 +124,31 @@ describe('EngineContext', () => {
       expect(milestones).toHaveLength(1);
       expect(milestones[0].description).toBe('milestone-0');
     });
+
+    // H4: with the chained tier already at the budget, a freshly-appended NON-chained
+    // entry (a thought) used to be evicted by the truncate its own push triggered —
+    // silently. The tier fill consumed the whole budget for chained entries, leaving
+    // zero slots for the just-appended entry.
+    it('H4: does not evict a just-appended non-chained entry when the chained tier is saturated', () => {
+      const budget = 200;
+      // Fill the budget with CHAINED entries (event_hash present).
+      const log: ActivityLogEntry[] = [];
+      for (let i = 0; i < budget; i++) {
+        log.push({ event_id: `c-${i}`, timestamp: `t${i}`, description: `chained-${i}`, event_hash: `h${i}` } as ActivityLogEntry);
+      }
+      // Append a fresh NON-chained entry (thought) — this is the one that must survive.
+      log.push({ event_id: 'thought-new', timestamp: 'tZ', description: 'the newest thought' } as ActivityLogEntry);
+
+      const out = tieredTruncate(log, budget);
+      expect(out).toHaveLength(budget);
+      // The just-appended entry survives (before the fix it was dropped).
+      expect(out[out.length - 1].event_id).toBe('thought-new');
+      expect(out.some(e => e.event_id === 'thought-new')).toBe(true);
+      // Chain contiguity holds: kept chained entries are a contiguous most-recent suffix.
+      const keptChained = out.filter(e => e.event_hash !== undefined).map(e => e.event_id);
+      const idxs = keptChained.map(id => Number(id.slice(2)));
+      for (let i = 1; i < idxs.length; i++) expect(idxs[i]).toBe(idxs[i - 1] + 1);
+    });
   });
 
   describe('rebuildActionFrontierMap', () => {
@@ -163,6 +188,24 @@ describe('EngineContext', () => {
         frontier_item_id: 'fi-new',
         agent_id: undefined,
         frontier_type: 'untested_edge',
+      });
+    });
+
+    it('M7: preserves the first-writer mapping on rebuild when different agents collide', () => {
+      const ctx = makeCtx();
+      // The live writer keeps agent-A's fi-1 (first-writer-wins) but still appends
+      // agent-B's colliding event to the log. A JSON-snapshot restore then reruns
+      // rebuild over that log — which must resolve to the SAME first writer, not the last.
+      ctx.logEvent({ description: 'A', action_id: 'act-collision', frontier_item_id: 'fi-1', agent_id: 'agent-A' });
+      ctx.logEvent({ description: 'B', action_id: 'act-collision', frontier_item_id: 'fi-2', agent_id: 'agent-B' });
+
+      ctx.actionFrontierMap.clear();
+      ctx.rebuildActionFrontierMap();
+
+      expect(ctx.actionFrontierMap.get('act-collision')).toEqual({
+        frontier_item_id: 'fi-1',
+        agent_id: 'agent-A',
+        frontier_type: undefined,
       });
     });
   });
