@@ -564,6 +564,18 @@ describe('client-safe matched-signal excerpts (3f)', () => {
     const [card] = buildProofCardsForFinding({ evidence: chainWithSecretExcerpt() } as never, 'operator');
     expect(card.excerpts![0].snippet).toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
   });
+
+  it('also masks the secret in the composed PROOF STRING for client (not just the excerpts field)', () => {
+    // Regression: proofTextForEvidence composes "Matched: <snippet>" INTO the proof
+    // string, so masking only card.excerpts left the secret in card.proof — which leaked
+    // an NTLM/secretsdump line into the client report. (Caught by dogfooding.)
+    const [clientCard] = buildProofCardsForFinding({ evidence: chainWithSecretExcerpt() } as never, 'client');
+    expect(clientCard.proof).not.toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
+    expect(clientCard.proof).toContain('<redacted>');
+    // Operator proof keeps the real bytes.
+    const [operatorCard] = buildProofCardsForFinding({ evidence: chainWithSecretExcerpt() } as never, 'operator');
+    expect(operatorCard.proof).toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
+  });
 });
 
 // ============================================================

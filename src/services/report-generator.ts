@@ -1380,12 +1380,25 @@ function proofCardForEvidence(ev: EvidenceChain, profile: ReportProfile): Eviden
   const key = evidenceKey(ev);
   const kind = sourceKindForEvidence(ev);
   const raw = rawPreviewForEvidence(ev, profile);
-  const command = ev.command || (ev.binary ? [ev.binary, ...(ev.args ?? [])].join(' ') : undefined);
+  const rawCommand = ev.command || (ev.binary ? [ev.binary, ...(ev.args ?? [])].join(' ') : undefined);
+  // 3f (client): mask at the MODEL layer so no secret reaches the client report, in
+  // ANY field. The proof text is COMPOSED from the excerpts (and command) — masking
+  // only the separate `excerpts` field left the secret in the `proof` string, which a
+  // matched-signal excerpt (e.g. an NTLM/secretsdump line) then leaked into client md.
+  // Compose the client proof from a fully-masked chain, and mask the command/claim too.
+  const maskedExcerpts = maskExcerptsForProfile(ev.excerpts, profile);
+  const command = profile === 'client' && rawCommand
+    ? (maskEvidenceTextForClient(rawCommand) ?? rawCommand)
+    : rawCommand;
+  const claim = profile === 'client' ? (maskEvidenceTextForClient(ev.claim) ?? ev.claim) : ev.claim;
+  const evForProof: EvidenceChain = profile === 'client'
+    ? { ...ev, excerpts: maskedExcerpts, command, binary: undefined, args: undefined, claim }
+    : ev;
   return {
     id: stableProofId('proof', `${key}|${ev.claim}`),
     appendix_ref: stableProofId('ev', key),
-    claim: ev.claim,
-    proof: proofTextForEvidence(ev, kind),
+    claim,
+    proof: proofTextForEvidence(evForProof, kind),
     proof_status: proofStatusForEvidence(ev),
     source_kind: kind,
     tool: ev.tool,
@@ -1402,7 +1415,7 @@ function proofCardForEvidence(ev: EvidenceChain, profile: ReportProfile): Eviden
     evidence_type: ev.evidence_type,
     filename: ev.evidence_filename,
     parsed_summary: parsedSummaryForEvidence(ev),
-    excerpts: maskExcerptsForProfile(ev.excerpts, profile),
+    excerpts: maskedExcerpts,
     source_trust: ev.source_trust ?? sourceTrustForChain(ev),
     derivation: ev.derivation,
     reasoning: ev.reasoning,

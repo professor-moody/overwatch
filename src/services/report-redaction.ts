@@ -173,19 +173,29 @@ export function sanitizeCommandForClient(cmd: string | undefined | null, opts: R
 export function maskEvidenceTextForClient(text: string | undefined | null, opts: RedactionOptions = { client_safe: true }): string | null {
   if (text == null) return null;
   if (!opts.client_safe) return text;
-  // Inline creds (user:pass@host, Bearer …) + CLI secret flags (-p, --hashes, …).
-  let out = sanitizeCommandForClient(text, opts) ?? text;
-  // secretsdump / pwdump line: user:rid:lmhash:nthash::: — mask the hash fields.
-  out = out.replace(
-    /\b([A-Za-z0-9._$\\-]{1,128}):(\d{1,7}):([a-fA-F0-9]{32}):([a-fA-F0-9]{32}):::/g,
-    (_m, user) => `${user}:<redacted>:${REDACTED_PLACEHOLDER}:${REDACTED_PLACEHOLDER}:::`,
-  );
-  // Structured secret assignments: key: value / key=value (quote-aware value).
-  out = out.replace(
-    /\b(cred_value|password|passwd|nt_hash|lm_hash|ntlm|aes256_hash|aes128_hash|krb5_hash|secret|api_key|apikey|private_key|access_key|secret_key|session_key)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi,
-    (_m, key, sep) => `${key}${sep}${REDACTED_PLACEHOLDER}`,
-  );
-  return out;
+  // Inline creds (user:pass@host, Bearer …) + CLI secret flags (-p, --hashes, …),
+  // then the structured secret shapes those miss (NTLM/SAM lines, key:value).
+  return maskStructuredSecrets(sanitizeCommandForClient(text, opts) ?? text);
+}
+
+/**
+ * Mask structured secret SHAPES that the inline/command redactors miss: a
+ * secretsdump/pwdump line (`user:rid:lmhash:nthash:::`) and `key: value` /
+ * `key=value` assignments for known-secret keys. Targeted (anchored) patterns, so
+ * it is safe to run over arbitrary strings — non-secret prose is untouched. Used
+ * both by maskEvidenceTextForClient and by the JSON walker (walkAndRedact), where a
+ * command that echoes an NTLM line would otherwise leak the bare hash.
+ */
+export function maskStructuredSecrets(text: string): string {
+  return text
+    .replace(
+      /\b([A-Za-z0-9._$\\-]{1,128}):(\d{1,7}):([a-fA-F0-9]{32}):([a-fA-F0-9]{32}):::/g,
+      (_m, user) => `${user}:<redacted>:${REDACTED_PLACEHOLDER}:${REDACTED_PLACEHOLDER}:::`,
+    )
+    .replace(
+      /\b(cred_value|password|passwd|nt_hash|lm_hash|ntlm|aes256_hash|aes128_hash|krb5_hash|secret|api_key|apikey|private_key|access_key|secret_key|session_key)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi,
+      (_m, key, sep) => `${key}${sep}${REDACTED_PLACEHOLDER}`,
+    );
 }
 
 function walkAndRedact(value: unknown): unknown {
@@ -199,11 +209,14 @@ function walkAndRedact(value: unknown): unknown {
     } else if (BLOB_KEYS.has(k) && typeof v === 'string') {
       out[k] = redactBlob(v, { client_safe: true });
     } else if (COMMAND_KEYS.has(k) && typeof v === 'string') {
-      // Commands carry creds in their args (-p, --hashes, user:pass@, Bearer …).
-      out[k] = redactOperatorPaths(sanitizeCommandForClient(v), { client_safe: true });
+      // Commands carry creds in their args (-p, --hashes, user:pass@, Bearer …) AND
+      // can echo an NTLM/secretsdump line whose bare hash the flag-based sanitizer
+      // misses — mask the structured shapes too.
+      out[k] = redactOperatorPaths(maskStructuredSecrets(sanitizeCommandForClient(v) ?? v), { client_safe: true });
     } else if (typeof v === 'string') {
-      // Operator paths + inline creds (user:pass@, Bearer) can leak via any field.
-      out[k] = redactInlineCredentials(redactOperatorPaths(v, { client_safe: true }) ?? v);
+      // Operator paths + inline creds (user:pass@, Bearer) + structured secret shapes
+      // (NTLM/secretsdump lines, key:value) can leak via any field.
+      out[k] = maskStructuredSecrets(redactInlineCredentials(redactOperatorPaths(v, { client_safe: true }) ?? v));
     } else {
       out[k] = walkAndRedact(v);
     }

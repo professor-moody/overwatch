@@ -30,7 +30,7 @@ import { renderReportHtml } from './report-html.js';
 import { runRetrospective, buildCredentialChains } from './retrospective.js';
 import type { RetrospectiveInput } from './retrospective.js';
 import { classifyAllFindings, generateNavigatorLayer } from './finding-classifier.js';
-import { redactReportText, redactSecretKeys, sanitizeCommandForClient } from './report-redaction.js';
+import { redactReportText, redactSecretKeys, maskEvidenceTextForClient } from './report-redaction.js';
 import { buildTrustSignalsResponse } from './trust-signal-summary.js';
 import type { TrustSignalDto } from './trust-signal-summary.js';
 import { displayFindingCategory, displayFindingShortTitle, displayFindingTitle } from './finding-presentation.js';
@@ -98,10 +98,14 @@ function scrubMarkdownForClient(md: string): string {
     /\b(cred_value|password|nt_hash|lm_hash|aes256_hash|aes128_hash|secret|token|bearer|api_key|private_key)\s*[:=]\s*([^\s,'"`<>{}]+)/gi,
     (_m, k) => `${k}: <redacted>`,
   );
-  // Commands render into ```bash fences with their secrets in the args
-  // (-p/--password, --hashes, user:pass@host, Bearer …) — the label-based
-  // redactions above never see them. Sanitize the whole document.
-  out = sanitizeCommandForClient(out) ?? out;
+  // Commands render into ```bash fences AND timeline/methodology tables with their
+  // secrets in the args (-p/--password, --hashes, user:pass@host, Bearer …), and a
+  // command that echoes an NTLM/secretsdump line (user:rid:lm:nt:::) leaks the bare
+  // hash — the label-based redactions above never see either. maskEvidenceTextForClient
+  // is a superset of sanitizeCommandForClient that also masks NTLM/secretsdump lines and
+  // structured key:value secrets, applied whole-document as the final net. (Caught by
+  // dogfooding: a matched-signal command leaked an NTLM hash into a client timeline table.)
+  out = maskEvidenceTextForClient(out) ?? out;
   return out;
 }
 
