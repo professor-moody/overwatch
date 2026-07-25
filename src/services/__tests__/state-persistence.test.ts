@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Graph from 'graphology';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { NodeProperties, EdgeProperties, InferenceRule } from '../../types.js';
@@ -896,6 +896,162 @@ describe('StatePersistence', () => {
       // Should NOT have written because we cancelled
       expect(existsSync(ctx.stateFilePath)).toBe(false);
       expect(persistence.isDirty()).toBe(true);
+    });
+  });
+
+  // =============================================
+  // M6 — getRecoveryStatus transient WAL reads
+  // =============================================
+  describe('getRecoveryStatus transient WAL reads (M6)', () => {
+    function seed() {
+      const built = buildPersistence();
+      built.persistence.persistImmediate();
+      built.ctx.applyJournaledMutation(
+        'add_node',
+        { props: { id: 'h', type: 'host', label: 'h', discovered_at: now, confidence: 1 } },
+        () => built.graph.addNode('h', { id: 'h', type: 'host', label: 'h', discovered_at: now, confidence: 1 } as NodeProperties),
+      );
+      built.persistence.persistImmediate();
+      return built;
+    }
+
+    it('does NOT latch degraded read-only on a TRANSIENT (EAGAIN) status read', () => {
+      const { ctx, persistence } = seed();
+      expect(persistence.isWritable()).toBe(true);
+      vi.spyOn(ctx.mutationJournal!, 'getHighestPhysicalSeq').mockImplementationOnce(() => {
+        const e = new Error('EAGAIN: resource temporarily unavailable') as NodeJS.ErrnoException;
+        e.code = 'EAGAIN';
+        throw e;
+      });
+
+      const status = persistence.getRecoveryStatus();
+      expect(status.writable).toBe(true);
+      expect(status.reason).toBeUndefined();
+      expect(persistence.isWritable()).toBe(true);
+      expect(ctx.mutationJournal!.getAppendBlockedReason()).toBeUndefined();
+      // A status query must never quarantine the WAL.
+      expect(readdirSync(tempDir).some(f => f.includes('.quarantine-'))).toBe(false);
+    });
+
+    it('still gates writes on a genuinely-unreadable (EIO) WAL — but without quarantining on the status path', () => {
+      const { ctx, persistence } = seed();
+      vi.spyOn(ctx.mutationJournal!, 'getHighestPhysicalSeq').mockImplementationOnce(() => {
+        const e = new Error('EIO: i/o error') as NodeJS.ErrnoException;
+        e.code = 'EIO';
+        throw e;
+      });
+
+      const status = persistence.getRecoveryStatus();
+      expect(status.writable).toBe(false);
+      expect(persistence.isWritable()).toBe(false);
+      expect(readdirSync(tempDir).some(f => f.includes('.quarantine-'))).toBe(false);
+    });
+
+    it('does NOT latch/quarantine on a TRANSIENT WAL-read error during a FLUSH (write path)', () => {
+      const { ctx, persistence, graph } = seed();
+      graph.addNode('h2', { id: 'h2', type: 'host', label: 'h2', discovered_at: now, confidence: 1 } as NodeProperties);
+      // assertCaughtUpForStateWrite scans the WAL during the flush; a transient EMFILE
+      // hiccup there must NOT permanently brick writes.
+      vi.spyOn(ctx.mutationJournal!, 'assertCaughtUpForStateWrite').mockImplementationOnce(() => {
+        const e = new Error('EMFILE: too many open files') as NodeJS.ErrnoException;
+        e.code = 'EMFILE';
+        throw e;
+      });
+      persistence.persist();
+      // The flush fails (retryable) but does not latch.
+      expect(() => persistence.flushNow()).toThrow(/EMFILE/);
+      expect(persistence.isWritable()).toBe(true);
+      expect(ctx.mutationJournal!.getAppendBlockedReason()).toBeUndefined();
+      expect(readdirSync(tempDir).some(f => f.includes('.quarantine-'))).toBe(false);
+      // The retry (spy exhausted) succeeds.
+      expect(() => persistence.flushNow()).not.toThrow();
+    });
+  });
+
+  // =============================================
+  // M5 — legacy root snapshot pruning re-enables WAL compaction
+  // =============================================
+  describe('legacy root-directory snapshot pruning (M5)', () => {
+    it('ages out an immortal legacy root snapshot so WAL compaction resumes', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      const journaledAdd = (id: string) => {
+        const props = { id, type: 'host', label: id, discovered_at: now, confidence: 1 } as NodeProperties;
+        ctx.applyJournaledMutation('add_node', { props }, () => graph.addNode(id, props));
+      };
+      journaledAdd('host-1');
+      persistence.persistImmediate();
+
+      // Plant a LEGACY ROOT snapshot (pre-walCompactionAuthority) with a timestamp older
+      // than every future rotation, so it is always the oldest. Under the bug it is
+      // enumerated for recovery but never pruned -> immortal -> not compaction-trusted ->
+      // compaction permanently disabled.
+      const legacy = JSON.parse(readFileSync(ctx.stateFilePath, 'utf8')) as Record<string, unknown>;
+      delete legacy.walCompactionAuthority;
+      delete legacy.state_version;
+      delete legacy.journal_version;
+      const legacyRootPath = join(tempDir, 'state.snap-2000-01-01T00-00-00-000Z-1.json');
+      writeFileSync(legacyRootPath, JSON.stringify(legacy));
+
+      // Under the bug the untrusted legacy anchor forces the compaction gate to undefined.
+      expect((persistence as any).oldestRetainedValidSnapshotCheckpoint()).toBeUndefined();
+
+      // Rotate enough times that the legacy anchor falls outside MAX_SNAPSHOTS retention.
+      // Journaled mutations advance the checkpoint so a resumed compaction has real work.
+      for (let i = 0; i < MAX_SNAPSHOTS + 2; i++) {
+        journaledAdd(`host-extra-${i}`);
+        ctx.lastSnapshotTime = 0;
+        persistence.persistImmediate();
+      }
+
+      // Reversion signal: pre-fix the legacy root file is immortal (both assertions fail).
+      expect(existsSync(legacyRootPath)).toBe(false);
+      expect(persistence.listSnapshots().some(s => s.includes('2000-01-01T00-00-00-000Z-1'))).toBe(false);
+      // Compaction gate now resolves to a trusted checkpoint (undefined -> a real seq).
+      expect((persistence as any).oldestRetainedValidSnapshotCheckpoint()).toBeGreaterThan(0);
+    });
+  });
+
+  // =============================================
+  // M4 — flush integrity guards are fingerprint-cached
+  // =============================================
+  describe('flush integrity guards are fingerprint-cached (M4)', () => {
+    it('does not re-deep-validate the primary on every debounced flush', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+      persistence.persistImmediate();
+      // Suppress the 30s rotation so inspectPrimaryStateIntegrity runs each flush (it is
+      // NOT rotation-gated) — isolating the cache behavior.
+      ctx.lastSnapshotTime = Date.now();
+
+      const spy = vi.spyOn(persistence as any, 'validateFullStateDetached');
+      for (let i = 0; i < 4; i++) {
+        graph.addNode(`n-${i}`, { id: `n-${i}`, type: 'host', label: `n${i}`, discovered_at: now, confidence: 1.0 } as NodeProperties);
+        ctx.lastSnapshotTime = Date.now();
+        persistence.persistImmediate();
+      }
+      // Reversion signal: pre-fix this is called once per flush (>= 4); post-fix the
+      // fingerprint cache (primed post-write) means the on-disk primary is byte-identical
+      // to the last validated one, so the full graph rebuild is skipped.
+      expect(spy.mock.calls.length).toBe(0);
+    });
+
+    it('busts the cache when the primary is externally overwritten', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+      persistence.persistImmediate();
+      ctx.lastSnapshotTime = Date.now();
+
+      const spy = vi.spyOn(persistence as any, 'validateFullStateDetached');
+      // Externally rewrite the primary (a valid base, but different bytes/mtime) so the
+      // stat fingerprint no longer matches the cache.
+      const current = JSON.parse(readFileSync(ctx.stateFilePath, 'utf8')) as Record<string, unknown>;
+      writeFileSync(ctx.stateFilePath, JSON.stringify({ ...current }) + ' ');
+      graph.addNode('n-after', { id: 'n-after', type: 'host', label: 'a', discovered_at: now, confidence: 1.0 } as NodeProperties);
+      ctx.lastSnapshotTime = Date.now();
+      persistence.persistImmediate();
+
+      // The tampered fingerprint forces a re-validation.
+      expect(spy.mock.calls.length).toBeGreaterThanOrEqual(1);
     });
   });
 });

@@ -11,7 +11,7 @@
 // and batchMutate() to suppress flushes during batch operations.
 // ============================================================
 
-import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, openSync, fsyncSync, closeSync, lstatSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, openSync, fsyncSync, closeSync, lstatSync, statSync } from 'fs';
 import { dirname, basename, isAbsolute, join, relative, resolve } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import {
@@ -136,6 +136,32 @@ import {
 
 export const MAX_SNAPSHOTS = 5;
 const WAL_COMPACTION_AUTHORITY_SEMANTICS = 'full_state_sha256_json_v1' as const;
+
+/** M4: stat-based content fingerprint (dev/ino/size/mtime/ctime), the same trust
+ * model already relied on in mutation-journal.ts. Any external modification busts it,
+ * so a cache keyed on it is safe. Returns null when the file is absent. */
+function stateFileFingerprint(path: string): string | null {
+  try {
+    if (!existsSync(path)) return null;
+    const s = statSync(path);
+    return [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs].join(':');
+  } catch {
+    return null;
+  }
+}
+
+/** M6: a transient (retryable) filesystem read error — a resource-availability or
+ * signal hiccup, NOT corruption. These must not permanently latch degraded read-only
+ * when they surface on the read-only recovery-status path. Malformed WAL *content*
+ * never reaches this classifier (per-frame parse errors are swallowed upstream), so
+ * this is I/O-only and the transient/non-transient errno split is the right axis. */
+const TRANSIENT_JOURNAL_READ_ERRNOS = new Set([
+  'EAGAIN', 'EBUSY', 'EINTR', 'EMFILE', 'ENFILE', 'ETIMEDOUT',
+]);
+function isTransientJournalReadError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' && TRANSIENT_JOURNAL_READ_ERRNOS.has(code);
+}
 
 function snapshotCollisionIdentity(path: string): { family: string; ordinal: number } | undefined {
   const name = basename(path);
@@ -341,6 +367,14 @@ export class StatePersistence {
   private createGraph: () => OverwatchGraph;
 
   // --- Write coalescing state ---
+  // M4: memoize the two load-bearing integrity guards keyed on a stat fingerprint so
+  // a debounced flush doesn't re-deep-validate an on-disk primary this same writer
+  // just produced (validateFullStateDetached rebuilds an entire scratch graph) nor
+  // re-read+validate all retained snapshots when the inventory hasn't changed. We
+  // cache ONLY the usable/all-clean success outcome; any fingerprint mismatch or
+  // failure re-runs the full check, preserving fail-closed behavior.
+  private primaryIntegrityCache?: { fingerprint: string; checkpoint: number };
+  private snapshotInventoryCacheKey?: string;
   private dirty = false;
   private pendingDetail: GraphUpdateDetail = {};
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -462,18 +496,33 @@ export class StatePersistence {
       observedJournalFormat = journal?.getObservedFormatVersion();
       journalHasData = journal?.hasData() ?? false;
     } catch (error) {
-      const accessReason = this.describeJournalAccessFailure(error);
-      const reason = this.recoveryReadOnlyReason
-        ? this.recoveryReadOnlyReason.includes(accessReason)
-          ? this.recoveryReadOnlyReason
-          : `${this.recoveryReadOnlyReason}; additionally, ${accessReason}`
-        : accessReason;
-      this.latchJournalRecoveryFailure({
-        reason,
-        error,
-        malformed: false,
-        accessFailure: true,
-      });
+      // M6: getRecoveryStatus() is a READ-ONLY status surface. A TRANSIENT fs error
+      // on these WAL reads (EAGAIN/EBUSY/EINTR/EMFILE...) must NOT permanently latch
+      // the process into degraded read-only — that used to make one benign hiccup
+      // during a status poll brick writes until restart. On a transient error, leave
+      // recoveryReadOnlyReason / the append-block / the WAL untouched and fall through
+      // to the cached values. Write-gating on a genuinely-unreadable WAL is delivered
+      // independently on the checkpoint path: highestPhysicalSeqOr /
+      // highestPhysicalFrameSeqOr re-read the WAL there and latch on a real failure, and
+      // assertWritable() then refuses the write off that latched flag. Softening this
+      // read-only status path does not weaken that. (A transient error on the WRITE path
+      // still latches — a separate, intentional-for-now behavior tracked outside M6.)
+      if (!isTransientJournalReadError(error)) {
+        const accessReason = this.describeJournalAccessFailure(error);
+        const reason = this.recoveryReadOnlyReason
+          ? this.recoveryReadOnlyReason.includes(accessReason)
+            ? this.recoveryReadOnlyReason
+            : `${this.recoveryReadOnlyReason}; additionally, ${accessReason}`
+          : accessReason;
+        this.latchJournalRecoveryFailure({
+          reason,
+          error,
+          malformed: false,
+          accessFailure: true,
+          // A status query must never copy/move the WAL, even for a real error.
+          quarantine: false,
+        });
+      }
       logicalOnDiskHighest = this.recoveryStatus.highest_on_disk_seq;
       physicalFrameHighest = this.recoveryStatus.highest_physical_frame_seq ?? 0;
       observedJournalFormat = undefined;
@@ -1394,6 +1443,16 @@ export class StatePersistence {
       try {
         this.ctx.mutationJournal.assertCaughtUpForStateWrite(primaryCheckpoint);
       } catch (error) {
+        // M6 (write path): assertCaughtUpForStateWrite scans the WAL, which can throw a
+        // TRANSIENT read error (EMFILE/EAGAIN/EBUSY under fd pressure). Latching+quarantining
+        // a perfectly healthy WAL on such a hiccup is the same benign-hiccup-bricks-writes
+        // anti-pattern M6 fixes on the status path — and worse here (permanent read-only).
+        // Re-throw the transient error plain so flushNow's catch routes it to the bounded
+        // retry (recordPersistenceFailure/scheduleRetry; the gate only trips after 3
+        // consecutive failures), leaving recoveryReadOnlyReason, the append-block, and the
+        // WAL untouched. A genuine stale-writer/integrity failure carries no transient errno
+        // and still fail-closes via the latch below.
+        if (isTransientJournalReadError(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
         const staleWriter = message.startsWith('writer is stale:');
         throw this.latchJournalRecoveryFailure({
@@ -1436,6 +1495,14 @@ export class StatePersistence {
     }
     fsyncDirectory(stateDir);
     this.ctx.journalSnapshotSeq = journalCheckpointSeq;
+    // M4: the primary we just wrote is a checksummed base emitted from valid in-memory
+    // state, so prime the integrity cache with its fingerprint + checkpoint. Without
+    // this the cache never hits — each flush replaces the primary, so a validate-on-read
+    // cache would always miss. Any external tamper after this busts the stat fingerprint.
+    const writtenFingerprint = stateFileFingerprint(this.ctx.stateFilePath);
+    if (writtenFingerprint !== null) {
+      this.primaryIntegrityCache = { fingerprint: writtenFingerprint, checkpoint: journalCheckpointSeq };
+    }
     // A failed replacement must retain every snapshot that justified any
     // preceding WAL compaction. Prune only after the new primary rename and
     // its directory entry are durable.
@@ -1562,9 +1629,21 @@ export class StatePersistence {
         `state replacement could not enumerate retained recovery snapshots: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+    // M4: skip the per-snapshot read+validate loop when the retained inventory (paths +
+    // each file's stat fingerprint) is byte-identical to one we previously validated as
+    // ALL-CLEAN. We cache ONLY the fully-clean outcome (every snapshot parsed + passed
+    // validateStateBase with no error at all), so the cache is independent of
+    // journalSnapshotSeq / primaryIsUsableBase — a clean-parsing snapshot never reaches
+    // the checkpoint-coupled blocksReplacement branch. Any change to the inventory (a
+    // rotation, prune, or external edit) busts the fingerprint and re-runs the loop.
+    const inventoryKey = snapshots
+      .map(snapshot => `${snapshot}#${stateFileFingerprint(join(stateDir, snapshot)) ?? 'missing'}`)
+      .join('|');
+    if (this.snapshotInventoryCacheKey === inventoryKey) return;
     const candidates = snapshots.map(snapshot => ({
       path: join(stateDir, snapshot),
     }));
+    let allClean = true;
     for (const candidate of candidates) {
       let bytes: Buffer;
       try {
@@ -1578,6 +1657,9 @@ export class StatePersistence {
         const data = parseJsonBytes(bytes);
         this.validateStateBase(data);
       } catch (error) {
+        // Any error means this snapshot is not cleanly clean — don't cache the
+        // inventory (a non-blocking outcome may be checkpoint-coupled).
+        allClean = false;
         if (
           (error instanceof PersistedStateVersionError
             || error instanceof PersistedJournalVersionError)
@@ -1603,9 +1685,19 @@ export class StatePersistence {
         });
       }
     }
+    // M4: every snapshot parsed + validated cleanly — memoize this inventory so the
+    // next flush with an unchanged inventory skips the loop. A rotation/prune/edit
+    // changes inventoryKey and re-runs. Never cached when any snapshot errored.
+    if (allClean) this.snapshotInventoryCacheKey = inventoryKey;
   }
 
   private inspectPrimaryStateIntegrity(): { checkpoint: number; usable: boolean } {
+    // M4: the primary is ALWAYS read + parsed + validateStateBase'd — those are the
+    // fail-closed guards (an unreadable / structurally-invalid / recognized-corrupt
+    // primary must still throw, and callers count these reads). The cache skips ONLY
+    // the expensive validateFullStateDetached (full scratch-graph rebuild) when the
+    // on-disk primary is byte-identical (by stat fingerprint) to the one we last fully
+    // validated as usable. Any external tamper changes the stat and re-runs the rebuild.
     let bytes: Buffer;
     try {
       bytes = this.readPersistedBytes(this.ctx.stateFilePath);
@@ -1614,6 +1706,7 @@ export class StatePersistence {
         `state replacement could not read the durable primary at ${this.ctx.stateFilePath}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+    const primaryFingerprint = stateFileFingerprint(this.ctx.stateFilePath);
     let data: unknown;
     try {
       data = parseJsonBytes(bytes);
@@ -1630,7 +1723,24 @@ export class StatePersistence {
       : 0;
     try {
       const validated = this.validateStateBase(data);
-      this.validateFullStateDetached(data, this.builtinRules);
+      // Skip the deep graph rebuild only on a fingerprint hit whose CONTENT still
+      // hashes correctly — the stat fingerprint alone would miss stat-preserving at-rest
+      // corruption (silent bit-rot that doesn't touch mtime/ctime), which validateStateBase
+      // does not reject (it only marks such a base untrusted). Re-verifying the
+      // walCompactionAuthority payload sha256 is one hash of the payload — far cheaper
+      // than the full scratch-graph rebuild it guards — and any content change busts it,
+      // falling through to the full validateFullStateDetached. We cache ONLY this usable
+      // success, so the fail-closed throws below still fire.
+      const cacheHit = primaryFingerprint !== null
+        && this.primaryIntegrityCache?.fingerprint === primaryFingerprint
+        && record !== undefined
+        && this.walCompactionAuthorityStatus(record) === 'valid';
+      if (!cacheHit) {
+        this.validateFullStateDetached(data, this.builtinRules);
+        if (primaryFingerprint !== null) {
+          this.primaryIntegrityCache = { fingerprint: primaryFingerprint, checkpoint: validated.checkpoint };
+        }
+      }
       return { checkpoint: validated.checkpoint, usable: true };
     } catch (error) {
       if (
@@ -1664,21 +1774,40 @@ export class StatePersistence {
     const dir = dirname(this.ctx.stateFilePath);
     const base = basename(this.ctx.stateFilePath, '.json');
     const snapDir = join(dir, '.snapshots');
-    if (!existsSync(snapDir)) return;
-    // Retaining an extra snapshot is safe, so pruning alone remains best-effort.
-    let snaps: string[];
-    try {
-      snaps = readdirSync(snapDir)
-        .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json'))
-        .sort(compareSnapshotPaths);
-    } catch {
-      return;
-    }
-    while (snaps.length > MAX_SNAPSHOTS) {
-      const oldest = snaps.shift()!;
+    // M5: prune BOTH the current `.snapshots/` location AND the legacy root-directory
+    // snapshots (`<base>.snap-*.json` written by older builds). Previously a legacy
+    // root snapshot was enumerated for recovery but never pruned/migrated, so it lived
+    // forever — and because it predates walCompactionAuthority it is not
+    // compaction-trusted, which made oldestRetainedValidSnapshotCheckpoint() return
+    // undefined permanently and disabled WAL compaction (the WAL grew unbounded). Aging
+    // the legacy anchor out under the normal MAX_SNAPSHOTS retention re-enables
+    // compaction once enough fresh trusted snapshots exist. Retaining an extra snapshot
+    // is safe, so this stays strictly best-effort (swallow per-file errors).
+    const candidates: Array<{ path: string; snapDirModified: boolean; name: string }> = [];
+    if (existsSync(snapDir)) {
       try {
-        unlinkSync(join(snapDir, oldest));
-        fsyncDirectory(snapDir);
+        for (const f of readdirSync(snapDir)) {
+          if (f.startsWith(`${base}.snap-`) && f.endsWith('.json')) {
+            candidates.push({ path: join(snapDir, f), snapDirModified: true, name: f });
+          }
+        }
+      } catch { /* best effort */ }
+    }
+    try {
+      for (const f of readdirSync(dir)) {
+        if (f.startsWith(`${base}.snap-`) && f.endsWith('.json')) {
+          candidates.push({ path: join(dir, f), snapDirModified: false, name: f });
+        }
+      }
+    } catch { /* best effort */ }
+    // Sort by snapshot BASENAME (compareSnapshotPaths ignores the directory prefix), so
+    // cross-location retention keeps the newest MAX_SNAPSHOTS regardless of location.
+    candidates.sort((a, b) => compareSnapshotPaths(a.name, b.name));
+    while (candidates.length > MAX_SNAPSHOTS) {
+      const oldest = candidates.shift()!;
+      try {
+        unlinkSync(oldest.path);
+        fsyncDirectory(oldest.snapDirModified ? snapDir : dir);
       } catch { /* best effort: an extra recovery anchor is safe */ }
     }
   }
