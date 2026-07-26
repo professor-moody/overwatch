@@ -79,6 +79,47 @@ describe('parseAndMaybeIngest canonical outcomes', () => {
     expect((event?.details as any)?.excerpts).toHaveLength(1);
   });
 
+  it('#2: derives matched-signal excerpts generically from cred_value (real nxc parser, no explicit excerpts)', () => {
+    // Exercises the REAL nxc parser: it extracts the credential from this line, and the
+    // generic post-parse pass derives the matched-signal excerpt for its cred_value.
+    const raw = 'SMB  10.0.0.1  445  APP01  [+] corp\\admin:S3cretP@ssw0rd (Pwn3d!)\n';
+    const result = parseAndMaybeIngest(engine, {
+      tool_name: 'nxc', outputText: raw, action_id: 'act-cred', ingest: true,
+    });
+    expect(result.excerpts).toHaveLength(1);
+    const ex = result.excerpts![0];
+    expect(ex.node_id).toMatch(/^cred/);   // canonicalized credential id
+    expect(ex.matched_by).toBe('nxc');
+    // The byte range re-reads exactly the leaked secret from the tool output.
+    expect(Buffer.from(raw, 'utf8').subarray(ex.byte_start, ex.byte_end).toString('utf8')).toBe('S3cretP@ssw0rd');
+  });
+
+  it('#2: derives a matched-signal excerpt from a CVE id for a vulnerability finding', () => {
+    const raw = '[critical] [CVE-2021-44228] http://10.0.0.5:8080 log4shell RCE confirmed\n';
+    // Realistic scanner shape: host + vuln + VULNERABLE_TO so the vuln actually ingests.
+    disposers.push(__registerParserForTest('vuln-parser', () => finding('f-vuln', [
+      { id: 'svc-10-0-0-5-8080', type: 'service', label: 'http/8080', port: 8080, discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } as never,
+      { id: 'vuln-log4shell', type: 'vulnerability', label: 'Log4Shell', cve: 'CVE-2021-44228', cvss: 10, discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } as never,
+    ], { edges: [{ source: 'svc-10-0-0-5-8080', target: 'vuln-log4shell', properties: { type: 'VULNERABLE_TO', confidence: 1, discovered_at: '2026-01-01T00:00:00Z' } }] } as never)));
+    const result = parseAndMaybeIngest(engine, {
+      tool_name: 'vuln-parser', outputText: raw, action_id: 'act-vuln', ingest: true,
+    });
+    expect(result.excerpts).toHaveLength(1);
+    expect(result.excerpts![0].node_id).toBe('vuln-log4shell');
+    expect(Buffer.from(raw, 'utf8').subarray(result.excerpts![0].byte_start, result.excerpts![0].byte_end).toString('utf8')).toBe('CVE-2021-44228');
+  });
+
+  it('#2: a parser\'s OWN explicit excerpts take precedence over the generic derivation', () => {
+    disposers.push(__registerParserForTest('explicit-cred-parser', () => finding('f-x', [
+      { id: 'cred-x', type: 'credential', label: 'admin', cred_value: 'Secret123', cred_material_kind: 'plaintext_password', cred_type: 'plaintext', cred_usable_for_auth: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } as never,
+    ], { excerpts: [{ node_id: 'cred-x', byte_start: 2, byte_end: 8, matched_by: 'explicit' }] })));
+    const result = parseAndMaybeIngest(engine, {
+      tool_name: 'explicit-cred-parser', outputText: 'xxSecret123xx', action_id: 'act-x', ingest: true,
+    });
+    expect(result.excerpts).toHaveLength(1);
+    expect(result.excerpts?.[0].matched_by).toBe('explicit');   // not the generic 't'
+  });
+
   it('distinguishes parser exceptions from zero data', () => {
     disposers.push(__registerParserForTest('throwing-parser', () => {
       throw new Error('fixture parser exploded');
