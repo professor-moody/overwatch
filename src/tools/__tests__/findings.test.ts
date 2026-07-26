@@ -188,6 +188,65 @@ describe('finding tools', () => {
     expect(payload.warnings?.some((w: string) => /invalid byte range/i.test(w))).toBe(true);
   });
 
+  it('report_finding derives a matched-signal excerpt from raw_output when the agent supplies none (#2 parity)', async () => {
+    // The worker-agent path: capture stdout, report a credential finding with
+    // raw_output but no explicit excerpts. Derivation must fill in the byte range.
+    const raw = 'SMB  10.10.10.9  445  APP  [+] corp\\admin:S3cretP@ssw0rd (Pwn3d!)\n';
+    const result = await handlers.report_finding({
+      agent_id: 'agent-derive',
+      action_id: 'act-derive',
+      tool_name: 'nxc',
+      nodes: [{
+        id: 'cred-x', type: 'credential', label: 'admin',
+        properties: {
+          cred_value: 'S3cretP@ssw0rd', cred_type: 'plaintext',
+          cred_material_kind: 'plaintext_password', cred_user: 'admin',
+          cred_domain: 'corp', cred_usable_for_auth: true,
+        },
+      }],
+      edges: [],
+      raw_output: raw,
+      // NB: no `excerpts` supplied — the generic derivation must produce them.
+    });
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    const event = engine.getFullHistory().find(e => e.action_id === 'act-derive' && e.event_type === 'finding_reported');
+    const excerpts = (event?.details as any)?.excerpts;
+    expect(excerpts).toHaveLength(1);
+    expect(excerpts[0].matched_by).toBe('nxc');
+    // A credential value is secret — tagged so the client renderer redacts it.
+    expect(excerpts[0].sensitive).toBe(true);
+    // evidence_id backfilled to the finding's stored raw blob.
+    expect(excerpts[0].evidence_id).toBe(payload.evidence_id);
+    // The derived byte range re-reads exactly the leaked secret from that blob.
+    const slice = engine.getEvidenceStore().getRawOutputSlice(
+      payload.evidence_id, excerpts[0].byte_start, excerpts[0].byte_end - excerpts[0].byte_start,
+    );
+    expect(slice?.text).toBe('S3cretP@ssw0rd');
+  });
+
+  it('report_finding does NOT override the agent\'s explicit excerpts with the generic derivation', async () => {
+    const raw = 'user:S3cretP@ssw0rd\n';
+    const result = await handlers.report_finding({
+      agent_id: 'a', action_id: 'act-explicit', tool_name: 'nxc',
+      nodes: [{
+        id: 'cred-y', type: 'credential', label: 'u',
+        properties: {
+          cred_value: 'S3cretP@ssw0rd', cred_type: 'plaintext', cred_material_kind: 'plaintext_password',
+          cred_user: 'user', cred_domain: 'corp', cred_usable_for_auth: true,
+        },
+      }],
+      edges: [], raw_output: raw,
+      excerpts: [{ node_id: 'cred-y', byte_start: 5, byte_end: 19, matched_by: 'agent', snippet: 'S3cretP@ssw0rd' }],
+    });
+    const payload = JSON.parse(result.content[0].text);
+    const event = engine.getFullHistory().find(e => e.action_id === 'act-explicit' && e.event_type === 'finding_reported');
+    const excerpts = (event?.details as any)?.excerpts;
+    expect(excerpts).toHaveLength(1);
+    expect(excerpts[0].matched_by).toBe('agent');   // explicit wins, not the generic 'nxc'
+    expect(excerpts[0].evidence_id).toBe(payload.evidence_id);
+  });
+
   it('get_evidence with invalid ID returns error', async () => {
     const result = await handlers.get_evidence({
       evidence_id: 'nonexistent-evidence-id',

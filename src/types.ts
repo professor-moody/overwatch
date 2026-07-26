@@ -1235,6 +1235,11 @@ export interface EvidenceExcerpt {
   matched_by?: string;
   /** The matched text captured at conclusion time (verifiable against the blob). */
   snippet?: string;
+  /** The captured span IS credential material (e.g. a derived `cred_value` excerpt),
+   * so the snippet is a bare secret with no structural context the text redactors
+   * key on. Client-profile rendering must redact it wholesale (hash placeholder)
+   * rather than pass it through. Operator profile is unaffected. */
+  sensitive?: boolean;
 }
 
 export interface Finding {

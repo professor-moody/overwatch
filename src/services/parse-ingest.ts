@@ -7,40 +7,10 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type { GraphEngine } from './graph-engine.js';
-import { ParserContextSchema, type ParseContext, type EvidenceExcerpt, type Finding } from '../types.js';
+import { ParserContextSchema, type ParseContext, type EvidenceExcerpt } from '../types.js';
 import { parseOutput, getSupportedParsers, isParserError } from './parsers/index.js';
 import { prepareFindingForIngest } from './finding-validation.js';
-import { deriveExcerpt } from './parser-utils.js';
-
-/**
- * 3c fleet-wide (#2): derive matched-signal excerpts generically for any parser that
- * didn't emit its own — matching the reliably-VERBATIM, high-value node values
- * (credential material and CVE ids) in the raw tool output. This is the "how it was
- * found" byte range for credential-dump and CVE parsers without bespoke per-parser
- * wiring. Values that don't appear verbatim (normalized service names, derived hashes)
- * simply yield no excerpt — deriveExcerpt returns undefined, never a bogus locator.
- */
-function deriveNodeExcerpts(finding: Finding, rawOutput: string): EvidenceExcerpt[] {
-  if (!rawOutput) return [];
-  const excerpts: EvidenceExcerpt[] = [];
-  const seen = new Set<string>();
-  for (const node of finding.nodes) {
-    const value = typeof node.cred_value === 'string' && node.cred_value.length >= 6
-      ? node.cred_value
-      : typeof node.cve === 'string' && node.cve.length >= 4
-        ? node.cve
-        : undefined;
-    if (!value || seen.has(value)) continue;
-    seen.add(value);
-    const ex = deriveExcerpt(rawOutput, value, {
-      node_id: node.id,
-      matched_by: finding.tool_name || 'parser',
-    });
-    if (ex) excerpts.push(ex);
-    if (excerpts.length >= 20) break; // bound the count for a huge dump
-  }
-  return excerpts;
-}
+import { deriveNodeExcerpts } from './parser-utils.js';
 
 export interface ParseIngestOpts {
   tool_name: string;

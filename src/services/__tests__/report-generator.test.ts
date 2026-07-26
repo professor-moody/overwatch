@@ -576,6 +576,37 @@ describe('client-safe matched-signal excerpts (3f)', () => {
     const [operatorCard] = buildProofCardsForFinding({ evidence: chainWithSecretExcerpt() } as never, 'operator');
     expect(operatorCard.proof).toContain('31d6cfe0d16ae931b73c59d7e0c089c0');
   });
+
+  // A derived credential excerpt's snippet is the BARE cred_value (no user:pass@ /
+  // NTLM / key=value structure), so the text maskers pass it through — it must be
+  // redacted wholesale via the `sensitive` flag or the plaintext password reaches
+  // the client report. (Caught by adversarial review of the report_finding-derivation change.)
+  const chainWithBareCredentialExcerpt = () => ([{
+    claim: 'Leaked DB password', action_id: 'act-cred', command: 'curl -s http://10.0.0.5/',
+    stdout_evidence_id: 'ev-cred', source_nodes: [], target_nodes: ['cred-1'],
+    timestamp: '2026-01-01T00:00:00Z',
+    excerpts: [{
+      node_id: 'cred-1', byte_start: 0, byte_end: 11, matched_by: 'curl',
+      snippet: 'Summer2024!', resolved_snippet: 'Summer2024!', verified: true, sensitive: true,
+    }],
+  }] as any);
+
+  it('redacts a bare credential (sensitive) excerpt for the client — snippet AND composed proof', () => {
+    const [clientCard] = buildProofCardsForFinding({ evidence: chainWithBareCredentialExcerpt() } as never, 'client');
+    expect(clientCard.excerpts![0].snippet).not.toContain('Summer2024!');
+    expect(clientCard.excerpts![0].snippet).toMatch(/<redacted.*sha256:[0-9a-f]+…>/);
+    expect(clientCard.excerpts![0].resolved_snippet).not.toContain('Summer2024!');
+    expect(clientCard.proof).not.toContain('Summer2024!');   // the composed proof string too
+    // Span + verification handles survive so the client can still audit.
+    expect(clientCard.excerpts![0].byte_start).toBe(0);
+    expect(clientCard.excerpts![0].byte_end).toBe(11);
+  });
+
+  it('leaves the bare credential excerpt intact for the operator', () => {
+    const [operatorCard] = buildProofCardsForFinding({ evidence: chainWithBareCredentialExcerpt() } as never, 'operator');
+    expect(operatorCard.excerpts![0].snippet).toBe('Summer2024!');
+    expect(operatorCard.proof).toContain('Summer2024!');
+  });
 });
 
 // ============================================================

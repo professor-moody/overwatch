@@ -4,7 +4,7 @@
 // ============================================================
 
 import { createHash } from 'crypto';
-import type { EvidenceExcerpt } from '../types.js';
+import type { EvidenceExcerpt, Finding } from '../types.js';
 
 /**
  * Derive a matched-signal excerpt (3c): locate `matched` inside the raw parser
@@ -32,6 +32,46 @@ export function deriveExcerpt(
     matched_by: opts.matched_by,
     snippet: matched,
   };
+}
+
+/**
+ * Fleet-wide matched-signal derivation (3c, #2): for a finding whose parser/agent
+ * did NOT supply its own excerpts, derive them generically for the reliably-VERBATIM,
+ * high-value node values — credential material (`cred_value`) and CVE ids (`cve`) —
+ * by locating each in `rawOutput` (the exact bytes of the raw evidence blob). This
+ * gives "how it was found" byte ranges to credential-dump and CVE producers without
+ * bespoke per-parser (or per-tool) wiring, on BOTH the parse_output path and the
+ * report_finding raw_output path. Values that don't appear verbatim (normalized
+ * service names, derived hashes) simply yield no excerpt — deriveExcerpt returns
+ * undefined, never a bogus locator. `matched_by` names what recognized the signal
+ * (the parser/tool); it falls back to finding.tool_name, then 'parser'.
+ */
+export function deriveNodeExcerpts(
+  finding: Finding,
+  rawOutput: string,
+  opts: { matched_by?: string } = {},
+): EvidenceExcerpt[] {
+  if (!rawOutput) return [];
+  const matchedBy = opts.matched_by || finding.tool_name || 'parser';
+  const excerpts: EvidenceExcerpt[] = [];
+  const seen = new Set<string>();
+  for (const node of finding.nodes) {
+    // A credential value is secret; a CVE id is not. Track which so the client
+    // renderer can redact the bare credential snippet (it carries no structural
+    // context the text maskers key on) while keeping CVE excerpts visible.
+    const isCredential = typeof node.cred_value === 'string' && node.cred_value.length >= 6;
+    const value = isCredential
+      ? node.cred_value as string
+      : typeof node.cve === 'string' && node.cve.length >= 4
+        ? node.cve
+        : undefined;
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    const ex = deriveExcerpt(rawOutput, value, { node_id: node.id, matched_by: matchedBy });
+    if (ex) excerpts.push(isCredential ? { ...ex, sensitive: true } : ex);
+    if (excerpts.length >= 20) break; // bound the count for a huge dump
+  }
+  return excerpts;
 }
 
 export function normalizeKeyPart(value: string): string {
