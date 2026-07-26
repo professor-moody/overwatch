@@ -12,6 +12,8 @@ import {
   buildHeadlessClaudeEnv,
   inspectHeadlessClaudeCompatibility,
   shouldReprobeCompatibility,
+  detectTerminalAgentApiError,
+  isRetryableAgentApiError,
 } from '../headless-mcp-runner.js';
 import { HeadlessProcessRegistry } from '../headless-process-registry.js';
 import {
@@ -270,6 +272,75 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(thrown.ok).toBe(false);
     expect(thrown.error).toContain('ETIMEDOUT');
     expect(shouldReprobeCompatibility(thrown)).toBe(true);
+  });
+
+  it('detects a terminal model API error in the agent stream-json (effort/thinking 400)', () => {
+    const captured = [
+      '⚠ claude.ai connectors are disabled …',
+      '{"type":"system","subtype":"init"}',
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"API Error: 400 …"}]}}',
+      `{"is_error":true,"terminal_reason":"api_error","api_error_status":400,"result":"API Error: 400 output_config.effort 'xhigh' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking.","subtype":"success"}`,
+    ].join('\n');
+    const err = detectTerminalAgentApiError(captured);
+    expect(err).not.toBeNull();
+    expect(err!.status).toBe(400);
+    expect(err!.message).toContain("effort 'xhigh'");
+    // Clean-exit output with no api_error -> null (don't false-positive a normal turn end).
+    expect(detectTerminalAgentApiError('{"is_error":false,"subtype":"success","result":"done"}')).toBeNull();
+    expect(detectTerminalAgentApiError('just some logs\nno json here')).toBeNull();
+  });
+
+  it('classifies API errors: 4xx config/auth non-retryable, 408/429 + 5xx + unknown retryable', () => {
+    expect(isRetryableAgentApiError(400)).toBe(false);
+    expect(isRetryableAgentApiError(401)).toBe(false);
+    expect(isRetryableAgentApiError(403)).toBe(false);
+    expect(isRetryableAgentApiError(408)).toBe(true);
+    expect(isRetryableAgentApiError(429)).toBe(true);
+    expect(isRetryableAgentApiError(500)).toBe(true);
+    expect(isRetryableAgentApiError(529)).toBe(true);
+    expect(isRetryableAgentApiError(undefined)).toBe(true);
+  });
+
+  it('surfaces a deterministic model API error as failed+no_retry with a diagnostic (not a silent interrupt)', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-apierr' }));
+    await settle();
+    expect(spawned).toHaveLength(1);
+    // The model call fails with the effort/thinking 400; claude -p still exits code 0.
+    const result = `{"is_error":true,"terminal_reason":"api_error","api_error_status":400,"result":"API Error: 400 output_config.effort 'xhigh' is not supported when thinking is disabled on this model.","subtype":"success"}`;
+    spawned[0].stdout.emit('data', Buffer.from(`{"type":"system","subtype":"init"}\n${result}\n`));
+    spawned[0].simulateExit(0, null);
+    spawned[0].simulateClose(0, null);
+    await settle();
+
+    // Pre-fix this was a silent 'interrupted' with a benign "clean exit" reason.
+    expect(engine.getTask('h-apierr')?.status).toBe('failed');
+    expect(liveTask('h-apierr').no_retry).toBe(true);          // don't re-brick the next agent
+    const diag = engine.getFullHistory().find(e => (e.details as any)?.reason === 'headless_agent_api_error');
+    expect(diag).toBeDefined();
+    expect((diag!.details as any).api_error_status).toBe(400);
+    expect((diag!.details as any).retryable).toBe(false);
+    expect(diag!.description).toMatch(/effort|thinking/i);       // actionable hint
+  });
+
+  it('treats a transient (429) model API error as interrupted+retryable, not a hard failure', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-429' }));
+    await settle();
+    const result = `{"is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 rate limit exceeded","subtype":"success"}`;
+    spawned[spawned.length - 1].stdout.emit('data', Buffer.from(`${result}\n`));
+    spawned[spawned.length - 1].simulateExit(0, null);
+    spawned[spawned.length - 1].simulateClose(0, null);
+    await settle();
+
+    expect(engine.getTask('h-429')?.status).toBe('interrupted');   // retryable -> reofferable
+    expect(liveTask('h-429').no_retry).not.toBe(true);
+    const diag = engine.getFullHistory().find(e => (e.details as any)?.reason === 'headless_agent_api_error');
+    expect((diag!.details as any).retryable).toBe(true);
   });
 
   afterEach(() => {
