@@ -90,6 +90,7 @@ describe('parseAndMaybeIngest canonical outcomes', () => {
     const ex = result.excerpts![0];
     expect(ex.node_id).toMatch(/^cred/);   // canonicalized credential id
     expect(ex.matched_by).toBe('nxc');
+    expect(ex.sensitive).toBe(true);       // credential material — redacted for client reports
     // The byte range re-reads exactly the leaked secret from the tool output.
     expect(Buffer.from(raw, 'utf8').subarray(ex.byte_start, ex.byte_end).toString('utf8')).toBe('S3cretP@ssw0rd');
   });
@@ -106,6 +107,7 @@ describe('parseAndMaybeIngest canonical outcomes', () => {
     });
     expect(result.excerpts).toHaveLength(1);
     expect(result.excerpts![0].node_id).toBe('vuln-log4shell');
+    expect(result.excerpts![0].sensitive).toBeFalsy();   // a CVE id is not secret — stays visible to clients
     expect(Buffer.from(raw, 'utf8').subarray(result.excerpts![0].byte_start, result.excerpts![0].byte_end).toString('utf8')).toBe('CVE-2021-44228');
   });
 

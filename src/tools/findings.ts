@@ -5,6 +5,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { nodeTypeSchema, edgeTypeSchema } from '../types.js';
 import type { Finding, NodeType, EdgeType } from '../types.js';
 import { prepareFindingForIngest } from '../services/finding-validation.js';
+import { deriveNodeExcerpts } from '../services/parser-utils.js';
 import { withErrorBoundary } from './error-boundary.js';
 
 export function registerFindingTools(server: McpServer, engine: GraphEngine): void {
@@ -231,11 +232,26 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         evidenceDetails.raw_output = raw_output.slice(0, 8192);
       }
 
-      // 3c: persist matched-signal excerpts. Backfill evidence_id to this finding's
-      // durable blob when omitted, drop malformed spans (end must exceed start) with
-      // a loud warning so a bad locator never silently claims to prove something.
-      if (excerpts && excerpts.length > 0) {
-        const validExcerpts = excerpts
+      // 3c: persist matched-signal excerpts. Prefer the agent's own explicit
+      // excerpts; when it supplied none, derive them generically from raw_output for
+      // verbatim high-value values (credential material / CVE ids) — the same
+      // fleet-wide derivation the parse_output path uses (#2). This closes the
+      // report_finding parity gap the worker-agent dogfood exposed: an agent that
+      // captures stdout and reports a finding gets "how it was found" byte ranges
+      // without hand-computing offsets. Derivation indexes raw_output, which is
+      // exactly the bytes stored as this finding's raw evidence blob, so the offsets
+      // stay verifiable (a non-verbatim value yields no excerpt, never a bogus one).
+      const explicitExcerpts = excerpts ?? [];
+      const effectiveExcerpts = explicitExcerpts.length > 0
+        ? explicitExcerpts
+        : (raw_output
+          ? deriveNodeExcerpts(prepared.finding, raw_output, { matched_by: tool_name || 'report_finding' })
+          : []);
+      // Backfill evidence_id to this finding's durable blob when omitted, drop
+      // malformed spans (end must exceed start) with a loud warning so a bad locator
+      // never silently claims to prove something.
+      if (effectiveExcerpts.length > 0) {
+        const validExcerpts = effectiveExcerpts
           .map(ex => ({ ...ex, evidence_id: ex.evidence_id ?? storedEvidenceId }))
           .filter(ex => {
             const ok = ex.byte_end > ex.byte_start && (ex.evidence_id !== undefined || ex.snippet !== undefined);

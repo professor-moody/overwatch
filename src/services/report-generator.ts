@@ -27,7 +27,7 @@ import {
   presentFinding,
   type FindingPresentation,
 } from './finding-presentation.js';
-import { maskEvidenceTextForClient } from './report-redaction.js';
+import { maskEvidenceTextForClient, redactCredentialValue } from './report-redaction.js';
 import {
   buildActionPlan,
   buildExecutiveSummary,
@@ -217,6 +217,9 @@ export interface ProofExcerpt {
   verified?: boolean;
   /** Total size of the source blob, for offset context. */
   total_bytes?: number;
+  /** The span IS credential material — client rendering redacts the snippet
+   * wholesale (see EvidenceExcerpt.sensitive). */
+  sensitive?: boolean;
 }
 
 export interface NarrativePhase {
@@ -970,6 +973,7 @@ export function buildEvidenceChainsForNode(
             byte_end: ex.byte_end,
             matched_by: ex.matched_by,
             snippet: ex.snippet,
+            ...(ex.sensitive ? { sensitive: true } : {}),
           };
           if (sliceLoader && evidence_id) {
             try {
@@ -1369,11 +1373,25 @@ function rawPreviewForEvidence(ev: EvidenceChain, profile: ReportProfile): { pre
  * otherwise reach a client report byte-for-byte. Operator profile is untouched. */
 function maskExcerptsForProfile(excerpts: ProofExcerpt[] | undefined, profile: ReportProfile): ProofExcerpt[] | undefined {
   if (!excerpts || profile !== 'client') return excerpts;
-  return excerpts.map(ex => ({
-    ...ex,
-    snippet: ex.snippet !== undefined ? maskEvidenceTextForClient(ex.snippet) ?? undefined : undefined,
-    resolved_snippet: ex.resolved_snippet !== undefined ? maskEvidenceTextForClient(ex.resolved_snippet) ?? undefined : undefined,
-  }));
+  return excerpts.map(ex => {
+    // A `sensitive` excerpt's snippet IS a bare credential value (e.g. a derived
+    // cred_value excerpt) — it carries none of the structural context the text
+    // maskers key on (`user:pass@`, NTLM lines, `key=value`), so maskEvidenceTextForClient
+    // would pass it through verbatim. Redact it wholesale to a hash placeholder,
+    // preserving the span/offsets/hash ("redacted-but-real") without leaking the secret.
+    if (ex.sensitive) {
+      return {
+        ...ex,
+        snippet: ex.snippet !== undefined ? redactCredentialValue(ex.snippet) ?? undefined : undefined,
+        resolved_snippet: ex.resolved_snippet !== undefined ? redactCredentialValue(ex.resolved_snippet) ?? undefined : undefined,
+      };
+    }
+    return {
+      ...ex,
+      snippet: ex.snippet !== undefined ? maskEvidenceTextForClient(ex.snippet) ?? undefined : undefined,
+      resolved_snippet: ex.resolved_snippet !== undefined ? maskEvidenceTextForClient(ex.resolved_snippet) ?? undefined : undefined,
+    };
+  });
 }
 
 function proofCardForEvidence(ev: EvidenceChain, profile: ReportProfile): EvidenceProofCard {
