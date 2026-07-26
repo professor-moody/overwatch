@@ -62,6 +62,47 @@ export interface HeadlessClaudeCompatibility {
   error?: string;
 }
 
+/**
+ * A headless `claude -p` agent exits code 0 even when its underlying model call
+ * FAILS: the stream-json result carries `is_error:true` + `terminal_reason:'api_error'`
+ * + `api_error_status`. Without inspecting it the runner reads a clean exit and marks
+ * the task interrupted with a benign "ended its turn" reason — so a deterministic config
+ * error (e.g. an operator's `effortLevel:xhigh` + thinking-off, which the model rejects
+ * with a 400) silently bricks EVERY agent with no diagnostic surfaced. Parse the
+ * captured stream-json tail for that terminal result. Returns null when the agent ended
+ * for any other reason.
+ */
+export function detectTerminalAgentApiError(captured: string): { status: number | undefined; message: string } | null {
+  const lines = captured.split('\n');
+  // The result is the last stream-json object; scan a bounded tail from the end.
+  for (let i = lines.length - 1; i >= 0 && i > lines.length - 16; i--) {
+    const line = lines[i].trim();
+    if (!line.startsWith('{') || !line.includes('is_error')) continue;
+    let obj: Record<string, unknown>;
+    try { obj = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+    if (obj.is_error === true && (obj.terminal_reason === 'api_error' || typeof obj.api_error_status === 'number')) {
+      const status = typeof obj.api_error_status === 'number' ? obj.api_error_status : undefined;
+      const message = typeof obj.result === 'string' && obj.result.trim()
+        ? obj.result.trim()
+        : `agent API error${status ? ` ${status}` : ''}`;
+      return { status, message };
+    }
+  }
+  return null;
+}
+
+/**
+ * A 4xx (client/config/auth) API error repeats on EVERY dispatch — an unsupported
+ * effort/thinking combo, an unknown model, bad auth — so re-offering the frontier item
+ * would just re-brick the next agent in a loop. 408/429 and 5xx are transient and safe
+ * to retry. An unknown status is treated as retryable (don't poison the item on a guess).
+ */
+export function isRetryableAgentApiError(status: number | undefined): boolean {
+  if (status === undefined) return true;
+  if (status === 408 || status === 429) return true;
+  return status >= 500;
+}
+
 /** Inspect the real CLI once before launching a managed worker. The dashboard
  * runner relies on these flags to remain isolated from the human terminal's
  * Claude session and project MCP settings. */
@@ -556,6 +597,36 @@ export class HeadlessMcpRunner {
       // on 'close'. The reason line distinguishes HOW it ended so a clean exit (hit its
       // turn budget / ended its turn early) doesn't read to the operator like a crash.
       if (current && current.status === 'running') {
+        // A model-layer API error makes claude -p exit code 0 with is_error in its
+        // stream-json result — surface it instead of reading it as a clean turn end.
+        const apiError = detectTerminalAgentApiError(captured);
+        if (apiError) {
+          const retryable = isRetryableAgentApiError(apiError.status);
+          const effortHint = /effort|thinking/i.test(apiError.message)
+            ? ' Adjust the operator Claude settings the agent inherits via --setting-sources user (~/.claude/settings.json: lower effortLevel or enable thinking).'
+            : '';
+          this.engine.logActionEvent({
+            description: `Headless sub-agent could not run its model: ${apiError.message}${effortHint}`,
+            event_type: 'instrumentation_warning',
+            category: 'system',
+            result_classification: 'failure',
+            agent_id: task.agent_id,
+            linked_agent_task_id: task.id,
+            details: { reason: 'headless_agent_api_error', api_error_status: apiError.status, retryable },
+          });
+          this.finishOwnedCommandWithoutPlan(task, targetCode, targetSignal, current.status);
+          if (retryable) {
+            this.transitionTask(task.id, 'interrupted',
+              `headless agent hit a transient API error (${apiError.status ?? 'unknown'}) — work returned to the frontier`);
+          } else {
+            // Deterministic 4xx (invalid effort/model/auth) — re-offering would re-brick
+            // the next agent identically, so fail without retry and stop the loop.
+            this.engine.updateAgentSchedulerFlags(task.id, { no_retry: true });
+            this.transitionTask(task.id, 'failed',
+              `agent runtime API error (${apiError.status ?? 'unknown'}): ${apiError.message}`);
+          }
+          return;
+        }
         const reason = targetCode === 0 && targetSignal == null
           ? 'headless agent ended its turn without submitting a transcript (clean exit) — work returned to the frontier'
           : `headless agent exited without submitting a transcript (code=${targetCode ?? 'null'}, signal=${targetSignal ?? 'null'}) — work returned to the frontier`;
