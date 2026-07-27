@@ -122,6 +122,99 @@ describe('GraphEngine', () => {
       expect(result.new_edges.length).toBeGreaterThan(0);
     });
 
+    it('stamps discovered_by_action_id on nodes and edges, preserving the original on update', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding({
+        ...makeFinding({
+          nodes: [
+            { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+            { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB on .1', port: 445, service_name: 'smb' },
+          ],
+          edges: [
+            { source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          ],
+        }),
+        action_id: 'act-discovery-1',
+      });
+      // The discovering action is a back-pointer on both the node and the edge.
+      expect(engine.getNode('host-10-10-10-1')?.discovered_by_action_id).toBe('act-discovery-1');
+      const runsEdge = engine.exportGraph().edges.find(e =>
+        e.source === 'host-10-10-10-1' && e.target === 'svc-10-10-10-1-445' && e.properties.type === 'RUNS');
+      expect(runsEdge?.properties.discovered_by_action_id).toBe('act-discovery-1');
+
+      // A later observation from a different action preserves the ORIGINAL discoverer
+      // (same semantics as discovered_by), so the pointer stays stable.
+      engine.ingestFinding({
+        ...makeFinding({ nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', os: 'Windows Server 2022' }] }),
+        action_id: 'act-discovery-2',
+      });
+      expect(engine.getNode('host-10-10-10-1')?.discovered_by_action_id).toBe('act-discovery-1');
+    });
+
+    it('leaves discovered_by_action_id unset when the finding carries no action_id', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-9', type: 'host', label: '10.10.10.9', ip: '10.10.10.9' }],
+      }));
+      expect(engine.getNode('host-10-10-10-9')?.discovered_by_action_id).toBeUndefined();
+    });
+
+    it('preserves the original discovering action through cold-store promotion (re-observation path)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      // Action A ping-sweeps a bare alive host → classified cold (no services/edges).
+      engine.ingestFinding({
+        ...makeFinding({ nodes: [{ id: 'host-10-10-10-50', type: 'host', label: '10.10.10.50', ip: '10.10.10.50', alive: true }] }),
+        action_id: 'act-cold-A',
+      });
+      // Action B re-observes it → promotes to the hot graph. The back-pointer must
+      // still name A (the first discoverer), matching the restored discovered_at.
+      engine.ingestFinding({
+        ...makeFinding({ nodes: [{ id: 'host-10-10-10-50', type: 'host', label: '10.10.10.50', ip: '10.10.10.50', alive: true, os: 'Linux' }] }),
+        action_id: 'act-promote-B',
+      });
+      expect(engine.getNode('host-10-10-10-50')?.discovered_by_action_id).toBe('act-cold-A');
+    });
+
+    it('preserves the original discovering action through cold-store promotion (edge-driven path)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding({
+        ...makeFinding({ nodes: [{ id: 'host-10-10-10-51', type: 'host', label: '10.10.10.51', ip: '10.10.10.51', alive: true }] }),
+        action_id: 'act-cold-B1',
+      });
+      // A later finding adds a service + RUNS edge to the cold host → edge-driven promotion.
+      engine.ingestFinding({
+        ...makeFinding({
+          nodes: [{ id: 'svc-10-10-10-51-22', type: 'service', label: 'ssh', port: 22, service_name: 'ssh' }],
+          edges: [{ source: 'host-10-10-10-51', target: 'svc-10-10-10-51-22', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+        }),
+        action_id: 'act-promote-B2',
+      });
+      expect(engine.getNode('host-10-10-10-51')?.discovered_by_action_id).toBe('act-cold-B1');
+    });
+
+    it('backfills the action_id back-pointer on a hot node without churning it as "updated"', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      // A service is always hot. First observed with NO action_id → discovered_by_action_id undefined.
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-60', type: 'host', label: '10.10.10.60', ip: '10.10.10.60', alive: true },
+          { id: 'svc-10-10-10-60-22', type: 'service', label: 'ssh', port: 22, service_name: 'ssh' },
+        ],
+        edges: [{ source: 'host-10-10-10-60', target: 'svc-10-10-10-60-22', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+      expect(engine.getNode('svc-10-10-10-60-22')?.discovered_by_action_id).toBeUndefined();
+      // Re-observe ONLY the service, now WITH an action_id — the sole change is the provenance
+      // back-pointer (undefined → act-later). The backfill DOES happen (feature works), but —
+      // like discovered_by — it must NOT register as a content update (else every pre-existing
+      // node would churn 'updated' the first time it's re-observed after upgrade).
+      const result = engine.ingestFinding({
+        ...makeFinding({ nodes: [{ id: 'svc-10-10-10-60-22', type: 'service', label: 'ssh', port: 22, service_name: 'ssh' }] }),
+        action_id: 'act-later',
+      });
+      expect(engine.getNode('svc-10-10-10-60-22')?.discovered_by_action_id).toBe('act-later');
+      expect(result.updated_nodes).not.toContain('svc-10-10-10-60-22');
+    });
+
     it('merges properties on existing nodes', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Create host first

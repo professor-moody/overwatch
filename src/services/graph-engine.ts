@@ -9474,7 +9474,7 @@ export class GraphEngine {
   // =============================================
 
   private propertiesChanged(oldProps: NodeProperties, newProps: NodeProperties): boolean {
-    const ignoreKeys = new Set(['discovered_at', 'discovered_by', 'last_seen_at', 'first_seen_at', 'sources']);
+    const ignoreKeys = new Set(['discovered_at', 'discovered_by', 'discovered_by_action_id', 'last_seen_at', 'first_seen_at', 'sources']);
     for (const [key, val] of Object.entries(newProps)) {
       if (ignoreKeys.has(key)) continue;
       if (val !== undefined && val !== null && !this.valuesEqual(oldProps[key], val)) return true;

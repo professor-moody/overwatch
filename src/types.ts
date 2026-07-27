@@ -40,6 +40,7 @@ export interface NodeProperties {
   type: NodeType;
   label: string;
   discovered_by?: string;       // agent id that found this
+  discovered_by_action_id?: string; // action that discovered this node — pivot to the run/evidence via explain_action
   discovered_at: string;        // ISO timestamp
   first_seen_at?: string;       // first direct observation time
   last_seen_at?: string;        // most recent direct observation time
@@ -463,6 +464,7 @@ export interface EdgeProperties {
   confidence: number;           // 0.0 = hypothesis, 1.0 = confirmed
   source_trust?: SourceTrust;   // derived on export (services/source-trust.ts); not stored
   discovered_by?: string;
+  discovered_by_action_id?: string; // most-recent observing action (paired with discovered_by; overwritten on re-observation like the edge's other provenance) — pivot to the run/evidence via explain_action
   discovered_at: string;
   tested?: boolean;
   tested_at?: string;
