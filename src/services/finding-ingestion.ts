@@ -100,6 +100,10 @@ export function ingestFindingImpl(
       sources: sources.length > 0 ? sources : undefined,
       discovered_at: existingNode?.discovered_at || finding.timestamp,
       discovered_by: existingNode?.discovered_by || finding.agent_id,
+      // Provenance back-pointer: the action that first discovered this node, so a
+      // reader can pivot node → run/evidence via explain_action. Preserve the original
+      // (like discovered_by); only stamp when the finding carries an action_id.
+      discovered_by_action_id: existingNode?.discovered_by_action_id || finding.action_id,
     };
     if (baseProps.confidence >= 1.0) {
       if (isNew) {
@@ -133,6 +137,13 @@ export function ingestFindingImpl(
         fullProps.first_seen_at = coldRecord.discovered_at < (fullProps.first_seen_at || fullProps.discovered_at)
           ? coldRecord.discovered_at
           : (fullProps.first_seen_at || fullProps.discovered_at);
+        // Restore the ORIGINAL discovering action from the cold record (a promoted
+        // node was never in the hot graph, so existingNode was null and the stamp
+        // above defaulted to the promoting action). Keeps discovered_by_action_id
+        // consistent with the restored discovered_at / discovered_by-via-sources.
+        if (coldRecord.action_id) {
+          fullProps.discovered_by_action_id = coldRecord.action_id;
+        }
         if (coldRecord.provenance && coldRecord.provenance !== finding.agent_id) {
           const existingSources = fullProps.sources || [];
           if (!existingSources.includes(coldRecord.provenance)) {
@@ -195,6 +206,10 @@ export function ingestFindingImpl(
               last_seen_at: coldRecord.last_seen_at,
               alive: coldRecord.alive,
               discovered_by: coldRecord.provenance,
+              // Carry the original discovering action forward on promotion, paired with
+              // discovered_by/discovered_at above (else the back-pointer would be null
+              // for exactly the ping-sweep hosts the cold store exists to hold).
+              discovered_by_action_id: coldRecord.action_id,
               confidence: 1.0,
             });
             newNodes.push(endpointId);
@@ -209,7 +224,11 @@ export function ingestFindingImpl(
       discovered_at: finding.timestamp,
       confidence: 1.0,
       ...edge.properties,
-      discovered_by: finding.agent_id
+      discovered_by: finding.agent_id,
+      // Provenance back-pointer paired with discovered_by (same finding's action), so a
+      // reader can pivot edge → run/evidence via explain_action. Inferred edges keep
+      // this unset — they carry inferred_by_rule instead of an observing action.
+      discovered_by_action_id: finding.action_id,
     };
     // Mark directly-observed edges as tested so they don't pollute the frontier.
     // Inferred edges (from rules) retain tested=undefined for frontier surfacing.
