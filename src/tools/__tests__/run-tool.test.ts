@@ -5,6 +5,7 @@ import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerRunToolTool } from '../run-tool.js';
+import { runInstrumentedProcess } from '../_process-runner.js';
 import type { EngagementConfig } from '../../types.js';
 
 function makeConfig(): EngagementConfig {
@@ -90,6 +91,40 @@ describe('run_tool', () => {
       action_terminal_event_id: expect.any(String),
       evidence_state: 'captured',
     }));
+  });
+
+  it('makes the captured evidence blob self-describing (binary/args/command_repr/exit_code)', async () => {
+    const result = await handlers.run_tool({ binary: 'echo', args: ['prov-arg'], validate: false });
+    const payload = parseTextResult(result);
+    const completed = engine.getFullHistory().find(e => e.action_id === payload.action_id && e.event_type === 'action_completed');
+    const stdoutId = (completed?.details as any)?.stdout_evidence_id;
+    expect(stdoutId).toBeTruthy();
+    // The record describes what produced it without joining through the activity log.
+    const rec = engine.getEvidenceStore().getRecord(stdoutId)!;
+    expect(rec.binary).toBe('echo');
+    expect(rec.args).toEqual(['prov-arg']);
+    expect(rec.command_repr).toContain('echo');
+    expect(rec.exit_code).toBe(0);   // stamped at end(), once the process finished
+  });
+
+  it('withholds secret argv from the evidence record when redact_args_in_log is set', async () => {
+    // The record must redact identically to the activity events: a run whose argv
+    // carries a secret (test_webapp_credential, token replay) sets redact_args_in_log,
+    // and the durable evidence record must NOT persist the raw args (M12).
+    const secret = 'S3cr3tArgv';
+    const resp = await runInstrumentedProcess(engine, {
+      binary: 'sh', args: ['-c', 'printf done', secret], command_repr: 'sh -c "printf done" <redacted>',
+      validate: false, redact_args_in_log: true, invoking_tool: 'run_tool',
+    });
+    const payload = parseTextResult(resp);
+    const completed = engine.getFullHistory().find(e => e.action_id === payload.action_id && e.event_type === 'action_completed');
+    const stdoutId = (completed?.details as any)?.stdout_evidence_id;
+    expect(stdoutId).toBeTruthy();
+    const rec = engine.getEvidenceStore().getRecord(stdoutId)!;
+    expect(rec.args).toBeUndefined();                    // the secret argv is NOT persisted
+    expect(JSON.stringify(rec)).not.toContain(secret);   // secret appears nowhere in the record
+    expect(rec.command_repr).toBe('sh -c "printf done" <redacted>'); // caller-redacted command_repr kept
+    expect(rec.binary).toBe('sh');
   });
 
   it('L4: the durable receipt carries action_id while the process is still in-flight', async () => {

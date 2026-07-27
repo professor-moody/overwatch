@@ -220,6 +220,8 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
           filename: evidence?.filename,
           content: evidence?.content,
           raw_output,
+          // Self-describing record: the tool the agent named as the source.
+          ...(tool_name ? { tool: tool_name } : {}),
         });
         evidenceDetails.evidence_id = storedEvidenceId;
       }

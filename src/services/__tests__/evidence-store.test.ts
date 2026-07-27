@@ -133,6 +133,62 @@ describe('EvidenceStore', () => {
     expect(store.list({ node_id: 'host-does-not-exist' })).toHaveLength(0);
   });
 
+  it('records execution provenance so the blob describes itself (store path)', () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const id = store.store({
+      evidence_type: 'command_output',
+      raw_output: '445/tcp open microsoft-ds',
+      action_id: 'act-prov',
+      tool: 'nmap',
+      command_repr: 'nmap -sV 10.0.0.1',
+      binary: '/usr/bin/nmap',
+      args: ['-sV', '10.0.0.1'],
+      exit_code: 0,
+    });
+    const rec = store.getRecord(id)!;
+    expect(rec.tool).toBe('nmap');
+    expect(rec.command_repr).toBe('nmap -sV 10.0.0.1');
+    expect(rec.binary).toBe('/usr/bin/nmap');
+    expect(rec.args).toEqual(['-sV', '10.0.0.1']);
+    expect(rec.exit_code).toBe(0);
+  });
+
+  it('omits execution-provenance keys entirely when the producer had no such datum', () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const id = store.store({ evidence_type: 'command_output', content: 'pasted output', action_id: 'act-bare' });
+    const rec = store.getRecord(id)!;
+    // No `undefined`-valued keys clutter the persisted record.
+    for (const k of ['tool', 'command_repr', 'binary', 'args', 'exit_code']) {
+      expect(Object.prototype.hasOwnProperty.call(rec, k)).toBe(false);
+    }
+  });
+
+  it('stamps creation-time provenance + the end() exit_code onto a streamed record', async () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const sink = store.createBlobStream({
+      evidence_type: 'command_output', kind: 'raw_output', action_id: 'act-stream',
+      command_repr: 'id', binary: '/usr/bin/id', args: [],
+    });
+    sink.write('uid=0(root)\n');
+    // exit_code is only known once the process finishes — it arrives via end().
+    await sink.end({ exit_code: 0 });
+    const rec = store.getRecord(sink.evidence_id)!;
+    expect(rec.command_repr).toBe('id');
+    expect(rec.binary).toBe('/usr/bin/id');
+    expect(rec.args).toEqual([]);
+    expect(rec.exit_code).toBe(0);
+  });
+
+  it('carries a signalled process exit as exit_code null on a streamed record', async () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const sink = store.createBlobStream({
+      evidence_type: 'command_output', kind: 'raw_output', action_id: 'act-sig', binary: '/bin/sleep',
+    });
+    sink.write('partial\n');
+    await sink.end({ exit_code: null });
+    expect(store.getRecord(sink.evidence_id)!.exit_code).toBeNull();
+  });
+
   it('M1: node_ids do not disturb content-hash dedup', () => {
     const store = new EvidenceStore(TEST_STATE);
     const a = store.store({ evidence_type: 'command_output', content: 'same bytes', node_ids: ['host-a'] });
