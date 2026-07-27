@@ -2732,6 +2732,9 @@ export class DashboardServer {
           ingest,
           context: parserContext,
           agent_id: 'operator',
+          // Re-parse of an already-stored blob: reference it so derived excerpts resolve
+          // against those exact bytes rather than re-storing a duplicate.
+          capture_evidence_id: resolvedEvidenceId,
           command_completion: commandCompletion,
         }),
         { action_id: actionId },

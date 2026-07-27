@@ -1999,6 +1999,15 @@ async function runInstrumentedProcessCore(
         parsed_from_evidence: parsedFromEvidence,
         evidence_read_error: evidenceReadError,
         exit_code: result.exit_code,
+        // A single-stream parse owns exactly one captured blob (the parsed stream), so
+        // reference it — the excerpt offsets index those bytes and no duplicate is
+        // written. `combined` concatenates stdout+stderr, which no single stored blob
+        // holds, so leave this undefined and let parse-ingest persist the exact
+        // concatenated bytes the offsets index (else a stderr-region excerpt would
+        // resolve against the stdout-only blob → wrong bytes).
+        capture_evidence_id: usedStream === 'stdout' ? stdout_evidence_id
+          : usedStream === 'stderr' ? stderr_evidence_id
+            : undefined,
       });
   }
 
