@@ -87,6 +87,18 @@ export interface EvidenceRecord {
    * descriptor-less blob scans remain best-effort.
    */
   recovered?: boolean;
+  /**
+   * Execution provenance — what produced this blob — so the record can describe
+   * itself without joining through the (bounded, rollover-prone) activity log.
+   * All optional/additive: only set when known (a run_tool capture knows binary/args/
+   * exit_code; a report_finding blob knows only the tool). `exit_code` is null when
+   * the process was signalled rather than exiting normally.
+   */
+  tool?: string;
+  command_repr?: string;
+  binary?: string;
+  args?: string[];
+  exit_code?: number | null;
 }
 
 interface EvidenceRecoveryDescriptorV1 {
@@ -126,6 +138,12 @@ interface EvidenceStreamIntentV1 {
   owner_pid: number;
   owner_process_start_identity?: string;
   owner_token: string;
+  // Execution provenance known at stream creation (exit_code arrives at end()), so a
+  // record recovered from the intent after an interrupted stream still self-describes.
+  tool?: string;
+  command_repr?: string;
+  binary?: string;
+  args?: string[];
 }
 
 const evidenceStreamOwnerToken = uuidv4();
@@ -234,6 +252,22 @@ function descriptorRecord(record: EvidenceRecord): EvidenceRecord {
   return durable;
 }
 
+/** The execution-provenance subset (self-describing record), with only defined
+ *  fields — so a persisted record never carries `undefined` keys for a blob whose
+ *  producer didn't have that datum (e.g. a report_finding blob has a tool but no
+ *  binary/args/exit_code). */
+function execProvenance(o: {
+  tool?: string; command_repr?: string; binary?: string; args?: string[]; exit_code?: number | null;
+}): Partial<EvidenceRecord> {
+  const p: Partial<EvidenceRecord> = {};
+  if (o.tool !== undefined) p.tool = o.tool;
+  if (o.command_repr !== undefined) p.command_repr = o.command_repr;
+  if (o.binary !== undefined) p.binary = o.binary;
+  if (o.args !== undefined) p.args = o.args;
+  if (o.exit_code !== undefined) p.exit_code = o.exit_code;
+  return p;
+}
+
 function recoveryRecordSignature(record: EvidenceRecord): string {
   const durable = descriptorRecord(record);
   return JSON.stringify({
@@ -250,6 +284,11 @@ function recoveryRecordSignature(record: EvidenceRecord): string {
     content_length: durable.content_length,
     raw_output_length: durable.raw_output_length,
     capture_error: durable.capture_error,
+    tool: durable.tool,
+    command_repr: durable.command_repr,
+    binary: durable.binary,
+    args: durable.args,
+    exit_code: durable.exit_code,
   });
 }
 
@@ -630,6 +669,9 @@ export class EvidenceStore {
         filename: intent.filename,
         content_length: intent.kind === 'content' ? bytes! : 0,
         raw_output_length: intent.kind === 'raw_output' ? bytes! : 0,
+        // Creation-time provenance survives from the intent even though the stream was
+        // interrupted before end() could stamp exit_code.
+        ...execProvenance(intent),
         capture_error: 'interrupted before evidence stream finalization',
         recovered: true,
       };
@@ -1058,6 +1100,12 @@ export class EvidenceStore {
     filename?: string;
     content?: string;
     raw_output?: string;
+    // Execution provenance (self-describing record). All optional/additive.
+    tool?: string;
+    command_repr?: string;
+    binary?: string;
+    args?: string[];
+    exit_code?: number | null;
   }): string {
     this.assertWritable();
     const contentHash = computeContentHash(opts.content, opts.raw_output);
@@ -1094,6 +1142,7 @@ export class EvidenceStore {
             filename: opts.filename,
             content_length: existing.content_length,
             raw_output_length: existing.raw_output_length,
+            ...execProvenance(opts),
           };
           const before = this.manifest;
           this.manifest = [
@@ -1146,6 +1195,7 @@ export class EvidenceStore {
         filename: opts.filename,
         content_length: opts.content === undefined ? 0 : Buffer.byteLength(opts.content),
         raw_output_length: opts.raw_output === undefined ? 0 : Buffer.byteLength(opts.raw_output),
+        ...execProvenance(opts),
       };
       this.publishRecoveryDescriptor(record, {
         content: opts.content !== undefined,
@@ -1185,10 +1235,18 @@ export class EvidenceStore {
     filename?: string;
     /** Selects the content-addressed `.content` or `.raw` blob namespace. */
     kind?: 'content' | 'raw_output';
+    // Execution provenance known at stream creation (self-describing record). exit_code
+    // arrives later via end(), since the process hasn't finished when the stream opens.
+    tool?: string;
+    command_repr?: string;
+    binary?: string;
+    args?: string[];
   }): {
     evidence_id: string;
     write: (chunk: Buffer | string) => void;
-    end: () => Promise<void>;
+    /** exit_code (known only once the process finishes) is stamped onto the finalized
+     *  record here; null means the process was signalled rather than exiting normally. */
+    end: (finalize?: { exit_code?: number | null }) => Promise<void>;
     /** Final byte count (durable). Available after end() resolves. */
     bytesWritten: () => number;
     /** First write/finalize error if any. */
@@ -1221,6 +1279,7 @@ export class EvidenceStore {
         ? { owner_process_start_identity: evidenceStreamProcessStartIdentity }
         : {}),
       owner_token: evidenceStreamOwnerToken,
+      ...execProvenance(opts),
     };
     this.withManifestWriteLock(() => {
       this.durableBlobWrite(intentPath, `${JSON.stringify(streamIntent, null, 2)}\n`);
@@ -1306,7 +1365,7 @@ export class EvidenceStore {
         const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         writeChain = writeChain.then(() => writeChunk(buf));
       },
-      end: async () => {
+      end: async (finalize?: { exit_code?: number | null }) => {
         if (finalized) return;
         finalized = true;
         // Drain queued writes before closing.
@@ -1369,6 +1428,9 @@ export class EvidenceStore {
           filename: opts.filename,
           content_length: kind === 'content' ? bytesDurable : 0,
           raw_output_length: kind === 'raw_output' ? bytesDurable : 0,
+          // Creation-time provenance from opts + the exit_code the caller learned once
+          // the process finished — the record now fully describes what produced the blob.
+          ...execProvenance({ ...opts, exit_code: finalize?.exit_code }),
         };
         if (writeError) record.capture_error = writeError.message;
         this.withManifestWriteLock(() => {

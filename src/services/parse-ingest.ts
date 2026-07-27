@@ -317,6 +317,8 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
       node_ids: prepared.finding.nodes.map(n => n.id),
       evidence_type: 'command_output',
       raw_output: outputText,
+      // Self-describing record: the parser/tool family this output was parsed as.
+      tool: tool_name,
     });
   }
   // Backfill evidence_id onto the derived/parser excerpts so a report can re-read and

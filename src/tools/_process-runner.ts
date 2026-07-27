@@ -1675,6 +1675,11 @@ async function runInstrumentedProcessCore(
     evidence_type: 'command_output',
     filename: 'stdout',
     kind: 'raw_output',
+    // Self-describing record: what produced this blob (exit_code stamped at end()).
+    // Use loggedArgs, NOT the raw argv: when redact_args_in_log is set the args carry a
+    // secret and the event withholds them (loggedArgs === undefined) — the durable record
+    // must redact identically. command_repr is pre-redacted by the caller; binary is not a secret.
+    command_repr, binary, args: loggedArgs,
   });
   const stderrSink = evidenceStore.createBlobStream({
     action_id: normalizedActionId,
@@ -1682,6 +1687,7 @@ async function runInstrumentedProcessCore(
     evidence_type: 'command_output',
     filename: 'stderr',
     kind: 'raw_output',
+    command_repr, binary, args: loggedArgs,
   });
   // Live-output buffer: tee chunks so the Analysis workspace can stream a
   // running action in real time. Durable bytes still go to the evidence sinks.
@@ -1748,7 +1754,12 @@ async function runInstrumentedProcessCore(
   // We capture the error rather than throwing so the action lifecycle
   // event can record `evidence_capture_error` instead of silently
   // claiming evidence that does not exist.
-  const finalizeResults = await Promise.allSettled([stdoutSink.end(), stderrSink.end()]);
+  // The process has finished, so exit_code is known — stamp it onto the finalized
+  // evidence records (null when the process was signalled rather than exiting).
+  const finalizeResults = await Promise.allSettled([
+    stdoutSink.end({ exit_code: result.exit_code }),
+    stderrSink.end({ exit_code: result.exit_code }),
+  ]);
   const stdoutCaptureError = finalizeResults[0].status === 'rejected'
     ? (finalizeResults[0].reason instanceof Error
         ? finalizeResults[0].reason.message
