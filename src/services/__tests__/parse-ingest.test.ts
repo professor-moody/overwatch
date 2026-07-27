@@ -111,6 +111,45 @@ describe('parseAndMaybeIngest canonical outcomes', () => {
     expect(Buffer.from(raw, 'utf8').subarray(result.excerpts![0].byte_start, result.excerpts![0].byte_end).toString('utf8')).toBe('CVE-2021-44228');
   });
 
+  it('persists a durable evidence blob for the standalone (pasted) path so derived excerpts resolve', () => {
+    // No capture_evidence_id → parseAndMaybeIngest must store outputText itself, else the
+    // derived excerpt's offsets index bytes that were never saved (unretrievable proof).
+    const raw = 'SMB  10.0.0.1  445  APP01  [+] corp\\admin:S3cretP@ssw0rd (Pwn3d!)\n';
+    const result = parseAndMaybeIngest(engine, {
+      tool_name: 'nxc', outputText: raw, action_id: 'act-blob', ingest: true,
+    });
+    expect(result.excerpts).toHaveLength(1);
+    const ex = result.excerpts![0];
+    // The excerpt now carries a real blob id, and the blob is discoverable by action_id.
+    expect(ex.evidence_id).toBeTruthy();
+    expect(engine.getEvidenceStore().list({ action_id: 'act-blob' }).length).toBeGreaterThan(0);
+    // The cited byte range re-reads exactly the leaked secret from the stored blob.
+    const slice = engine.getEvidenceStore().getRawOutputSlice(ex.evidence_id!, ex.byte_start, ex.byte_end - ex.byte_start);
+    expect(slice?.text).toBe('S3cretP@ssw0rd');
+    // The parse_output event also cites the blob so the report chain builder lifts it.
+    const event = engine.getFullHistory().find(e => e.action_id === 'act-blob' && e.event_type === 'parse_output');
+    expect((event?.details as any)?.evidence_id).toBe(ex.evidence_id);
+  });
+
+  it('references the owned blob (no duplicate store) when the caller passes capture_evidence_id', () => {
+    const raw = 'SMB  10.0.0.1  445  APP01  [+] corp\\admin:S3cretP@ssw0rd (Pwn3d!)\n';
+    const owned = engine.getEvidenceStore().store({ action_id: 'act-owned', evidence_type: 'command_output', raw_output: raw });
+    const before = engine.getEvidenceStore().list().length;
+    const result = parseAndMaybeIngest(engine, {
+      tool_name: 'nxc', outputText: raw, action_id: 'act-owned', ingest: true, capture_evidence_id: owned,
+    });
+    // No new evidence record written; the excerpt references the caller's blob.
+    expect(engine.getEvidenceStore().list().length).toBe(before);
+    expect(result.excerpts![0].evidence_id).toBe(owned);
+  });
+
+  it('does not persist an evidence blob on a preview parse (ingest:false)', () => {
+    const raw = 'SMB  10.0.0.1  445  APP01  [+] corp\\admin:S3cretP@ssw0rd (Pwn3d!)\n';
+    const before = engine.getEvidenceStore().list().length;
+    parseAndMaybeIngest(engine, { tool_name: 'nxc', outputText: raw, action_id: 'act-prev', ingest: false });
+    expect(engine.getEvidenceStore().list().length).toBe(before);
+  });
+
   it('#2: a parser\'s OWN explicit excerpts take precedence over the generic derivation', () => {
     disposers.push(__registerParserForTest('explicit-cred-parser', () => finding('f-x', [
       { id: 'cred-x', type: 'credential', label: 'admin', cred_value: 'Secret123', cred_material_kind: 'plaintext_password', cred_type: 'plaintext', cred_usable_for_auth: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } as never,

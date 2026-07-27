@@ -31,6 +31,15 @@ export interface ParseIngestOpts {
   exit_code?: number | null;
   parser_details?: Record<string, unknown>;
   /**
+   * The evidence blob the caller already captured `outputText` into, if any. When a
+   * caller owns the capture (a run_tool stdout/stderr blob, a dashboard re-parse of a
+   * stored blob) it passes that id so the derived excerpts reference it and no
+   * duplicate blob is written. When omitted (the standalone parse_output tool parsing
+   * pasted / file input), parseAndMaybeIngest persists `outputText` itself so the
+   * finding and its matched-signal excerpts have retrievable, verifiable proof.
+   */
+  capture_evidence_id?: string;
+  /**
    * Optional application-command terminalizer. The callback is responsible for
    * committing `appendAudit` with the supplied result in one durable boundary.
    */
@@ -291,6 +300,31 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
     });
   }
 
+  // Persist the parsed output as a durable evidence blob so this finding — and the
+  // matched-signal excerpts derived above — have retrievable, verifiable proof. The
+  // standalone parse_output tool (pasted / file input) has no owning capture, so
+  // without this its excerpt offsets index bytes that were never stored (a report can
+  // cite an evidence_id but never re-read or verify it). Callers that already own the
+  // blob pass `capture_evidence_id` and we reference it instead of re-storing. Only on
+  // ingest (a preview must not persist), and blob-first: an orphan blob on a later
+  // failure is harmless, a dangling evidence reference is not.
+  let parseEvidenceId = opts.capture_evidence_id;
+  if (ingest && parseEvidenceId === undefined && outputText.length > 0) {
+    parseEvidenceId = engine.getEvidenceStore().store({
+      action_id,
+      agent_id: finding.agent_id,
+      // M1 durable node→evidence index: the actually-ingested (canonicalized) node ids.
+      node_ids: prepared.finding.nodes.map(n => n.id),
+      evidence_type: 'command_output',
+      raw_output: outputText,
+    });
+  }
+  // Backfill evidence_id onto the derived/parser excerpts so a report can re-read and
+  // verify the cited byte range against the stored blob.
+  const persistedExcerpts: EvidenceExcerpt[] = parseEvidenceId
+    ? findingExcerpts.map(ex => ({ ...ex, evidence_id: ex.evidence_id ?? parseEvidenceId }))
+    : findingExcerpts;
+
   type IngestCounts = {
     new_nodes: string[];
     new_edges: string[];
@@ -317,7 +351,7 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
       : undefined,
     warnings: warnings.length > 0 ? warnings : undefined,
     ...(finding.parser_details ? { parser_details: finding.parser_details } : {}),
-    ...(findingExcerpts.length > 0 ? { excerpts: findingExcerpts } : {}),
+    ...(persistedExcerpts.length > 0 ? { excerpts: persistedExcerpts } : {}),
     ...findingQuality,
   });
   const buildSuccessAudit = (
@@ -347,9 +381,12 @@ export function parseAndMaybeIngest(engine: GraphEngine, opts: ParseIngestOpts):
       new_edges: ingestResult?.new_edges.length ?? 0,
       inferred_edges: ingestResult?.inferred_edges.length ?? 0,
       parser_context: durableParserContext,
+      // M9/M1: the durable blob these excerpts (and this finding) are proven by, so the
+      // chain builder can cite + re-read it even for the standalone parse_output path.
+      ...(parseEvidenceId ? { evidence_id: parseEvidenceId } : {}),
       // 3c: persist matched-signal excerpts on the parse event so the chain builder
       // lifts them even for the standalone parse_output path (no terminal event).
-      ...(findingExcerpts.length > 0 ? { excerpts: findingExcerpts } : {}),
+      ...(persistedExcerpts.length > 0 ? { excerpts: persistedExcerpts } : {}),
       ...findingQuality,
     },
   });
