@@ -23,6 +23,7 @@ export function AttentionQueue({
   onAnswered,
   onPlanResolved,
   onSelectAgent,
+  onForceRemove,
   onTriageAll,
 }: {
   agentQueries: api.AgentQuery[];
@@ -30,6 +31,7 @@ export function AttentionQueue({
   onAnswered: () => void;
   onPlanResolved: () => void;
   onSelectAgent: (taskId: string) => void;
+  onForceRemove: (taskId: string) => Promise<void> | void;
   onTriageAll: () => void;
 }) {
   const pendingActions = useEngagementStore(s => s.pendingActions);
@@ -117,6 +119,7 @@ export function AttentionQueue({
             onAnswered={onAnswered}
             onPlanResolved={onPlanResolved}
             onSelectAgent={onSelectAgent}
+            onForceRemove={onForceRemove}
           />
         ))}
         {open && overflow > 0 && (
@@ -136,6 +139,7 @@ function AttentionRow({
   onAnswered,
   onPlanResolved,
   onSelectAgent,
+  onForceRemove,
 }: {
   item: AttentionItem;
   expanded: boolean;
@@ -143,7 +147,18 @@ function AttentionRow({
   onAnswered: () => void;
   onPlanResolved: () => void;
   onSelectAgent: (taskId: string) => void;
+  onForceRemove: (taskId: string) => Promise<void> | void;
 }) {
+  // Force-remove is an escape hatch for a wedged/failed agent: kill + clear in one
+  // click without leaving the "needs you" surface. The parent owns canonicalization
+  // + refresh + error toast (forceRemoveAgent); we only track the in-flight state.
+  const [removing, setRemoving] = useState(false);
+  const forceRemove = async () => {
+    if (!item.taskId || removing) return;
+    setRemoving(true);
+    try { await onForceRemove(item.taskId); }
+    finally { setRemoving(false); }   // success unmounts the row; modern React no-ops the stale set
+  };
   const kindTone = item.kind === 'question' ? 'text-warning' : item.kind === 'failed' ? 'text-destructive' : item.kind === 'stuck' ? 'text-warning' : item.kind === 'plan' ? 'text-accent' : 'text-accent';
   return (
     <div className={cn('rounded border bg-surface', expanded ? 'border-accent/40' : 'border-border')}>
@@ -165,7 +180,18 @@ function AttentionRow({
           {item.kind === 'question' && item.queryIds && item.queryIds.length > 0 && <AnswerActions queryIds={item.queryIds} options={item.options} onAnswered={onAnswered} />}
           {item.kind === 'plan' && item.planId && <PlanActions planId={item.planId} onResolved={onPlanResolved} />}
           {(item.kind === 'failed' || item.kind === 'stuck') && item.taskId && (
-            <ActionButton size="xs" variant="secondary" onClick={() => onSelectAgent(item.taskId!)}>View agent →</ActionButton>
+            <div className="flex flex-wrap gap-1.5">
+              <ActionButton size="xs" variant="secondary" onClick={() => onSelectAgent(item.taskId!)}>View agent →</ActionButton>
+              <ActionButton
+                size="xs"
+                variant="danger"
+                disabled={removing}
+                title="Force stop & remove — kills the process and clears the agent even if Cancel won't"
+                onClick={forceRemove}
+              >
+                {removing ? 'Removing…' : 'Force remove'}
+              </ActionButton>
+            </div>
           )}
         </div>
       )}

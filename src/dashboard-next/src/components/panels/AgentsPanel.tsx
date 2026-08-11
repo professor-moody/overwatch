@@ -440,6 +440,7 @@ export function AgentsPanel() {
         onAnswered={loadAgentQueries}
         onPlanResolved={() => { void loadPlans(); void refreshAgents(); void loadConsole(); }}
         onSelectAgent={(taskId) => setActiveAgentId(taskId)}
+        onForceRemove={forceRemoveAgent}
         onTriageAll={() => navigateToPanel('actions')}
       />
 
