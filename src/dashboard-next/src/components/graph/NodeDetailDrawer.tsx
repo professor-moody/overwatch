@@ -236,7 +236,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
         </InspectorSection>
 
         <InspectorSection title="Why this matters">
-          <NodeSignificanceCard props={props} nodeType={nodeType} />
+          <NodeSignificanceCard props={props} nodeType={nodeType} nodeId={nodeId} graph={storeGraph} />
         </InspectorSection>
 
         {nodeType === 'webapp' && typeof props.screenshot_evidence_id === 'string' && props.screenshot_evidence_id && (

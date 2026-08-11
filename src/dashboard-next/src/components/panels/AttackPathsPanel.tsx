@@ -23,6 +23,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 import { findPaths } from '../../lib/api';
 import type { ExportedEdge, ExportedNode, PathAnalysisStatus } from '../../lib/types';
 import { tiersForPath, type Tier } from '../../lib/tier';
+import { BIDIRECTIONAL, buildAdjacency, dijkstra, isObjectiveTarget, reconstructPath, type Optimize } from '../../lib/attack-graph';
 import {
   ATTACK_PATH_GROUPS,
   attackPathLaneCounts,
@@ -40,8 +41,6 @@ import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, Seg
 
 type RouteOptimize = 'confidence' | 'stealth' | 'balanced';
 
-export type Optimize = 'confidence' | 'stealth';
-
 export interface ComputedPath {
   nodes: string[];
   edge_types: string[];
@@ -50,96 +49,6 @@ export interface ComputedPath {
   total_confidence: number;
   total_opsec_noise: number;
   tiers: Set<Tier>;
-}
-
-const BIDIRECTIONAL = new Set([
-  'HAS_SESSION', 'ADMIN_TO', 'CAN_RDPINTO', 'CAN_PSREMOTE',
-  'OWNS_CRED', 'VALID_ON', 'MEMBER_OF', 'MEMBER_OF_DOMAIN',
-  'RELATED', 'SAME_DOMAIN', 'TRUSTS', 'ASSUMES_ROLE', 'MANAGED_BY',
-  'FEDERATES_WITH', 'ISSUES_TOKENS_FOR', 'AUTHENTICATES_VIA',
-  'ASSIGNED_TO_APP', 'MFA_REQUIRED_FOR', 'VALID_FOR_APP', 'VALID_FOR_IDP_PRINCIPAL',
-  'BACKED_BY', 'CAN_REACH', 'HOSTS', 'POLICY_ALLOWS',
-]);
-
-function edgeWeight(e: ExportedEdge, mode: Optimize): number {
-  const conf = typeof e.confidence === 'number' ? e.confidence : 1;
-  const noise = typeof e.opsec_noise === 'number' ? (e.opsec_noise as number) : 0.3;
-  if (mode === 'stealth') return Math.max(noise, 0.001);
-  return Math.max(1 - conf, 0.001);
-}
-
-interface Adj {
-  to: string;
-  weight: number;
-  edge_type: string;
-  via_edge_id: string;
-}
-
-function edgeKeyForExport(edge: ExportedEdge): string {
-  return edge.id || `${edge.source}--${edge.type || ''}--${edge.target}`;
-}
-
-function buildAdjacency(nodes: ExportedNode[], edges: ExportedEdge[], mode: Optimize): Map<string, Adj[]> {
-  const adj = new Map<string, Adj[]>();
-  for (const n of nodes) adj.set(n.id, []);
-  for (const e of edges) {
-    // Skip dead session edges (matches server-side path graph).
-    if (e.type === 'HAS_SESSION' && e.session_live === false) continue;
-    const w = edgeWeight(e, mode);
-    const edgeId = edgeKeyForExport(e);
-    adj.get(e.source)?.push({ to: e.target, weight: w, edge_type: e.type, via_edge_id: edgeId });
-    if (BIDIRECTIONAL.has(e.type)) {
-      adj.get(e.target)?.push({ to: e.source, weight: w, edge_type: e.type, via_edge_id: edgeId });
-    }
-  }
-  return adj;
-}
-
-/** Dijkstra returning shortest-paths from one source to every node. */
-function dijkstra(adj: Map<string, Adj[]>, source: string): Map<string, { dist: number; prev: string | undefined; via: string | undefined; viaEdgeId: string | undefined }> {
-  const dist = new Map<string, { dist: number; prev: string | undefined; via: string | undefined; viaEdgeId: string | undefined }>();
-  for (const id of adj.keys()) dist.set(id, { dist: Infinity, prev: undefined, via: undefined, viaEdgeId: undefined });
-  dist.set(source, { dist: 0, prev: undefined, via: undefined, viaEdgeId: undefined });
-
-  // Tiny binary-heap stand-in: array + sort. Graph sizes here are
-  // typically <2k nodes; correctness > micro-perf.
-  const queue: Array<{ id: string; d: number }> = [{ id: source, d: 0 }];
-  const visited = new Set<string>();
-
-  while (queue.length > 0) {
-    queue.sort((a, b) => a.d - b.d);
-    const cur = queue.shift()!;
-    if (visited.has(cur.id)) continue;
-    visited.add(cur.id);
-    const neighbors = adj.get(cur.id) ?? [];
-    for (const n of neighbors) {
-      if (visited.has(n.to)) continue;
-      const nextDist = cur.d + n.weight;
-      const known = dist.get(n.to);
-      if (!known || nextDist < known.dist) {
-        dist.set(n.to, { dist: nextDist, prev: cur.id, via: n.edge_type, viaEdgeId: n.via_edge_id });
-        queue.push({ id: n.to, d: nextDist });
-      }
-    }
-  }
-  return dist;
-}
-
-function reconstructPath(target: string, dijkstraResult: ReturnType<typeof dijkstra>): { nodes: string[]; edge_types: string[]; edge_ids: string[] } | null {
-  const nodes: string[] = [];
-  const edge_types: string[] = [];
-  const edge_ids: string[] = [];
-  let cursor: string | undefined = target;
-  while (cursor) {
-    nodes.unshift(cursor);
-    const entry = dijkstraResult.get(cursor);
-    if (!entry || !entry.prev) break;
-    if (entry.via) edge_types.unshift(entry.via);
-    if (entry.viaEdgeId) edge_ids.unshift(entry.viaEdgeId);
-    cursor = entry.prev;
-  }
-  if (!Number.isFinite(dijkstraResult.get(target)?.dist ?? Infinity)) return null;
-  return { nodes, edge_types, edge_ids };
 }
 
 export function computePaths(
@@ -167,14 +76,8 @@ export function computePaths(
   }).map(n => n.id);
   // Targets: objective nodes + cloud_identity (federated roles —
   // typical pivot endpoint), cloud_resource, idp_principal, and any
-  // node explicitly flagged hvt.
-  const targets = nodes.filter(n =>
-    n.objective_achieved !== undefined ||
-    n.hvt === true ||
-    n.type === 'cloud_identity' ||
-    n.type === 'cloud_resource' ||
-    n.type === 'idp_principal',
-  ).map(n => n.id);
+  // node explicitly flagged hvt. Shared with the node drawer's reachability.
+  const targets = nodes.filter(isObjectiveTarget).map(n => n.id);
   if (sources.length === 0 || targets.length === 0) return [];
 
   const adj = buildAdjacency(nodes, edges, optimize);
