@@ -54,6 +54,10 @@ export interface EvidenceNarrativeItem {
   latest?: string;
   description?: string;
   proof?: string;
+  /** The exact command that produced this evidence — the "how it was found". */
+  command?: string;
+  /** The agent/sub-agent that ran it. */
+  agent_id?: string;
   source_kind: 'command_output' | 'parsed_result' | 'activity';
   event_type?: string;
   action_id?: string;
@@ -65,6 +69,12 @@ export function narrativeItemsFromChains(chains: EvidenceChainResponse[]): Evide
     const first = chain.chains[0];
     const findingDescription = chain.findings?.[0]?.description;
     const snippet = first?.snippet || first?.description || findingDescription;
+    // The exact command + the acting agent can live on different lifecycle entries of
+    // the same chain (validate → run → complete → parse), so lift each from the entry
+    // that actually carries it. The old mapping read only chains[0] and dropped both,
+    // so "how it was found" was invisible even though the data was here all along.
+    const command = chain.chains.find(entry => entry.command)?.command;
+    const agent_id = chain.chains.find(entry => entry.agent_id)?.agent_id;
     return {
       id: chain.node_id,
       node_id: chain.node_id,
@@ -73,7 +83,9 @@ export function narrativeItemsFromChains(chains: EvidenceChainResponse[]): Evide
       latest: first?.timestamp,
       description: findingDescription || first?.description,
       proof: snippet,
-      source_kind: sourceKindForChain(first),
+      command,
+      agent_id,
+      source_kind: command ? 'command_output' : sourceKindForChain(first),
       event_type: first?.event_type,
       action_id: first?.action_id,
       tool: first?.tool,
