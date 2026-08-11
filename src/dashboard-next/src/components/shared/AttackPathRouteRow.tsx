@@ -1,5 +1,6 @@
 import { ExternalLink, Route } from 'lucide-react';
 import type { DisplayAttackPath } from '../../lib/attack-path-workspace';
+import { pathHops } from '../../lib/attack-path-workspace';
 import { cn } from '../../lib/utils';
 import { ActionButton } from './primitives';
 
@@ -26,22 +27,7 @@ const RISK_CLASS = {
 };
 
 export function AttackPathRouteRow({ path, index, compact = false, onInspect, onFrontier }: AttackPathRouteRowProps) {
-  const routeParts = path.nodes.flatMap((node, idx) => {
-    const parts = [(
-      <span key={`${node.id}-node-${idx}`} className="max-w-full truncate text-foreground">
-        {node.label}
-      </span>
-    )];
-    if (idx < path.nodes.length - 1) {
-      const edge = path.edges[idx];
-      parts.push(
-        <span key={`${node.id}-edge-${idx}`} className="text-muted-foreground">
-          {edge?.label || 'link'}
-        </span>,
-      );
-    }
-    return parts;
-  });
+  const hops = pathHops(path);
 
   return (
     <div className={cn(
@@ -78,15 +64,26 @@ export function AttackPathRouteRow({ path, index, compact = false, onInspect, on
             {path.reason}
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-            {routeParts.map((part, idx) => (
-              <span key={idx} className={cn(
-                idx % 2 === 0
-                  ? 'inline-flex min-w-0 max-w-full rounded bg-background/60 px-1.5 py-0.5'
-                  : 'text-[10px]',
-              )}>
-                {part}
-              </span>
+          {/* Followable hop narrative: foothold → objective, one explained step per hop. */}
+          <div className="mt-3 space-y-0.5 text-xs">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] uppercase tracking-wide text-muted-foreground">Foothold</span>
+              <span className={cn('h-1.5 w-1.5 flex-shrink-0 rounded-full', TIER_DOT_CLASS[path.source.tier] || TIER_DOT_CLASS.unknown)} />
+              <span className="min-w-0 truncate font-medium text-foreground">{path.source.label}</span>
+            </div>
+            {hops.map((hop, idx) => (
+              <div key={hop.edge?.id ?? idx} className="flex items-center gap-1.5 pl-2">
+                <span className="text-muted-foreground" aria-hidden="true">↳</span>
+                <span className="text-muted-foreground">{hop.phrase}</span>
+                <span className={cn('h-1.5 w-1.5 flex-shrink-0 rounded-full', TIER_DOT_CLASS[hop.to.tier] || TIER_DOT_CLASS.unknown)} />
+                <span className="min-w-0 truncate text-foreground">{hop.to.label}</span>
+                {hop.crossesTier && (
+                  <span className="flex-shrink-0 rounded border border-accent/30 px-1 text-[9px] text-accent">crosses into {hop.to.tier}</span>
+                )}
+                {idx === hops.length - 1 && (
+                  <span className="flex-shrink-0 rounded border border-warning/30 px-1 text-[9px] uppercase tracking-wide text-warning">objective</span>
+                )}
+              </div>
             ))}
           </div>
 

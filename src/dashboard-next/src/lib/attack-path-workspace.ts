@@ -120,6 +120,73 @@ function edgeLabel(type: string | undefined): string {
   return EDGE_LABELS[type] || type.toLowerCase().replace(/_/g, ' ');
 }
 
+/** Verb phrases that turn an edge type into a readable hop sentence — the previous node
+ *  "{phrase}" the next node — so a path reads foothold → objective as a followable story
+ *  (e.g. a host "has an active session as" jdoe "is a member of" Domain Admins "is admin
+ *  on" DC01). Falls back to the terse edge label prefixed with "via". */
+const EDGE_PHRASES: Record<string, string> = {
+  ADMIN_TO: 'is admin on',
+  ASSIGNED_TO_APP: 'is assigned the app',
+  ASSUMES_ROLE: 'can assume role',
+  AUTHENTICATES_VIA: 'authenticates via',
+  BACKED_BY: 'is backed by',
+  CAN_REACH: 'can reach',
+  CAN_RDPINTO: 'can RDP into',
+  CAN_PSREMOTE: 'can PowerShell-remote into',
+  EXPLOITS: 'can exploit',
+  FEDERATES_WITH: 'federates with',
+  HAS_ENDPOINT: 'exposes',
+  HAS_POLICY: 'carries policy',
+  HAS_SESSION: 'has an active session as',
+  HOSTS: 'hosts',
+  ISSUES_TOKENS_FOR: 'issues tokens for',
+  MANAGED_BY: 'is managed by',
+  MEMBER_OF: 'is a member of',
+  MEMBER_OF_DOMAIN: 'is a member of domain',
+  OWNS_CRED: 'holds credentials for',
+  POLICY_ALLOWS: 'is allowed by policy to reach',
+  RUNS: 'runs',
+  TESTED_CRED: 'has a tested credential for',
+  TRUSTS: 'is trusted by',
+  VALID_FOR_APP: 'has valid access to',
+  VALID_FOR_IDP_PRINCIPAL: 'is a valid identity for',
+  VALID_ON: 'is valid on',
+  VULNERABLE_TO: 'is vulnerable to',
+};
+
+export function edgePhrase(type: string | undefined): string {
+  if (!type) return 'connects to';
+  return EDGE_PHRASES[type] ?? `via ${edgeLabel(type)}`;
+}
+
+export interface PathHop {
+  from: DisplayPathNode;
+  edge: DisplayPathEdge;
+  to: DisplayPathNode;
+  /** Readable verb phrase: `from` {phrase} `to`. */
+  phrase: string;
+  /** True when the hop crosses a trust tier (network → identity → cloud …). */
+  crossesTier: boolean;
+}
+
+/** Turn a display path into an ordered, readable hop list — foothold → objective, one
+ *  explained step per edge — using the per-hop edge types the client path already carries. */
+export function pathHops(path: { nodes: DisplayPathNode[]; edges: DisplayPathEdge[] }): PathHop[] {
+  const hops: PathHop[] = [];
+  for (let i = 0; i < path.edges.length && i + 1 < path.nodes.length; i++) {
+    const from = path.nodes[i];
+    const to = path.nodes[i + 1];
+    hops.push({
+      from,
+      edge: path.edges[i],
+      to,
+      phrase: edgePhrase(path.edges[i]?.rawType),
+      crossesTier: from.tier !== to.tier && from.tier !== 'unknown' && to.tier !== 'unknown',
+    });
+  }
+  return hops;
+}
+
 function confidenceLabel(confidence: number): string {
   if (confidence >= 0.85) return 'strong confidence';
   if (confidence >= 0.7) return 'moderate confidence';
