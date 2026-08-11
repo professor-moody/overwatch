@@ -69,4 +69,23 @@ describe('buildAgentThread', () => {
   it('threadHasOpenQuestion is false with no questions', () => {
     expect(threadHasOpenQuestion(buildAgentThread([ev({ id: 'x', timestamp: '2026-06-17T12:00:00Z' })], [], OPTS))).toBe(false);
   });
+
+  it("lifts a thought's reasoning (kind, alternatives, confidence) onto the entry", () => {
+    const [entry] = buildAgentThread([
+      ev({
+        id: 't', timestamp: '2026-06-17T12:00:05Z', kind: 'thought', summary: 'Spray is quieter than a full kerberoast',
+        raw: { details: { kind: 'decision', considered_alternatives: ['kerberoast all SPNs', 'targeted spray'], confidence: 0.7 } },
+      }),
+    ], [], OPTS);
+    expect(entry.kind).toBe('thought');
+    expect(entry.thought).toEqual({ kind: 'decision', alternatives: ['kerberoast all SPNs', 'targeted spray'], confidence: 0.7 });
+  });
+
+  it('leaves thought metadata undefined when the event carries no reasoning fields', () => {
+    const [entry] = buildAgentThread([
+      ev({ id: 't', timestamp: '2026-06-17T12:00:05Z', kind: 'thought', summary: 'hm' }),
+    ], [], OPTS);
+    expect(entry.kind).toBe('thought');
+    expect(entry.thought).toBeUndefined();
+  });
 });

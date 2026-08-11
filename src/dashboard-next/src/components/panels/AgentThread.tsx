@@ -101,13 +101,19 @@ function ThreadEntryRow({
 }) {
   const [rawOpen, setRawOpen] = useState(false);
 
-  // Secondary entries (thoughts, system notes, sessions) read as dim one-liners.
+  // A thought is the agent's reasoning — render it as a legible (if restrained) card
+  // showing WHY: the kind of thought, what it weighed, and how sure it was.
+  if (entry.kind === 'thought') {
+    return <ThoughtEntry entry={entry} />;
+  }
+
+  // Other secondary entries (system notes, sessions) read as dim one-liners.
   if (entry.prominence === 'secondary') {
     return (
       <div className="flex items-start gap-2 px-1 text-[11px] text-muted-foreground">
         <span className="w-12 flex-shrink-0 font-mono text-[10px]">{formatTimestamp(entry.timestamp)}</span>
         <span className="truncate" title={entry.body || entry.title}>
-          {entry.kind === 'thought' ? '· thinking: ' : '· '}{entry.body || entry.title}
+          · {entry.body || entry.title}
         </span>
       </div>
     );
@@ -143,6 +149,44 @@ function ThreadEntryRow({
           {rawOpen && (
             <pre className="mt-1 max-h-36 overflow-auto rounded bg-background p-2 text-[10px] text-muted-foreground">{JSON.stringify(entry.raw, null, 2)}</pre>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const THOUGHT_KIND_LABEL: Record<string, string> = {
+  plan: 'Plan',
+  hypothesis: 'Hypothesis',
+  observation: 'Observation',
+  decision: 'Decision',
+  rejection: 'Rejected',
+  reflection: 'Reflection',
+  note: 'Note',
+};
+
+// The agent's reasoning. Restrained (dashed, indented, muted) so it reads as context
+// around the loud action cards — but now shows the kind, the options weighed, and the
+// confidence, so an operator can follow WHY the agent did what it did.
+function ThoughtEntry({ entry }: { entry: ThreadEntry }) {
+  const meta = entry.thought;
+  const kindLabel = meta?.kind ? (THOUGHT_KIND_LABEL[meta.kind] ?? meta.kind) : 'Thinking';
+  return (
+    <div className="ml-4 rounded border border-dashed border-border/70 bg-surface/40 p-2 text-[11px]">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-accent/80">💭 {kindLabel}</span>
+        {typeof meta?.confidence === 'number' && (
+          <span className="rounded border border-border px-1 py-0.5 text-[9px] text-muted-foreground">{Math.round(meta.confidence * 100)}% sure</span>
+        )}
+        <span className="ml-auto flex-shrink-0 font-mono text-[10px] text-muted-foreground">{formatTimestamp(entry.timestamp)}</span>
+      </div>
+      <div className="mt-1 whitespace-pre-wrap break-words text-foreground/80">{entry.body || entry.title}</div>
+      {meta?.alternatives && meta.alternatives.length > 0 && (
+        <div className="mt-1.5">
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Considered</div>
+          <ul className="mt-0.5 list-disc space-y-0.5 pl-4 text-muted-foreground">
+            {meta.alternatives.map((alt, i) => <li key={i} className="break-words">{alt}</li>)}
+          </ul>
         </div>
       )}
     </div>
