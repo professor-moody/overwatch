@@ -23,6 +23,7 @@ import { trustSignalsForNode } from '../../lib/trust-signals';
 import { TrustSignalList } from '../shared/TrustSignals';
 import { findingSummary, findingTitle } from '../../lib/finding-display';
 import { AuthenticatedImage } from '../shared/AuthenticatedImage';
+import { NodeSignificanceCard } from './NodeSignificanceCard';
 
 interface NodeDetailDrawerProps {
   graph: Graph;
@@ -232,6 +233,10 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
             ))}
             {entries.length === 0 && <EmptyLine>No display properties on this node.</EmptyLine>}
           </div>
+        </InspectorSection>
+
+        <InspectorSection title="Why this matters">
+          <NodeSignificanceCard props={props} nodeType={nodeType} />
         </InspectorSection>
 
         {nodeType === 'webapp' && typeof props.screenshot_evidence_id === 'string' && props.screenshot_evidence_id && (

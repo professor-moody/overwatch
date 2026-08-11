@@ -406,6 +406,11 @@ export interface EvidenceChainEntry {
   excerpts?: ProofExcerpt[];
 }
 
+/** Honesty label: whether a node/evidence was directly captured (observed), merely
+ *  claimed (asserted), or produced by an inference rule (inferred). Derived on export
+ *  (services/source-trust.ts) and mirrored here so proof reads apart from hypothesis. */
+export type SourceTrust = 'observed' | 'asserted' | 'inferred';
+
 /** A matched-signal excerpt — the specific bytes that justify a finding, re-read and
  *  verified against the evidence blob (mirrors the report's ProofExcerpt). */
 export interface ProofExcerpt {
