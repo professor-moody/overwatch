@@ -1501,6 +1501,10 @@ describe('GET /api/evidence-chains/:nodeId', () => {
       expect((chain.activity_id as string).length).toBeGreaterThan(0);
       expect(typeof chain.description).toBe('string');
       expect(typeof chain.timestamp).toBe('string');
+      // Proof parity (PR-A2): the endpoint now shares the report's evidence-chain
+      // builder, so every chain carries an honesty label the old thin builder never
+      // produced — proof the dashboard and report can't drift.
+      expect(['observed', 'asserted', 'inferred']).toContain(chain.source_trust);
     }
 
     // And the payload must round-trip the published response schema — this is the

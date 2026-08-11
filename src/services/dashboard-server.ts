@@ -93,7 +93,7 @@ import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
 import { assembleReport, type ReportFormat } from './report-assembler.js';
 import { buildBundle } from './bundle-builder.js';
-import { buildFindings } from './report-generator.js';
+import { buildFindings, buildEvidenceChainsForNode, type EvidenceChain } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
 import type { DurableApprovalRecord, PendingAction } from './pending-action-queue.js';
 import {
@@ -216,6 +216,69 @@ interface DashboardEvidenceChainEntry {
   tool?: string;
   command?: string;
   snippet?: string;
+  // Proof parity (PR-A2): the dashboard now shares the report's per-action evidence-chain
+  // builder, so a finding's proof carries the matched-signal excerpts (re-read + verified
+  // against the blob), the honesty label, and a tamper-evident hash — the same fields the
+  // report renders — instead of a lone activity snippet.
+  exit_code?: number;
+  technique?: string;
+  source_trust?: 'observed' | 'asserted' | 'inferred';
+  content_hash?: string;
+  evidence_id?: string;
+  excerpts?: DashboardProofExcerpt[];
+}
+
+interface DashboardProofExcerpt {
+  snippet?: string;
+  resolved_snippet?: string;
+  byte_start: number;
+  byte_end: number;
+  matched_by?: string;
+  verified?: boolean;
+  sensitive?: boolean;
+  node_id?: string;
+  total_bytes?: number;
+}
+
+/**
+ * Project a shared report EvidenceChain (per-action proof) into the dashboard's
+ * evidence-chain entry. Preserves the fields existing consumers read (activity_id /
+ * timestamp / description / event_type / snippet) — mapping claim→description,
+ * source_event_type→event_type, and a concise proof snippet — and adds the proof-parity
+ * fields (excerpts, source_trust, exit_code, content hash) the finding UI can now render.
+ * The contract requires a non-empty activity_id/timestamp/description; the rich chain is
+ * per-action, so key activity_id by action_id with a stable per-node index fallback.
+ */
+function projectEvidenceChain(nodeId: string, chain: EvidenceChain, index: number): DashboardEvidenceChainEntry {
+  const excerpts: DashboardProofExcerpt[] = (chain.excerpts ?? []).map(ex => ({
+    snippet: ex.snippet,
+    resolved_snippet: ex.resolved_snippet,
+    byte_start: ex.byte_start,
+    byte_end: ex.byte_end,
+    matched_by: ex.matched_by,
+    verified: ex.verified,
+    sensitive: ex.sensitive,
+    node_id: ex.node_id,
+    total_bytes: ex.total_bytes,
+  }));
+  const snippet = excerpts[0]?.snippet ?? chain.stdout_preview ?? chain.claim;
+  return {
+    activity_id: chain.action_id ?? `${nodeId}:${index}`,
+    timestamp: chain.timestamp ?? '',
+    description: chain.claim,
+    event_type: chain.source_event_type,
+    action_id: chain.action_id,
+    agent_id: chain.agent_id,
+    tool: chain.tool,
+    command: chain.command,
+    snippet,
+    exit_code: chain.exit_code,
+    technique: chain.technique,
+    source_trust: chain.source_trust,
+    content_hash: chain.content_hash ?? chain.stdout_content_hash,
+    evidence_id: chain.evidence_id ?? chain.stdout_evidence_id,
+    ...(excerpts.length > 0 ? { excerpts } : {}),
+  };
 }
 
 export class DashboardServer {
@@ -4328,50 +4391,22 @@ export class DashboardServer {
     node_props?: Record<string, unknown>;
     findings?: Array<{ finding_type?: string; severity?: string; technique_id?: string; description?: string }>;
   } {
-    // Build evidence chains for a node from the activity log
+    // Share the ONE rich evidence-chain builder with the report (buildEvidenceChainsForNode)
+    // so the dashboard and the report can never drift: per-action proof chains carrying the
+    // matched-signal excerpts (re-read + verified against the evidence blob), source_trust,
+    // exit code, and content hash — not just the activity snippet the old thin builder emitted.
     const history = this.engine.getFullHistory();
-    const chains: DashboardEvidenceChainEntry[] = [];
-
-    for (const entry of history) {
-      // Match entries that explicitly reference this node via structured fields
-      const e = entry as Record<string, unknown>;
-      const det = e.details as Record<string, unknown> | undefined;
-      const targetNodeIds = Array.isArray(e.target_node_ids) ? e.target_node_ids as string[] : [];
-      const ingestedNodeIds = Array.isArray(det?.ingested_node_ids) ? det.ingested_node_ids as string[] : [];
-      const nodeIds = Array.isArray(det?.node_ids) ? det.node_ids as string[] : [];
-      const referencesNode =
-        targetNodeIds.includes(nodeId) ||
-        ingestedNodeIds.includes(nodeId) ||
-        nodeIds.includes(nodeId) ||
-        e.action_id === nodeId ||
-        e.node_id === nodeId;
-      if (!referencesNode) continue;
-
-      const commandRepr = e.command_repr as string | undefined
-        || (typeof det?.command === 'string' ? det.command : undefined);
-
-      chains.push({
-        // `activity_id` and `description` are REQUIRED by EvidenceChainsResponseSchema
-        // (contracts/dashboard-api-v1.ts). Omitting them made installResponseContract
-        // reject every NON-EMPTY chain and rewrite it to HTTP 500 — so this endpoint
-        // only ever succeeded when there was no evidence to show, and the UI rendered
-        // that failure as "No evidence found". Both fields are required on
-        // ActivityLogEntry, so this is a pure mapping with no new data.
-        activity_id: entry.event_id,
-        description: entry.description,
-        action_id: e.action_id as string | undefined,
-        agent_id: e.agent_id as string | undefined,
-        event_type: e.event_type as string | undefined,
-        tool: e.tool_name as string | undefined || e.action_type as string | undefined,
-        command: commandRepr,
-        timestamp: entry.timestamp,
-        // Retained for back-compat with existing consumers (schema is .passthrough()).
-        snippet: e.description as string | undefined || e.summary as string | undefined,
-      });
-    }
-
-    // Enrich with node properties and findings from exported graph
     const exported = this.engine.exportGraph();
+    const store = this.engine.getEvidenceStore();
+    const richChains = buildEvidenceChainsForNode(nodeId, exported, history, {
+      evidenceLoader: (id: string) => { try { return store.getRawOutput(id); } catch { return null; } },
+      evidenceRecordLoader: (id: string) => { try { return store.getRecord(id) ?? undefined; } catch { return undefined; } },
+      sliceLoader: (id: string, offset: number, maxBytes: number) => {
+        try { const s = store.getRawOutputSlice(id, offset, maxBytes); return s ? { text: s.text, total_bytes: s.total_bytes } : null; } catch { return null; }
+      },
+      evidenceByNode: (nid: string) => { try { return store.list({ node_id: nid }); } catch { return []; } },
+    });
+    const chains: DashboardEvidenceChainEntry[] = richChains.map((chain, index) => projectEvidenceChain(nodeId, chain, index));
     let node_props: Record<string, unknown> | undefined;
     let findings: Array<{ finding_type?: string; severity?: string; technique_id?: string; description?: string }> = [];
     const nodeData = exported.nodes.find(n => n.id === nodeId);

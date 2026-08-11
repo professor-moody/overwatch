@@ -463,6 +463,31 @@ const EvidenceChainsResponseSchema = z.object({
     // and turned a valid 200 into a 500.
     event_type: z.string().optional(),
     description: z.string(),
+    // Proof parity (PR-A2): the dashboard now shares the report's per-action evidence-chain
+    // builder, so each chain carries the proof — the exact command + acting agent, the
+    // matched-signal excerpts (re-read + verified against the blob), the honesty label
+    // (source_trust), the exit code, and a tamper-evident content hash.
+    action_id: z.string().optional(),
+    agent_id: z.string().optional(),
+    tool: z.string().optional(),
+    command: z.string().optional(),
+    snippet: z.string().optional(),
+    exit_code: z.number().optional(),
+    technique: z.string().optional(),
+    source_trust: z.enum(['observed', 'asserted', 'inferred']).optional(),
+    content_hash: z.string().optional(),
+    evidence_id: z.string().optional(),
+    excerpts: z.array(z.object({
+      snippet: z.string().optional(),
+      resolved_snippet: z.string().optional(),
+      byte_start: z.number(),
+      byte_end: z.number(),
+      matched_by: z.string().optional(),
+      verified: z.boolean().optional(),
+      sensitive: z.boolean().optional(),
+      node_id: z.string().optional(),
+      total_bytes: z.number().optional(),
+    }).passthrough()).optional(),
   }).passthrough()),
   count: z.number().int().nonnegative(),
 }).passthrough();

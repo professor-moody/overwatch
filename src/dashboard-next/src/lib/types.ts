@@ -397,6 +397,27 @@ export interface EvidenceChainEntry {
   tool?: string;
   command?: string;
   snippet?: string;
+  // Proof parity (PR-A2): shared with the report's per-action evidence chain.
+  exit_code?: number;
+  technique?: string;
+  source_trust?: 'observed' | 'asserted' | 'inferred';
+  content_hash?: string;
+  evidence_id?: string;
+  excerpts?: ProofExcerpt[];
+}
+
+/** A matched-signal excerpt — the specific bytes that justify a finding, re-read and
+ *  verified against the evidence blob (mirrors the report's ProofExcerpt). */
+export interface ProofExcerpt {
+  snippet?: string;
+  resolved_snippet?: string;
+  byte_start: number;
+  byte_end: number;
+  matched_by?: string;
+  verified?: boolean;
+  sensitive?: boolean;
+  node_id?: string;
+  total_bytes?: number;
 }
 
 export interface EvidenceChainResponse {
