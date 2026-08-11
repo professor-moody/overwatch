@@ -11,6 +11,18 @@ import type { AgentQuery } from './api';
 export type ThreadRole = 'operator' | 'agent' | 'system';
 export type ThreadKind = 'command' | 'action' | 'finding' | 'question' | 'thought' | 'session' | 'note';
 
+/** The agent's recorded reasoning behind a thought event (from log_thought), lifted
+ *  out of the console event's raw details so the thread can render WHY, not just a dim
+ *  "thinking" line: the kind of thought, the options it weighed, and how sure it was. */
+export interface ThoughtMeta {
+  /** plan | hypothesis | observation | decision | rejection | reflection | note. */
+  kind?: string;
+  /** Options the agent explicitly weighed before deciding. */
+  alternatives?: string[];
+  /** Self-reported confidence, 0-1. */
+  confidence?: number;
+}
+
 export interface ThreadEntry {
   id: string;
   timestamp: string;
@@ -22,6 +34,8 @@ export interface ThreadEntry {
   status?: string;
   links?: AgentConsoleEvent['links'];
   raw?: Record<string, unknown>;
+  /** Reasoning metadata, present on thought entries. */
+  thought?: ThoughtMeta;
   /** Primary entries (commands, actions, findings, questions) read loud;
    *  secondary (thoughts, system notes, sessions) read dim/compact. */
   prominence: 'primary' | 'secondary';
@@ -54,6 +68,21 @@ function prominenceFor(role: ThreadRole, kind: ThreadKind): 'primary' | 'seconda
   return 'primary';
 }
 
+/** Lift log_thought's reasoning fields out of the console event's raw details. Returns
+ *  undefined when none are present, so a bare thought stays a plain line. */
+function thoughtMetaFrom(raw: AgentConsoleEvent['raw'] | undefined): ThoughtMeta | undefined {
+  const details = (raw as { details?: unknown } | undefined)?.details;
+  if (!details || typeof details !== 'object') return undefined;
+  const d = details as Record<string, unknown>;
+  const kind = typeof d.kind === 'string' ? d.kind : undefined;
+  const alternatives = Array.isArray(d.considered_alternatives)
+    ? d.considered_alternatives.filter((v): v is string => typeof v === 'string')
+    : undefined;
+  const confidence = typeof d.confidence === 'number' && Number.isFinite(d.confidence) ? d.confidence : undefined;
+  if (!kind && !(alternatives && alternatives.length) && confidence === undefined) return undefined;
+  return { kind, alternatives: alternatives && alternatives.length ? alternatives : undefined, confidence };
+}
+
 function entryFromEvent(event: AgentConsoleEvent): ThreadEntry {
   const role = roleForEvent(event);
   const kind = kindForEvent(event);
@@ -68,6 +97,7 @@ function entryFromEvent(event: AgentConsoleEvent): ThreadEntry {
     status: event.status,
     links: event.links,
     raw: event.raw,
+    thought: kind === 'thought' ? thoughtMetaFrom(event.raw) : undefined,
     prominence: prominenceFor(role, kind),
   };
 }
