@@ -7,6 +7,8 @@ export const POLL = {
   CONSOLE_PRIMARY_MS: 3000,
   /** A single-agent console drawer (lower volume, slower cadence). */
   CONSOLE_DRAWER_MS: 8000,
+  /** Graph node-detail drawer: silent refresh of the open node's findings/evidence/trust. */
+  NODE_DRAWER_MS: 8000,
   /** Agent roster / fleet status. */
   AGENTS_MS: 5000,
   /** Durable planner-command status poll in the command bar. */
