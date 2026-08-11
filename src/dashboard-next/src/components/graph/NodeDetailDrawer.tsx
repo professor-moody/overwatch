@@ -2,7 +2,7 @@
 // NodeDetailDrawer - right-side operator inspector
 // ============================================================
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
@@ -10,6 +10,8 @@ import { useNavigation } from '../../hooks/useNavigation';
 import { dispatchAgent, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
+import { useWs } from '../../providers/ws-provider';
+import { POLL } from '../../lib/polling';
 import { deriveNodeRelationships } from '../../lib/relationships';
 import { ActionButton, StatusPill } from '../shared/primitives';
 import type { EvidenceChainResponse } from '../../lib/types';
@@ -46,6 +48,11 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
   const [evidenceError, setEvidenceError] = useState<string>('');
   const [deploying, setDeploying] = useState(false);
   const addToast = useToastStore(s => s.addToast);
+  const { connected } = useWs();
+  // Live nodeId for stale-response guarding: a slow fetch that resolves after the
+  // operator has moved to another node must not overwrite the new node's data.
+  const liveNodeId = useRef(nodeId);
+  liveNodeId.current = nodeId;
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +98,33 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
       });
     return () => { cancelled = true; };
   }, [nodeId]);
+
+  // Silent auto-refresh: while the drawer stays open on a node, keep its findings /
+  // trust / evidence current WITHOUT a loading flicker, so a long graph session doesn't
+  // show stale data as agents discover more. Gated on the WS `connected` flag (per the
+  // polling.ts contract); a transient poll error leaves the last-good data in place
+  // rather than blanking a good drawer.
+  const refetchSilently = useCallback(() => {
+    const id = liveNodeId.current;
+    getFindings().then(data => setFindings(data.findings || [])).catch(() => { /* keep last-good */ });
+    if (!id) return;
+    getTrustSignals({ node_id: id, limit: 25 })
+      .then(data => { if (liveNodeId.current === id) setTrustSignals(data.signals || []); })
+      .catch(() => { /* keep last-good */ });
+    getEvidenceChains(id)
+      .then(data => {
+        if (liveNodeId.current !== id) return;
+        setEvidence(data);
+        setEvidenceStatus(data.count > 0 ? 'ready' : 'empty');
+      })
+      .catch(() => { /* transient — don't blank a good drawer */ });
+  }, []);
+
+  useEffect(() => {
+    if (!nodeId || !connected) return;
+    const timer = setInterval(refetchSilently, POLL.NODE_DRAWER_MS);
+    return () => clearInterval(timer);
+  }, [nodeId, connected, refetchSilently]);
 
   if (!nodeId || !graph.hasNode(nodeId)) return null;
 
