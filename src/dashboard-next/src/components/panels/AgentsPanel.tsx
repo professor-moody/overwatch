@@ -90,12 +90,15 @@ export function AgentsPanel() {
     void loadPlans();
     const onUpdate = () => void loadAgentQueries();
     window.addEventListener('overwatch-agent-query-update', onUpdate);
-    const timer = setInterval(() => { void loadAgentQueries(); void loadPlans(); }, POLL.AGENTS_MS);
+    // Gated on the WS `connected` flag (polling.ts contract) — like the console poll
+    // below — so a dropped socket doesn't keep hammering the API; the WS push +
+    // reconnect full_state keep queries/plans live otherwise.
+    const timer = setInterval(() => { if (connected) { void loadAgentQueries(); void loadPlans(); } }, POLL.AGENTS_MS);
     return () => {
       window.removeEventListener('overwatch-agent-query-update', onUpdate);
       clearInterval(timer);
     };
-  }, [loadAgentQueries, loadPlans]);
+  }, [loadAgentQueries, loadPlans, connected]);
 
   const refreshAgents = useCallback(async () => {
     try {

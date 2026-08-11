@@ -11,6 +11,8 @@ export const POLL = {
   NODE_DRAWER_MS: 8000,
   /** Agent roster / fleet status. */
   AGENTS_MS: 5000,
+  /** Findings + reports list (findings move when agents finish). */
+  FINDINGS_MS: 8000,
   /** Durable planner-command status poll in the command bar. */
   PLAN_POLL_MS: 2000,
   /** Overview metrics (budget, trust signals). */
