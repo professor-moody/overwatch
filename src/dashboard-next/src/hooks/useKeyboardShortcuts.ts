@@ -27,6 +27,17 @@ export function useKeyboardShortcuts({
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       const tag = target.tagName;
+
+      // ⌘K / Ctrl-K — open the command palette from ANYWHERE (including while typing in
+      // an input, which is the whole point of a quick-switcher), except a focused
+      // terminal, which may bind Ctrl-K itself. Handled before the typing guard below.
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K') && !e.altKey) {
+        if (target.closest('.xterm')) return;
+        e.preventDefault();
+        document.dispatchEvent(new CustomEvent('toggle-command-palette'));
+        return;
+      }
+
       // Don't intercept when user is typing in an input/textarea/select
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) return;
       // Don't intercept when terminal is focused (xterm captures its own keys)
@@ -81,6 +92,7 @@ export function useKeyboardShortcuts({
 }
 
 export const SHORTCUT_HELP: { key: string; desc: string }[] = [
+  { key: '⌘K', desc: 'Command palette — jump to any panel or agent' },
   { key: '1-0', desc: 'Routes: Overview, Frontier, Actions, Operator, Sessions, Campaigns, Evidence, Credentials, Paths, Settings' },
   { key: 'c', desc: 'Back to the Operator Console' },
   { key: 'g', desc: 'Open Graph workspace' },
