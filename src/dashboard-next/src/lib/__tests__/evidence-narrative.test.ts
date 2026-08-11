@@ -54,11 +54,35 @@ describe('evidence narrative helpers', () => {
       proof: 'SMB evidence',
       command: undefined,
       agent_id: undefined,
+      source_trust: undefined,
+      exit_code: undefined,
+      content_hash: undefined,
+      evidence_id: undefined,
+      excerpts: undefined,
       source_kind: 'activity',
       event_type: 'action_completed',
       action_id: undefined,
       tool: undefined,
     }]);
+  });
+
+  it('carries the proof (matched excerpts + source_trust + exit code + hash) for a finding', () => {
+    const [item] = narrativeItemsFromChains([{
+      node_id: 'host-1',
+      count: 1,
+      node_props: { label: 'DC01.corp.local' },
+      chains: [{
+        activity_id: 'act-1', timestamp: '2026-05-15T00:00:00Z', event_type: 'action_completed',
+        description: 'nxc found creds', agent_id: 'recon', command: 'nxc smb 10.10.10.10',
+        source_trust: 'observed', exit_code: 0, content_hash: 'deadbeefcafe',
+        excerpts: [{ snippet: 'admin:Pwn3d!', byte_start: 40, byte_end: 52, matched_by: 'nxc', verified: true }],
+      }],
+    }]);
+    expect(item.source_trust).toBe('observed');
+    expect(item.exit_code).toBe(0);
+    expect(item.content_hash).toBe('deadbeefcafe');
+    expect(item.excerpts).toHaveLength(1);
+    expect(item.excerpts![0]).toMatchObject({ snippet: 'admin:Pwn3d!', byte_start: 40, byte_end: 52, verified: true });
   });
 
   it('lifts the command + agent from whichever lifecycle entry carries them ("how it was found")', () => {

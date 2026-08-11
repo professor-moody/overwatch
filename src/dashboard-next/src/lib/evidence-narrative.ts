@@ -1,4 +1,4 @@
-import type { EvidenceChainResponse, ExportedGraph, ExportedNode, FindingContextResponse } from './types';
+import type { EvidenceChainResponse, ExportedGraph, ExportedNode, FindingContextResponse, ProofExcerpt } from './types';
 import type { FindingDto } from './api';
 import { resolveAssetToNodeId } from './relationships';
 import { findingTitle } from './finding-display';
@@ -58,6 +58,16 @@ export interface EvidenceNarrativeItem {
   command?: string;
   /** The agent/sub-agent that ran it. */
   agent_id?: string;
+  /** Honesty label: observed (direct capture) / asserted (claimed) / inferred (rule). */
+  source_trust?: 'observed' | 'asserted' | 'inferred';
+  /** Exit code of the producing command, when it was a real execution. */
+  exit_code?: number;
+  /** SHA-256 of the captured blob — tamper-evident proof handle. */
+  content_hash?: string;
+  evidence_id?: string;
+  /** Matched-signal excerpts: the specific bytes that justify the finding, re-read and
+   *  verified against the evidence blob. */
+  excerpts?: ProofExcerpt[];
   source_kind: 'command_output' | 'parsed_result' | 'activity';
   event_type?: string;
   action_id?: string;
@@ -75,6 +85,12 @@ export function narrativeItemsFromChains(chains: EvidenceChainResponse[]): Evide
     // so "how it was found" was invisible even though the data was here all along.
     const command = chain.chains.find(entry => entry.command)?.command;
     const agent_id = chain.chains.find(entry => entry.agent_id)?.agent_id;
+    // The proof fields (excerpts / source_trust / exit code / hash) travel together on a
+    // per-action chain, so lift them from the primary proof entry — the one with matched
+    // excerpts, else the command entry, else the first — rather than mixing across entries.
+    const proof = chain.chains.find(entry => entry.excerpts?.length)
+      ?? chain.chains.find(entry => entry.command)
+      ?? first;
     return {
       id: chain.node_id,
       node_id: chain.node_id,
@@ -85,6 +101,11 @@ export function narrativeItemsFromChains(chains: EvidenceChainResponse[]): Evide
       proof: snippet,
       command,
       agent_id,
+      source_trust: proof?.source_trust,
+      exit_code: proof?.exit_code,
+      content_hash: proof?.content_hash,
+      evidence_id: proof?.evidence_id,
+      excerpts: proof?.excerpts,
       source_kind: command ? 'command_output' : sourceKindForChain(first),
       event_type: first?.event_type,
       action_id: first?.action_id,
