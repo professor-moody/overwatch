@@ -43,7 +43,7 @@ type SidebarItem = {
 // everything the operator ACTS with sits in CONSOLE, investigation destinations
 // in INVESTIGATE, engagement/admin in MANAGE. (Approvals stays reachable here as
 // its own item until Phase 4b folds approve/deny into the console and demotes it.)
-const NAV_GROUPS: { label: string; items: SidebarItem[] }[] = [
+export const NAV_GROUPS: { label: string; items: SidebarItem[] }[] = [
   {
     label: 'Console',
     items: [

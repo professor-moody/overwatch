@@ -4,16 +4,20 @@ import {
   useState,
   useEffect,
   useCallback,
+  useMemo,
   type ComponentType,
   type LazyExoticComponent,
 } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router';
-import { Sidebar } from './Sidebar';
+import { Sidebar, NAV_GROUPS } from './Sidebar';
 import { Toolbar } from './Toolbar';
 import { Breadcrumb } from './Breadcrumb';
+import { CommandPalette } from './CommandPalette';
 import { useWs } from '../../providers/ws-provider';
+import { useEngagementStore } from '../../stores/engagement-store';
 import { useKeyboardShortcuts, SHORTCUT_HELP } from '../../hooks/useKeyboardShortcuts';
 import { buildPanelPath, isPanelId, parseHash } from '../../hooks/useNavigation';
+import type { CommandItem } from '../../lib/command-palette';
 import { cn } from '../../lib/utils';
 import { safeLocalStorage } from '../../lib/browser-storage';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
@@ -72,6 +76,13 @@ export function OperatorLayout() {
   const activePanel: PanelId = isPanelId(panelId) ? panelId : 'agents';
   const [selectedItem, setSelectedItem] = useState<string | undefined>(undefined);
   const [showHelp, setShowHelp] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const agents = useEngagementStore(s => s.agents);
+  // Flatten the sidebar nav (icons dropped) into the palette's panel commands.
+  const commandPanels = useMemo(
+    () => NAV_GROUPS.flatMap(group => group.items.map(it => ({ id: it.id, path: it.path, label: it.label, group: group.label }))),
+    [],
+  );
   const [sidebarExpanded, setSidebarExpanded] = useState(() =>
     safeLocalStorage.getItem('overwatch-sidebar-expanded') !== 'false');
   const navigate = useNavigate();
@@ -102,13 +113,27 @@ export function OperatorLayout() {
     onNavigateEvidence: useCallback(() => handlePanelChange('evidence'), [handlePanelChange]),
   });
 
+  const handleCommandSelect = useCallback((item: CommandItem) => {
+    if (item.kind === 'agent' && item.taskId) {
+      setSelectedItem(undefined);
+      navigate(buildPanelPath({ panel: 'agents', item: item.taskId }));
+    } else if (item.panelId) {
+      handlePanelChange(item.panelId);
+    } else if (item.path) {
+      navigate(item.path);
+    }
+  }, [navigate, handlePanelChange]);
+
   useEffect(() => {
     const toggle = () => setShowHelp(prev => !prev);
-    const close = () => setShowHelp(false);
+    const togglePalette = () => setPaletteOpen(prev => !prev);
+    const close = () => { setShowHelp(false); setPaletteOpen(false); };
     document.addEventListener('toggle-shortcut-help', toggle);
+    document.addEventListener('toggle-command-palette', togglePalette);
     document.addEventListener('close-overlay', close);
     return () => {
       document.removeEventListener('toggle-shortcut-help', toggle);
+      document.removeEventListener('toggle-command-palette', togglePalette);
       document.removeEventListener('close-overlay', close);
     };
   }, []);
@@ -183,6 +208,14 @@ export function OperatorLayout() {
           </div>
         </div>
       )}
+
+      <CommandPalette
+        open={paletteOpen}
+        panels={commandPanels}
+        agents={agents}
+        onClose={() => setPaletteOpen(false)}
+        onSelect={handleCommandSelect}
+      />
     </div>
   );
 }
