@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   attackPathLaneCounts,
+  edgePhrase,
   filterDisplayAttackPaths,
   groupDisplayAttackPaths,
   normalizeApiAttackPath,
   normalizeComputedAttackPath,
+  pathHops,
   shouldAutoRunPaths,
 } from '../attack-path-workspace';
 import type { AttackPath, ExportedNode } from '../types';
@@ -115,5 +117,40 @@ describe('attack path workspace helpers', () => {
     expect(display?.nodeIds).toEqual(['host-jump', 'cloud-id-power']);
     expect(display?.edgeIds).toEqual([]);
     expect(display?.rawEdgeTypes).toEqual([]); // no edge types available from the engine shape
+  });
+
+  it('edgePhrase renders an edge type as a readable verb phrase, never a raw TYPE', () => {
+    expect(edgePhrase('ADMIN_TO')).toBe('is admin on');
+    expect(edgePhrase('HAS_SESSION')).toBe('has an active session as');
+    expect(edgePhrase('MEMBER_OF')).toBe('is a member of');
+    // An unknown edge type still reads as a phrase, not SCREAMING_CASE.
+    expect(edgePhrase('SOME_NEW_EDGE')).toBe('via some new edge');
+    // No edge type at all still yields a neutral connector, never undefined.
+    expect(edgePhrase(undefined)).toBe('connects to');
+  });
+
+  it('pathHops narrates a route as explained foothold->objective steps with cross-tier flags', () => {
+    const byId = new Map([
+      ['ws01', node('ws01', 'host', 'WS01.corp.local')],
+      ['portal', node('portal', 'webapp', 'Benefits Portal')],
+      ['cve', node('cve', 'vulnerability', 'CVE-2024-1337')],
+    ]);
+    const display = normalizeComputedAttackPath({
+      nodes: ['ws01', 'portal', 'cve'],
+      edge_types: ['CAN_REACH', 'VULNERABLE_TO'],
+      edge_ids: ['e1', 'e2'],
+      total_confidence: 0.8,
+      total_opsec_noise: 0.3,
+    }, byId)!;
+
+    const hops = pathHops(display);
+    expect(hops).toHaveLength(2);
+    // Hop 1 crosses the network -> app tier boundary and reads as a sentence.
+    expect(hops[0]).toMatchObject({ phrase: 'can reach', crossesTier: true });
+    expect(hops[0].from.label).toBe('WS01.corp.local');
+    expect(hops[0].to.label).toBe('Benefits Portal');
+    // Hop 2 stays inside the app tier, so it is not flagged as a boundary crossing.
+    expect(hops[1]).toMatchObject({ phrase: 'is vulnerable to', crossesTier: false });
+    expect(hops[1].to.label).toBe('CVE-2024-1337');
   });
 });
