@@ -39,9 +39,18 @@ export function EvidenceNarrative({
               className="text-accent"
             />
           </div>
+          {item.command && (
+            <div className="mt-1.5">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">How it was found</div>
+              <pre className="mt-0.5 overflow-x-auto whitespace-pre-wrap break-words rounded border border-border bg-background/60 px-2 py-1 font-mono text-[11px] text-foreground">
+                <span className="select-none text-muted-foreground">$ </span>{item.command}
+              </pre>
+            </div>
+          )}
           {item.proof && <EvidenceProof proof={item.proof} />}
           <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
             {item.tool && <span className="rounded border border-border bg-background/50 px-1.5 py-0.5">{item.tool}</span>}
+            {item.agent_id && <span className="rounded border border-border bg-background/50 px-1.5 py-0.5">agent {item.agent_id}</span>}
             {item.latest && <span className="rounded border border-border bg-background/50 px-1.5 py-0.5">{formatTimestamp(item.latest)}</span>}
           </div>
           {(item.action_id || item.event_type || item.description) && (

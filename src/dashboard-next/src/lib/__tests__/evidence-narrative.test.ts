@@ -52,10 +52,30 @@ describe('evidence narrative helpers', () => {
       latest: '2026-05-15T00:00:00Z',
       description: 'done',
       proof: 'SMB evidence',
+      command: undefined,
+      agent_id: undefined,
       source_kind: 'activity',
       event_type: 'action_completed',
       action_id: undefined,
       tool: undefined,
     }]);
+  });
+
+  it('lifts the command + agent from whichever lifecycle entry carries them ("how it was found")', () => {
+    // The command is on the run entry and the result snippet on the completion entry —
+    // both must survive, and the presence of a command makes it command_output.
+    const [item] = narrativeItemsFromChains([{
+      node_id: 'host-1',
+      count: 2,
+      node_props: { label: 'DC01.corp.local' },
+      chains: [
+        { activity_id: 'evt-run', timestamp: '2026-05-15T00:00:00Z', event_type: 'action_started', description: 'running', agent_id: 'recon-agent', command: 'nxc smb 10.10.10.10' },
+        { activity_id: 'evt-done', timestamp: '2026-05-15T00:00:05Z', event_type: 'action_completed', description: 'done', snippet: 'Pwn3d!' },
+      ],
+    }]);
+    expect(item.command).toBe('nxc smb 10.10.10.10');
+    expect(item.agent_id).toBe('recon-agent');
+    expect(item.source_kind).toBe('command_output');
+    expect(item.proof).toBe('running'); // chains[0] snippet/description is the current proof selection
   });
 });
