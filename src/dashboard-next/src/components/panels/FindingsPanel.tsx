@@ -17,6 +17,7 @@ import { cn, formatTimestamp } from '../../lib/utils';
 import { RenderReportModal } from './RenderReportModal';
 import { ReportsList } from './ReportsList';
 import { useEngagementStore } from '../../stores/engagement-store';
+import { POLL } from '../../lib/polling';
 import { resolveAssetToNodeId } from '../../lib/relationships';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { EvidenceNarrative } from '../shared/EvidenceNarrative';
@@ -45,6 +46,7 @@ const SEVERITY_BADGE: Record<FindingDto['severity'], string> = {
 
 export function FindingsPanel() {
   const graph = useEngagementStore(s => s.graph);
+  const connected = useEngagementStore(s => s.connected);
   const [findings, setFindings] = useState<FindingDto[]>([]);
   const [summary, setSummary] = useState<{ critical: number; high: number; medium: number; low: number; info: number }>({
     critical: 0, high: 0, medium: 0, low: 0, info: 0,
@@ -76,11 +78,12 @@ export function FindingsPanel() {
   useEffect(() => {
     refreshFindings();
     refreshReports();
-    // Light poll — findings move when agents finish; reports move when
-    // operator renders.
-    const id = setInterval(() => { refreshFindings(); refreshReports(); }, 8000);
+    // Light poll — findings move when agents finish; reports move when the operator
+    // renders. Gated on the WS `connected` flag (polling.ts contract) so a dropped
+    // socket doesn't keep hammering the API; a reconnect refreshes immediately.
+    const id = setInterval(() => { if (connected) { refreshFindings(); refreshReports(); } }, POLL.FINDINGS_MS);
     return () => clearInterval(id);
-  }, [refreshFindings, refreshReports]);
+  }, [refreshFindings, refreshReports, connected]);
 
   useEffect(() => {
     const item = searchParams.get('item');
