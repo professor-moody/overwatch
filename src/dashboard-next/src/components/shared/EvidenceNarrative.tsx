@@ -3,6 +3,7 @@ import type { EvidenceNarrativeItem } from '../../lib/evidence-narrative';
 import type { ProofExcerpt } from '../../lib/types';
 import { cn, formatTimestamp } from '../../lib/utils';
 import { GraphNodeLinks } from './GraphNodeLinks';
+import { TrustBadge } from './primitives';
 
 export function EvidenceNarrative({
   items,
@@ -118,23 +119,6 @@ function sourceKindLabel(kind: EvidenceNarrativeItem['source_kind']): string {
   if (kind === 'command_output') return 'Command output';
   if (kind === 'parsed_result') return 'Parsed result';
   return 'Activity record';
-}
-
-/** Honesty label (3d): whether the evidence was directly captured (observed), merely
- *  claimed (asserted), or produced by a rule (inferred) — so the reader can tell proof
- *  from hypothesis at a glance. */
-function TrustBadge({ trust }: { trust: NonNullable<EvidenceNarrativeItem['source_trust']> }) {
-  const cls = trust === 'observed' ? 'border-success/40 text-success'
-    : trust === 'asserted' ? 'border-warning/40 text-warning'
-    : 'border-border text-muted-foreground';
-  const title = trust === 'observed' ? 'Directly captured from tool output — proof.'
-    : trust === 'asserted' ? 'Claimed by the tool/agent, not independently captured.'
-    : 'Produced by an inference rule, not a direct observation.';
-  return (
-    <span className={cn('rounded border px-1.5 py-0.5 text-[9px] uppercase tracking-wide', cls)} title={title}>
-      {trust}
-    </span>
-  );
 }
 
 /** Matched-signal excerpts (3c): the exact bytes that justify the finding, re-read and
