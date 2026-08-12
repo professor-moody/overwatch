@@ -1618,6 +1618,27 @@ describe('buildRemediationRanking', () => {
     }
   });
 
+  it('shows CVSS only for vulnerabilities — never risk_score relabeled as CVSS', () => {
+    // A reachable cloud role and a compromised host are engagement achievements, not CVEs:
+    // they carry no CVSS, even though they have a high risk_score.
+    const findings = [
+      { id: 'f-vuln', title: 'CVE-2021-41773 is exploitable on web01', severity: 'high', category: 'vulnerability', description: '', affected_assets: ['web01'], remediation: '', risk_score: 7.5, cvss_score: 7.5 },
+      { id: 'f-host', title: 'Compromised host DC01', severity: 'critical', category: 'compromised_host', description: '', affected_assets: ['DC01'], remediation: '', risk_score: 9.5 },
+      { id: 'f-cloud', title: 'AWS AdminRole reachable', severity: 'critical', category: 'cloud_exposure', description: '', affected_assets: ['AdminRole'], remediation: '', risk_score: 9.0 },
+    ] as never;
+    const ranking = buildRemediationRanking(findings, { nodes: [], edges: [] });
+
+    const withCvss = ranking.filter(r => r.cvss !== null);
+    expect(withCvss).toHaveLength(1);           // only the vulnerability
+    expect(withCvss[0].cvss).toBe(7.5);
+
+    const nonVuln = ranking.filter(r => r.cvss === null);
+    expect(nonVuln).toHaveLength(2);            // host + cloud carry NO cvss (not 9.5 / 9.0)
+    expect(nonVuln.every(r => r.risk > 0)).toBe(true);  // but risk is retained for ranking
+    // the high-risk host still ranks by its risk via priority_score, despite no CVSS
+    expect(ranking.find(r => r.risk === 9.5)!.priority_score).toBeGreaterThan(0);
+  });
+
   it('returns at most 20 entries', () => {
     const graph = makeGraph();
     const findings = buildFindings(graph, makeHistory(), makeConfig());

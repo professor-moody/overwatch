@@ -2633,13 +2633,14 @@ export function renderFullReportFromModel(
     if (ranked.length > 0) {
       lines.push('## Remediation Priority Ranking');
       lines.push('');
-      lines.push('Findings ranked by combined CVSS score, blast radius, and credential exposure.');
+      lines.push('Findings ranked by engagement risk, blast radius, and credential exposure. CVSS is shown for vulnerabilities where available; other findings are engagement achievements and carry no CVSS.');
       lines.push('');
-      lines.push('| # | Finding | CVSS | Blast Radius | Credential Exposure | Priority Score |');
-      lines.push('|---|---------|------|-------------|-------------------|----------------|');
+      lines.push('| # | Finding | Risk | CVSS | Blast Radius | Credential Exposure | Priority Score |');
+      lines.push('|---|---------|------|------|-------------|-------------------|----------------|');
       for (let i = 0; i < ranked.length; i++) {
         const r = ranked[i];
-        lines.push(`| ${i + 1} | ${escapeTableCell(r.title)} | ${r.cvss.toFixed(1)}${r.cvss_estimated ? '†' : ''} | ${r.blast_radius} | ${r.cred_exposure} | ${r.priority_score.toFixed(1)} |`);
+        const cvssCell = r.cvss !== null ? `${r.cvss.toFixed(1)}${r.cvss_estimated ? '†' : ''}` : '—';
+        lines.push(`| ${i + 1} | ${escapeTableCell(r.title)} | ${r.risk.toFixed(1)} | ${cvssCell} | ${r.blast_radius} | ${r.cred_exposure} | ${r.priority_score.toFixed(1)} |`);
       }
       lines.push('');
       lines.push('*† CVSS score estimated from engagement context*');
@@ -2807,8 +2808,14 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
 
 interface RemediationRanking {
   title: string;
-  cvss: number;
+  /** Real CVSS — null for findings that are not vulnerabilities (host access, credentials,
+   *  cloud exposure). Those are engagement achievements, not CVEs, and carry no CVSS. */
+  cvss: number | null;
   cvss_estimated: boolean;
+  /** Engagement-risk severity used for prioritization (the finding's CVSS when it is a
+   *  vulnerability, else its risk_score). Kept distinct from CVSS so risk is never
+   *  mislabeled as a CVSS score. */
+  risk: number;
   blast_radius: number;
   cred_exposure: number;
   priority_score: number;
@@ -2838,7 +2845,11 @@ export function buildRemediationRanking(findings: ReportFinding[], graph: Export
   }
 
   const ranked = findings.map(f => {
-    const cvss = f.cvss_score ?? f.risk_score;
+    // CVSS applies only to vulnerabilities; every other finding is an engagement
+    // achievement, not a CVE, so it has no CVSS. Prioritization still needs a severity —
+    // that's `risk` (CVSS for vulns, else risk_score) — but it must never be shown as CVSS.
+    const cvss = typeof f.cvss_score === 'number' ? f.cvss_score : null;
+    const risk = f.cvss_score ?? f.risk_score;
     const cvssEstimated = f.cvss_estimated ?? false;
 
     // Blast radius: count unique nodes within 2 hops of affected assets
@@ -2864,13 +2875,14 @@ export function buildRemediationRanking(findings: ReportFinding[], graph: Export
       if (node?.type === 'credential') credExposure++;
     }
 
-    // Priority score: weighted combination (CVSS × 4 + blast_radius × 0.3 + cred_exposure × 1.5), capped at 100
-    const priorityScore = Math.min(100, cvss * 4 + blastRadius * 0.3 + credExposure * 1.5);
+    // Priority score: weighted combination (risk × 4 + blast_radius × 0.3 + cred_exposure × 1.5), capped at 100
+    const priorityScore = Math.min(100, risk * 4 + blastRadius * 0.3 + credExposure * 1.5);
 
     return {
       title: displayFindingShortTitle(f),
       cvss,
       cvss_estimated: cvssEstimated,
+      risk,
       blast_radius: blastRadius,
       cred_exposure: credExposure,
       priority_score: priorityScore,

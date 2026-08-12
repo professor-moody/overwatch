@@ -101,8 +101,11 @@ export interface HtmlHeatmapData {
 
 export interface HtmlRemediationRanking {
   title: string;
-  cvss: number;
+  /** Real CVSS — null for non-vulnerability findings (they carry no CVSS). */
+  cvss: number | null;
   cvss_estimated: boolean;
+  /** Engagement-risk severity used for prioritization; distinct from CVSS. */
+  risk: number;
   blast_radius: number;
   cred_exposure: number;
   priority_score: number;
@@ -861,7 +864,8 @@ function renderRemediationRankingHtml(rankings: HtmlRemediationRanking[]): strin
     <tr>
       <td>${i + 1}</td>
       <td>${esc(r.title)}</td>
-      <td><span class="cvss-score cvss-${cvssColorClass(r.cvss)}">${r.cvss.toFixed(1)}${r.cvss_estimated ? '†' : ''}</span></td>
+      <td>${r.risk.toFixed(1)}</td>
+      <td>${r.cvss !== null ? `<span class="cvss-score cvss-${cvssColorClass(r.cvss)}">${r.cvss.toFixed(1)}${r.cvss_estimated ? '†' : ''}</span>` : '<span class="muted">—</span>'}</td>
       <td>${r.blast_radius}</td>
       <td>${r.cred_exposure}</td>
       <td><strong>${r.priority_score.toFixed(1)}</strong></td>
@@ -870,9 +874,9 @@ function renderRemediationRankingHtml(rankings: HtmlRemediationRanking[]): strin
   return `
   <section id="remediation-ranking">
     <h2>Remediation Priority Ranking</h2>
-    <p>Findings ranked by combined CVSS score, blast radius, and credential exposure.</p>
+    <p>Findings ranked by engagement risk, blast radius, and credential exposure. CVSS is shown for vulnerabilities where available; other findings are engagement achievements and carry no CVSS.</p>
     <table>
-      <thead><tr><th>#</th><th>Finding</th><th>CVSS</th><th>Blast Radius</th><th>Cred. Exposure</th><th>Priority</th></tr></thead>
+      <thead><tr><th>#</th><th>Finding</th><th>Risk</th><th>CVSS</th><th>Blast Radius</th><th>Cred. Exposure</th><th>Priority</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <p class="footnote">† CVSS score estimated from engagement context</p>
