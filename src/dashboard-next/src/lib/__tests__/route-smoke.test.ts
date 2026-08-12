@@ -24,7 +24,7 @@ const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> 
   { path: '/findings', expects: ['Findings'], expectsAny: ['Estimated CVSS', 'CVSS'] },
   { path: '/findings?item=nonexistent-id', expects: ['Findings'] },
   { path: '/sessions?item=nonexistent-id', expects: ['Sessions'] },
-  { path: '/smoke', expects: ['Smoke', '/api/trust-signals'] },
+  { path: '/smoke', expects: ['Diagnostics', '/api/trust-signals'] },
   { path: '/settings', expects: ['Settings'] },
   { path: '/engagements', expects: ['Engagements'] },
 ];

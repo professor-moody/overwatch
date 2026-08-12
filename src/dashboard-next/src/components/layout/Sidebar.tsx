@@ -74,7 +74,7 @@ export const NAV_GROUPS: { label: string; items: SidebarItem[] }[] = [
       { id: 'sessions', label: 'Sessions', icon: Terminal },
       { id: 'engagements', label: 'Engagements', icon: Briefcase },
       { id: 'settings', label: 'Settings', icon: Settings },
-      { id: 'smoke', label: 'Smoke', icon: FlaskConical },
+      { id: 'smoke', label: 'Diagnostics', icon: FlaskConical },
     ],
   },
 ];
