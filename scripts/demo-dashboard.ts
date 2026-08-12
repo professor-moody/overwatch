@@ -146,9 +146,12 @@ const config: EngagementConfig = {
     approval_timeout_ms: 3_600_000,
     blacklisted_techniques: ['credential_dump'],
   },
+  // Objective ids intentionally do NOT start with "obj-": objective-manager derives the
+  // objective node id as `obj-${id}`, so an id like "obj-1" produced a double-prefixed
+  // node "obj-obj-1" that mismatched find-paths?objective=<id>.
   objectives: [
     {
-      id: 'obj-1',
+      id: 'dc-compromise',
       description: 'Compromise domain controller',
       target_node_type: 'host',
       target_criteria: { hostname: 'DC01' },
@@ -156,7 +159,7 @@ const config: EngagementConfig = {
       achieved: false,
     },
     {
-      id: 'obj-2',
+      id: 'data-exfil',
       description: 'Exfiltrate sensitive data',
       target_node_type: 'cloud_resource',
       target_criteria: { resource_type: 's3_bucket', provider_resource_id: 'corp-payroll-archive' },
@@ -164,7 +167,7 @@ const config: EngagementConfig = {
       achieved: false,
     },
     {
-      id: 'obj-3',
+      id: 'cloud-admin',
       description: 'Reach production cloud admin role',
       target_node_type: 'cloud_identity',
       target_criteria: { arn: 'arn:aws:iam::111122223333:role/AdminRole' },
@@ -187,7 +190,7 @@ const config: EngagementConfig = {
       order: 1,
       strategies: ['credential_spray', 'post_exploitation'],
       entry_criteria: [{ type: 'phase_completed', phase_id: 'recon' }],
-      exit_criteria: [{ type: 'objective_achieved', objective_id: 'obj-1' }],
+      exit_criteria: [{ type: 'objective_achieved', objective_id: 'dc-compromise' }],
       approval_overrides: { mode: 'approve-all' },
     },
   ],
@@ -468,7 +471,14 @@ const opsec = (noise: number, signals: string[] = []): OpsecContext => ({
   global_noise_spent: 0.32,
   noise_budget_remaining: Math.max(0, config.opsec.max_noise - noise),
   recommended_approach: noise >= 0.75 ? 'loud' : noise >= 0.35 ? 'normal' : 'quiet',
-  defensive_signals: signals,
+  // DefensiveSignal is {type, detected_at, description} — NOT a bare string. Emitting
+  // strings here made the whole /api/state + WS full_state snapshot fail its response
+  // contract (and, before the hub was hardened, crash the daemon on WS connect).
+  defensive_signals: signals.map((description, i) => ({
+    type: 'block' as const,
+    detected_at: iso(30 - i),
+    description,
+  })),
   warning: signals.length ? 'Defensive signals observed in the last phase.' : undefined,
 });
 
