@@ -91,9 +91,13 @@ void queue.submit({
 } as never);
 
 app.engine.logActionEvent({
-  description: 'Primary: prioritizing app01 — SSH is the only exposed service and recon is mid-flight.',
+  description: 'Prioritizing app01 — SSH is the only exposed service and recon is mid-flight. Sweeping the whole /24 first would delay the one lead we already have.',
   event_type: 'thought', category: 'reasoning', target_node_ids: ['h-app'],
-  details: { kind: 'selection' },
+  details: {
+    kind: 'plan',
+    considered_alternatives: ['sweep the whole 10.20.0.0/24 first', 'focus app01 while recon finishes'],
+    confidence: 0.75,
+  },
 });
 
 // Seed a full command→result→question loop for agent-recon-1 so the focused
@@ -114,6 +118,19 @@ app.engine.logActionEvent({
   description: 'app01 SSH (10.20.0.20:22): password auth ENABLED; users enumerated — svc-deploy, admin',
   event_type: 'action_completed', category: 'frontier', agent_id: 'agent-recon-1',
   target_node_ids: ['h-app', 'svc-ssh'], result_classification: 'success',
+});
+// The agent's OWN reasoning before it escalates — surfaces in the conversation as a
+// reasoning card (kind + considered alternatives + confidence), so the operator sees
+// WHY it's asking rather than just the question.
+app.engine.logActionEvent({
+  description: 'Password auth on service accounts is a spray candidate, but app01 almost certainly logs failed SSH logins — spraying unprompted risks tipping our hand before we hold a foothold. Better to surface the call to the operator.',
+  event_type: 'thought', category: 'reasoning', agent_id: 'agent-recon-1',
+  target_node_ids: ['h-app', 'svc-ssh'],
+  details: {
+    kind: 'decision',
+    considered_alternatives: ['spray a small list now (fast, noisy)', 'stay quiet and pivot via the web app', 'escalate the decision to the operator'],
+    confidence: 0.6,
+  },
 });
 app.engine.logActionEvent({
   description: 'Finding: app01 exposes SSH password auth (10.20.0.20) — credential-spray candidate',
