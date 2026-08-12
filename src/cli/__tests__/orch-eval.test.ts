@@ -40,24 +40,47 @@ describe('parseOrchArgs', () => {
   });
 });
 
-describe('meanOrchGrade', () => {
-  const rec = (newNodeCount: number): OrchRunRecord => ({
+describe('objective_progress scoring', () => {
+  const rec = (over: Partial<OrchRunRecord> = {}): OrchRunRecord => ({
     toolCalls: [{ tool: 'get_state' }, { tool: 'log_thought' }, { tool: 'register_agent' }, { tool: 'get_state' }],
     dispatches: [{ archetype: 'recon_scanner', matchedFrontier: true }],
-    newNodeCount,
+    newNodeCount: 0,
+    ...over,
+  });
+  const op = (r: OrchRunRecord) => gradeOrchestration(r).criteria.find(c => c.criterion === 'objective_progress')!.score;
+
+  it('grades by what actually moved forward, not raw node creation', () => {
+    expect(op(rec({ objectivesAchieved: 1 }))).toBe(1);       // objective achieved → full
+    expect(op(rec({ newAccessEdges: 2 }))).toBe(0.6);         // access/cred/pivot → material
+    expect(op(rec({ newNodeCount: 5 }))).toBe(0.2);           // nodes only → activity, not progress
+    expect(op(rec({ newNodeCount: 0 }))).toBe(0);             // nothing
+  });
+
+  it('creating nodes alone no longer scores full objective progress', () => {
+    // The old rubric gave newNodeCount>0 a 1.0; it must not anymore.
+    expect(op(rec({ newNodeCount: 10 }))).toBeLessThan(1);
+  });
+});
+
+describe('meanOrchGrade', () => {
+  const rec = (over: Partial<OrchRunRecord> = {}): OrchRunRecord => ({
+    toolCalls: [{ tool: 'get_state' }, { tool: 'log_thought' }, { tool: 'register_agent' }, { tool: 'get_state' }],
+    dispatches: [{ archetype: 'recon_scanner', matchedFrontier: true }],
+    newNodeCount: 0,
+    ...over,
   });
 
   it('returns the single grade unchanged for one trial', () => {
-    const g = gradeOrchestration(rec(2));
+    const g = gradeOrchestration(rec({ newAccessEdges: 1 }));
     expect(meanOrchGrade([g])).toBe(g);
   });
 
   it('averages overall + per-criterion across trials', () => {
-    const g1 = gradeOrchestration(rec(2));   // objective_progress = 1
-    const g2 = gradeOrchestration(rec(0));   // objective_progress = 0
+    const g1 = gradeOrchestration(rec({ objectivesAchieved: 1 }));  // objective_progress = 1
+    const g2 = gradeOrchestration(rec({ newNodeCount: 0 }));        // objective_progress = 0
     const m = meanOrchGrade([g1, g2]);
     expect(m.overall).toBeCloseTo((g1.overall + g2.overall) / 2, 6);
-    const op = m.criteria.find(c => c.criterion === 'objective_progress')!;
-    expect(op.score).toBeCloseTo(0.5, 6);
+    const opScore = m.criteria.find(c => c.criterion === 'objective_progress')!;
+    expect(opScore.score).toBeCloseTo(0.5, 6);
   });
 });
