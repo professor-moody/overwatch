@@ -122,40 +122,104 @@ function edgeLabel(type: string | undefined): string {
 
 /** Verb phrases that turn an edge type into a readable hop sentence — the previous node
  *  "{phrase}" the next node — so a path reads foothold → objective as a followable story
- *  (e.g. a host "has an active session as" jdoe "is a member of" Domain Admins "is admin
- *  on" DC01). Falls back to the terse edge label prefixed with "via". */
+ *  (e.g. a host "has an active session as" jdoe "is a member of" Domain Admins "can
+ *  DCSync" the domain). Covers the canonical EDGE_TYPES that appear on attack paths;
+ *  ESC* ADCS abuses are handled by pattern in edgePhrase(); anything unmapped falls back
+ *  to the terse edge label prefixed with "via". */
 const EDGE_PHRASES: Record<string, string> = {
-  ADMIN_TO: 'is admin on',
-  ASSIGNED_TO_APP: 'is assigned the app',
-  ASSUMES_ROLE: 'can assume role',
-  AUTHENTICATES_VIA: 'authenticates via',
-  BACKED_BY: 'is backed by',
+  // Network / access
+  REACHABLE: 'can reach',
   CAN_REACH: 'can reach',
+  RUNS: 'runs',
+  ADMIN_TO: 'is admin on',
+  HAS_SESSION: 'has an active session as',
   CAN_RDPINTO: 'can RDP into',
   CAN_PSREMOTE: 'can PowerShell-remote into',
-  EXPLOITS: 'can exploit',
-  FEDERATES_WITH: 'federates with',
-  HAS_ENDPOINT: 'exposes',
-  HAS_POLICY: 'carries policy',
-  HAS_SESSION: 'has an active session as',
-  HOSTS: 'hosts',
-  ISSUES_TOKENS_FOR: 'issues tokens for',
-  MANAGED_BY: 'is managed by',
+  // Domain membership / trust
   MEMBER_OF: 'is a member of',
   MEMBER_OF_DOMAIN: 'is a member of domain',
-  OWNS_CRED: 'holds credentials for',
-  POLICY_ALLOWS: 'is allowed by policy to reach',
-  RUNS: 'runs',
-  TESTED_CRED: 'has a tested credential for',
   TRUSTS: 'is trusted by',
+  SAME_DOMAIN: 'is in the same domain as',
+  // Credentials
+  OWNS_CRED: 'holds credentials for',
+  VALID_ON: 'is valid on',
+  TESTED_CRED: 'has a tested credential for',
+  DERIVED_FROM: 'was derived from',
+  DUMPED_FROM: 'was dumped from',
+  SHARED_CREDENTIAL: 'shares a credential with',
+  // AD attack paths (replication + ACL abuse)
+  CAN_DCSYNC: 'can DCSync',
+  CAN_GET_CHANGES: 'can replicate changes from',
+  CAN_GET_CHANGES_ALL: 'can replicate all changes from',
+  GENERIC_ALL: 'has full control over',
+  GENERIC_WRITE: 'can write to',
+  WRITE_OWNER: 'can take ownership of',
+  WRITE_DACL: 'can rewrite the ACL of',
+  WRITEABLE_BY: 'is writable by',
+  OWNS: 'owns',
+  ADD_MEMBER: 'can add members to',
+  FORCE_CHANGE_PASSWORD: 'can reset the password of',
+  ALLOWED_TO_ACT: 'is allowed to act on',
+  CAN_READ_LAPS: 'can read the LAPS password of',
+  CAN_READ_GMSA: 'can read the gMSA password of',
+  // Delegation
+  DELEGATES_TO: 'can delegate to',
+  CAN_DELEGATE_TO: 'can delegate to',
+  CAN_CAPTURE_TGT_FROM: 'can capture a TGT from',
+  RBCD_TARGET: 'can RBCD to',
+  // Roasting
+  KERBEROASTABLE: 'can kerberoast',
+  AS_REP_ROASTABLE: 'can AS-REP roast',
+  // ADCS
+  CAN_ENROLL: 'can enroll in',
+  ISSUED_BY: 'was issued by',
+  OPERATES_CA: 'operates the CA',
+  MANAGE_CA: 'can manage the CA',
+  MANAGE_CERTIFICATES: 'can manage certificates on',
+  // Lateral movement
+  RELAY_TARGET: 'can relay to',
+  NULL_SESSION: 'can open a null session to',
+  POTENTIAL_AUTH: 'may authenticate to',
+  // Web application surface
+  HOSTS: 'hosts',
+  HAS_ENDPOINT: 'exposes',
+  VULNERABLE_TO: 'is vulnerable to',
+  EXPLOITS: 'can exploit',
+  AUTH_BYPASS: 'can bypass auth on',
+  AUTHENTICATED_AS: 'is authenticated as',
+  // Cloud infrastructure
+  ASSUMES_ROLE: 'can assume role',
+  HAS_POLICY: 'carries policy',
+  POLICY_ALLOWS: 'is allowed by policy to reach',
+  EXPOSED_TO: 'is exposed to',
+  RUNS_ON: 'runs on',
+  MANAGED_BY: 'is managed by',
+  SERVICE_PRINCIPAL_FOR: 'is the service principal for',
+  // Identity tier (SSO / IdP)
+  FEDERATES_WITH: 'federates with',
+  AUTHENTICATES_VIA: 'authenticates via',
+  ASSIGNED_TO_APP: 'is assigned the app',
+  MFA_REQUIRED_FOR: 'requires MFA for',
+  ISSUES_TOKENS_FOR: 'issues tokens for',
+  BACKED_BY: 'is backed by',
   VALID_FOR_APP: 'has valid access to',
   VALID_FOR_IDP_PRINCIPAL: 'is a valid identity for',
-  VALID_ON: 'is valid on',
-  VULNERABLE_TO: 'is vulnerable to',
+  // OSINT / external recon
+  SUBDOMAIN_OF: 'is a subdomain of',
+  RESOLVES_TO: 'resolves to',
+  IN_NETBLOCK: 'is in the netblock',
+  OWNS_ASSET: 'owns',
+  AFFILIATED_WITH: 'is affiliated with',
+  // Objective / generic
+  PATH_TO_OBJECTIVE: 'advances toward',
+  RELATED: 'is related to',
 };
 
 export function edgePhrase(type: string | undefined): string {
   if (!type) return 'connects to';
+  // ADCS escalations ESC1..ESC15 — one family, read them uniformly instead of the terse
+  // "via esc1" fallback.
+  if (/^ESC\d+$/.test(type)) return `can abuse via ${type}`;
   return EDGE_PHRASES[type] ?? `via ${edgeLabel(type)}`;
 }
 
