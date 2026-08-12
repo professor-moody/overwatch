@@ -574,12 +574,31 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     );
     const evidence = buildEvidenceChainsForNode(n.id, graph, history, opts);
 
+    const vulnName = n.properties.cve || n.properties.label || n.id;
+    // An UNVERIFIED CVE candidate: research_cve records these as VULNERABLE_TO edges
+    // marked `tested: false` — a version match nobody has confirmed on the target. Such a
+    // candidate must not sit at the CVE's intrinsic severity next to confirmed findings, so
+    // it is demoted to `info` (its real CVSS is retained as context via cvss_score; the
+    // finding PRIORITY reflects our low confidence it applies). Anything actually verified —
+    // exploited, flagged exploitable, or an edge marked tested — keeps CVSS-derived severity.
+    // Detection is precise: scanners (nuclei/nessus) leave `tested` unset, so only explicit
+    // `tested === false` candidates are demoted.
+    const unverifiedCandidate =
+      affectedEdges.length > 0 &&
+      affectedEdges.every(e => e.properties.tested === false) &&
+      exploitEdges.length === 0 &&
+      n.properties.exploitable !== true;
+
     findings.push({
       id: `finding-vuln-${n.id}`,
-      title: `Vulnerability: ${n.properties.cve || n.properties.label || n.id}`,
-      severity: cvssToSeverity(n.properties.cvss),
+      title: unverifiedCandidate ? `Unverified CVE candidate: ${vulnName}` : `Vulnerability: ${vulnName}`,
+      severity: unverifiedCandidate ? 'info' : cvssToSeverity(n.properties.cvss),
       category: 'vulnerability',
-      description: `${n.properties.vuln_type || 'Vulnerability'}: ${n.properties.label || n.properties.cve || n.id}. ` +
+      description:
+        (unverifiedCandidate
+          ? 'Unverified: matched from the detected service version by CVE research; not confirmed on the target. Verify before prioritizing. '
+          : '') +
+        `${n.properties.vuln_type || 'Vulnerability'}: ${n.properties.label || n.properties.cve || n.id}. ` +
         `CVSS: ${n.properties.cvss ?? 'N/A'}. ` +
         `Exploitable: ${n.properties.exploitable ? 'Yes' : 'Unknown'}. ` +
         `Exploit available: ${n.properties.exploit_available ? 'Yes' : 'No'}. ` +
@@ -588,7 +607,9 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
       affected_assets: affectedAssets,
       evidence,
       remediation: generateVulnerabilityRemediation(n.properties, affectedAssets),
-      risk_score: n.properties.cvss ?? (n.properties.exploitable ? 8.0 : 5.0),
+      risk_score: unverifiedCandidate
+        ? Math.min(typeof n.properties.cvss === 'number' ? n.properties.cvss : 2, 2)
+        : (n.properties.cvss ?? (n.properties.exploitable ? 8.0 : 5.0)),
     });
   }
 

@@ -57,6 +57,16 @@ describe('findingVulnLabel', () => {
     expect(findingVulnLabel(f)).toBe('Cross-site Scripting');
   });
 
+  it('prefers the actual CVE over the coarse CWE class for a CVE finding', () => {
+    // The screenshot bug: the classifier mapped the CVE's rce vuln_type to CWE-94
+    // "Code Injection", so the evidence read "proves Code Injection". Show the CVE instead.
+    const f = makeFinding({
+      title: 'CVE-2020-25682 is an unverified candidate on domain/53',
+      classification: { cwe: { id: 'CWE-94', name: 'Code Injection' } },
+    });
+    expect(findingVulnLabel(f)).toBe('CVE-2020-25682');
+  });
+
   it('falls back to the category label when there is no CWE', () => {
     expect(findingVulnLabel(makeFinding({ category: 'credential' }))).toBe('Credential exposure');
   });
