@@ -67,10 +67,11 @@ export async function renderReportPdf(html: string, opts: PdfRenderOptions = {})
   });
   try {
     const page = await browser.newPage();
-    // setContent + waitUntil networkidle0 lets any inlined fonts /
-    // images settle before the snapshot. Reports are self-contained,
-    // so this typically resolves immediately.
-    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 30_000 });
+    // setContent + waitUntil 'load' lets inlined fonts / images settle before the
+    // snapshot. Reports are self-contained, so this typically resolves immediately.
+    // (puppeteer-core 25 restricts setContent's waitUntil to load/domcontentloaded —
+    // networkidle only applies to real navigation, which a self-contained report has none.)
+    await page.setContent(html, { waitUntil: 'load', timeout: 30_000 });
     const pdfData = await page.pdf({
       format: opts.format ?? 'A4',
       printBackground: opts.printBackground ?? true,
