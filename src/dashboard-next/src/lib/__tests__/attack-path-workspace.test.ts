@@ -123,10 +123,34 @@ describe('attack path workspace helpers', () => {
     expect(edgePhrase('ADMIN_TO')).toBe('is admin on');
     expect(edgePhrase('HAS_SESSION')).toBe('has an active session as');
     expect(edgePhrase('MEMBER_OF')).toBe('is a member of');
+    // Core AD attack primitives read as real verbs, not "via can dcsync".
+    expect(edgePhrase('CAN_DCSYNC')).toBe('can DCSync');
+    expect(edgePhrase('GENERIC_ALL')).toBe('has full control over');
+    expect(edgePhrase('FORCE_CHANGE_PASSWORD')).toBe('can reset the password of');
+    expect(edgePhrase('KERBEROASTABLE')).toBe('can kerberoast');
+    // The ESC1..ESC15 ADCS family is handled by pattern, uniformly.
+    expect(edgePhrase('ESC1')).toBe('can abuse via ESC1');
+    expect(edgePhrase('ESC8')).toBe('can abuse via ESC8');
     // An unknown edge type still reads as a phrase, not SCREAMING_CASE.
     expect(edgePhrase('SOME_NEW_EDGE')).toBe('via some new edge');
     // No edge type at all still yields a neutral connector, never undefined.
     expect(edgePhrase(undefined)).toBe('connects to');
+  });
+
+  it('gives every attack-critical edge type an explicit phrase (no raw "via" fallback)', () => {
+    // The edge types that actually carry an attack path — if a new one is added to the
+    // backend, it should get a phrase here rather than reading as terse "via x".
+    const CRITICAL = [
+      'REACHABLE', 'ADMIN_TO', 'HAS_SESSION', 'CAN_RDPINTO', 'CAN_PSREMOTE', 'MEMBER_OF',
+      'CAN_DCSYNC', 'CAN_GET_CHANGES', 'CAN_GET_CHANGES_ALL', 'GENERIC_ALL', 'GENERIC_WRITE',
+      'WRITE_OWNER', 'WRITE_DACL', 'ADD_MEMBER', 'FORCE_CHANGE_PASSWORD', 'ALLOWED_TO_ACT',
+      'CAN_READ_LAPS', 'CAN_READ_GMSA', 'DELEGATES_TO', 'RBCD_TARGET', 'KERBEROASTABLE',
+      'AS_REP_ROASTABLE', 'CAN_ENROLL', 'POTENTIAL_AUTH', 'ASSUMES_ROLE', 'POLICY_ALLOWS',
+      'MFA_REQUIRED_FOR', 'BACKED_BY', 'CAN_REACH', 'OWNS_CRED', 'VALID_ON',
+    ];
+    for (const type of CRITICAL) {
+      expect(edgePhrase(type), `${type} should have an explicit phrase`).not.toMatch(/^via /);
+    }
   });
 
   it('pathHops narrates a route as explained foothold->objective steps with cross-tier flags', () => {
