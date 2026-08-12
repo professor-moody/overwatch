@@ -34,6 +34,18 @@ const nonEmptyString = z.string().min(1);
  *  Derived on read (see services/source-trust.ts); never stored. */
 export type SourceTrust = 'observed' | 'asserted' | 'inferred';
 
+/** How well-established a claim (a node/edge assertion) is — its lifecycle, distinct from
+ *  source_trust (which is provenance/origin). Derived on read from existing signals (see
+ *  services/source-trust.ts:claimState); never stored in Phase 1.
+ *  - candidate: a rule's hypothesis, or an explicitly-untested lead
+ *  - asserted:  recorded/claimed, not yet confirmed (the conservative default)
+ *  - observed:  passively confirmed (confidence 1.0 / confirmed_at)
+ *  - validated: actively confirmed (a tool test succeeded)
+ *  - exploited: exploitation confirmed
+ *  - refuted:   tested and disproven
+ *  - stale:     was true but has decayed (superseded identity, expired/rotated credential) */
+export type ClaimState = 'candidate' | 'asserted' | 'observed' | 'validated' | 'exploited' | 'refuted' | 'stale';
+
 export interface NodeProperties {
   // Common
   id: string;
@@ -48,6 +60,7 @@ export interface NodeProperties {
   sources?: string[];           // unique agents that contributed to this node
   confidence: number;           // 0.0 - 1.0
   source_trust?: SourceTrust;   // derived on export (services/source-trust.ts); not stored
+  claim_state?: ClaimState;    // derived on export (services/source-trust.ts:claimState); not stored
   notes?: string;
   identity_status?: 'canonical' | 'unresolved' | 'superseded';
   identity_family?: string;
@@ -463,6 +476,7 @@ export interface EdgeProperties {
   type: EdgeType;
   confidence: number;           // 0.0 = hypothesis, 1.0 = confirmed
   source_trust?: SourceTrust;   // derived on export (services/source-trust.ts); not stored
+  claim_state?: ClaimState;    // derived on export (services/source-trust.ts:claimState); not stored
   discovered_by?: string;
   discovered_by_action_id?: string; // most-recent observing action (paired with discovered_by; overwritten on re-observation like the edge's other provenance) — pivot to the run/evidence via explain_action
   discovered_at: string;

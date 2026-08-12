@@ -35,7 +35,7 @@ import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import type { PathOptimize, PathResult } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
-import { sourceTrust } from './source-trust.js';
+import { claimState, sourceTrust } from './source-trust.js';
 import { ChainScorer } from './chain-scorer.js';
 import { CampaignPlanner } from './campaign-planner.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
@@ -9259,6 +9259,7 @@ export class GraphEngine {
       // than paying clone setup cost for every node and edge at 50k scale.
       const properties = this.projectNodeProperties(id, attrs, withCommunities, false);
       if (withTrust) properties.source_trust = sourceTrust(attrs);
+      if (withTrust) properties.claim_state = claimState(attrs);
       nodes.push({ id, properties });
     });
 
@@ -9270,6 +9271,7 @@ export class GraphEngine {
       }
       const properties = { ...attrs } as EdgeProperties;
       if (withTrust) properties.source_trust = sourceTrust(attrs);
+      if (withTrust) properties.claim_state = claimState(attrs);
       edges.push({ id: edgeId, source, target, properties });
     });
 
@@ -9327,6 +9329,7 @@ export class GraphEngine {
       }
       const properties = this.projectNodeProperties(id, attrs, includeDerivedCommunities);
       if (withTrust) properties.source_trust = sourceTrust(attrs);
+      if (withTrust) properties.claim_state = claimState(attrs);
       nodes.push({ id, properties });
       if (includeIncidentEdges || incidentNodeIds.has(id)) {
         for (const edgeId of this.ctx.graph.edges(id)) edgeIds.add(edgeId);
@@ -9352,6 +9355,7 @@ export class GraphEngine {
       const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
       const properties = detached(attrs);
       if (withTrust) properties.source_trust = sourceTrust(attrs);
+      if (withTrust) properties.claim_state = claimState(attrs);
       edges.push({ id: edgeId, source, target, properties });
     }
 

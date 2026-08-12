@@ -431,10 +431,18 @@ describe('GraphEngine', () => {
       }));
       const labeled = engine.exportGraph({ sourceTrust: true });
       expect(labeled.nodes.length).toBeGreaterThan(0);
-      for (const n of labeled.nodes) expect(['observed', 'asserted', 'inferred']).toContain(n.properties.source_trust);
+      const CLAIM_STATES = ['candidate', 'asserted', 'observed', 'validated', 'exploited', 'refuted', 'stale'];
+      for (const n of labeled.nodes) {
+        expect(['observed', 'asserted', 'inferred']).toContain(n.properties.source_trust);
+        // claim_state (the lifecycle) rides the same opt-in gate as source_trust.
+        expect(CLAIM_STATES).toContain(n.properties.claim_state);
+      }
       // Default export is unchanged (keeps the canonical replay hash pristine).
       const plain = engine.exportGraph();
-      for (const n of plain.nodes) expect(n.properties.source_trust).toBeUndefined();
+      for (const n of plain.nodes) {
+        expect(n.properties.source_trust).toBeUndefined();
+        expect(n.properties.claim_state).toBeUndefined();
+      }
     });
 
     it('reverse-merges hostname-only host into existing IP-based host via FQDN short name', () => {
