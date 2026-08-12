@@ -742,6 +742,44 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
 // Evidence Chain Construction
 // ============================================================
 
+/**
+ * The full set of node ids that resolve to `nodeId` for evidence correlation: the id
+ * itself plus every id that (transitively) merged into it, plus the ultimate canonical
+ * survivor if `nodeId` was itself superseded. Derived from the `Identity converged`
+ * audit events identity-reconciliation logs on every merge — each carries
+ * `details.alias_node_id` and `details.canonical_node_id`. When no merges touched this
+ * node, the result is just `{nodeId}`, so correlation is unchanged in the common case.
+ */
+export function identityFamilyIds(nodeId: string, history: ActivityLogEntry[]): Set<string> {
+  const aliasToCanonical = new Map<string, string>();
+  for (const entry of history) {
+    const d = entry.details as Record<string, unknown> | undefined;
+    const alias = typeof d?.alias_node_id === 'string' ? d.alias_node_id : undefined;
+    const canonical = typeof d?.canonical_node_id === 'string' ? d.canonical_node_id : undefined;
+    if (alias && canonical && alias !== canonical) aliasToCanonical.set(alias, canonical);
+  }
+  if (aliasToCanonical.size === 0) return new Set([nodeId]);
+
+  const family = new Set<string>([nodeId]);
+  // Forward: if nodeId was itself superseded, follow the chain to the survivor (cycle-guarded).
+  let cursor = nodeId;
+  const seen = new Set<string>();
+  while (aliasToCanonical.has(cursor) && !seen.has(cursor)) {
+    seen.add(cursor);
+    cursor = aliasToCanonical.get(cursor)!;
+    family.add(cursor);
+  }
+  // Reverse: pull in every id that (transitively) converged into anything already in the family.
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [alias, canonical] of aliasToCanonical) {
+      if (family.has(canonical) && !family.has(alias)) { family.add(alias); grew = true; }
+    }
+  }
+  return family;
+}
+
 export function buildEvidenceChainsForNode(
   nodeId: string,
   graph: ExportedGraph,
@@ -755,12 +793,21 @@ export function buildEvidenceChainsForNode(
   const sliceLoader = opts?.sliceLoader;
   const evidenceByNode = opts?.evidenceByNode;
 
-  // 1. Find activity log entries that reference this node
+  // Identity reconciliation merges alias nodes into a canonical node (rewriting node
+  // properties + edges) but does NOT rewrite the target_node_ids on historical activity
+  // entries. Evidence captured against the pre-merge id would therefore detach from the
+  // canonical node — an operator inspecting the merged host would see "no evidence"
+  // despite tools having run against it. Resolve the node's whole identity family from
+  // the "Identity converged" audit events already in this history, so evidence follows
+  // the node across merges. When nothing merged, this is just {nodeId}.
+  const family = identityFamilyIds(nodeId, history);
+
+  // 1. Find activity log entries that reference this node (or any id that merged into it)
   const relatedEntries = history.filter(entry => {
-    if (entry.target_node_ids?.includes(nodeId)) return true;
+    if (entry.target_node_ids?.some(id => family.has(id))) return true;
     // Check ingested_node_ids stored in details (from finding ingestion)
     const d = entry.details as Record<string, unknown> | undefined;
-    if (Array.isArray(d?.ingested_node_ids) && (d!.ingested_node_ids as string[]).includes(nodeId)) return true;
+    if (Array.isArray(d?.ingested_node_ids) && (d!.ingested_node_ids as string[]).some(id => family.has(id))) return true;
     return false;
   });
 

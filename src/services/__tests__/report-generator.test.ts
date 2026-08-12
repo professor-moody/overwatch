@@ -276,6 +276,52 @@ describe('buildEvidenceChainsForNode', () => {
     expect(chains).toHaveLength(0);
   });
 
+  // Identity reconciliation merges an alias node into a canonical one but does NOT rewrite
+  // target_node_ids on historical activity. Evidence captured against the pre-merge id must
+  // still correlate to the canonical node — else a merged host reads as "no evidence".
+  it('keeps evidence attached across an identity merge (alias -> canonical)', () => {
+    const history = [
+      // A real tool run, logged against the pre-merge alias id.
+      {
+        event_id: 'ev-run', timestamp: '2026-01-01T00:00:00Z',
+        description: 'nmap completed', event_type: 'action_completed',
+        action_id: 'act-nmap', tool_name: 'nmap', command_repr: 'nmap -sV 10.0.0.5',
+        target_node_ids: ['host-ip-5'],
+        details: { command: 'nmap -sV 10.0.0.5', binary: 'nmap', exit_code: 0 },
+      },
+      // The merge audit event: host-ip-5 converged into the canonical host-canonical.
+      {
+        event_id: 'ev-merge', timestamp: '2026-01-01T00:01:00Z',
+        description: 'Identity converged: host-ip-5 -> host-canonical', event_type: 'system',
+        target_node_ids: ['host-canonical'],
+        details: { alias_node_id: 'host-ip-5', canonical_node_id: 'host-canonical' },
+      },
+    ] as never;
+
+    // Querying the canonical node must surface the run that was tagged with the alias id.
+    const chains = buildEvidenceChainsForNode('host-canonical', makeGraph(), history);
+    expect(chains.find(c => c.action_id === 'act-nmap')).toBeDefined();
+
+    // And an unrelated node still gets nothing (the family resolution isn't a catch-all).
+    expect(buildEvidenceChainsForNode('host-unrelated', makeGraph(), history)).toHaveLength(0);
+  });
+
+  it('resolves a transitive merge chain (A -> B -> C) so pre-merge evidence still correlates', () => {
+    const history = [
+      {
+        event_id: 'ev-run', timestamp: '2026-01-01T00:00:00Z',
+        description: 'nxc completed', event_type: 'action_completed',
+        action_id: 'act-nxc', tool_name: 'nxc', command_repr: 'nxc smb A',
+        target_node_ids: ['host-A'],
+        details: { command: 'nxc smb A', exit_code: 0 },
+      },
+      { event_id: 'm1', timestamp: '2026-01-01T00:01:00Z', description: 'converged', event_type: 'system', details: { alias_node_id: 'host-A', canonical_node_id: 'host-B' } },
+      { event_id: 'm2', timestamp: '2026-01-01T00:02:00Z', description: 'converged', event_type: 'system', details: { alias_node_id: 'host-B', canonical_node_id: 'host-C' } },
+    ] as never;
+
+    expect(buildEvidenceChainsForNode('host-C', makeGraph(), history).find(c => c.action_id === 'act-nxc')).toBeDefined();
+  });
+
   // M9: report_finding writes its durable blob id to details.evidence_id (not a
   // stdout/stderr stream id). The chain builder used to read only the stream ids, so
   // the durable proof was orphaned. The chain and its proof card must now cite it, with
