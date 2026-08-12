@@ -451,7 +451,7 @@ export function SmokePanel() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Smoke"
+        title="Diagnostics"
         meta={
           <span className="inline-flex items-center gap-3">
           <StatusPill status={overallStatus} />
