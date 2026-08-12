@@ -610,6 +610,16 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
 // orchestrates; children (archetype) land type-matched findings. Returns an
 // OrchRunRecord for gradeOrchestration().
 
+// Edge types that mark material offensive progress (access / lateral movement /
+// credential capture / escalation / cross-tier pivot), as opposed to plain service or
+// metadata discovery. Used to grade objective_progress by what actually moved forward.
+const ORCH_ACCESS_EDGE_TYPES = new Set([
+  'HAS_SESSION', 'ADMIN_TO', 'CAN_RDPINTO', 'CAN_PSREMOTE',
+  'OWNS_CRED', 'VALID_ON', 'TESTED_CRED',
+  'CAN_DCSYNC', 'CAN_GET_CHANGES', 'CAN_GET_CHANGES_ALL', 'GENERIC_ALL',
+  'ASSUMES_ROLE', 'CROSS_TIER_PIVOT', 'BACKED_BY', 'FEDERATES_WITH',
+]);
+
 const ORCH_SEED_NODES: Array<Record<string, unknown>> = [
   { id: 'orch-host-a', type: 'host', label: '10.10.30.1', ip: '10.10.30.1', alive: true },
   { id: 'orch-host-b', type: 'host', label: '10.10.30.2', ip: '10.10.30.2', alive: true },
@@ -732,7 +742,9 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     await startHttpApp(app, { port: 0, host: '127.0.0.1' });
 
     app.engine.ingestFinding({ id: 'seed-orch', agent_id: 'seed', timestamp: new Date().toISOString(), nodes: ORCH_SEED_NODES, edges: [] } as never);
-    const beforeCount = app.engine.exportGraph().nodes.length;
+    const beforeGraph = app.engine.exportGraph();
+    const beforeCount = beforeGraph.nodes.length;
+    const beforeNodeIds = new Set(beforeGraph.nodes.map(n => n.id));
 
     app.engine.registerAgent({
       id: taskId, agent_id: 'agent-orch', assigned_at: new Date().toISOString(), status: 'running',
@@ -807,8 +819,25 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     // primary it also counts nodes the primary lands directly — i.e. it measures
     // "the engagement graph advanced", not "children specifically progressed it".
     // Orchestration-specific credit comes from the dispatch criteria, not this one.
-    const afterCount = app.engine.exportGraph().nodes.length;
-    const record: OrchRunRecord = { toolCalls, dispatches, newNodeCount: Math.max(0, afterCount - beforeCount) };
+    const afterGraph = app.engine.exportGraph();
+    const afterCount = afterGraph.nodes.length;
+    // Material offensive progress: new access / credential / pivot edges touching a
+    // node created this run (a shell, admin rights, a captured credential, a role
+    // assumption, a cross-tier pivot) — not plain service/metadata discovery.
+    const newOrchNodeIds = new Set(afterGraph.nodes.filter(n => !beforeNodeIds.has(n.id)).map(n => n.id));
+    const newAccessEdges = afterGraph.edges.filter(e =>
+      ORCH_ACCESS_EDGE_TYPES.has(String((e.properties as { type?: string })?.type ?? ''))
+      && (newOrchNodeIds.has(e.source) || newOrchNodeIds.has(e.target)),
+    ).length;
+    const objectivesAchieved = app.engine.getFullHistory()
+      .filter(ev => ev.event_type === 'objective_achieved').length;
+    const record: OrchRunRecord = {
+      toolCalls,
+      dispatches,
+      newNodeCount: Math.max(0, afterCount - beforeCount),
+      objectivesAchieved,
+      newAccessEdges,
+    };
     const taskStatus = app.engine.getTask(taskId)?.status;
     const outcome = classifyEvalOutcome(taskStatus, ndjson, timedOut);
     const finalizeArtifacts = (details: EvalArtifactCompletion = {}) => artifactSession?.finalize({

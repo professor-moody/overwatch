@@ -45,7 +45,12 @@ describe.skipIf(!supportsLocalListen)('orchestration eval pipeline smoke (fake)'
     expect(g.criteria).toHaveLength(ORCH_CRITERIA.length);
     expect(g.criteria.find(c => c.criterion === 'dispatches')!.score).toBe(1);
     expect(g.criteria.find(c => c.criterion === 'archetype_match')!.score).toBe(1);
-    expect(g.criteria.find(c => c.criterion === 'objective_progress')!.score).toBe(1);
+    // objective_progress is graded by what actually moved forward: the fake recon child
+    // lands service/metadata nodes (no access edge, no achieved objective), so this is
+    // partial credit — NOT the full 1.0 that raw node creation used to earn.
+    const opScore = g.criteria.find(c => c.criterion === 'objective_progress')!.score;
+    expect(opScore).toBeGreaterThan(0);   // the child's nodes register as progress
+    expect(opScore).toBeLessThan(1);      // but discovery alone is not full objective progress
   }, 45000);
 
   it('uses the same explicit artifact finalization path as prompt evaluation', async () => {

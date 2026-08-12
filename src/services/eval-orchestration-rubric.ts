@@ -33,11 +33,18 @@ export interface OrchRunRecord {
   toolCalls: OrchToolCall[];
   /** Children the primary dispatched. */
   dispatches: DispatchRecord[];
-  /** Graph nodes added during the run (the engagement advanced). Source-agnostic:
-   *  in the fake smoke the only post-seed writer is the dispatched child, but a real
-   *  primary can also land nodes directly — so this is a coarse "objective advanced"
-   *  signal, not proof children did it. Orchestration credit comes from `dispatches`. */
+  /** Graph nodes added during the run (the engagement advanced). Coarse — creating a
+   *  metadata node is not the same as making objective progress, so this only earns
+   *  partial credit (see scoreObjectiveProgress). Orchestration credit comes from
+   *  `dispatches`. */
   newNodeCount: number;
+  /** Objectives the engagement actually achieved during the run (`objective_achieved`
+   *  events) — the strongest objective-progress signal. Optional; absent → 0. */
+  objectivesAchieved?: number;
+  /** New access / credential / pivot edges created during the run (a shell, admin rights,
+   *  a captured credential, a role assumption, a cross-tier pivot) — material offensive
+   *  progress, as opposed to metadata or plain service discovery. Optional; absent → 0. */
+  newAccessEdges?: number;
 }
 
 export type OrchCriterion =
@@ -172,6 +179,19 @@ function scoreAdaptiveSynthesis(r: OrchRunRecord): { score: number; detail: stri
     : { score: 0.5, detail: 're-oriented after dispatch but did not adapt (no further dispatch)' };
 }
 
+/** Objective progress is graded by what actually moved the engagement forward, not by
+ *  raw graph growth: an achieved objective is full credit; new access/credential/pivot
+ *  edges are material progress; plain node creation (metadata, service discovery) earns
+ *  only a small amount — creating a node is activity, not progress. */
+function scoreObjectiveProgress(r: OrchRunRecord): { score: number; detail: string } {
+  const achieved = r.objectivesAchieved ?? 0;
+  const accessEdges = r.newAccessEdges ?? 0;
+  if (achieved > 0) return { score: 1, detail: `${achieved} objective(s) achieved` };
+  if (accessEdges > 0) return { score: 0.6, detail: `${accessEdges} new access/credential/pivot edge(s) — material progress` };
+  if (r.newNodeCount > 0) return { score: 0.2, detail: `${r.newNodeCount} new node(s) — graph advanced, no access/objective progress` };
+  return { score: 0, detail: 'no graph progress' };
+}
+
 export function gradeOrchestration(run: OrchRunRecord): OrchRubricResult {
   const raw: Array<{ criterion: OrchCriterion; score: number; detail: string }> = [
     { criterion: 'orients', ...scoreOrients(run) },
@@ -179,7 +199,7 @@ export function gradeOrchestration(run: OrchRunRecord): OrchRubricResult {
     { criterion: 'dispatches', ...scoreDispatches(run) },
     { criterion: 'archetype_match', ...scoreArchetypeMatch(run) },
     { criterion: 'synthesizes', ...scoreSynthesizes(run) },
-    { criterion: 'objective_progress', score: run.newNodeCount > 0 ? 1 : 0, detail: `${run.newNodeCount} new graph node(s)` },
+    { criterion: 'objective_progress', ...scoreObjectiveProgress(run) },
     { criterion: 'dispatch_precision', ...scoreDispatchPrecision(run) },
     { criterion: 'orient_efficiency', ...scoreOrientEfficiency(run) },
     { criterion: 'adaptive_synthesis', ...scoreAdaptiveSynthesis(run) },

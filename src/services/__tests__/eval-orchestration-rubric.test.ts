@@ -19,6 +19,7 @@ const goodRun: OrchRunRecord = {
     { archetype: 'web_tester', matchedFrontier: true, target: 'fi-2' },
   ],
   newNodeCount: 4,
+  objectivesAchieved: 1,  // a top run actually reached an objective (full objective_progress)
 };
 
 describe('gradeOrchestration', () => {
@@ -87,8 +88,17 @@ describe('gradeOrchestration', () => {
     expect(gradeOrchestration(run).criteria.find(c => c.criterion === 'synthesizes')!.score).toBe(0);
   });
 
-  it('flags zero objective progress when no nodes landed', () => {
-    expect(gradeOrchestration({ ...goodRun, newNodeCount: 0 }).criteria.find(c => c.criterion === 'objective_progress')!.score).toBe(0);
+  it('flags zero objective progress when nothing advanced', () => {
+    const stalled: OrchRunRecord = { ...goodRun, newNodeCount: 0, objectivesAchieved: 0, newAccessEdges: 0 };
+    expect(gradeOrchestration(stalled).criteria.find(c => c.criterion === 'objective_progress')!.score).toBe(0);
+  });
+
+  it('grades node-only discovery as partial, an achieved objective as full', () => {
+    const discoveryOnly: OrchRunRecord = { ...goodRun, newNodeCount: 6, objectivesAchieved: 0, newAccessEdges: 0 };
+    const op = (r: OrchRunRecord) => gradeOrchestration(r).criteria.find(c => c.criterion === 'objective_progress')!.score;
+    expect(op(discoveryOnly)).toBe(0.2);                                       // nodes only
+    expect(op({ ...discoveryOnly, newAccessEdges: 1 })).toBe(0.6);            // access/pivot
+    expect(op({ ...discoveryOnly, objectivesAchieved: 1 })).toBe(1);         // objective reached
   });
 
   it('does not gate on completed status (no such criterion)', () => {
