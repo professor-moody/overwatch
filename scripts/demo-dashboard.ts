@@ -2,7 +2,9 @@
 // Recordable demo cockpit: starts GraphEngine + DashboardServer with a
 // deterministic, local-only engagement that exercises the operator dashboard.
 
-import { unlinkSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import type { AdapterHandle, EdgeProperties, EngagementConfig, NodeProperties, SessionCapabilities } from '../src/types.js';
 import { GraphEngine } from '../src/services/graph-engine.js';
 import { DashboardServer } from '../src/services/dashboard-server.js';
@@ -13,7 +15,12 @@ import { setTelemetry } from '../src/tools/error-boundary.js';
 import { ToolTelemetry } from '../src/services/tool-telemetry.js';
 import type { ToolDescriptor } from '../src/services/tool-descriptor-registry.js';
 
-const STATE_FILE = './state-demo-dashboard.json';
+// Persist into a fresh temp dir (like demo:daemon) rather than a fixed repo-root file —
+// a crashed run used to leave a journal/quarantine/lock sidecar next to a fixed state
+// file, and the next boot refused all mutations ("nonempty WAL without a valid base").
+// A per-run temp dir can never be stale, and nothing lands in the working tree.
+const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-demo-dashboard-'));
+const STATE_FILE = join(tempDir, 'state.json');
 const requestedDashboardPort = Number.parseInt(process.env.OVERWATCH_DEMO_DASHBOARD_PORT || process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
 const DASHBOARD_PORT = Number.isFinite(requestedDashboardPort) ? requestedDashboardPort : 8384;
 const NOW = new Date('2026-05-15T18:23:34.963Z');
@@ -23,8 +30,6 @@ const ACTION_RDP = 'a11ca7e0001';
 const ACTION_SMB = 'a11ca7e0002';
 const ACTION_CRED = 'a11ca7e0003';
 const ACTION_CI = 'a11ca7e0004';
-
-if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE);
 
 class DemoPtyHandle implements AdapterHandle {
   pid = 4242;
@@ -136,7 +141,7 @@ const config: EngagementConfig = {
   opsec: {
     name: 'pentest',
     enabled: true,
-    max_noise: 1.2,
+    max_noise: 1.0, // config schema caps max_noise at 1.0 — 1.2 threw on GraphEngine construction
     approval_mode: 'approve-all',
     approval_timeout_ms: 3_600_000,
     blacklisted_techniques: ['credential_dump'],
@@ -191,6 +196,9 @@ const config: EngagementConfig = {
 const engine = new GraphEngine(config, STATE_FILE);
 const sessionManager = new SessionManager(engine, 0);
 sessionManager.registerAdapter(new DemoPtyAdapter());
+// Wire the durable-descriptor owner exactly as the real app does (app.ts) — the session
+// runtime refuses to create sessions until one is registered.
+sessionManager.onDurableEvent(event => engine.recordSessionDescriptor(event.session));
 
 const hosts = [
   { id: 'dc01', type: 'host' as const, label: 'DC01.corp.local', ip: '10.10.10.10', os: 'Windows Server 2019', hostname: 'DC01', alive: true, domain_joined: true, edr: 'Defender for Endpoint' },
@@ -893,6 +901,6 @@ if (result.started) {
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
   await dashboard.stop();
-  if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE);
+  rmSync(tempDir, { recursive: true, force: true });
   process.exit(0);
 });
