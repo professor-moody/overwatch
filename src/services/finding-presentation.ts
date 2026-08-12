@@ -183,6 +183,21 @@ function presentVulnerabilityFinding(
   const vulnName = node?.cve || node?.label || stripLegacyPrefix(finding.title);
   const affected = finding.affected_assets.length > 0 ? listPhrase(finding.affected_assets.slice(0, 3)) : asset;
   const exploitable = node?.exploitable === true || /successfully exploited|exploitable: yes/i.test(finding.description);
+  // buildFindings demotes an unverified CVE candidate (version-matched, tested:false) to
+  // `info`. Present it honestly: it was inferred from the detected service version and has
+  // NOT been confirmed on the target — so the linked scan is not a proof of the vuln.
+  const unverified = !exploitable && finding.severity === 'info';
+  if (unverified) {
+    return {
+      title: `${vulnName} is an unverified candidate on ${affected}`,
+      short_title: `${vulnName} needs verification`,
+      summary: `${vulnName} was matched to ${affected} from its detected service version${node?.cvss !== undefined ? ` (CVSS ${node.cvss})` : ''} — not confirmed on the target.`,
+      impact: 'This is a version-match candidate from CVE research. It has not been verified on the target and may not apply — confirm it before prioritizing or remediating.',
+      evidence_claim: `The linked scan shows the service and version ${vulnName} was inferred from; it is not a confirmation that the vulnerability is present.`,
+      technical_context: finding.description,
+      remediation_steps: remediationSteps,
+    };
+  }
   return {
     title: exploitable ? `${vulnName} is exploitable on ${affected}` : `${vulnName} affects ${affected}`,
     short_title: exploitable ? `${vulnName} is exploitable` : `${vulnName} requires remediation`,

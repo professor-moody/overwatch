@@ -210,7 +210,43 @@ describe('buildFindings', () => {
     const vulnFindings = findings.filter(f => f.category === 'vulnerability');
     expect(vulnFindings.length).toBe(1);
     expect(vulnFindings[0].title).toContain('CVE-2024-1234');
-    expect(vulnFindings[0].severity).toBe('critical'); // cvss 9.8
+    expect(vulnFindings[0].severity).toBe('critical'); // cvss 9.8, exploitable — confirmed
+  });
+
+  it('demotes an unverified CVE candidate (research_cve, VULNERABLE_TO tested:false) to info', () => {
+    // A version-matched candidate: high CVSS, but nobody confirmed it on the target.
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'svc-dns', properties: { id: 'svc-dns', type: 'service', label: 'domain/53', discovered_at: 'now', confidence: 1 } as NodeProperties },
+        { id: 'vuln-cand', properties: { id: 'vuln-cand', type: 'vulnerability', label: 'CVE-2020-25682', cve: 'CVE-2020-25682', cvss: 8.1, vuln_type: 'rce', discovered_at: 'now', confidence: 0.6 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'svc-dns', target: 'vuln-cand', properties: { type: 'VULNERABLE_TO', confidence: 0.6, tested: false, discovered_at: 'now' } as EdgeProperties },
+      ],
+    };
+    const [vuln] = buildFindings(graph, [], makeConfig()).filter(f => f.category === 'vulnerability');
+    expect(vuln.severity).toBe('info');                 // NOT high, despite CVSS 8.1
+    expect(vuln.risk_score).toBeLessThanOrEqual(2);
+    expect(vuln.title).toContain('Unverified CVE candidate');
+    expect(vuln.cvss_score).toBe(8.1);                  // real CVSS kept as context
+    // The presentation reads honestly — matched from version, not confirmed.
+    expect(vuln.presentation?.title).toMatch(/unverified candidate/i);
+    expect(vuln.presentation?.evidence_claim).toMatch(/not a confirmation/i);
+  });
+
+  it('keeps a tested/confirmed vulnerability at its CVSS severity', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'svc-x', properties: { id: 'svc-x', type: 'service', label: 'http/80', discovered_at: 'now', confidence: 1 } as NodeProperties },
+        { id: 'vuln-x', properties: { id: 'vuln-x', type: 'vulnerability', label: 'CVE-2021-41773', cve: 'CVE-2021-41773', cvss: 7.5, vuln_type: 'lfi', discovered_at: 'now', confidence: 1 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'svc-x', target: 'vuln-x', properties: { type: 'VULNERABLE_TO', confidence: 1, tested: true, discovered_at: 'now' } as EdgeProperties },
+      ],
+    };
+    const [vuln] = buildFindings(graph, [], makeConfig()).filter(f => f.category === 'vulnerability');
+    expect(vuln.severity).toBe('high');                 // cvss 7.5, tested → not demoted
+    expect(vuln.title).not.toContain('Unverified');
   });
 
   it('sorts findings by risk score descending', () => {

@@ -33,9 +33,13 @@ export function findingRemediation(finding: FindingDto): string {
   return steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
 }
 
-/** A short label for WHAT the finding is — the CWE name when classified, else the
- *  category label. Used to anchor the evidence block to the vuln it proves. */
+/** A short label for WHAT the finding is — used to anchor the evidence block to the vuln
+ *  it proves. Prefer the actual CVE id when the finding references one (the classifier's
+ *  coarse CWE bucket, e.g. "Code Injection" for any rce, is misleading for a specific CVE);
+ *  otherwise the CWE name, else the category label. */
 export function findingVulnLabel(finding: FindingDto): string {
+  const cve = (finding.presentation?.title || finding.title || '').match(/CVE-\d{4}-\d{4,}/i)?.[0];
+  if (cve) return cve.toUpperCase();
   return finding.classification?.cwe?.name || findingCategoryLabel(finding.category);
 }
 
