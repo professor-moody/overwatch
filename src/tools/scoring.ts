@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
+import { selectFrontierTasks } from '../services/frontier-ranking.js';
 import {
   ApprovalCommandError,
   ApprovalCommandService,
@@ -67,7 +68,11 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
       const frontier = engine.computeFrontier();
       const { passed, filtered } = engine.filterFrontier(frontier);
 
-      const surfaced = passed.slice(0, max_items);
+      // Rank by offensive value and select with a per-type diversity cap instead of a
+      // positional slice — otherwise a burst of low-value enrichment tasks (surfaced first
+      // in construction order) crowds out the pivots/credentials/exploitation that matter.
+      // Each surfaced item carries a frontier_priority + rank_reason.
+      const surfaced = selectFrontierTasks(passed, max_items);
 
       // Frontier linkage and dropped-item audit are one durable state patch.
       const linkage = engine.recordFrontierEmission(surfaced.map(item => item.id));
