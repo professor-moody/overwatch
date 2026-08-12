@@ -7,6 +7,7 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -333,9 +334,22 @@ function slugify(input) {
 function resolveTemplate(template) {
   const direct = resolve(process.cwd(), template);
   if (existsSync(direct)) return direct;
-  const named = join(sourceRoot, 'engagement-templates', template.endsWith('.json') ? template : `${template}.json`);
+  const templateDir = join(sourceRoot, 'engagement-templates');
+  const named = join(templateDir, template.endsWith('.json') ? template : `${template}.json`);
   if (existsSync(named)) return named;
-  throw new Error(`Template not found: ${template}`);
+  // List the real template names so a mistyped `--template` (e.g. a profile name
+  // like "network") points the operator at valid choices instead of dead-ending.
+  let available = [];
+  try {
+    available = readdirSync(templateDir)
+      .filter(f => f.endsWith('.json'))
+      .map(f => f.replace(/\.json$/, ''))
+      .sort();
+  } catch { /* templateDir unreadable — fall through with no hint */ }
+  const hint = available.length
+    ? ` Available templates: ${available.join(', ')} (or pass a path to your own .json).`
+    : '';
+  throw new Error(`Template not found: ${template}.${hint}`);
 }
 
 const opts = parseArgs(process.argv.slice(2));
