@@ -155,8 +155,8 @@ export class DashboardMainWebSocketHub {
   }
 
   broadcast(event: unknown): void {
-    const validated = MainWebSocketEventSchema.parse(event);
-    const message = JSON.stringify(validated);
+    const message = this.serializeOutbound(event);
+    if (message === null) return;
     for (const ws of this.clients) {
       if (this.contractFilter !== undefined
         && (this.clientContracts.get(ws) ?? 1) !== this.contractFilter) continue;
@@ -370,8 +370,35 @@ export class DashboardMainWebSocketHub {
 
   private send(ws: WebSocket, event: unknown): void {
     if (ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify(MainWebSocketEventSchema.parse(event)));
+    const message = this.serializeOutbound(event);
+    if (message !== null) ws.send(message);
   }
+
+  private serializeOutbound(event: unknown): string | null {
+    return serializeOutboundEvent(event);
+  }
+}
+
+/**
+ * Validate an outbound event against the wire contract, returning the JSON string, or
+ * null if it doesn't conform. A contract-invalid outbound message is DROPPED with a
+ * logged error rather than thrown: `send()` runs synchronously inside the WS connection
+ * handler, so a throwing `.parse()` here is an unhandled exception that crashes the whole
+ * daemon — a single bad event (e.g. schema drift, or one malformed record in the state
+ * snapshot) would DoS every connected operator on connect. Inbound requests stay
+ * fail-closed; this fail-safe applies only to outbound telemetry, where dropping one
+ * frame is strictly better than taking the process down.
+ */
+export function serializeOutboundEvent(event: unknown): string | null {
+  const parsed = MainWebSocketEventSchema.safeParse(event);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const where = issue ? `${issue.path.join('.')}: ${issue.message}` : parsed.error.message;
+    const kind = (event as { type?: unknown } | null)?.type;
+    console.error(`[dashboard-ws] dropping contract-invalid outbound event (type=${String(kind)}) — ${where}`);
+    return null;
+  }
+  return JSON.stringify(parsed.data);
 }
 
 export function mergeGraphUpdateDetails(
