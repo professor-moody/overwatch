@@ -87,6 +87,24 @@ read-only recovery launch. Ambiguous or incomplete artifacts stop setup before
 it writes client wiring; restore the matching config or set
 `OVERWATCH_STATE_FILE` to the state you intend to inspect.
 
+!!! tip "Preview first — confirm a clean, fresh engagement"
+    Add `--dry-run` to print exactly what setup *would* write, touching nothing:
+
+    ```bash
+    npm run setup -- --dry-run --template ctf --name "My Lab" --cidr 10.10.10.0/24
+    ```
+
+    On a genuinely fresh clone the output includes a brand-new `engagement.json`
+    (with a fresh `engagement_nonce`) alongside the client wiring — that's a clean
+    start. If the dry run instead **omits** `engagement.json` (setup is preserving
+    an existing one) or **stops** and asks you to select or restore a state family,
+    then durable artifacts from a previous engagement are present and setup will
+    not overwrite them. To start clean in that case, move the old engagement to a
+    separate workspace rather than deleting a live state file while its WAL,
+    snapshots, evidence, and reports remain — see
+    [Backup and relocation](daily-operations.md#backup-and-relocation). Run
+    `npm run setup -- --help` for the full flag list.
+
 Before the first daemon start, you may instead copy `engagement.example.json`
 or a template to `engagement.json` and fill in **just two things**:
 
@@ -460,6 +478,24 @@ If none of the templates fit, the full schema is in [Configuration](configuratio
     - Port conflict? Stop the verified owner, rerun setup with `OVERWATCH_DASHBOARD_PORT=<port>`, then start it again.
     - Blank page? Open browser console (F12) — the dashboard needs WebGL.
     - WebSocket disconnects? It reconnects with bounded 1/2/4/8/16/30-second backoff and falls back to HTTP polling. Check for a proxy/firewall blocking WS.
+
+??? failure "Dashboard build … does not match server build … (stuck disconnected)"
+    The tab shows *"Dashboard build `<a>` does not match server build `<b>`"* and
+    stays **Disconnected**. The browser loaded a different dashboard bundle than
+    the daemon currently running — almost always a **stale daemon** left over from
+    before you rebuilt, or a second daemon from another checkout. Make one daemon
+    serve the build you just built:
+
+    ```bash
+    npm run daemon:status   # which PID / build / engagement is actually live?
+    npm run build           # ensure the bundle and backend are the same build
+    npm run daemon:restart  # verified stop + start on the fresh build
+    npm run doctor          # must report a matching build identity
+    ```
+
+    Then hard-reload the tab (**Cmd/Ctrl+Shift+R**) so the browser drops its cached
+    bundle. If `doctor` reports a *different* PID or build, another owner is running
+    (e.g. a second checkout) — stop that owner instead of starting a second daemon.
 
 ??? failure "Corrupted state file"
     Do not delete or rename the primary state, WAL, `.snapshots/`, config
