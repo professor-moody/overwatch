@@ -1023,6 +1023,24 @@ describe('GraphEngine', () => {
       expect(discovery[0].target_cidr).toBe('10.10.10.0/28');
     });
 
+    it('getState frontier is canonically ranked — the operator sees the same ordering the model does', () => {
+      // Canonical ranking is materialized once by the engine, so the frontier get_state /
+      // the dashboard reads carries the same rank the model gets via next_task, in the same
+      // order — not raw construction order.
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const frontier = engine.getState().frontier;
+      expect(frontier.length).toBeGreaterThan(0);
+      for (const item of frontier) {
+        expect(item.rank).toBeDefined();
+        expect(typeof item.rank!.priority_score).toBe('number');
+        expect(typeof item.rank!.explanation).toBe('string');
+      }
+      // Descending by priority — never re-sorted per consumer.
+      for (let i = 1; i < frontier.length; i++) {
+        expect(frontier[i].rank!.priority_score).toBeLessThanOrEqual(frontier[i - 1].rank!.priority_score);
+      }
+    });
+
     it('network_discovery item persists with reduced fan_out after partial exploration', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // /28 = 14 usable hosts
