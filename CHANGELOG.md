@@ -4,6 +4,54 @@ All notable source releases are documented here. Overwatch follows semantic
 versioning for public wire/configuration contracts and uses explicit persisted
 state and journal versions for durable engagement data.
 
+## [Unreleased]
+
+The efficacy & evidence program — an outcome-honesty train that narrows the gap
+between what Overwatch reports and what an engagement has actually proven. All
+changes are additive/behavioral; no persisted-state, wire, or config contract
+version changes.
+
+### Added
+
+- Epistemic labels derived on export: `source_trust` (observed | asserted |
+  inferred — provenance) and `claim_state` (candidate → asserted → observed →
+  validated → exploited, plus refuted / stale — current standing). Both ride the
+  opt-in `exportGraph({ sourceTrust: true })` gate; the canonical export and its
+  golden-replay hash are unchanged.
+- An engagement scorecard (`computeEngagementScorecard`) — ground-truth-free
+  quality metrics (verified-vs-hypothesized claim share, proof-ready findings,
+  unverified CVE candidates, objective attainment) rendered as a report
+  "Evidence Integrity" section (Markdown) and carried in the JSON report.
+- Canonical frontier ranking: every item is annotated once, at the engine, with
+  a split `rank` (priority_score / evidence_confidence / expected_value /
+  expected_noise / explanation), so `next_task`, `get_state`, the dashboard,
+  campaigns, and dispatch all read the same ordered, explained frontier.
+
+### Changed
+
+- `claim_state: exploited` now requires a real exploitation signal (an explicit
+  exploitation event or a confirmed EXPLOITS relationship), not the loosely
+  severity-derived `exploitable` flag, which is only ever a `candidate`.
+- CVSS (`cvss_score` / `cvss_vector` / `cvss_estimated`) is emitted only for
+  vulnerability findings. Engagement achievements (captured hosts, reachable
+  roles, credentials, cloud resources) are ranked by `engagement_risk`, never a
+  fabricated CVSS.
+- "Proof-ready" is one canonical predicate (`hasCapturedProof`) shared by the
+  scorecard and finding-readiness: retrievable evidence (captured bytes or a
+  matched-signal excerpt), not a bare command line or exit code.
+- Objective evaluation and path-start selection require **claim maturity**
+  (`isMatureClaim`) instead of bare `confidence >= 0.9`: a rule inference, a
+  refuted edge, or a stale/rotated credential no longer completes an objective
+  or roots an attack path, while legitimately-confirmed access at 0.9–0.99 is
+  unaffected.
+- Frontier ranking no longer clamps the KB/chain confidence boost to 1.0 and now
+  folds the attack-chain `chain_score` into expected value; both signals were
+  previously discarded.
+- Orchestration-eval material progress is measured as a real before/after
+  edge-ID delta (an access edge between two already-known nodes now counts), and
+  the access-edge set drops topology (`BACKED_BY`, `FEDERATES_WITH`) and the
+  non-edge `CROSS_TIER_PIVOT`.
+
 ## 0.2.0 — 2026-07-18
 
 This is the first explicit compatibility baseline after the reliability,
