@@ -19,6 +19,7 @@ import {
   renderFullReportFromModel,
 } from './report-generator.js';
 import type { ReportInput, AttackPath, ReportProfile, EvidenceStyle, ReportOptions, ReportIntegrity } from './report-generator.js';
+import { computeEngagementScorecard } from './engagement-scorecard.js';
 import {
   verifyChain, verifyCheckpoints, verifyCheckpointSignatures,
   attestCheckpointSignatures, loadCheckpointKeyring, deriveChainSeed,
@@ -388,8 +389,17 @@ export function assembleReport(
   if (format === 'json') {
     const classifications = classifyAllFindings(findings, graph);
     const remRanking = buildRemediationRanking(findings, graph);
+    // Ground-truth-free quality signal: how much of the engagement is verified vs.
+    // hypothesized, how proof-ready its findings are. Needs claim_state, so re-export
+    // with sourceTrust (report generation is not a hot path).
+    const engagement_scorecard = computeEngagementScorecard(
+      engine.exportGraph({ sourceTrust: true }),
+      findings,
+      config.objectives ?? [],
+    );
     const jsonPayload = {
       engagement: { id: config.id, name: config.name },
+      engagement_scorecard,
       findings: findings.map(f => ({
         ...f,
         classification: classifications.get(f.id) ?? f.classification,
