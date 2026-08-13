@@ -726,30 +726,37 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     // Classification (CWE, OWASP, NIST, PCI, ATT&CK)
     f.classification = classifyFinding(f, nodeMap2, graph);
 
-    // CVSS: use explicit vector from vuln node if available, otherwise estimate
-    let hasExplicitCvss = false;
-    for (const assetId of f.affected_assets) {
-      const node = nodeMap2.get(assetId);
-      if (node?.type === 'vulnerability' && node.cvss !== undefined) {
-        hasExplicitCvss = true;
-        f.cvss_score = node.cvss;
-        break;
+    // CVSS is a vulnerability-severity metric — it applies ONLY to vulnerability findings.
+    // Non-vuln findings (captured hosts, reachable roles, captured credentials, public
+    // cloud resources) are prioritized by engagement_risk (risk_score), never a fabricated
+    // CVSS. Estimating one for them stamped misleading "Estimated CVSS" vectors on things
+    // that are not vulnerabilities at all.
+    if (f.category === 'vulnerability') {
+      // Prefer an explicit vector/score from a vuln node; otherwise estimate from context.
+      let hasExplicitCvss = false;
+      for (const assetId of f.affected_assets) {
+        const node = nodeMap2.get(assetId);
+        if (node?.type === 'vulnerability' && node.cvss !== undefined) {
+          hasExplicitCvss = true;
+          f.cvss_score = node.cvss;
+          break;
+        }
       }
-    }
-    // For vulnerability findings, also check the finding's own vuln node
-    if (!hasExplicitCvss && f.category === 'vulnerability') {
-      const vulnNodeId = f.id.replace(/^finding-vuln-/, '');
-      const vulnNode = nodeMap2.get(vulnNodeId);
-      if (vulnNode?.type === 'vulnerability' && vulnNode.cvss !== undefined) {
-        hasExplicitCvss = true;
-        f.cvss_score = vulnNode.cvss;
+      // Also check the finding's own vuln node.
+      if (!hasExplicitCvss) {
+        const vulnNodeId = f.id.replace(/^finding-vuln-/, '');
+        const vulnNode = nodeMap2.get(vulnNodeId);
+        if (vulnNode?.type === 'vulnerability' && vulnNode.cvss !== undefined) {
+          hasExplicitCvss = true;
+          f.cvss_score = vulnNode.cvss;
+        }
       }
-    }
-    if (!hasExplicitCvss) {
-      const estimated = estimateCvssFromContext(f, graph, nodeMap2);
-      f.cvss_vector = vectorToString(estimated.vector);
-      f.cvss_score = estimated.score;
-      f.cvss_estimated = true;
+      if (!hasExplicitCvss) {
+        const estimated = estimateCvssFromContext(f, graph, nodeMap2);
+        f.cvss_vector = vectorToString(estimated.vector);
+        f.cvss_score = estimated.score;
+        f.cvss_estimated = true;
+      }
     }
     f.presentation = presentFinding(f, { graph });
   }

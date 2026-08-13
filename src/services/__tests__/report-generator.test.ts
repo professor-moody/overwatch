@@ -1527,14 +1527,25 @@ describe('buildFindings — classification & CVSS enrichment', () => {
     }
   });
 
-  it('sets cvss_score on every finding', () => {
+  it('sets cvss_score only on vulnerability findings — never on engagement achievements', () => {
     const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
+    let vulns = 0, nonVulns = 0;
     for (const f of findings) {
-      expect(f.cvss_score).toBeDefined();
-      expect(typeof f.cvss_score).toBe('number');
-      expect(f.cvss_score).toBeGreaterThanOrEqual(0);
-      expect(f.cvss_score).toBeLessThanOrEqual(10);
+      if (f.category === 'vulnerability') {
+        vulns++;
+        expect(typeof f.cvss_score).toBe('number');
+        expect(f.cvss_score).toBeGreaterThanOrEqual(0);
+        expect(f.cvss_score).toBeLessThanOrEqual(10);
+      } else {
+        // A captured host, a reachable role, a credential is not a CVE — no fabricated CVSS.
+        nonVulns++;
+        expect(f.cvss_score).toBeUndefined();
+        expect(f.cvss_vector).toBeUndefined();
+        expect(f.cvss_estimated).toBeUndefined();
+      }
     }
+    expect(vulns).toBeGreaterThan(0);
+    expect(nonVulns).toBeGreaterThan(0);
   });
 
   it('uses explicit CVSS from vulnerability node when present', () => {
@@ -1547,15 +1558,24 @@ describe('buildFindings — classification & CVSS enrichment', () => {
     expect(vulnFinding!.cvss_estimated).toBeUndefined();
   });
 
-  it('marks estimated CVSS on non-vulnerability findings', () => {
-    const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
-    const nonVulnFindings = findings.filter(f => f.category !== 'vulnerability');
-    expect(nonVulnFindings.length).toBeGreaterThan(0);
-    for (const f of nonVulnFindings) {
-      expect(f.cvss_estimated).toBe(true);
-      expect(f.cvss_vector).toBeDefined();
-      expect(f.cvss_vector).toMatch(/^CVSS:3\.1\//);
-    }
+  it('estimates CVSS for a vulnerability finding with no explicit score (vulns only)', () => {
+    // A vulnerability node carrying no cvss still yields an estimated CVSS vector — the
+    // estimation path is exercised only for vulnerability findings now, never for the
+    // engagement achievements that used to (wrongly) receive a fabricated score.
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'host-x', properties: { id: 'host-x', type: 'host', label: '10.0.0.9', ip: '10.0.0.9', confidence: 1 } as NodeProperties },
+        { id: 'vuln-noscore', properties: { id: 'vuln-noscore', type: 'vulnerability', label: 'CVE-2099-9999', confidence: 1 } as NodeProperties },
+      ],
+      edges: [
+        { id: 'e-vuln', source: 'host-x', target: 'vuln-noscore', properties: { type: 'VULNERABLE_TO', confidence: 1 } as EdgeProperties },
+      ],
+    };
+    const vuln = buildFindings(graph, [], makeConfig()).find(f => f.category === 'vulnerability');
+    expect(vuln).toBeDefined();
+    expect(vuln!.cvss_estimated).toBe(true);
+    expect(typeof vuln!.cvss_score).toBe('number');
+    expect(vuln!.cvss_vector).toMatch(/^CVSS:3\.1\//);
   });
 
   it('classifies vulnerability finding with ATT&CK techniques from edges', () => {
@@ -1651,12 +1671,12 @@ describe('buildRemediationRanking', () => {
     expect(ranking).toEqual([]);
   });
 
-  it('includes cvss and cvss_estimated fields', () => {
+  it('includes cvss (number for vulns, null otherwise) and a boolean cvss_estimated', () => {
     const graph = makeGraph();
     const findings = buildFindings(graph, makeHistory(), makeConfig());
     const ranking = buildRemediationRanking(findings, graph);
     for (const r of ranking) {
-      expect(typeof r.cvss).toBe('number');
+      expect(r.cvss === null || typeof r.cvss === 'number').toBe(true);
       expect(typeof r.cvss_estimated).toBe('boolean');
     }
   });

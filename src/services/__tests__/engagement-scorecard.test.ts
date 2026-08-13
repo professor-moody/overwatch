@@ -40,18 +40,19 @@ describe('computeEngagementScorecard', () => {
     expect(sc.verification.verified_share).toBe(0);
   });
 
-  it('counts proof-ready findings (command / excerpt / exit code), not narrative-only ones', () => {
+  it('counts proof-ready findings (captured bytes or matched excerpt), NOT command/exit-code metadata', () => {
     const findings = [
-      finding({ id: 'a', evidence: [{ claim: 'x', command: 'nmap -sV 10.0.0.1' } as never] }),   // command → proof
-      finding({ id: 'b', evidence: [{ claim: 'x', exit_code: 0 } as never] }),                   // exit code → proof
-      finding({ id: 'c', evidence: [{ claim: 'x', excerpts: [{ snippet: 'open', byte_start: 0, byte_end: 4 }] } as never] }), // excerpt → proof
-      finding({ id: 'd', evidence: [{ claim: 'narrative only' } as never] }),                    // no proof handle
-      finding({ id: 'e', evidence: [] }),                                                         // nothing
+      finding({ id: 'a', evidence: [{ claim: 'x', stdout_evidence_id: 'ev-1' } as never] }),      // captured bytes → proof
+      finding({ id: 'b', evidence: [{ claim: 'x', raw_output: '445/tcp open' } as never] }),        // inline raw → proof
+      finding({ id: 'c', evidence: [{ claim: 'x', excerpts: [{ snippet: 'open', byte_start: 0, byte_end: 4 }] } as never] }), // matched excerpt → proof
+      finding({ id: 'd', evidence: [{ claim: 'x', command: 'nmap -sV 10.0.0.1', exit_code: 0 } as never] }), // command + exit code only → methodology, NOT proof
+      finding({ id: 'e', evidence: [{ claim: 'narrative only' } as never] }),                       // no proof handle
+      finding({ id: 'f', evidence: [] }),                                                            // nothing
     ];
     const sc = computeEngagementScorecard(graphOf([]), findings, []);
-    expect(sc.findings.total).toBe(5);
+    expect(sc.findings.total).toBe(6);
     expect(sc.findings.proof_ready).toBe(3);
-    expect(sc.findings.proof_ready_share).toBeCloseTo(0.6, 4);
+    expect(sc.findings.proof_ready_share).toBeCloseTo(0.5, 4);
   });
 
   it('counts unverified CVE candidates (info-severity vulnerability findings)', () => {
@@ -68,8 +69,9 @@ describe('computeEngagementScorecard', () => {
     expect(sc.objectives).toEqual({ total: 3, achieved: 1 });
   });
 
-  it('isProofReady is the shared predicate', () => {
-    expect(isProofReady({ evidence: [{ claim: 'x', command: 'id' } as never] })).toBe(true);
+  it('isProofReady is the shared captured-proof predicate — a bare command is not proof', () => {
+    expect(isProofReady({ evidence: [{ claim: 'x', stdout_evidence_id: 'ev-1' } as never] })).toBe(true);
+    expect(isProofReady({ evidence: [{ claim: 'x', command: 'id', exit_code: 0 } as never] })).toBe(false);
     expect(isProofReady({ evidence: [{ claim: 'x' } as never] })).toBe(false);
   });
 });

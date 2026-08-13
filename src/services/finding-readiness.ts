@@ -12,6 +12,7 @@
 import type { GraphEngine } from './graph-engine.js';
 import { buildFindings, type ReportFinding } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
+import { hasCapturedProof } from './evidence-proof.js';
 
 export type Readiness = 'client_ready' | 'needs_validation' | 'draft';
 
@@ -39,10 +40,10 @@ export interface FindingReadinessReport {
 export function assess(f: ReportFinding): FindingReadiness {
   const proof_cards = f.proof_cards?.length ?? 0;
   const evidence_chains = f.evidence?.length ?? 0;
-  // "captured" = a chain cites real evidence-store bytes / raw output, not just a claim.
-  const captured_evidence = (f.evidence ?? []).some(
-    c => !!c.stdout_evidence_id || !!c.stderr_evidence_id || !!c.raw_output || !!c.evidence_content,
-  );
+  // "captured" = a chain cites real evidence-store bytes / raw output / matched excerpt,
+  // not just a claim. Shared canonical predicate (evidence-proof.ts) so the readiness
+  // rollup and the engagement scorecard agree on what counts as proof.
+  const captured_evidence = hasCapturedProof(f);
   const classified = !!f.classification;
   const affected_assets = f.affected_assets?.length ?? 0;
 

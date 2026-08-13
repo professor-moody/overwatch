@@ -48,7 +48,17 @@ export function sourceTrust(p: SourceTrustInput): SourceTrust {
 
 /** Superset of SourceTrustInput adding the signals that separate the extra states. */
 export interface ClaimStateInput extends SourceTrustInput {
+  /** The node/edge type. An EXPLOITS edge is the graph's "we exploited it" relationship —
+   *  when confirmed, it is the signal for `exploited` (not the loose `exploitable` flag). */
+  type?: string;
+  /** A finding was *flagged* as potentially exploitable — parsers set this loosely from
+   *  severity (high/critical → true), so it means "a candidate opportunity", NOT proof of
+   *  exploitation. It never promotes a claim past `candidate`. */
   exploitable?: boolean;
+  /** An explicit exploitation event actually occurred (a real signal, set by a successful
+   *  exploitation, not derived from severity). */
+  exploited_at?: string;
+  exploitation_confirmed?: boolean;
   identity_status?: 'canonical' | 'unresolved' | 'superseded';
   credential_status?: 'active' | 'stale' | 'expired' | 'rotated';
 }
@@ -56,7 +66,15 @@ export interface ClaimStateInput extends SourceTrustInput {
 /**
  * Classify how well-established a claim is. Precedence, highest first:
  *   refuted (disproven) → stale (decayed) → exploited → validated (actively tested)
- *   → observed (passively confirmed) → candidate (hypothesis / untested) → asserted.
+ *   → observed (passively confirmed) → candidate (hypothesis / untested / flagged
+ *   exploitable) → asserted.
+ *
+ * `exploited` requires a REAL exploitation signal — an explicit exploitation event
+ * (`exploited_at` / `exploitation_confirmed`) or a *confirmed* `EXPLOITS` relationship —
+ * never the `exploitable` flag, which parsers derive loosely from severity and which
+ * therefore only ever makes a claim a `candidate`. (Conflating the two silently inflated
+ * the engagement scorecard's verified share with every high/critical severity flag.)
+ *
  * A confirmed rule-inferred claim is `observed`/`validated`, not `candidate` — origin
  * (source_trust: inferred) and current standing (claim_state) are deliberately distinct.
  */
@@ -68,9 +86,14 @@ export function claimState(p: ClaimStateInput): ClaimState {
     || p.credential_status === 'rotated') {
     return 'stale';
   }
-  if (p.exploitable === true) return 'exploited';
+  const confirmed = (typeof p.confidence === 'number' && p.confidence >= CONFIRMED)
+    || !!p.confirmed_at
+    || (p.tested === true && p.test_result === 'success');
+  if (!!p.exploited_at || p.exploitation_confirmed === true || (p.type === 'EXPLOITS' && confirmed)) {
+    return 'exploited';
+  }
   if (p.tested === true && p.test_result === 'success') return 'validated';
-  if ((typeof p.confidence === 'number' && p.confidence >= CONFIRMED) || !!p.confirmed_at) return 'observed';
-  if (p.inferred_by_rule || p.tested === false) return 'candidate';
+  if (confirmed) return 'observed';
+  if (p.inferred_by_rule || p.tested === false || p.exploitable === true) return 'candidate';
   return 'asserted';
 }
