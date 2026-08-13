@@ -97,3 +97,31 @@ export function claimState(p: ClaimStateInput): ClaimState {
   if (p.inferred_by_rule || p.tested === false || p.exploitable === true) return 'candidate';
   return 'asserted';
 }
+
+/** The historical "confident enough" floor for a directly-recorded observation. */
+const MATURE_CONFIDENCE_FLOOR = 0.9;
+
+/**
+ * A claim is "mature" — established enough to complete an objective or to route a real
+ * attack path — unless it is an unverified hypothesis or has been undermined:
+ *
+ *   - observed / validated / exploited → mature (confirmed or actively verified).
+ *   - refuted (tested and disproven) or stale (superseded identity / rotated-expired
+ *     credential) → NEVER mature. A bare `confidence >= 0.9` gate would happily complete an
+ *     objective on a DISPROVEN edge or a ROTATED credential; this closes that.
+ *   - a rule inference (`inferred_by_rule`) → NEVER mature, at ANY confidence. That is the
+ *     core fix: an objective must not be marked achieved on something a rule merely guessed.
+ *   - otherwise (a directly-recorded, non-inferred claim) → mature once it clears the
+ *     historical confidence floor, so legitimately-confirmed access recorded at 0.9-0.99 is
+ *     unaffected (no regression against the previous behavior).
+ *
+ * Replaces the bare `confidence >= 0.9` gates in objective + path evaluation, which treated
+ * a rule's hypothesis — and a refuted or stale claim — the same as a validated observation.
+ */
+export function isMatureClaim(p: ClaimStateInput): boolean {
+  const s = claimState(p);
+  if (s === 'observed' || s === 'validated' || s === 'exploited') return true;
+  if (s === 'refuted' || s === 'stale') return false;
+  if (p.inferred_by_rule) return false; // a hypothesis is never mature, whatever its confidence
+  return typeof p.confidence === 'number' && p.confidence >= MATURE_CONFIDENCE_FLOOR;
+}

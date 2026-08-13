@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { claimState, sourceTrust } from '../source-trust.js';
+import { claimState, sourceTrust, isMatureClaim } from '../source-trust.js';
 
 describe('sourceTrust', () => {
   it('inferred: created by an inference rule (a hypothesis), regardless of confidence', () => {
@@ -74,5 +74,33 @@ describe('claimState — how well-established a claim is (its lifecycle)', () =>
     const input = { inferred_by_rule: 'r1', confidence: 1 } as const;
     expect(claimState(input)).toBe('observed');
     expect(sourceTrust(input)).toBe('inferred');
+  });
+});
+
+describe('isMatureClaim — established enough to complete an objective / route a path', () => {
+  it('confirmed / verified / exploited claims are mature', () => {
+    expect(isMatureClaim({ confidence: 1 })).toBe(true);                        // observed
+    expect(isMatureClaim({ confirmed_at: '2026-01-01T00:00:00Z' })).toBe(true); // observed
+    expect(isMatureClaim({ tested: true, test_result: 'success' })).toBe(true); // validated
+    expect(isMatureClaim({ type: 'EXPLOITS', confidence: 1 })).toBe(true);      // exploited
+  });
+
+  it('a directly-recorded, non-inferred claim is mature at the confidence floor (no regression)', () => {
+    expect(isMatureClaim({ confidence: 0.9 })).toBe(true);
+    expect(isMatureClaim({ confidence: 0.95 })).toBe(true);
+    expect(isMatureClaim({ confidence: 0.89 })).toBe(false);
+  });
+
+  it('a rule inference is NEVER mature, at any confidence below confirmation', () => {
+    expect(isMatureClaim({ inferred_by_rule: 'r1', confidence: 0.95 })).toBe(false);
+    expect(isMatureClaim({ inferred_by_rule: 'r1', confidence: 0.7 })).toBe(false);
+    // ...but a rule-inferred claim later CONFIRMED (confidence 1) IS mature — origin doesn't taint a confirmed claim.
+    expect(isMatureClaim({ inferred_by_rule: 'r1', confidence: 1 })).toBe(true);
+  });
+
+  it('a refuted or stale claim is never mature, even at high confidence (a bare 0.9 gate missed this)', () => {
+    expect(isMatureClaim({ tested: true, test_result: 'failure', confidence: 1 })).toBe(false); // refuted
+    expect(isMatureClaim({ credential_status: 'rotated', confidence: 1 })).toBe(false);          // stale
+    expect(isMatureClaim({ identity_status: 'superseded', confidence: 1 })).toBe(false);         // stale
   });
 });
