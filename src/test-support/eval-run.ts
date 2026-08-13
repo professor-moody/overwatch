@@ -613,11 +613,17 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
 // Edge types that mark material offensive progress (access / lateral movement /
 // credential capture / escalation / cross-tier pivot), as opposed to plain service or
 // metadata discovery. Used to grade objective_progress by what actually moved forward.
+// Edges that represent MATERIAL OFFENSIVE ACCESS — a shell, admin rights, a captured/
+// validated credential, a directory-replication right, a role assumption. NOT topology:
+// BACKED_BY (webapp→cloud backend) and FEDERATES_WITH (idp↔domain) are declared linkages
+// that exist without any access being gained, so counting them as offensive progress
+// overstated it. CROSS_TIER_PIVOT is a *frontier-item* type, not a graph edge type, so it
+// never matched an edge at all — a dead entry. Both classes are removed.
 const ORCH_ACCESS_EDGE_TYPES = new Set([
   'HAS_SESSION', 'ADMIN_TO', 'CAN_RDPINTO', 'CAN_PSREMOTE',
   'OWNS_CRED', 'VALID_ON', 'TESTED_CRED',
   'CAN_DCSYNC', 'CAN_GET_CHANGES', 'CAN_GET_CHANGES_ALL', 'GENERIC_ALL',
-  'ASSUMES_ROLE', 'CROSS_TIER_PIVOT', 'BACKED_BY', 'FEDERATES_WITH',
+  'ASSUMES_ROLE',
 ]);
 
 const ORCH_SEED_NODES: Array<Record<string, unknown>> = [
@@ -744,7 +750,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     app.engine.ingestFinding({ id: 'seed-orch', agent_id: 'seed', timestamp: new Date().toISOString(), nodes: ORCH_SEED_NODES, edges: [] } as never);
     const beforeGraph = app.engine.exportGraph();
     const beforeCount = beforeGraph.nodes.length;
-    const beforeNodeIds = new Set(beforeGraph.nodes.map(n => n.id));
+    const beforeEdgeIds = new Set(beforeGraph.edges.map(e => e.id));
 
     app.engine.registerAgent({
       id: taskId, agent_id: 'agent-orch', assigned_at: new Date().toISOString(), status: 'running',
@@ -821,13 +827,15 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     // Orchestration-specific credit comes from the dispatch criteria, not this one.
     const afterGraph = app.engine.exportGraph();
     const afterCount = afterGraph.nodes.length;
-    // Material offensive progress: new access / credential / pivot edges touching a
-    // node created this run (a shell, admin rights, a captured credential, a role
-    // assumption, a cross-tier pivot) — not plain service/metadata discovery.
-    const newOrchNodeIds = new Set(afterGraph.nodes.filter(n => !beforeNodeIds.has(n.id)).map(n => n.id));
+    // Material offensive progress: access / credential edges that are NEW this run — a
+    // shell, admin rights, a captured/validated credential, a role assumption, a
+    // directory-replication right. Measured as a real before/after edge-ID delta, NOT
+    // "touches a node created this run": a credential validated or a session established
+    // BETWEEN two already-known hosts is exactly the kind of escalation we most want to
+    // credit, and the old node-touch test silently missed it.
     const newAccessEdges = afterGraph.edges.filter(e =>
-      ORCH_ACCESS_EDGE_TYPES.has(String((e.properties as { type?: string })?.type ?? ''))
-      && (newOrchNodeIds.has(e.source) || newOrchNodeIds.has(e.target)),
+      !beforeEdgeIds.has(e.id)
+      && ORCH_ACCESS_EDGE_TYPES.has(String((e.properties as { type?: string })?.type ?? '')),
     ).length;
     const objectivesAchieved = app.engine.getFullHistory()
       .filter(ev => ev.event_type === 'objective_achieved').length;
