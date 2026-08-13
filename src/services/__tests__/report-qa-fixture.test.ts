@@ -55,7 +55,10 @@ describe('report QA fixture outputs', () => {
 
     const markdown = assembleReport(qa.engine, qa.skills, { format: 'markdown', profile: 'operator' }).content;
     const html = assembleReport(qa.engine, qa.skills, { format: 'html', profile: 'operator' }).content;
-    const json = JSON.parse(assembleReport(qa.engine, qa.skills, { format: 'json', profile: 'operator' }).content) as { playbooks: { total: number; partial: number; runs: Array<Record<string, unknown>> } };
+    const json = JSON.parse(assembleReport(qa.engine, qa.skills, { format: 'json', profile: 'operator' }).content) as {
+      playbooks: { total: number; partial: number; runs: Array<Record<string, unknown>> };
+      engagement_scorecard: { verification: { total: number; verified_share: number }; findings: { total: number; proof_ready: number } };
+    };
     const client = JSON.parse(assembleReport(qa.engine, qa.skills, { format: 'json', profile: 'client', client_safe: true }).content) as { playbooks: { runs: Array<Record<string, unknown>> } };
 
     expect(markdown).toContain('[Credential Playbooks](#credential-playbooks)');
@@ -65,6 +68,11 @@ describe('report QA fixture outputs', () => {
     expect(html).toContain(opened.run.run_id);
     expect(json.playbooks).toMatchObject({ total: 1, partial: 1 });
     expect(json.playbooks.runs[0]).toMatchObject({ evidence_count: 1, finding_count: 1, report_status: 'partial' });
+    // The engagement scorecard rides the JSON report: claim_state is populated (so the
+    // graph is classified) and proof-readiness is measured over the real findings.
+    expect(json.engagement_scorecard.verification.total).toBeGreaterThan(0);
+    expect(json.engagement_scorecard.findings.total).toBeGreaterThan(0);
+    expect(json.engagement_scorecard.findings.proof_ready).toBeGreaterThan(0);
     expect(client.playbooks.runs[0]).not.toHaveProperty('credential_id');
     expect(client.playbooks.runs[0]).not.toHaveProperty('run_id');
   });
