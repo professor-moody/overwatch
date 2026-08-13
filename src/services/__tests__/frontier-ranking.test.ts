@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rankFrontier, selectFrontierTasks } from '../frontier-ranking.js';
+import { rankFrontier, selectFrontierTasks, annotateFrontierRanks, scoreItem } from '../frontier-ranking.js';
 import type { FrontierItem } from '../../types.js';
 
 function item(over: Partial<FrontierItem> & { id: string; type: FrontierItem['type'] }): FrontierItem {
@@ -60,5 +60,46 @@ describe('frontier ranking', () => {
     // Only one type available, more than the cap — must still return maxItems, not typeCap.
     const items = Array.from({ length: 15 }, (_, i) => item({ id: `n-${i}`, type: 'incomplete_node' }));
     expect(selectFrontierTasks(items, 10)).toHaveLength(10);
+  });
+
+  it('does NOT clamp the KB/chain confidence boost — a boosted lead outranks a plain one', () => {
+    // graph_metrics.confidence is a multiplier that legitimately exceeds 1 when knowledge-base
+    // hit-rates / attack-chain heuristics promote an item. The old ranker clamped it to 1, so
+    // a boosted lead (1.4) and a plain one (1.0) tied. They must not tie now.
+    const boosted = item({ id: 'boosted', type: 'inferred_edge', graph_metrics: { hops_to_objective: null, fan_out_estimate: 1, node_degree: 1, confidence: 1.4 } });
+    const plain = item({ id: 'plain', type: 'inferred_edge', graph_metrics: { hops_to_objective: null, fan_out_estimate: 1, node_degree: 1, confidence: 1.0 } });
+    const [first] = rankFrontier([plain, boosted]);
+    expect(first.id).toBe('boosted');
+    expect(scoreItem(boosted).priority_score).toBeGreaterThan(scoreItem(plain).priority_score);
+    expect(scoreItem(boosted).evidence_confidence).toBeGreaterThan(1); // preserved, not clamped to 1
+  });
+
+  it('folds attack-chain strength (chain_score) into expected value — previously ignored', () => {
+    const inChain = item({ id: 'in-chain', type: 'untested_edge', chain_score: 8 });
+    const isolated = item({ id: 'isolated', type: 'untested_edge', chain_score: 0 });
+    const [first] = rankFrontier([isolated, inChain]);
+    expect(first.id).toBe('in-chain');
+    expect(scoreItem(inChain).expected_value).toBeGreaterThan(scoreItem(isolated).expected_value);
+    expect(scoreItem(inChain).explanation).toMatch(/chain value 8/);
+  });
+
+  it('annotateFrontierRanks is the canonical projection — annotates rank + sorts in place', () => {
+    const enrich = item({ id: 'enrich', type: 'incomplete_node' });
+    const cred = item({ id: 'cred', type: 'credential_test', opsec_noise: 0.1, graph_metrics: { hops_to_objective: 1, fan_out_estimate: 3, node_degree: 2, confidence: 1 } });
+    const items: FrontierItem[] = [enrich, cred];
+    const ranked = annotateFrontierRanks(items);
+    // Sorted highest-priority first, in place (same array reference).
+    expect(ranked).toBe(items);
+    expect(ranked[0].id).toBe('cred');
+    // Every item carries the split-axis rank.
+    for (const it of ranked) {
+      expect(it.rank).toBeDefined();
+      expect(typeof it.rank!.priority_score).toBe('number');
+      expect(typeof it.rank!.evidence_confidence).toBe('number');
+      expect(typeof it.rank!.expected_value).toBe('number');
+      expect(typeof it.rank!.expected_noise).toBe('number');
+      expect(typeof it.rank!.explanation).toBe('string');
+    }
+    expect(ranked[0].rank!.priority_score).toBeGreaterThan(ranked[1].rank!.priority_score);
   });
 });

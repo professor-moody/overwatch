@@ -1077,6 +1077,31 @@ export interface FrontierItem {
   truncated?: boolean;
   total_hosts?: number;
   expanded_count?: number;
+  /** Canonical ranking, attached once by the engine so every consumer — next_task, the
+   *  operator's get_state, the dashboard, campaigns, and dispatch — sees the SAME ordered,
+   *  explained frontier instead of raw construction order. See frontier-ranking.ts. */
+  rank?: FrontierRank;
+}
+
+/**
+ * The one ranking projection for a frontier item, split into its axes so a reader (or a
+ * policy experiment) can see WHY an item ranks where it does — not a single opaque number.
+ */
+export interface FrontierRank {
+  /** Composed ranking value — higher is more valuable. A relative ordering signal, not a
+   *  probability. `expected_value × confidence × noise-penalty`. */
+  priority_score: number;
+  /** How well-supported the underlying opportunity is (the item's composite confidence
+   *  multiplier). Deliberately NOT clamped to 1 — the KB success-rate and attack-chain
+   *  boosts legitimately push a well-supported lead above 1.0, and clamping erased that. */
+  evidence_confidence: number;
+  /** Offensive payoff if it pans out — type value × objective proximity × optionality
+   *  (fan-out) × attack-chain strength. */
+  expected_value: number;
+  /** Expected OPSEC cost of acting on it (0 = silent, higher = noisier). */
+  expected_noise: number;
+  /** Short human-readable "why it's ranked here". */
+  explanation: string;
 }
 
 export interface ScoredTask {

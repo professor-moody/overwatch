@@ -68,10 +68,12 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
       const frontier = engine.computeFrontier();
       const { passed, filtered } = engine.filterFrontier(frontier);
 
-      // Rank by offensive value and select with a per-type diversity cap instead of a
-      // positional slice — otherwise a burst of low-value enrichment tasks (surfaced first
-      // in construction order) crowds out the pivots/credentials/exploitation that matter.
-      // Each surfaced item carries a frontier_priority + rank_reason.
+      // Select with a per-type diversity cap instead of a positional slice — otherwise a
+      // burst of low-value enrichment tasks crowds out the pivots/credentials/exploitation
+      // that matter. The frontier is already canonically ranked by the engine (the operator's
+      // get_state and the dashboard see the same order), so this only applies the diversity
+      // window. Each surfaced item carries the full `rank` breakdown (+ frontier_priority /
+      // rank_reason mirrors).
       const surfaced = selectFrontierTasks(passed, max_items);
 
       // Frontier linkage and dropped-item audit are one durable state patch.

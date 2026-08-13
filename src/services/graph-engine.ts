@@ -35,6 +35,7 @@ import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import type { PathOptimize, PathResult } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
+import { annotateFrontierRanks } from './frontier-ranking.js';
 import { claimState, sourceTrust } from './source-trust.js';
 import { ChainScorer } from './chain-scorer.js';
 import { CampaignPlanner } from './campaign-planner.js';
@@ -1965,6 +1966,12 @@ export class GraphEngine {
       }
       // Enrich frontier items with chain scoring data
       const chainGroups = this.chainScorer.scoreChains(all);
+
+      // Canonical ranking: annotate every item with its rank and sort by priority ONCE,
+      // here, before anything consumes `all`. Campaigns, the filtered frontier that feeds
+      // get_state and the dashboard, and dispatch all read this same ordered, explained
+      // frontier — so the model (next_task) and the operator never see different priorities.
+      annotateFrontierRanks(all);
 
       // Generate campaigns from frontier + chain groups (phase-aware)
       const campaigns = this.isPersistenceWritable()
