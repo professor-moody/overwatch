@@ -1861,6 +1861,23 @@ describe('GraphEngine', () => {
       expect(daObj?.achieved).toBe(false);
     });
 
+    it('does NOT achieve the objective when the only access edge is a refuted claim (claim maturity)', () => {
+      // A DISPROVEN OWNS_CRED at full confidence: tested and failed. A bare confidence>=0.9
+      // gate would wrongly complete the objective on it; claim maturity refuses.
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'cred-da', type: 'credential', label: 'DA cred', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, tested: true, test_result: 'failure', discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const daObj = engine.getState().objectives.find(o => o.id === 'obj-da');
+      expect(daObj?.achieved).toBe(false);
+    });
+
     it('marks objective achieved via obtained flag without access edge', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 

@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { EngineContext, ActivityLogEntry } from './engine-context.js';
 import { isCredentialUsableForAuth } from './credential-utils.js';
 import { isLiveSessionEdge } from './session-edge-utils.js';
+import { isMatureClaim } from './source-trust.js';
 import type {
   NodeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState,
@@ -125,9 +126,9 @@ function evaluateObjectiveDraft(
           // OWNS_CRED, custom achievement_edge_types) are unaffected.
           if (ep.type === 'HAS_SESSION' && !isLiveSessionEdge(ep)) return false;
           if (ep.type !== 'OWNS_CRED') {
-            return accessEdgeTypes.has(ep.type) && ep.confidence >= 0.9;
+            return accessEdgeTypes.has(ep.type) && isMatureClaim(ep);
           }
-          return nodeProps.type === 'credential' && isCredentialUsableForAuth(nodeProps) && ep.confidence >= 0.9;
+          return nodeProps.type === 'credential' && isCredentialUsableForAuth(nodeProps) && isMatureClaim(ep);
         });
       });
       if (obtained) {
@@ -279,8 +280,8 @@ function evaluateSingleCriterion(
         if (attrs.type !== 'host' || attrs.superseded_by) return;
         const hasAccess = host.ctx.graph.inEdges(attrs.id).some((e: string) => {
           const ep = host.ctx.graph.getEdgeAttributes(e);
-          if (ep.type === 'ADMIN_TO' && ep.confidence >= 0.9) return true;
-          if (ep.type === 'HAS_SESSION' && ep.confidence >= 0.9 && ep.session_live === true) return true;
+          if (ep.type === 'ADMIN_TO' && isMatureClaim(ep)) return true;
+          if (ep.type === 'HAS_SESSION' && isMatureClaim(ep) && ep.session_live === true) return true;
           return false;
         });
         if (hasAccess) compromised.push(attrs.label);
@@ -306,13 +307,13 @@ export function computeAccessLevel(host: ObjectiveManagerHost, compromised: stri
     if (c.obtained === true) return true;
     return host.ctx.graph.inEdges(c.id).some((e: string) => {
       const ep = host.ctx.graph.getEdgeAttributes(e);
-      return ep.type === 'OWNS_CRED' && ep.confidence >= 0.9;
+      return ep.type === 'OWNS_CRED' && isMatureClaim(ep);
     });
   });
   if (hasDa) return 'domain_admin';
   // Check for local admin
   const hasAdmin = !!host.ctx.graph.findEdge((_, attrs) =>
-    attrs.type === 'ADMIN_TO' && attrs.confidence >= 0.9
+    attrs.type === 'ADMIN_TO' && isMatureClaim(attrs)
   );
   if (hasAdmin) return 'local_admin';
   return 'user';
