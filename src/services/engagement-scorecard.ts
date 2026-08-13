@@ -42,11 +42,59 @@ export interface ScorecardFindings {
   unverified_cve_candidates: number;
 }
 
+/** Observation coverage of the discovered asset inventory (graph nodes). Separated from
+ *  attack-path validation so a large host import can't inflate a single headline number
+ *  while the escalation claims that matter stay unverified. */
+export interface ScorecardInventoryCoverage {
+  total: number;      // asset/inventory nodes carrying a claim_state
+  observed: number;   // of those, mature (observed / validated / exploited)
+  coverage: number;   // observed / total
+}
+
+/** Validation of the ATTACK PATH — the access/escalation edges (sessions, admin rights,
+ *  owned/validated creds, replication rights, role assumption, exploitation). This is the
+ *  number a reader should trust for "is the attack path real", distinct from inventory. */
+export interface ScorecardAttackPathValidation {
+  total: number;          // access/attack edges carrying a claim_state
+  validated: number;      // of those, mature (observed / validated / exploited)
+  validation_share: number;
+}
+
+/** Negative-testing coverage — how much of the graph's claims have actually been put to
+ *  the test (validated, exploited, or refuted) rather than merely recorded. */
+export interface ScorecardRefutation {
+  tested: number;     // claims that were actively tested (validated + exploited + refuted)
+  refuted: number;    // of those, disproven
+  coverage: number;   // tested / total claims
+}
+
 export interface EngagementScorecard {
   verification: ScorecardVerification;
   findings: ScorecardFindings;
   objectives: { total: number; achieved: number };
+  // ---- v2 dimensions: the same evidence, split so one headline can't mask a weak spot ----
+  /** Asset-inventory observation coverage (nodes). */
+  inventory: ScorecardInventoryCoverage;
+  /** Attack-path validation (access/escalation edges). */
+  attack_paths: ScorecardAttackPathValidation;
+  /** High/critical findings that carry no captured proof — the claims a reader should be
+   *  most skeptical of. */
+  unsupported_critical_claims: number;
+  /** Negative-testing / refutation coverage across graph claims. */
+  refutation: ScorecardRefutation;
 }
+
+/** Claim states that count as "confirmed enough" — mirrors isMatureClaim in source-trust. */
+const MATURE_STATES: ReadonlySet<ClaimState> = new Set<ClaimState>(['observed', 'validated', 'exploited']);
+
+/** Access / escalation edge types that constitute a material attack path (vs. topology or
+ *  plain inventory relations). */
+const ATTACK_PATH_EDGE_TYPES: ReadonlySet<string> = new Set([
+  'HAS_SESSION', 'ADMIN_TO', 'CAN_RDPINTO', 'CAN_PSREMOTE',
+  'OWNS_CRED', 'VALID_ON', 'TESTED_CRED',
+  'CAN_DCSYNC', 'CAN_GET_CHANGES', 'CAN_GET_CHANGES_ALL', 'GENERIC_ALL',
+  'ASSUMES_ROLE', 'EXPLOITS', 'AUTH_BYPASS',
+]);
 
 function share(numerator: number, denominator: number): number {
   return denominator > 0 ? Number((numerator / denominator).toFixed(4)) : 0;
@@ -81,6 +129,27 @@ export function computeEngagementScorecard(
   const proof_ready = findings.filter(isProofReady).length;
   const unverified_cve_candidates = findings.filter(f => f.category === 'vulnerability' && f.severity === 'info').length;
 
+  // v2 — split the same claim_state signal by what the claim IS, so a big benign inventory
+  // import can't mask unverified escalation. Inventory = nodes; attack paths = access edges.
+  let invTotal = 0, invObserved = 0;
+  for (const n of graph.nodes) {
+    const s = n.properties.claim_state;
+    if (!s) continue;
+    invTotal += 1;
+    if (MATURE_STATES.has(s)) invObserved += 1;
+  }
+  let apTotal = 0, apValidated = 0;
+  for (const e of graph.edges) {
+    const s = e.properties.claim_state;
+    if (!s || !ATTACK_PATH_EDGE_TYPES.has(String(e.properties.type ?? ''))) continue;
+    apTotal += 1;
+    if (MATURE_STATES.has(s)) apValidated += 1;
+  }
+  const tested = by_state.validated + by_state.exploited + by_state.refuted;
+  const unsupported_critical_claims = findings.filter(
+    f => (f.severity === 'critical' || f.severity === 'high') && !isProofReady(f),
+  ).length;
+
   return {
     verification: {
       by_state,
@@ -101,5 +170,79 @@ export function computeEngagementScorecard(
       total: objectives.length,
       achieved: objectives.filter(o => o.achieved === true).length,
     },
+    inventory: {
+      total: invTotal,
+      observed: invObserved,
+      coverage: share(invObserved, invTotal),
+    },
+    attack_paths: {
+      total: apTotal,
+      validated: apValidated,
+      validation_share: share(apValidated, apTotal),
+    },
+    unsupported_critical_claims,
+    refutation: {
+      tested,
+      refuted: by_state.refuted,
+      coverage: share(tested, total),
+    },
   };
 }
+
+// ============================================================
+// Presentation — one shared model rendered by every report format
+// ============================================================
+// The scorecard's "Evidence Integrity" section renders identically in Markdown, HTML/PDF,
+// and (later) the dashboard from this single row model, so the formats never drift and no
+// format-specific string is the source of truth.
+
+export interface ScorecardRow {
+  label: string;
+  value: string;
+}
+
+const pct = (x: number): string => `${Math.round(x * 100)}%`;
+
+/** True when the scorecard measured anything worth rendering (non-empty engagement, graph
+ *  exported with claim_state). Renderers skip the section when this is false. */
+export function scorecardHasContent(sc: EngagementScorecard): boolean {
+  const live = sc.verification.verified + sc.verification.unverified;
+  return live > 0 || sc.findings.total > 0 || sc.objectives.total > 0;
+}
+
+/** The scorecard as an ordered list of display rows — the presentation-agnostic model each
+ *  report format renders. Rows that would be trivially empty (no inventory, no refuted/stale)
+ *  are omitted so the section stays legible. */
+export function scorecardRows(sc: EngagementScorecard): ScorecardRow[] {
+  const v = sc.verification;
+  const live = v.verified + v.unverified;
+  const rows: ScorecardRow[] = [];
+  if (live > 0) {
+    rows.push({ label: 'Graph claims verified', value: `${v.verified} of ${live} live claim(s) confirmed (${pct(v.verified_share)}); ${v.unverified} unverified` });
+  }
+  if (sc.inventory.total > 0) {
+    rows.push({ label: 'Inventory observed', value: `${sc.inventory.observed} of ${sc.inventory.total} asset(s) confirmed (${pct(sc.inventory.coverage)})` });
+  }
+  if (sc.attack_paths.total > 0) {
+    rows.push({ label: 'Attack path validated', value: `${sc.attack_paths.validated} of ${sc.attack_paths.total} access edge(s) validated (${pct(sc.attack_paths.validation_share)})` });
+  }
+  if (v.refuted > 0 || v.stale > 0) {
+    rows.push({ label: 'Refuted / stale claims', value: `${v.refuted} refuted, ${v.stale} stale` });
+  }
+  if (v.total > 0) {
+    rows.push({ label: 'Negative-testing coverage', value: `${sc.refutation.tested} of ${v.total} claim(s) tested (${pct(sc.refutation.coverage)}); ${sc.refutation.refuted} refuted` });
+  }
+  rows.push({ label: 'Findings proof-ready', value: `${sc.findings.proof_ready} of ${sc.findings.total} (${pct(sc.findings.proof_ready_share)}) carry captured proof` });
+  if (sc.unsupported_critical_claims > 0) {
+    rows.push({ label: 'Unsupported critical claims', value: `${sc.unsupported_critical_claims} high/critical finding(s) without captured proof` });
+  }
+  if (sc.findings.unverified_cve_candidates > 0) {
+    rows.push({ label: 'Unverified CVE candidates', value: `${sc.findings.unverified_cve_candidates} (version-matched, not confirmed on target)` });
+  }
+  rows.push({ label: 'Objectives achieved', value: `${sc.objectives.achieved} of ${sc.objectives.total}` });
+  return rows;
+}
+
+/** The one-line framing that precedes the scorecard rows in every format. */
+export const SCORECARD_INTRO =
+  'A ground-truth-free read on how solid this engagement is: how much of what was recorded is actually confirmed, how much of the attack path is validated, and how much is proof-backed. These are quality signals, not findings.';
