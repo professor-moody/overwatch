@@ -19,7 +19,7 @@ import {
   renderFullReportFromModel,
 } from './report-generator.js';
 import type { ReportInput, AttackPath, ReportProfile, EvidenceStyle, ReportOptions, ReportIntegrity } from './report-generator.js';
-import { computeEngagementScorecard, type EngagementScorecard } from './engagement-scorecard.js';
+import { computeEngagementScorecard } from './engagement-scorecard.js';
 import {
   verifyChain, verifyCheckpoints, verifyCheckpointSignatures,
   attestCheckpointSignatures, loadCheckpointKeyring, deriveChainSeed,
@@ -108,35 +108,6 @@ function scrubMarkdownForClient(md: string): string {
   // dogfooding: a matched-signal command leaked an NTLM hash into a client timeline table.)
   out = maskEvidenceTextForClient(out) ?? out;
   return out;
-}
-
-function appendEngagementScorecard(md: string, sc: EngagementScorecard): string {
-  const v = sc.verification;
-  const f = sc.findings;
-  const live = v.verified + v.unverified;
-  // Nothing measured (empty engagement, or graph exported without claim_state) → no section.
-  if (live === 0 && f.total === 0 && sc.objectives.total === 0) return md;
-  const pct = (x: number) => `${Math.round(x * 100)}%`;
-  const lines = [
-    '',
-    '## Evidence Integrity',
-    '',
-    'A ground-truth-free read on how solid this engagement is: how much of what was recorded is actually confirmed, and how much of it is proof-backed. These are quality signals, not findings.',
-    '',
-    '| Signal | Value |',
-    '|--------|-------|',
-    `| Graph claims verified | ${v.verified} of ${live} live claim(s) confirmed (${pct(v.verified_share)}); ${v.unverified} unverified |`,
-  ];
-  if (v.refuted > 0 || v.stale > 0) {
-    lines.push(`| Refuted / stale claims | ${v.refuted} refuted, ${v.stale} stale |`);
-  }
-  lines.push(`| Findings proof-ready | ${f.proof_ready} of ${f.total} (${pct(f.proof_ready_share)}) carry command / matched-signal / exit-code proof |`);
-  if (f.unverified_cve_candidates > 0) {
-    lines.push(`| Unverified CVE candidates | ${f.unverified_cve_candidates} (version-matched, not confirmed on target) |`);
-  }
-  lines.push(`| Objectives achieved | ${sc.objectives.achieved} of ${sc.objectives.total} |`);
-  lines.push('');
-  return `${md.trimEnd()}\n${lines.join('\n')}`;
 }
 
 function appendTrustSignalNotes(md: string, signals: TrustSignalDto[]): string {
@@ -492,6 +463,7 @@ export function assembleReport(
       reportProfile: profile,
       evidenceStyle: evidence_style,
       integrity,
+      engagementScorecard: engagement_scorecard,
     };
 
     if (findings.length > 0) {
@@ -605,11 +577,11 @@ export function assembleReport(
     const renderData = redactionOpts.client_safe ? redactSecretKeys(htmlData, redactionOpts) : htmlData;
     content = renderReportHtml(renderData as HtmlReportData, { theme, include_toc: true, include_compliance });
   } else {
-    const rawMarkdown = appendEngagementScorecard(appendPlaybookSummary(appendTrustSignalNotes(renderFullReportFromModel(
+    const rawMarkdown = appendPlaybookSummary(appendTrustSignalNotes(renderFullReportFromModel(
       reportInput,
       documentModel,
-      { ...renderOptions, trust_signals: trustSignalSummary.signals },
-    ), trustSignalSummary.signals), playbookSummary), engagement_scorecard);
+      { ...renderOptions, trust_signals: trustSignalSummary.signals, engagement_scorecard },
+    ), trustSignalSummary.signals), playbookSummary);
     content = redactionOpts.client_safe ? scrubMarkdownForClient(rawMarkdown) : rawMarkdown;
   }
 

@@ -18,6 +18,7 @@ import {
   displayFindingTitle,
 } from './finding-presentation.js';
 import type { ReportActionPlanItem, ReportExecutiveSummary } from './report-deliverable.js';
+import { scorecardRows, scorecardHasContent, SCORECARD_INTRO, type EngagementScorecard } from './engagement-scorecard.js';
 
 export interface HtmlDiscoveryStats {
   nodesByType: Record<string, number>;
@@ -91,6 +92,7 @@ export interface HtmlReportData {
   reportProfile?: 'operator' | 'client';
   evidenceStyle?: 'proof_cards' | 'appendix' | 'full_inline';
   integrity?: ReportIntegrity;
+  engagementScorecard?: EngagementScorecard;
 }
 
 export interface HtmlHeatmapData {
@@ -239,6 +241,8 @@ ${narrative.length > 0 ? `
     </table>
   </section>
 
+${data.engagementScorecard && scorecardHasContent(data.engagementScorecard) ? renderEvidenceIntegrityHtml(data.engagementScorecard) : ''}
+
 ${data.heatmap ? renderHeatmapHtml(data.heatmap) : ''}
 
 ${data.remediationRanking && data.remediationRanking.length > 0 ? renderRemediationRankingHtml(data.remediationRanking) : ''}
@@ -295,6 +299,7 @@ function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data:
       ${narrative.length > 0 ? '<li><a href="#attack-narrative">Attack Narrative</a></li>' : ''}
       ${showEvidenceAppendix ? '<li><a href="#evidence-appendix">Evidence Appendix</a></li>' : ''}
       <li><a href="#objectives">Objectives</a></li>
+      ${data.engagementScorecard && scorecardHasContent(data.engagementScorecard) ? '<li><a href="#evidence-integrity">Evidence Integrity</a></li>' : ''}
       ${data.heatmap ? '<li><a href="#risk-heatmap">Risk Heatmap</a></li>' : ''}
       ${data.remediationRanking && data.remediationRanking.length > 0 ? '<li><a href="#remediation-ranking">Remediation Priority Ranking</a></li>' : ''}
       ${data.complianceMapping ? '<li><a href="#compliance-mapping">Compliance Mapping</a></li>' : ''}
@@ -962,6 +967,23 @@ function renderTrustSignalsHtml(signals: TrustSignalDto[]): string {
     <p>These notes identify parser, ingest, path-analysis, IAM, or scoring caveats present when the report was generated. They are verification prompts, not standalone findings.</p>
     <table>
       <thead><tr><th>Severity</th><th>Signal</th><th>Context</th></tr></thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  </section>`;
+}
+
+function renderEvidenceIntegrityHtml(sc: EngagementScorecard): string {
+  const rows = scorecardRows(sc)
+    .map(r => `<tr><td>${esc(r.label)}</td><td>${esc(r.value)}</td></tr>`)
+    .join('\n        ');
+  return `
+  <section id="evidence-integrity">
+    <h2>Evidence Integrity</h2>
+    <p>${esc(SCORECARD_INTRO)}</p>
+    <table>
+      <thead><tr><th>Signal</th><th>Value</th></tr></thead>
       <tbody>
         ${rows}
       </tbody>
