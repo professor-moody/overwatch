@@ -58,6 +58,36 @@ does not reopen its product decisions or weaken its recovery invariants.
 - The dashboard is an authenticated operator client, not a read-only graph
   viewer. Its mutations use the same validated command paths as MCP and the CLI.
 
+## Efficacy & evidence program (in progress)
+
+The current train answers the standing critique that Overwatch had strong
+machinery but little signal about whether an engagement's **output** was solid —
+verified vs. hypothesized, proof-backed vs. asserted. It is an outcome-honesty
+program, delivered as small reviewed PRs, and it is measured cheaply alongside
+(the engagement scorecard) rather than gated behind a full benchmark.
+
+| Slice | Delivery state |
+|---|---|
+| Epistemic labels | Landed; `source_trust` (provenance) and `claim_state` (standing) are derived on the opt-in trust export, distinct from each other, with the canonical export/golden hash unchanged. |
+| Engagement scorecard | Landed; ground-truth-free verification / proof-readiness / objective metrics in the JSON report and a Markdown "Evidence Integrity" section. |
+| Semantic correctness | Landed; `exploited` requires a real exploitation signal (not the severity-derived `exploitable` flag), CVSS is vulnerability-only, and one canonical proof predicate is shared by the scorecard and finding-readiness. |
+| Canonical frontier ranking | Landed; the engine ranks once into a split, explained `rank` that `next_task`, `get_state`, the dashboard, campaigns, and dispatch all share — no consumer re-sorts — and the previously-discarded KB/chain and `chain_score` signals are used. |
+| Claim maturity gate | Landed (Phase 2a); objectives and pathfinding require a mature claim (not a rule inference, refuted edge, or stale credential) rather than bare `confidence >= 0.9`. |
+| Orchestration measurement | Landed; material progress is a real before/after edge-ID delta over genuine offensive-access edge types. |
+
+Candidate next slices in this program (not yet committed):
+
+- **Claim lifecycle Phase 2b** — durable operator/agent validate-refute
+  promotions, contradictory-evidence tracking, and validity periods, so maturity
+  is asserted and corrected, not only derived.
+- **Scorecard v2** — split dimensions (inventory coverage, attack-path
+  validation, findings/objective proof-readiness, unsupported critical claims,
+  refutation coverage, interventions, cost/time) surfaced through the shared
+  report document model into HTML/PDF and the dashboard, not only JSON/Markdown.
+- **OverwatchBench + replay policy lab** — versioned ground-truth scenarios and
+  offline replay of stored frontier snapshots against candidate ranking
+  policies. Scoped separately; the expensive track.
+
 ## After the reliability program
 
 Further work should start from measured operator needs rather than reopening the
