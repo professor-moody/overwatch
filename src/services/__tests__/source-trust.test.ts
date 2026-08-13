@@ -35,8 +35,19 @@ describe('claimState — how well-established a claim is (its lifecycle)', () =>
     expect(claimState({ credential_status: 'stale' })).toBe('stale');
   });
 
-  it('exploited: exploitation confirmed', () => {
-    expect(claimState({ exploitable: true })).toBe('exploited');
+  it('exploited: a REAL exploitation signal — a confirmed EXPLOITS relationship or an explicit event', () => {
+    expect(claimState({ type: 'EXPLOITS', confidence: 1 })).toBe('exploited');
+    expect(claimState({ type: 'EXPLOITS', tested: true, test_result: 'success' })).toBe('exploited');
+    expect(claimState({ exploited_at: '2026-01-01T00:00:00Z' })).toBe('exploited');
+    expect(claimState({ exploitation_confirmed: true })).toBe('exploited');
+  });
+
+  it('the loose `exploitable` severity flag is only a candidate, never exploited', () => {
+    // Parsers set `exploitable` from severity (high/critical → true); it marks a potential
+    // opportunity, not proof. Conflating it with `exploited` inflated the scorecard.
+    expect(claimState({ exploitable: true })).toBe('candidate');
+    // An unconfirmed / inferred EXPLOITS hypothesis is likewise a candidate, not exploited.
+    expect(claimState({ type: 'EXPLOITS', inferred_by_rule: 'r1', confidence: 0.7 })).toBe('candidate');
   });
 
   it('validated: an active tool test succeeded', () => {

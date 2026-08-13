@@ -13,6 +13,7 @@
 
 import type { ExportedGraph, ClaimState } from '../types.js';
 import type { ReportFinding } from './report-generator.js';
+import { hasCapturedProof } from './evidence-proof.js';
 
 const CLAIM_STATES: ClaimState[] = ['candidate', 'asserted', 'observed', 'validated', 'exploited', 'refuted', 'stale'];
 // "verified" = the claim is confirmed (observed/validated/exploited); "unverified" =
@@ -51,14 +52,12 @@ function share(numerator: number, denominator: number): number {
   return denominator > 0 ? Number((numerator / denominator).toFixed(4)) : 0;
 }
 
-/** True when a finding has at least one evidence entry carrying a concrete proof handle. */
-export function isProofReady(finding: Pick<ReportFinding, 'evidence'>): boolean {
-  return (finding.evidence ?? []).some(chain =>
-    !!chain.command
-    || (Array.isArray(chain.excerpts) && chain.excerpts.length > 0)
-    || typeof chain.exit_code === 'number',
-  );
-}
+/** True when a finding has retrievable proof — captured evidence bytes or a matched-signal
+ *  excerpt. The canonical predicate lives in evidence-proof.ts and is shared with
+ *  finding-readiness so the scorecard and the readiness rollup never disagree; a bare
+ *  command line or exit code is methodology, not proof. Re-exported here for callers that
+ *  reach for it via the scorecard. */
+export const isProofReady = hasCapturedProof;
 
 export function computeEngagementScorecard(
   graph: ExportedGraph,
