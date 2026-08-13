@@ -64,6 +64,10 @@ describe('report QA fixture outputs', () => {
     expect(markdown).toContain('[Credential Playbooks](#credential-playbooks)');
     expect(markdown).toContain(opened.run.run_id);
     expect(markdown).toContain('| partial | succeeded |');
+    // The Evidence Integrity scorecard renders as a human-readable section, not just JSON.
+    expect(markdown).toContain('## Evidence Integrity');
+    expect(markdown).toContain('Findings proof-ready');
+    expect(markdown).toContain('Graph claims verified');
     expect(html).toContain('id="credential-playbooks"');
     expect(html).toContain(opened.run.run_id);
     expect(json.playbooks).toMatchObject({ total: 1, partial: 1 });
