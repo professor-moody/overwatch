@@ -11,6 +11,7 @@
 
 import type { GraphEngine } from './graph-engine.js';
 import type { SkillIndex } from './skill-index.js';
+import type { EngagementObjective } from '../types.js';
 import {
   buildAttackNarrative, buildRemediationRanking,
   buildAttackPaths,
@@ -108,6 +109,23 @@ function scrubMarkdownForClient(md: string): string {
   // dogfooding: a matched-signal command leaked an NTLM hash into a client timeline table.)
   out = maskEvidenceTextForClient(out) ?? out;
   return out;
+}
+
+/** An achieved objective is "proof-backed" when at least one node satisfying its target
+ *  carries captured evidence (the durable node→evidence index). Attainment alone is a graph
+ *  state; this asks whether that state is backed by retrievable proof. */
+function objectiveProofBacked(engine: GraphEngine, obj: EngagementObjective): boolean {
+  if (!obj.achieved) return false;
+  // Achieved via an obtained-flag with no target to inspect — count attainment as the best
+  // available signal rather than asserting absence of proof.
+  if (!obj.target_node_type && !obj.target_criteria) return true;
+  try {
+    const store = engine.getEvidenceStore();
+    const matches = engine.queryGraph({ node_type: obj.target_node_type, node_filter: obj.target_criteria });
+    return matches.nodes.some(n => store.list({ node_id: n.id }).length > 0);
+  } catch {
+    return false;
+  }
 }
 
 function appendTrustSignalNotes(md: string, signals: TrustSignalDto[]): string {
@@ -388,11 +406,17 @@ export function assembleReport(
     : undefined;
   // Ground-truth-free quality signal: how much of the engagement is verified vs.
   // hypothesized, how proof-ready its findings are. Needs claim_state, so re-export with
-  // sourceTrust (report generation is not a hot path). Shared across JSON + markdown.
+  // sourceTrust (report generation is not a hot path). Shared across JSON + markdown + HTML.
+  // An achieved objective is "proof-backed" when a node satisfying its target has captured
+  // evidence (the durable node→evidence index) — attainment alone can be an unproven state.
+  const scorecardObjectives = (config.objectives ?? []).map(obj => ({
+    achieved: obj.achieved,
+    proof_ready: objectiveProofBacked(engine, obj),
+  }));
   const engagement_scorecard = computeEngagementScorecard(
     engine.exportGraph({ sourceTrust: true }),
     findings,
-    config.objectives ?? [],
+    scorecardObjectives,
   );
 
   if (format === 'json') {

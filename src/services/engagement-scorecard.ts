@@ -71,7 +71,9 @@ export interface ScorecardRefutation {
 export interface EngagementScorecard {
   verification: ScorecardVerification;
   findings: ScorecardFindings;
-  objectives: { total: number; achieved: number };
+  /** Objective attainment AND how many of the achieved objectives are backed by captured
+   *  evidence (`proof_ready`) — attainment alone can be an unproven graph state. */
+  objectives: { total: number; achieved: number; proof_ready: number };
   // ---- v2 dimensions: the same evidence, split so one headline can't mask a weak spot ----
   /** Asset-inventory observation coverage (nodes). */
   inventory: ScorecardInventoryCoverage;
@@ -86,6 +88,11 @@ export interface EngagementScorecard {
 
 /** Claim states that count as "confirmed enough" — mirrors isMatureClaim in source-trust. */
 const MATURE_STATES: ReadonlySet<ClaimState> = new Set<ClaimState>(['observed', 'validated', 'exploited']);
+
+/** Node types that are NOT asset inventory: `objective` is a synthetic goal marker and
+ *  `vulnerability` is a claim ABOUT an asset (counted in findings/attack dimensions), not an
+ *  asset itself. Counting them as inventory overstated observation coverage. */
+const NON_ASSET_NODE_TYPES: ReadonlySet<string> = new Set(['objective', 'vulnerability']);
 
 /** Access / escalation edge types that constitute a material attack path (vs. topology or
  *  plain inventory relations). */
@@ -110,7 +117,7 @@ export const isProofReady = hasCapturedProof;
 export function computeEngagementScorecard(
   graph: ExportedGraph,
   findings: ReportFinding[],
-  objectives: ReadonlyArray<{ achieved?: boolean }> = [],
+  objectives: ReadonlyArray<{ achieved?: boolean; proof_ready?: boolean }> = [],
 ): EngagementScorecard {
   const by_state = Object.fromEntries(CLAIM_STATES.map(s => [s, 0])) as Record<ClaimState, number>;
   const claims = [
@@ -127,14 +134,19 @@ export function computeEngagementScorecard(
   const unverified = by_state.candidate + by_state.asserted;
 
   const proof_ready = findings.filter(isProofReady).length;
-  const unverified_cve_candidates = findings.filter(f => f.category === 'vulnerability' && f.severity === 'info').length;
+  // An UNVERIFIED CVE candidate is specifically a version-matched-but-untested finding that
+  // buildFindings demotes to info severity and titles "Unverified CVE candidate: …". Keying
+  // only on (vulnerability + info) also swept in genuinely-informational vuln findings.
+  const unverified_cve_candidates = findings.filter(
+    f => f.category === 'vulnerability' && f.severity === 'info' && /unverified cve candidate/i.test(f.title ?? ''),
+  ).length;
 
   // v2 — split the same claim_state signal by what the claim IS, so a big benign inventory
   // import can't mask unverified escalation. Inventory = nodes; attack paths = access edges.
   let invTotal = 0, invObserved = 0;
   for (const n of graph.nodes) {
     const s = n.properties.claim_state;
-    if (!s) continue;
+    if (!s || NON_ASSET_NODE_TYPES.has(String(n.properties.type ?? ''))) continue;
     invTotal += 1;
     if (MATURE_STATES.has(s)) invObserved += 1;
   }
@@ -169,6 +181,7 @@ export function computeEngagementScorecard(
     objectives: {
       total: objectives.length,
       achieved: objectives.filter(o => o.achieved === true).length,
+      proof_ready: objectives.filter(o => o.proof_ready === true).length,
     },
     inventory: {
       total: invTotal,
@@ -206,8 +219,10 @@ const pct = (x: number): string => `${Math.round(x * 100)}%`;
 /** True when the scorecard measured anything worth rendering (non-empty engagement, graph
  *  exported with claim_state). Renderers skip the section when this is false. */
 export function scorecardHasContent(sc: EngagementScorecard): boolean {
-  const live = sc.verification.verified + sc.verification.unverified;
-  return live > 0 || sc.findings.total > 0 || sc.objectives.total > 0;
+  // verification.total counts ALL classified claims — including refuted/stale. An engagement
+  // whose claims are entirely refuted/stale is exactly the case a reader most needs to see,
+  // so it must not suppress the section (an earlier `verified + unverified` check did).
+  return sc.verification.total > 0 || sc.findings.total > 0 || sc.objectives.total > 0;
 }
 
 /** The scorecard as an ordered list of display rows — the presentation-agnostic model each
@@ -239,7 +254,12 @@ export function scorecardRows(sc: EngagementScorecard): ScorecardRow[] {
   if (sc.findings.unverified_cve_candidates > 0) {
     rows.push({ label: 'Unverified CVE candidates', value: `${sc.findings.unverified_cve_candidates} (version-matched, not confirmed on target)` });
   }
-  rows.push({ label: 'Objectives achieved', value: `${sc.objectives.achieved} of ${sc.objectives.total}` });
+  rows.push({
+    label: 'Objectives achieved',
+    value: sc.objectives.total > 0
+      ? `${sc.objectives.achieved} of ${sc.objectives.total} (${sc.objectives.proof_ready} proof-backed)`
+      : `${sc.objectives.achieved} of ${sc.objectives.total}`,
+  });
   return rows;
 }
 

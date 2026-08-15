@@ -55,18 +55,44 @@ describe('computeEngagementScorecard', () => {
     expect(sc.findings.proof_ready_share).toBeCloseTo(0.5, 4);
   });
 
-  it('counts unverified CVE candidates (info-severity vulnerability findings)', () => {
+  it('counts only real unverified CVE candidates (the demoted "Unverified CVE candidate" findings)', () => {
     const findings = [
-      finding({ id: 'cand', severity: 'info', category: 'vulnerability' }),
-      finding({ id: 'real', severity: 'high', category: 'vulnerability' }),
-      finding({ id: 'host', severity: 'info', category: 'compromised_host' }), // info but not a vuln → not a CVE candidate
+      finding({ id: 'cand', severity: 'info', category: 'vulnerability', title: 'Unverified CVE candidate: CVE-2099-1' }),
+      finding({ id: 'info-vuln', severity: 'info', category: 'vulnerability', title: 'Informational: verbose banner' }), // info vuln but NOT a CVE candidate
+      finding({ id: 'real', severity: 'high', category: 'vulnerability', title: 'Vulnerability: CVE-2099-2' }),
+      finding({ id: 'host', severity: 'info', category: 'compromised_host', title: 'x' }), // info but not a vuln
     ];
     expect(computeEngagementScorecard(graphOf([]), findings, []).findings.unverified_cve_candidates).toBe(1);
   });
 
-  it('reports objective attainment', () => {
-    const sc = computeEngagementScorecard(graphOf([]), [], [{ achieved: true }, { achieved: false }, {}]);
-    expect(sc.objectives).toEqual({ total: 3, achieved: 1 });
+  it('reports objective attainment AND proof-backing', () => {
+    const sc = computeEngagementScorecard(graphOf([]), [], [
+      { achieved: true, proof_ready: true },
+      { achieved: true, proof_ready: false },
+      { achieved: false },
+      {},
+    ]);
+    expect(sc.objectives).toEqual({ total: 4, achieved: 2, proof_ready: 1 });
+  });
+
+  it('excludes synthetic/claim nodes (objective, vulnerability) from inventory coverage', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'h', properties: { type: 'host', claim_state: 'observed' } as unknown as NodeProperties },
+        { id: 'v', properties: { type: 'vulnerability', claim_state: 'observed' } as unknown as NodeProperties }, // not an asset
+        { id: 'o', properties: { type: 'objective', claim_state: 'candidate' } as unknown as NodeProperties },   // synthetic
+      ],
+      edges: [],
+    };
+    const sc = computeEngagementScorecard(graph, [], []);
+    expect(sc.inventory.total).toBe(1);      // only the host
+    expect(sc.inventory.observed).toBe(1);
+  });
+
+  it('still renders the section when every claim is refuted/stale (never suppressed)', () => {
+    const sc = computeEngagementScorecard(graphOf(['refuted', 'stale']), [], []);
+    expect(sc.verification.verified + sc.verification.unverified).toBe(0); // no "live" claims
+    expect(scorecardHasContent(sc)).toBe(true);                            // ...but the section still shows
   });
 
   it('isProofReady is the shared captured-proof predicate — a bare command is not proof', () => {

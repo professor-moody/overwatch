@@ -127,6 +127,30 @@ Commits `19ab38e`, `78f9b6e`, and `726cb4e` tightened runtime confidence. Tape n
 
 Commits `799316e` through `b16514f` converted several silent-failure classes into visible operator signals. Parsers, ingests, path analysis, IAM simulation, CVSS scoring, Activity, Findings, Overview, Graph inspector, Smoke, and reports now share the same "needs verification" vocabulary.
 
+## Efficacy & Evidence Program (August 2026)
+
+A second architectural review scored the machinery strong on reliability but weak
+on *proof of outcome*. The response was an outcome-honesty train of small reviewed
+PRs (#309–#314 and follow-ups):
+
+- **Semantic correctness** — `exploited` requires a real exploitation signal (not
+  the severity-derived `exploitable` flag); CVSS is emitted only for vulnerability
+  findings; one canonical proof predicate (`hasCapturedProof`) is shared by the
+  scorecard and finding-readiness.
+- **Canonical frontier ranking** — the engine ranks once into a split, explained
+  `rank`, so the model (`next_task`), the operator (`get_state`), the dashboard,
+  campaigns, and dispatch all read the same ordering. The KB/chain confidence
+  boost is no longer clamped away and `chain_score` is folded into expected value.
+- **Claim maturity gate** — objectives and pathfinding require a mature claim
+  (not a rule inference, a refuted edge, or a stale credential) instead of a bare
+  `confidence >= 0.9` threshold.
+- **Engagement scorecard v1 → v2** — ground-truth-free quality metrics, split into
+  inventory observation vs. attack-path validation, unsupported critical claims,
+  refutation coverage, and objective proof-backing, rendered from a shared model
+  into Markdown, HTML, and PDF.
+- **Orchestration measurement** — material progress is a real before/after
+  edge-ID delta over genuine offensive-access edge types.
+
 ## Evidence Checklist
 
 For a commit-level walkthrough, collect these items:

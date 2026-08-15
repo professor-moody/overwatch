@@ -74,16 +74,23 @@ program, delivered as small reviewed PRs, and it is measured cheaply alongside
 | Canonical frontier ranking | Landed; the engine ranks once into a split, explained `rank` that `next_task`, `get_state`, the dashboard, campaigns, and dispatch all share — no consumer re-sorts — and the previously-discarded KB/chain and `chain_score` signals are used. |
 | Claim maturity gate | Landed (Phase 2a); objectives and pathfinding require a mature claim (not a rule inference, refuted edge, or stale credential) rather than bare `confidence >= 0.9`. |
 | Orchestration measurement | Landed; material progress is a real before/after edge-ID delta over genuine offensive-access edge types. |
+| Scorecard v2 → HTML/PDF | Landed; split dimensions (inventory observation vs. attack-path validation, unsupported critical claims, refutation coverage, objective proof-backing) rendered from a shared model into a first-class "Evidence Integrity" section in Markdown, HTML, and PDF — not only JSON. Inventory excludes synthetic/claim nodes; a fully-refuted engagement is never suppressed. |
 
 Candidate next slices in this program (not yet committed):
 
 - **Claim lifecycle Phase 2b** — durable operator/agent validate-refute
   promotions, contradictory-evidence tracking, and validity periods, so maturity
   is asserted and corrected, not only derived.
-- **Scorecard v2** — split dimensions (inventory coverage, attack-path
-  validation, findings/objective proof-readiness, unsupported critical claims,
-  refutation coverage, interventions, cost/time) surfaced through the shared
-  report document model into HTML/PDF and the dashboard, not only JSON/Markdown.
+- **Live Engagement Quality dashboard** — the scorecard's split dimensions
+  surfaced in the dashboard with trends, drill-down to weak claims, and one-click
+  validation tasks. The report side has landed; the dashboard card plus the
+  operator-intervention and cost/time-per-result metrics remain, and need a
+  server endpoint (the live graph exports without `claim_state`) + data plumbing.
+- **Canonical edge-type registry** — one metadata source (topology / hypothesis /
+  attack_path / material_access / credential_access / objective_eligible) that the
+  objective, orchestration-measurement, reporting, and scorecard consumers all
+  derive from, retiring the several hand-maintained edge-type allowlists that have
+  already drifted.
 - **OverwatchBench + replay policy lab** — versioned ground-truth scenarios and
   offline replay of stored frontier snapshots against candidate ranking
   policies. Scoped separately; the expensive track.
