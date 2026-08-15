@@ -15,6 +15,7 @@ import type { AgentTask } from '../types.js';
 import type { RunRecord, ToolCall, ActivityLite } from '../services/eval-rubric.js';
 import type { OrchRunRecord } from '../services/eval-orchestration-rubric.js';
 import { recommendArchetype, isArchetypeId } from '../services/agent-archetypes.js';
+import { MATERIAL_ACCESS_EDGE_TYPES } from '../services/edge-semantics.js';
 import type { EvalScenario } from './eval-scenarios.js';
 import {
   EvalArtifactSession,
@@ -613,19 +614,6 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
 // Edge types that mark material offensive progress (access / lateral movement /
 // credential capture / escalation / cross-tier pivot), as opposed to plain service or
 // metadata discovery. Used to grade objective_progress by what actually moved forward.
-// Edges that represent MATERIAL OFFENSIVE ACCESS — a shell, admin rights, a captured/
-// validated credential, a directory-replication right, a role assumption. NOT topology:
-// BACKED_BY (webapp→cloud backend) and FEDERATES_WITH (idp↔domain) are declared linkages
-// that exist without any access being gained, so counting them as offensive progress
-// overstated it. CROSS_TIER_PIVOT is a *frontier-item* type, not a graph edge type, so it
-// never matched an edge at all — a dead entry. Both classes are removed.
-const ORCH_ACCESS_EDGE_TYPES = new Set([
-  'HAS_SESSION', 'ADMIN_TO', 'CAN_RDPINTO', 'CAN_PSREMOTE',
-  'OWNS_CRED', 'VALID_ON', 'TESTED_CRED',
-  'CAN_DCSYNC', 'CAN_GET_CHANGES', 'CAN_GET_CHANGES_ALL', 'GENERIC_ALL',
-  'ASSUMES_ROLE',
-]);
-
 const ORCH_SEED_NODES: Array<Record<string, unknown>> = [
   { id: 'orch-host-a', type: 'host', label: '10.10.30.1', ip: '10.10.30.1', alive: true },
   { id: 'orch-host-b', type: 'host', label: '10.10.30.2', ip: '10.10.30.2', alive: true },
@@ -835,7 +823,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     // credit, and the old node-touch test silently missed it.
     const newAccessEdges = afterGraph.edges.filter(e =>
       !beforeEdgeIds.has(e.id)
-      && ORCH_ACCESS_EDGE_TYPES.has(String((e.properties as { type?: string })?.type ?? '')),
+      && MATERIAL_ACCESS_EDGE_TYPES.has(String((e.properties as { type?: string })?.type ?? '')),
     ).length;
     const objectivesAchieved = app.engine.getFullHistory()
       .filter(ev => ev.event_type === 'objective_achieved').length;
