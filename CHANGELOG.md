@@ -19,9 +19,13 @@ version changes.
   opt-in `exportGraph({ sourceTrust: true })` gate; the canonical export and its
   golden-replay hash are unchanged.
 - An engagement scorecard (`computeEngagementScorecard`) — ground-truth-free
-  quality metrics (verified-vs-hypothesized claim share, proof-ready findings,
-  unverified CVE candidates, objective attainment) rendered as a report
-  "Evidence Integrity" section (Markdown) and carried in the JSON report.
+  quality metrics rendered as a first-class "Evidence Integrity" section from a
+  shared model into **Markdown, HTML, and PDF** (a body section, not a post-footer
+  append) and carried in the JSON report. Beyond the headline verified share it
+  splits into legible dimensions: inventory observation coverage (assets only —
+  synthetic/claim nodes excluded) vs. attack-path validation (access edges),
+  unsupported critical claims, refutation / negative-testing coverage, proof-ready
+  findings, and objective attainment plus how many objectives are proof-backed.
 - Canonical frontier ranking: every item is annotated once, at the engine, with
   a split `rank` (priority_score / evidence_confidence / expected_value /
   expected_noise / explanation), so `next_task`, `get_state`, the dashboard,
