@@ -14,6 +14,7 @@
 import type { ExportedGraph, ClaimState } from '../types.js';
 import type { ReportFinding } from './report-generator.js';
 import { hasCapturedProof } from './evidence-proof.js';
+import { ATTACK_PATH_EDGE_TYPES } from './edge-semantics.js';
 
 const CLAIM_STATES: ClaimState[] = ['candidate', 'asserted', 'observed', 'validated', 'exploited', 'refuted', 'stale'];
 // "verified" = the claim is confirmed (observed/validated/exploited); "unverified" =
@@ -94,14 +95,6 @@ const MATURE_STATES: ReadonlySet<ClaimState> = new Set<ClaimState>(['observed', 
  *  asset itself. Counting them as inventory overstated observation coverage. */
 const NON_ASSET_NODE_TYPES: ReadonlySet<string> = new Set(['objective', 'vulnerability']);
 
-/** Access / escalation edge types that constitute a material attack path (vs. topology or
- *  plain inventory relations). */
-const ATTACK_PATH_EDGE_TYPES: ReadonlySet<string> = new Set([
-  'HAS_SESSION', 'ADMIN_TO', 'CAN_RDPINTO', 'CAN_PSREMOTE',
-  'OWNS_CRED', 'VALID_ON', 'TESTED_CRED',
-  'CAN_DCSYNC', 'CAN_GET_CHANGES', 'CAN_GET_CHANGES_ALL', 'GENERIC_ALL',
-  'ASSUMES_ROLE', 'EXPLOITS', 'AUTH_BYPASS',
-]);
 
 function share(numerator: number, denominator: number): number {
   return denominator > 0 ? Number((numerator / denominator).toFixed(4)) : 0;

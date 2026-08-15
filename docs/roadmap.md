@@ -75,6 +75,7 @@ program, delivered as small reviewed PRs, and it is measured cheaply alongside
 | Claim maturity gate | Landed (Phase 2a); objectives and pathfinding require a mature claim (not a rule inference, refuted edge, or stale credential) rather than bare `confidence >= 0.9`. |
 | Orchestration measurement | Landed; material progress is a real before/after edge-ID delta over genuine offensive-access edge types. |
 | Scorecard v2 → HTML/PDF | Landed; split dimensions (inventory observation vs. attack-path validation, unsupported critical claims, refutation coverage, objective proof-backing) rendered from a shared model into a first-class "Evidence Integrity" section in Markdown, HTML, and PDF — not only JSON. Inventory excludes synthetic/claim nodes; a fully-refuted engagement is never suppressed. |
+| Canonical edge-type registry | Landed; one metadata source (`edge-semantics.ts`) tags each edge type with roles (material_access / exploitation / credential_access / objective_default / host_access / topology / hypothesis). The objective, orchestration-measurement, scorecard, and path-analysis consumers derive their sets from it instead of four hand-maintained allowlists — retiring the drift class that had let topology edges count as offensive progress. |
 
 Candidate next slices in this program (not yet committed):
 
@@ -86,11 +87,6 @@ Candidate next slices in this program (not yet committed):
   validation tasks. The report side has landed; the dashboard card plus the
   operator-intervention and cost/time-per-result metrics remain, and need a
   server endpoint (the live graph exports without `claim_state`) + data plumbing.
-- **Canonical edge-type registry** — one metadata source (topology / hypothesis /
-  attack_path / material_access / credential_access / objective_eligible) that the
-  objective, orchestration-measurement, reporting, and scorecard consumers all
-  derive from, retiring the several hand-maintained edge-type allowlists that have
-  already drifted.
 - **OverwatchBench + replay policy lab** — versioned ground-truth scenarios and
   offline replay of stored frontier snapshots against candidate ranking
   policies. Scoped separately; the expensive track.

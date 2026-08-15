@@ -9,6 +9,7 @@ import type { EngineContext, ActivityLogEntry } from './engine-context.js';
 import { isCredentialUsableForAuth } from './credential-utils.js';
 import { isLiveSessionEdge } from './session-edge-utils.js';
 import { isMatureClaim } from './source-trust.js';
+import { OBJECTIVE_ACCESS_EDGE_TYPES } from './edge-semantics.js';
 import type {
   NodeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState,
@@ -82,8 +83,6 @@ export function removeObjective(
 // Objective Evaluation
 // =============================================
 
-const DEFAULT_ACCESS_EDGE_TYPES = new Set(['HAS_SESSION', 'ADMIN_TO', 'OWNS_CRED']);
-
 export function evaluateObjectives(host: ObjectiveManagerHost): void {
   const objectives = structuredClone(host.ctx.config.objectives);
   const changed = evaluateObjectiveDraft(host, objectives);
@@ -105,8 +104,8 @@ function evaluateObjectiveDraft(
         node_filter: obj.target_criteria
       });
       const accessEdgeTypes = obj.achievement_edge_types
-        ? new Set(obj.achievement_edge_types)
-        : DEFAULT_ACCESS_EDGE_TYPES;
+        ? new Set<string>(obj.achievement_edge_types)
+        : OBJECTIVE_ACCESS_EDGE_TYPES;
       // A matching node must also be obtained — via an access edge, an explicit
       // obtained flag, or (for shares) readable/writable properties.
       const obtained = matching.nodes.some(n => {

@@ -10,6 +10,7 @@ import type { EngineContext, OverwatchGraph } from './engine-context.js';
 import type { EdgeProperties, EdgeType, GraphQuery, GraphQueryResult } from '../types.js';
 import { isLiveSessionEdge } from './session-edge-utils.js';
 import { isMatureClaim } from './source-trust.js';
+import { isHostAccessEdge } from './edge-semantics.js';
 
 type PathEdgeAttrs = { weight: number };
 
@@ -232,8 +233,10 @@ export class PathAnalyzer {
         // start. A closed shell isn't a current beachhead.
         const hasAccess = this.ctx.graph.edges(id).some((e: string) => {
           const ep = this.ctx.graph.getEdgeAttributes(e);
-          if (ep.type === 'HAS_SESSION') return isLiveSessionEdge(ep) && isMatureClaim(ep);
-          return ep.type === 'ADMIN_TO' && isMatureClaim(ep);
+          if (!isHostAccessEdge(ep.type)) return false;
+          // A closed shell isn't a current beachhead — only a LIVE session qualifies.
+          if (ep.type === 'HAS_SESSION' && !isLiveSessionEdge(ep)) return false;
+          return isMatureClaim(ep);
         });
         if (hasAccess) startNodes.push(id);
       }
