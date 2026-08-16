@@ -70,10 +70,69 @@ const EDGE_ROLES: Partial<Record<EdgeType, readonly EdgeRole[]>> = {
   BACKED_BY: ['topology'],
   FEDERATES_WITH: ['topology'],
   AUTHENTICATES_VIA: ['topology'],
-  // Inferred / weaker reachability leads.
+  MEMBER_OF: ['topology'],
+  MEMBER_OF_DOMAIN: ['topology'],
+  HOSTS: ['topology'],
+  RUNS: ['topology'],
+  RUNS_ON: ['topology'],
+  REACHABLE: ['topology'],
+  MANAGED_BY: ['topology'],
+  TRUSTS: ['topology'],
+  SAME_DOMAIN: ['topology'],
+  HAS_ENDPOINT: ['topology'],
+  HAS_POLICY: ['topology'],
+  POLICY_ALLOWS: ['topology'],
+  EXPOSED_TO: ['topology'],
+  SERVICE_PRINCIPAL_FOR: ['topology'],
+  ASSIGNED_TO_APP: ['topology'],
+  MFA_REQUIRED_FOR: ['topology'],
+  ISSUES_TOKENS_FOR: ['topology'],
+  ISSUED_BY: ['topology'],
+  SUBDOMAIN_OF: ['topology'],
+  RESOLVES_TO: ['topology'],
+  IN_NETBLOCK: ['topology'],
+  OWNS_ASSET: ['topology'],
+  AFFILIATED_WITH: ['topology'],
+  // Inferred / weaker reachability leads + attack-surface opportunities (a principal is
+  // roastable, a host is vulnerable, a relay/null-session is possible) — a lead, not access.
   POTENTIAL_AUTH: ['hypothesis'],
   CAN_REACH: ['hypothesis'],
+  AS_REP_ROASTABLE: ['hypothesis'],
+  KERBEROASTABLE: ['hypothesis'],
+  VULNERABLE_TO: ['hypothesis'],
+  RELAY_TARGET: ['hypothesis'],
+  NULL_SESSION: ['hypothesis'],
+  CAN_ENROLL: ['hypothesis'],
 };
+
+/**
+ * Edge types intentionally left WITHOUT a role — reviewed and decided, not forgotten. Together
+ * with EDGE_ROLES's keys this covers EVERY EdgeType (enforced by an exhaustiveness test), so a
+ * newly-added edge type can't silently escape classification — the test fails until it is placed
+ * in one list or the other. Grouped by why:
+ *  - AD ACL / control edges (OWNS, GENERIC_WRITE, WRITE_DACL, ADD_MEMBER, FORCE_CHANGE_PASSWORD,
+ *    ESC1-15, CAN_READ_LAPS/GMSA, RBCD_TARGET, …): genuine control-granting edges that are strong
+ *    CANDIDATES for `material_access` — but adding them would change the orchestration-progress
+ *    and attack-path counts, so that reclassification is a tracked behavior change, not silent.
+ *  - credential provenance / app-scoped validity (DERIVED_FROM, DUMPED_FROM, SHARED_CREDENTIAL,
+ *    VALID_FOR_APP, VALID_FOR_IDP_PRINCIPAL, AUTHENTICATED_AS): credential relationships, not
+ *    access on their own.
+ *  - operator-controlled decoy infra (OPERATED_BY, BAITED, RELAYED_VIA): not offensive progress.
+ *  - synthetic bookkeeping (PATH_TO_OBJECTIVE, RELATED): not epistemic claims about the target.
+ */
+export const INTENTIONALLY_UNROLED_EDGE_TYPES: readonly EdgeType[] = [
+  'DERIVED_FROM', 'DUMPED_FROM', 'DELEGATES_TO', 'WRITEABLE_BY', 'OWNS', 'GENERIC_WRITE',
+  'WRITE_OWNER', 'WRITE_DACL', 'ADD_MEMBER', 'FORCE_CHANGE_PASSWORD', 'ALLOWED_TO_ACT',
+  'MANAGE_CA', 'MANAGE_CERTIFICATES', 'OPERATES_CA',
+  'ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC12', 'ESC13', 'ESC15',
+  'CAN_DELEGATE_TO', 'CAN_CAPTURE_TGT_FROM', 'CAN_READ_LAPS', 'CAN_READ_GMSA', 'RBCD_TARGET',
+  'SHARED_CREDENTIAL', 'AUTHENTICATED_AS', 'VALID_FOR_APP', 'VALID_FOR_IDP_PRINCIPAL',
+  'OPERATED_BY', 'BAITED', 'RELAYED_VIA',
+  'PATH_TO_OBJECTIVE', 'RELATED',
+];
+
+/** Edge types that carry a role — for the exhaustiveness guard. */
+export const ROLED_EDGE_TYPES: readonly EdgeType[] = Object.keys(EDGE_ROLES) as EdgeType[];
 
 function typesWithRole(role: EdgeRole): ReadonlySet<string> {
   return new Set(

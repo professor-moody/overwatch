@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import { EDGE_TYPES } from '../../types.js';
 import {
   MATERIAL_ACCESS_EDGE_TYPES,
   ATTACK_PATH_EDGE_TYPES,
   OBJECTIVE_ACCESS_EDGE_TYPES,
   HOST_ACCESS_EDGE_TYPES,
+  INTENTIONALLY_UNROLED_EDGE_TYPES,
+  ROLED_EDGE_TYPES,
   isMaterialAccessEdge,
   isAttackPathEdge,
   isObjectiveAccessEdge,
@@ -47,7 +50,7 @@ describe('canonical edge-type semantics registry', () => {
     expect(isCredentialAccessEdge('OWNS_CRED')).toBe(true);
     expect(isTopologyEdge('BACKED_BY')).toBe(true);
     expect(isMaterialAccessEdge(undefined)).toBe(false);
-    expect(isTopologyEdge('RUNS')).toBe(false);                // plain discovery — no special role
+    expect(isTopologyEdge('OWNS')).toBe(false);                // an unroled AD-control edge — no topology role
   });
 
   it('topology edges are never material access (the drift that overstated orchestration progress)', () => {
@@ -56,5 +59,18 @@ describe('canonical edge-type semantics registry', () => {
       expect(isMaterialAccessEdge(t)).toBe(false);
       expect(isAttackPathEdge(t)).toBe(false);
     }
+  });
+
+  it('EXHAUSTIVE: every edge type is either roled or explicitly unroled — no silent escape', () => {
+    const roled = new Set<string>(ROLED_EDGE_TYPES);
+    const unroled = new Set<string>(INTENTIONALLY_UNROLED_EDGE_TYPES);
+    // Disjoint — an edge type is roled xor explicitly unroled, never both.
+    expect([...roled].filter(t => unroled.has(t))).toEqual([]);
+    // Complete — a NEW edge type added to EDGE_TYPES must be placed in one list or the other,
+    // or this fails (that is the anti-drift guard: no material-access edge escapes silently).
+    expect(EDGE_TYPES.filter(t => !roled.has(t) && !unroled.has(t))).toEqual([]);
+    // No phantom — nothing listed that isn't a real edge type.
+    const known = new Set<string>(EDGE_TYPES);
+    expect([...roled, ...unroled].filter(t => !known.has(t))).toEqual([]);
   });
 });
