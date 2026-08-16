@@ -78,15 +78,29 @@ program, delivered as small reviewed PRs, and it is measured cheaply alongside
 | Canonical edge-type registry | Landed; one metadata source (`edge-semantics.ts`) tags each edge type with roles (material_access / exploitation / credential_access / objective_default / host_access / topology / hypothesis). The objective, orchestration-measurement, scorecard, and path-analysis consumers derive their sets from it instead of four hand-maintained allowlists — retiring the drift class that had let topology edges count as offensive progress. |
 | Claim lifecycle Phase 2b (backend) | Landed; durable operator/agent `promote_claim` (validate / refute / observe / exploited / stale) stored on the node/edge and honored by `claimState()` everywhere; `valid_until` validity windows that decay a promotion to `stale`; promotion-vs-evidence contradiction detection surfaced in the scorecard; and refuting a supporting claim un-achieves the objective it completed. Hardening tracked below (transactional command service, temporal objective model, withdraw + history, actionable contradictions). |
 
-Candidate next slices in this program (not yet committed):
+Claim lifecycle Phase 2b hardening — **landed:** the transactional, idempotent
+`promote_claim` command service (atomic merge + audit + receipt, dedup by key);
+refuting a target node (not just an access edge) un-achieves its objective; and
+**actionable contradictions** (the scorecard names each contradicted promotion —
+which claim, the conflict, the promotion's reason — not just a count).
 
-- **Claim lifecycle Phase 2b hardening** — a transactional, idempotent
-  claim-promotion command service (atomic merge + audit + reconcile, dedup by
-  key) with a withdraw/clear op + promotion history; passive-expiry objective
-  reconciliation and a temporal objective model (`ever_achieved` /
-  `currently_satisfied` / `lost_at` / `revoked_as_unproven`); proof-backing that
-  requires evidence for the supporting access chain, not target existence; and
-  actionable contradictions (claim ids / reasons / competing evidence).
+Remaining hardening slices (not yet committed):
+
+- **Withdraw + promotion history** — a `promote_claim` withdraw/clear op that
+  durably reverts a claim to its derived state (needs an edge-attribute-unset
+  journal path), plus retained promotion history rather than overwrite-only.
+- **Temporal objective model + passive-expiry reconciliation** — distinguish
+  `ever_achieved` / `currently_satisfied` / `lost_at` / `revoked_as_unproven`, so a
+  claim that decays (a rotated credential → `stale`) reconciles the objective it
+  supported without a promotion — while a settled milestone stays recorded.
+  (Dogfooding confirmed these are coupled: a naive always-reconcile breaks
+  milestone stability, so the temporal split is the right shape, not a shortcut.)
+- **Supporting-chain proof-backing** — an objective is "proof-backed" only when the
+  obtaining ACCESS/action chain carries evidence, not merely that its target node
+  was observed to exist.
+- **Exhaustive edge-type registry** — classify the remaining edge types and add an
+  escape guard so a new material-access type can't silently fall through with no
+  role.
 - **Phase 2b-3 dashboard operator-correction** — invoke `promote_claim` from the
   graph node/edge drawer via a server action.
 - **Live Engagement Quality dashboard** — the scorecard's split dimensions

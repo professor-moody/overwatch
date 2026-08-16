@@ -158,12 +158,12 @@ describe('computeEngagementScorecard — v2 split dimensions', () => {
     expect(sc.refutation.coverage).toBeCloseTo(2 / 3, 4);
   });
 
-  it('counts contradicted promotions (promotion vs evidence conflict) across nodes and edges', () => {
-    const p = (state: string) => ({ state, by_kind: 'operator', at: 't', reason: 'r' });
+  it('surfaces contradicted promotions with actionable specifics (which claim, conflict, reason)', () => {
+    const p = (state: string, reason = 'r') => ({ state, by_kind: 'operator', at: 't', reason });
     const graph: ExportedGraph = {
       nodes: [
         // refuted promotion, yet confidence 1 confirms it → contradiction
-        { id: 'n1', properties: { claim_state: 'refuted', confidence: 1, claim_promotion: p('refuted') } as unknown as NodeProperties },
+        { id: 'n1', properties: { claim_state: 'refuted', confidence: 1, claim_promotion: p('refuted', 'looked wrong') } as unknown as NodeProperties },
         // validated promotion with no conflicting evidence → no contradiction
         { id: 'n2', properties: { claim_state: 'validated', claim_promotion: p('validated') } as unknown as NodeProperties },
       ],
@@ -172,7 +172,17 @@ describe('computeEngagementScorecard — v2 split dimensions', () => {
         { id: 'e1', source: 'a', target: 'b', properties: { type: 'ADMIN_TO', claim_state: 'validated', tested: true, test_result: 'failure', claim_promotion: p('validated') } as unknown as EdgeProperties },
       ],
     };
-    expect(computeEngagementScorecard(graph, [], []).contradicted_claims).toBe(2);
+    const sc = computeEngagementScorecard(graph, [], []);
+    expect(sc.contradicted_claims).toBe(2);
+    expect(sc.contradictions).toHaveLength(2);
+    const node = sc.contradictions.find(c => c.target_kind === 'node')!;
+    expect(node).toMatchObject({ target_id: 'n1', kind: 'refuted_but_evidence_positive', promoted_state: 'refuted', reason: 'looked wrong' });
+    const edge = sc.contradictions.find(c => c.target_kind === 'edge')!;
+    expect(edge).toMatchObject({ target_id: 'e1', target_ref: 'ADMIN_TO a→b', kind: 'promoted_positive_but_tested_failed' });
+    // The report rows name each contradiction, not just a count.
+    const rowValues = scorecardRows(sc).map(r => r.value);
+    expect(rowValues.some(v => v.includes('n1') && v.includes('refuted, but the evidence confirms it'))).toBe(true);
+    expect(rowValues.some(v => v.includes('ADMIN_TO a→b') && v.includes('a test of it failed'))).toBe(true);
   });
 
   it('scorecardRows renders the split dimensions; scorecardHasContent gates the section', () => {
