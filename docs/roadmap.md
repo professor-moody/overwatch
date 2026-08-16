@@ -80,9 +80,12 @@ program, delivered as small reviewed PRs, and it is measured cheaply alongside
 
 Claim lifecycle Phase 2b hardening — **landed:** the transactional, idempotent
 `promote_claim` command service (atomic merge + audit + receipt, dedup by key);
-refuting a target node (not just an access edge) un-achieves its objective; and
+refuting a target node (not just an access edge) un-achieves its objective;
 **actionable contradictions** (the scorecard names each contradicted promotion —
-which claim, the conflict, the promotion's reason — not just a count).
+which claim, the conflict, the promotion's reason — not just a count); and
+**supporting-chain proof-backing** (an objective reads "proof-backed" only when
+the mature obtaining access edge was created by an evidenced action, not when the
+target was merely observed to exist).
 
 Remaining hardening slices (not yet committed):
 
@@ -95,9 +98,6 @@ Remaining hardening slices (not yet committed):
   supported without a promotion — while a settled milestone stays recorded.
   (Dogfooding confirmed these are coupled: a naive always-reconcile breaks
   milestone stability, so the temporal split is the right shape, not a shortcut.)
-- **Supporting-chain proof-backing** — an objective is "proof-backed" only when the
-  obtaining ACCESS/action chain carries evidence, not merely that its target node
-  was observed to exist.
 - **Edge-type registry material-access reclassification** — the exhaustiveness
   escape guard has landed (every edge type is roled or explicitly unroled, so a new
   type can't silently escape), and topology/hypothesis edges are classified. The
