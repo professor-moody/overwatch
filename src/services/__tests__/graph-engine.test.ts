@@ -2023,6 +2023,51 @@ describe('GraphEngine', () => {
       expect(edge.properties.claim_state).toBe('stale'); // window elapsed → decayed
     });
 
+    it('refuting the supporting claim un-achieves an already-achieved objective', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'cred-da', type: 'credential', label: 'DA', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(true);
+
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'OWNS_CRED')!.id;
+      engine.promoteClaim({ edge_id: edgeId, state: 'refuted', reason: 'credential did not authenticate', by_kind: 'operator' });
+
+      // The only claim supporting the objective is now refuted → the objective is no longer met.
+      const daObj = engine.getState().objectives.find(o => o.id === 'obj-da');
+      expect(daObj?.achieved).toBe(false);
+      expect(daObj?.achieved_at).toBeUndefined();
+    });
+
+    it('reconciliation leaves an objective achieved when its own support is still mature', () => {
+      // obj-da is supported by a mature OWNS_CRED; refuting an UNRELATED edge reconciles all
+      // objectives but must not un-achieve obj-da, whose own claim is untouched.
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'cred-da', type: 'credential', label: 'DA', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+          { id: 'host-x', type: 'host', label: '10.0.0.9', ip: '10.0.0.9' },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'user-attacker', target: 'host-x', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(true);
+
+      const adminEdge = engine.exportGraph().edges.find(e => e.properties.type === 'ADMIN_TO')!.id;
+      engine.promoteClaim({ edge_id: adminEdge, state: 'refuted', reason: 'unrelated admin was wrong', by_kind: 'operator' });
+
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(true);
+    });
+
     it('rejects a promotion with no target and requires a reason', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       expect(() => engine.promoteClaim({ state: 'validated', reason: 'x', by_kind: 'operator' })).toThrow(/node_id or edge_id/);
