@@ -11,7 +11,7 @@
 // no backfill — and the default is the conservative one (`asserted` = "we have it
 // but haven't confirmed it"), so an unclassifiable element never over-claims.
 
-import type { ClaimState, SourceTrust } from '../types.js';
+import type { ClaimState, ClaimPromotion, SourceTrust } from '../types.js';
 
 // The minimal shape we classify from — satisfied by both NodeProperties and
 // EdgeProperties (extra fields are simply ignored).
@@ -40,11 +40,11 @@ export function sourceTrust(p: SourceTrustInput): SourceTrust {
 // ============================================================
 // Claim state: how well-established the claim is (its lifecycle)
 // ============================================================
-// Phase 1 of the claim lifecycle. Where source_trust answers "where did this come from"
-// (provenance), claim_state answers "how well established is it" (candidate → … →
-// validated / exploited, plus terminal refuted / stale). Both are DERIVED on read from
-// signals the graph already carries — no schema field, no migration. Durable operator/
-// agent promotions (validate / refute) come in a later phase; this floor is derivable.
+// Where source_trust answers "where did this come from" (provenance), claim_state answers
+// "how well established is it" (candidate → … → validated / exploited, plus terminal refuted /
+// stale). It is DERIVED on read from signals the graph carries — no stored claim_state field.
+// Phase 2b adds ONE durably-stored input: an explicit operator/agent `claim_promotion` that
+// claimState honors above the derived signals (see below).
 
 /** Superset of SourceTrustInput adding the signals that separate the extra states. */
 export interface ClaimStateInput extends SourceTrustInput {
@@ -61,6 +61,10 @@ export interface ClaimStateInput extends SourceTrustInput {
   exploitation_confirmed?: boolean;
   identity_status?: 'canonical' | 'unresolved' | 'superseded';
   credential_status?: 'active' | 'stale' | 'expired' | 'rotated';
+  /** A durable operator/agent promotion of this claim's standing (Phase 2b). When present it
+   *  overrides the derived signals below — negative/terminal promotions authoritatively, and
+   *  positive promotions as a floor a stronger real signal can still raise. */
+  claim_promotion?: ClaimPromotion;
 }
 
 /**
@@ -69,18 +73,27 @@ export interface ClaimStateInput extends SourceTrustInput {
  *   → observed (passively confirmed) → candidate (hypothesis / untested / flagged
  *   exploitable) → asserted.
  *
+ * A durable operator/agent PROMOTION (`claim_promotion`, Phase 2b) overrides the derived
+ * signals: refuted / stale promotions are authoritative (an operator disproving or retiring a
+ * claim wins over any derived positive), while observed / validated / exploited promotions set
+ * a floor — only a *stronger* real signal (an actual exploitation) can raise past a positive
+ * promotion.
+ *
  * `exploited` requires a REAL exploitation signal — an explicit exploitation event
- * (`exploited_at` / `exploitation_confirmed`) or a *confirmed* `EXPLOITS` relationship —
- * never the `exploitable` flag, which parsers derive loosely from severity and which
- * therefore only ever makes a claim a `candidate`. (Conflating the two silently inflated
- * the engagement scorecard's verified share with every high/critical severity flag.)
+ * (`exploited_at` / `exploitation_confirmed`), an explicit exploited promotion, or a *confirmed*
+ * `EXPLOITS` relationship — never the `exploitable` flag, which parsers derive loosely from
+ * severity and which therefore only ever makes a claim a `candidate`. (Conflating the two
+ * silently inflated the engagement scorecard's verified share with every high/critical flag.)
  *
  * A confirmed rule-inferred claim is `observed`/`validated`, not `candidate` — origin
  * (source_trust: inferred) and current standing (claim_state) are deliberately distinct.
  */
 export function claimState(p: ClaimStateInput): ClaimState {
-  if (p.tested === true && p.test_result === 'failure') return 'refuted';
-  if (p.identity_status === 'superseded'
+  const promoted = p.claim_promotion?.state;
+  // Negative / terminal — authoritative: an operator/agent saying "refuted" or "stale" wins.
+  if (promoted === 'refuted' || (p.tested === true && p.test_result === 'failure')) return 'refuted';
+  if (promoted === 'stale'
+    || p.identity_status === 'superseded'
     || p.credential_status === 'stale'
     || p.credential_status === 'expired'
     || p.credential_status === 'rotated') {
@@ -89,11 +102,15 @@ export function claimState(p: ClaimStateInput): ClaimState {
   const confirmed = (typeof p.confidence === 'number' && p.confidence >= CONFIRMED)
     || !!p.confirmed_at
     || (p.tested === true && p.test_result === 'success');
-  if (!!p.exploited_at || p.exploitation_confirmed === true || (p.type === 'EXPLOITS' && confirmed)) {
+  // Exploited — a real exploitation signal (or an explicit exploited promotion) beats a
+  // positive validated/observed promotion.
+  if (promoted === 'exploited' || !!p.exploited_at || p.exploitation_confirmed === true
+    || (p.type === 'EXPLOITS' && confirmed)) {
     return 'exploited';
   }
-  if (p.tested === true && p.test_result === 'success') return 'validated';
-  if (confirmed) return 'observed';
+  // Positive promotions set a floor alongside the equivalent derived signals.
+  if (promoted === 'validated' || (p.tested === true && p.test_result === 'success')) return 'validated';
+  if (promoted === 'observed' || confirmed) return 'observed';
   if (p.inferred_by_rule || p.tested === false || p.exploitable === true) return 'candidate';
   return 'asserted';
 }

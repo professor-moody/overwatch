@@ -99,7 +99,10 @@ export type ActivityEventType =
   | 'plan_proposed'
   | 'operator_command'
   // 3D: a running agent escalated a question to the operator.
-  | 'agent_query';
+  | 'agent_query'
+  // Phase 2b: an operator/agent durably promoted a claim's standing (validate / refute /
+  // correct). The judgment is stored on the node/edge; this records who/why for the timeline.
+  | 'claim_promoted';
 
 export type ActivityLogDetails =
   | { parsed_nodes: number; parsed_edges: number; ingested: boolean; new_nodes?: number; new_edges?: number; inferred_edges?: number; [key: string]: unknown }

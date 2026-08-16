@@ -180,6 +180,7 @@ import {
 import { engagementConfigSchema, inferProfile } from '../types.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
+  ClaimState, ClaimPromotion,
   EngagementConfig, EngagementState, FrontierItem,
   Finding, InferenceRule, GraphQuery, GraphQueryResult,
   AgentTask, ExportedGraph, HealthReport, GraphCorrectionOperation,
@@ -998,6 +999,109 @@ export class GraphEngine {
         this.invalidateAllCaches();
       },
     );
+  }
+
+  /** Durably merge attributes into a node (mirror of mergeEdgeAttributesDurable). Reuses the
+   *  existing `merge_node_attrs` journal kind, whose validator + replay key on `props.id`. */
+  mergeNodeAttributesDurable(
+    nodeId: string,
+    props: Record<string, unknown>,
+  ): void {
+    if (!this.ctx.graph.hasNode(nodeId)) {
+      throw new Error(`Cannot merge attributes into missing node: ${nodeId}`);
+    }
+    const withId = { ...props, id: nodeId };
+    this.ctx.applyJournaledMutation(
+      'merge_node_attrs',
+      { props: withId },
+      () => {
+        this.ctx.graph.mergeNodeAttributes(nodeId, withId);
+        this.invalidatePathGraph();
+        this.invalidateAllCaches();
+      },
+    );
+  }
+
+  /**
+   * Phase 2b: durably PROMOTE a claim's standing on a node or edge — an explicit operator/agent
+   * judgment (validate / refute / observe / exploited / stale) that claimState() honors above
+   * the derived signals. The promotion is stored on the element (the source of truth); a
+   * hash-chained `claim_promoted` activity event records who/why for the timeline.
+   */
+  promoteClaim(input: {
+    node_id?: string;
+    edge_id?: string;
+    state: ClaimPromotion['state'];
+    reason: string;
+    by_kind: ClaimPromotion['by_kind'];
+    by?: string;
+    valid_until?: string;
+    action_id?: string;
+  }): { target_kind: 'node' | 'edge'; target_id: string; claim_state: ClaimState } {
+    this.assertPersistenceWritable();
+    if (!input.reason?.trim()) throw new Error('promoteClaim requires a reason');
+    const promotion: ClaimPromotion = {
+      state: input.state,
+      by_kind: input.by_kind,
+      at: this.ctx.nowIso(),
+      reason: input.reason,
+      ...(input.by ? { by: input.by } : {}),
+      ...(input.valid_until ? { valid_until: input.valid_until } : {}),
+    };
+
+    let targetKind: 'node' | 'edge';
+    let targetId: string;
+    let claim_state: ClaimState;
+    let targetEdge: { source: string; target: string; type?: string } | undefined;
+
+    if (input.edge_id) {
+      if (!this.ctx.graph.hasEdge(input.edge_id)) throw new Error(`No such edge: ${input.edge_id}`);
+      this.mergeEdgeAttributesDurable(input.edge_id, { claim_promotion: promotion });
+      targetKind = 'edge';
+      targetId = input.edge_id;
+      const attrs = this.ctx.graph.getEdgeAttributes(input.edge_id) as EdgeProperties;
+      claim_state = claimState(attrs);
+      targetEdge = {
+        source: this.ctx.graph.source(input.edge_id),
+        target: this.ctx.graph.target(input.edge_id),
+        type: String(attrs.type),
+      };
+    } else if (input.node_id) {
+      if (!this.ctx.graph.hasNode(input.node_id)) throw new Error(`No such node: ${input.node_id}`);
+      this.mergeNodeAttributesDurable(input.node_id, { claim_promotion: promotion });
+      targetKind = 'node';
+      targetId = input.node_id;
+      claim_state = claimState(this.ctx.graph.getNodeAttributes(input.node_id) as NodeProperties);
+    } else {
+      throw new Error('promoteClaim requires node_id or edge_id');
+    }
+
+    this.ctx.logEvent({
+      event_type: 'claim_promoted',
+      description: `Claim ${targetKind} ${targetId} promoted to ${input.state} by ${input.by_kind}${input.by ? ` ${input.by}` : ''}: ${input.reason}`,
+      provenance: input.by_kind === 'agent' ? 'agent' : 'operator',
+      category: 'reasoning',
+      ...(input.by_kind === 'agent' && input.by ? { agent_id: input.by } : {}),
+      ...(input.action_id ? { action_id: input.action_id } : {}),
+      ...(targetKind === 'node' ? { target_node_ids: [targetId] } : {}),
+      ...(targetEdge ? { target_edge: targetEdge } : {}),
+      details: {
+        target_kind: targetKind,
+        target_id: targetId,
+        promoted_state: input.state,
+        resulting_claim_state: claim_state,
+        reason: input.reason,
+        valid_until: input.valid_until ?? null,
+      },
+    });
+
+    // Objective evaluation reads claim maturity, so a positive promotion may newly satisfy a
+    // not-yet-achieved objective — re-evaluate now so the change is reflected immediately.
+    // (Path-finding re-reads live edge attributes on every query, so a refuted access edge
+    // stops rooting a path start without any cache work here.)
+    this.evaluateObjectives();
+
+    return { target_kind: targetKind, target_id: targetId, claim_state };
   }
 
   dropNodeDurable(

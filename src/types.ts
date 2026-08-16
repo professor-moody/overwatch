@@ -46,6 +46,31 @@ export type SourceTrust = 'observed' | 'asserted' | 'inferred';
  *  - stale:     was true but has decayed (superseded identity, expired/rotated credential) */
 export type ClaimState = 'candidate' | 'asserted' | 'observed' | 'validated' | 'exploited' | 'refuted' | 'stale';
 
+/**
+ * A durable operator/agent PROMOTION of a claim's standing (claim lifecycle Phase 2b). Unlike
+ * `source_trust` / `claim_state` — which are derived on export and never stored — this is the
+ * one durably-stored claim-lifecycle field: an explicit human/agent judgment ("I validated
+ * this", "this is refuted", an operator correction) that `claimState()` honors above the
+ * derived signals. Negative/terminal promotions (refuted / stale) are authoritative; positive
+ * promotions (observed / validated / exploited) set a floor a stronger real signal can raise.
+ */
+export interface ClaimPromotion {
+  /** The promoted standing. `candidate`/`asserted` are the un-promoted defaults, not promotion
+   *  targets. */
+  state: 'observed' | 'validated' | 'exploited' | 'refuted' | 'stale';
+  /** Who made the judgment. */
+  by_kind: 'operator' | 'agent';
+  /** Agent id or operator name, best-effort from the invocation context. */
+  by?: string;
+  /** ISO timestamp of the promotion. */
+  at: string;
+  /** Why — the judgment, required for auditability. */
+  reason: string;
+  /** Optional validity window; after this the claim decays to `stale` (evaluated in a later
+   *  phase — stored now so a promotion can carry it). */
+  valid_until?: string;
+}
+
 export interface NodeProperties {
   // Common
   id: string;
@@ -61,6 +86,7 @@ export interface NodeProperties {
   confidence: number;           // 0.0 - 1.0
   source_trust?: SourceTrust;   // derived on export (services/source-trust.ts); not stored
   claim_state?: ClaimState;    // derived on export (services/source-trust.ts:claimState); not stored
+  claim_promotion?: ClaimPromotion; // durable operator/agent promotion (Phase 2b); honored by claimState()
   notes?: string;
   identity_status?: 'canonical' | 'unresolved' | 'superseded';
   identity_family?: string;
@@ -477,6 +503,7 @@ export interface EdgeProperties {
   confidence: number;           // 0.0 = hypothesis, 1.0 = confirmed
   source_trust?: SourceTrust;   // derived on export (services/source-trust.ts); not stored
   claim_state?: ClaimState;    // derived on export (services/source-trust.ts:claimState); not stored
+  claim_promotion?: ClaimPromotion; // durable operator/agent promotion (Phase 2b); honored by claimState()
   discovered_by?: string;
   discovered_by_action_id?: string; // most-recent observing action (paired with discovered_by; overwritten on re-observation like the edge's other provenance) — pivot to the run/evidence via explain_action
   discovered_at: string;

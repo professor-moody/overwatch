@@ -171,6 +171,7 @@ The server exposes a generated MCP tool registry. When the MCP connection is ava
 | [`ingest_json`](docs/tools/ingest-json.md) | Ingest tool output in JSON or JSONL format directly into the engagement graph without a dedicated parser. | Graph & data | Mutating |
 | [`ingest_screenshots`](docs/tools/ingest-screenshots.md) | Read a visual-recon report's PNG files off disk and ingest them so they're VIEWABLE in the dashboard. | Graph & data | Mutating |
 | [`parse_output`](docs/tools/parse-output.md) | Parse raw output from common offensive tools into structured graph data. | Graph & data | Mutating |
+| [`promote_claim`](docs/tools/promote-claim.md) | Durably record an explicit operator/agent judgment about a node or edge's standing (claim lifecycle Phase 2b). | Graph & data | Mutating |
 | [`recompute_objectives`](docs/tools/recompute-objectives.md) | Re-evaluate all engagement objectives from the current graph state. | Graph & data | Mutating |
 | [`report_finding`](docs/tools/report-finding.md) | Report a discovery from agent execution. | Graph & data | Mutating |
 | [`suggest_inference_rule`](docs/tools/suggest-inference-rule.md) | Propose a new inference rule to add to the engagement's active rule set. | Graph & data | Mutating |
