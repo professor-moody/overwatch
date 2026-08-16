@@ -15,6 +15,7 @@ import type { ExportedGraph, ClaimState } from '../types.js';
 import type { ReportFinding } from './report-generator.js';
 import { hasCapturedProof } from './evidence-proof.js';
 import { ATTACK_PATH_EDGE_TYPES } from './edge-semantics.js';
+import { claimContradiction } from './source-trust.js';
 
 const CLAIM_STATES: ClaimState[] = ['candidate', 'asserted', 'observed', 'validated', 'exploited', 'refuted', 'stale'];
 // "verified" = the claim is confirmed (observed/validated/exploited); "unverified" =
@@ -83,6 +84,10 @@ export interface EngagementScorecard {
   /** High/critical findings that carry no captured proof — the claims a reader should be
    *  most skeptical of. */
   unsupported_critical_claims: number;
+  /** Claims whose durable promotion conflicts with their own evidence (e.g. promoted refuted
+   *  yet the signals confirm it, or promoted validated yet a test failed) — a promotion that
+   *  may be out of date or wrong and needs an operator's review. */
+  contradicted_claims: number;
   /** Negative-testing / refutation coverage across graph claims. */
   refutation: ScorecardRefutation;
 }
@@ -154,6 +159,11 @@ export function computeEngagementScorecard(
   const unsupported_critical_claims = findings.filter(
     f => (f.severity === 'critical' || f.severity === 'high') && !isProofReady(f),
   ).length;
+  // Promotions whose durable standing conflicts with their own evidence — over ALL elements,
+  // not just the asset/attack-path subsets counted above.
+  let contradicted_claims = 0;
+  for (const n of graph.nodes) if (claimContradiction(n.properties)) contradicted_claims += 1;
+  for (const e of graph.edges) if (claimContradiction(e.properties)) contradicted_claims += 1;
 
   return {
     verification: {
@@ -187,6 +197,7 @@ export function computeEngagementScorecard(
       validation_share: share(apValidated, apTotal),
     },
     unsupported_critical_claims,
+    contradicted_claims,
     refutation: {
       tested,
       refuted: by_state.refuted,
@@ -243,6 +254,9 @@ export function scorecardRows(sc: EngagementScorecard): ScorecardRow[] {
   rows.push({ label: 'Findings proof-ready', value: `${sc.findings.proof_ready} of ${sc.findings.total} (${pct(sc.findings.proof_ready_share)}) carry captured proof` });
   if (sc.unsupported_critical_claims > 0) {
     rows.push({ label: 'Unsupported critical claims', value: `${sc.unsupported_critical_claims} high/critical finding(s) without captured proof` });
+  }
+  if (sc.contradicted_claims > 0) {
+    rows.push({ label: 'Contradicted promotions', value: `${sc.contradicted_claims} promotion(s) conflict with their own evidence — review` });
   }
   if (sc.findings.unverified_cve_candidates > 0) {
     rows.push({ label: 'Unverified CVE candidates', value: `${sc.findings.unverified_cve_candidates} (version-matched, not confirmed on target)` });

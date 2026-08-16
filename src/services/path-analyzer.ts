@@ -236,7 +236,7 @@ export class PathAnalyzer {
           if (!isHostAccessEdge(ep.type)) return false;
           // A closed shell isn't a current beachhead — only a LIVE session qualifies.
           if (ep.type === 'HAS_SESSION' && !isLiveSessionEdge(ep)) return false;
-          return isMatureClaim(ep);
+          return isMatureClaim(ep, this.ctx.nowIso());
         });
         if (hasAccess) startNodes.push(id);
       }

@@ -125,9 +125,9 @@ function evaluateObjectiveDraft(
           // OWNS_CRED, custom achievement_edge_types) are unaffected.
           if (ep.type === 'HAS_SESSION' && !isLiveSessionEdge(ep)) return false;
           if (ep.type !== 'OWNS_CRED') {
-            return accessEdgeTypes.has(ep.type) && isMatureClaim(ep);
+            return accessEdgeTypes.has(ep.type) && isMatureClaim(ep, host.nowIso());
           }
-          return nodeProps.type === 'credential' && isCredentialUsableForAuth(nodeProps) && isMatureClaim(ep);
+          return nodeProps.type === 'credential' && isCredentialUsableForAuth(nodeProps) && isMatureClaim(ep, host.nowIso());
         });
       });
       if (obtained) {
@@ -279,8 +279,8 @@ function evaluateSingleCriterion(
         if (attrs.type !== 'host' || attrs.superseded_by) return;
         const hasAccess = host.ctx.graph.inEdges(attrs.id).some((e: string) => {
           const ep = host.ctx.graph.getEdgeAttributes(e);
-          if (ep.type === 'ADMIN_TO' && isMatureClaim(ep)) return true;
-          if (ep.type === 'HAS_SESSION' && isMatureClaim(ep) && ep.session_live === true) return true;
+          if (ep.type === 'ADMIN_TO' && isMatureClaim(ep, host.nowIso())) return true;
+          if (ep.type === 'HAS_SESSION' && isMatureClaim(ep, host.nowIso()) && ep.session_live === true) return true;
           return false;
         });
         if (hasAccess) compromised.push(attrs.label);
@@ -306,13 +306,13 @@ export function computeAccessLevel(host: ObjectiveManagerHost, compromised: stri
     if (c.obtained === true) return true;
     return host.ctx.graph.inEdges(c.id).some((e: string) => {
       const ep = host.ctx.graph.getEdgeAttributes(e);
-      return ep.type === 'OWNS_CRED' && isMatureClaim(ep);
+      return ep.type === 'OWNS_CRED' && isMatureClaim(ep, host.nowIso());
     });
   });
   if (hasDa) return 'domain_admin';
   // Check for local admin
   const hasAdmin = !!host.ctx.graph.findEdge((_, attrs) =>
-    attrs.type === 'ADMIN_TO' && isMatureClaim(attrs)
+    attrs.type === 'ADMIN_TO' && isMatureClaim(attrs, host.nowIso())
   );
   if (hasAdmin) return 'local_admin';
   return 'user';
