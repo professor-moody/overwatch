@@ -42,7 +42,7 @@ const CATEGORY_MEMBERS: Record<ToolCategoryId, readonly string[]> = {
   ],
   'graph-data': [
     'report_finding', 'get_evidence', 'get_finding_readiness', 'parse_output',
-    'ingest_json', 'export_graph', 'correct_graph', 'promote_claim', 'recompute_objectives',
+    'ingest_json', 'export_graph', 'correct_graph', 'promote_claim', 'withdraw_claim', 'recompute_objectives',
     'suggest_inference_rule', 'ingest_bloodhound', 'ingest_azurehound',
     'ingest_screenshots',
   ],

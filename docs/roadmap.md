@@ -82,16 +82,16 @@ Claim lifecycle Phase 2b hardening — **landed:** the transactional, idempotent
 `promote_claim` command service (atomic merge + audit + receipt, dedup by key);
 refuting a target node (not just an access edge) un-achieves its objective;
 **actionable contradictions** (the scorecard names each contradicted promotion —
-which claim, the conflict, the promotion's reason — not just a count); and
+which claim, the conflict, the promotion's reason — not just a count);
 **supporting-chain proof-backing** (an objective reads "proof-backed" only when
 the mature obtaining access edge was created by an evidenced action, not when the
-target was merely observed to exist).
+target was merely observed to exist); and **withdraw + promotion history** (a
+`withdraw_claim` op reverts a claim to its derived state, re-reconciling objectives
+in both directions, while every promotion ever applied is retained in an
+append-only per-element history).
 
 Remaining hardening slices (not yet committed):
 
-- **Withdraw + promotion history** — a `promote_claim` withdraw/clear op that
-  durably reverts a claim to its derived state (needs an edge-attribute-unset
-  journal path), plus retained promotion history rather than overwrite-only.
 - **Temporal objective model + passive-expiry reconciliation** — distinguish
   `ever_achieved` / `currently_satisfied` / `lost_at` / `revoked_as_unproven`, so a
   claim that decays (a rotated credential → `stale`) reconciles the objective it

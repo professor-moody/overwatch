@@ -14,6 +14,7 @@ function buildHandlers() {
     correctGraph: vi.fn(),
   };
   const promote = vi.fn();
+  const withdraw = vi.fn();
 
   registerRemediationTools(fakeServer, engine as any, {
     correct(input: any) {
@@ -28,8 +29,8 @@ function buildHandlers() {
         ),
       };
     },
-  } as any, { promote } as any);
-  return { handlers, engine, promote };
+  } as any, { promote, withdraw } as any);
+  return { handlers, engine, promote, withdraw };
 }
 
 describe('correct_graph tool', () => {
@@ -173,5 +174,41 @@ describe('promote_claim tool', () => {
     expect(both.isError).toBe(true);
 
     expect(promote).not.toHaveBeenCalled();
+  });
+});
+
+describe('withdraw_claim tool', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('routes a withdrawal through the command service and surfaces the receipt', async () => {
+    const { handlers, withdraw } = buildHandlers();
+    withdraw.mockReturnValue({
+      result: { target_kind: 'edge', target_id: 'edge-1', claim_state: 'observed', withdrew: 'refuted' },
+      command_id: 'cmd-w', idempotency_key: 'idem-w', replayed: false,
+    });
+
+    const result = await handlers.withdraw_claim({ edge_id: 'edge-1', reason: 'undo it' });
+
+    expect(withdraw).toHaveBeenCalledWith(
+      expect.objectContaining({ edge_id: 'edge-1', reason: 'undo it' }),
+      expect.objectContaining({ transport: 'mcp' }),
+    );
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload).toMatchObject({ claim_state: 'observed', withdrew: 'refuted', command_id: 'cmd-w', replayed: false });
+  });
+
+  it('requires exactly one of node_id / edge_id before calling the command service', async () => {
+    const { handlers, withdraw } = buildHandlers();
+
+    const neither = await handlers.withdraw_claim({ reason: 'r' });
+    expect(neither.isError).toBe(true);
+    expect(JSON.parse(neither.content[0].text).error).toContain('exactly one');
+
+    const both = await handlers.withdraw_claim({ node_id: 'n', edge_id: 'e', reason: 'r' });
+    expect(both.isError).toBe(true);
+
+    expect(withdraw).not.toHaveBeenCalled();
   });
 });

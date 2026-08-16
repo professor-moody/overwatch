@@ -43,6 +43,14 @@ version changes.
   `stale` once elapsed; `refuted` is terminal); a promotion that conflicts with
   its own evidence is flagged in the scorecard (`contradicted_claims`); and
   refuting the claim that completed an objective un-achieves it.
+- A `withdraw_claim` tool that durably clears a `promote_claim` judgment,
+  reverting the claim to its derived standing (the clear is an explicit `null`
+  merge so it survives WAL replay, not an `undefined` the journal would drop).
+  Withdrawing re-reconciles objectives in both directions — clearing a
+  refutation can re-complete an objective, clearing a positive verdict can
+  un-complete one — and every promotion ever applied is retained in an
+  append-only per-element `claim_promotion_history` (a withdrawal clears the
+  effective promotion but never erases the record).
 
 ### Changed
 

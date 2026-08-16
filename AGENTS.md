@@ -175,6 +175,7 @@ The server exposes a generated MCP tool registry. When the MCP connection is ava
 | [`recompute_objectives`](docs/tools/recompute-objectives.md) | Re-evaluate all engagement objectives from the current graph state. | Graph & data | Mutating |
 | [`report_finding`](docs/tools/report-finding.md) | Report a discovery from agent execution. | Graph & data | Mutating |
 | [`suggest_inference_rule`](docs/tools/suggest-inference-rule.md) | Propose a new inference rule to add to the engagement's active rule set. | Graph & data | Mutating |
+| [`withdraw_claim`](docs/tools/withdraw-claim.md) | Durably clear a node or edge's promote_claim judgment, reverting the claim to its DERIVED standing (claim lifecycle Phase 2b). | Graph & data | Mutating |
 | [`acknowledge_agent_directive`](docs/tools/acknowledge-agent-directive.md) | Sub-agents call this to confirm they received a steering directive (delivered via the pending_directive field on agent_heartbeat). | Agents & planning | Mutating |
 | [`agent_heartbeat`](docs/tools/agent-heartbeat.md) | Sub-agents call this periodically (recommended every 30–60 seconds) to signal liveness. | Agents & planning | Mutating |
 | [`ask_operator`](docs/tools/ask-operator.md) | Escalate a decision to the human operator and WAIT for their answer. | Agents & planning | Mutating |

@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
-  "tool_count": 96,
-  "registry_sha256": "4f6e6533460006c2d37ebb395513e677c278f948d0549f0daf6a23a2730391cf",
+  "tool_count": 97,
+  "registry_sha256": "2102f54b76b2eede698e822959b9e425385b46148d425bc705e37a64186c6707",
   "categories": [
     {
       "id": "state-readiness",
@@ -9388,6 +9388,80 @@
       }
     },
     {
+      "name": "withdraw_claim",
+      "title": "Withdraw a Claim Promotion",
+      "description": "Durably clear a node or edge's `promote_claim` judgment, reverting the claim to its DERIVED standing (claim lifecycle Phase 2b).\n\nUse this to undo a mistaken or superseded promotion — e.g. you refuted an edge, then confirmed it really is exploitable after all, and want the evidence-derived state to govern again rather than promoting to a second explicit verdict. The effective promotion is cleared; the append-only promotion history is retained, and a `claim_withdrawn` timeline event records who/why. Objectives are re-reconciled in both directions: withdrawing a refutation can re-complete an objective, and withdrawing a positive verdict can un-complete one. Target exactly one of node_id or edge_id.",
+      "category": "graph-data",
+      "category_label": "Graph & data",
+      "category_order": 30,
+      "read_only": false,
+      "destructive": false,
+      "idempotent": false,
+      "open_world": false,
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "description": "Action ID to link this withdrawal back to the triggering workflow.",
+            "type": "string"
+          },
+          "agent_id": {
+            "description": "If an agent is withdrawing, its id (attributes the withdrawal to that agent); omit for an operator.",
+            "type": "string"
+          },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "edge_id": {
+            "description": "Target edge id (exactly one of node_id / edge_id).",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "node_id": {
+            "description": "Target node id (exactly one of node_id / edge_id).",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why — the judgment behind withdrawing this promotion; required for auditability.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
+      "output_schema": null,
+      "input_schema_sha256": "40bf1e9be2bcbe0d8b74f4deec81c751aadc72223b8c1ac85db35315500e329f",
+      "output_schema_sha256": null,
+      "documentation": {
+        "path": "tools/withdraw-claim.md",
+        "purpose": "Durably clear a node or edge's promote_claim judgment, reverting the claim to its DERIVED standing (claim lifecycle Phase 2b)."
+      },
+      "archetype_exposure": [
+        "default"
+      ],
+      "persistence": {
+        "mode": "write",
+        "allowed_during_recovery": false
+      }
+    },
+    {
       "name": "write_session",
       "title": "Write to Session",
       "description": "Write raw bytes to a session. This is the I/O primitive.\n\nNo implicit newline — use append_newline for convenience.\nWorks for shells, password prompts, REPLs, menus, and partial input.\nOnly the claiming agent can write (use force to override).",
@@ -9476,7 +9550,7 @@
     }
   ],
   "capabilities": {
-    "mcp_tools": 96,
+    "mcp_tools": 97,
     "skills": 44,
     "parser_aliases": 138,
     "inference_rules": 64,

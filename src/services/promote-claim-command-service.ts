@@ -12,7 +12,13 @@ import {
   type ApplicationCommandExecution,
   type ApplicationCommandMetadata,
 } from './application-command-service.js';
-import type { GraphEngine, ClaimPromotionInput, ClaimPromotionResult } from './graph-engine.js';
+import type {
+  GraphEngine,
+  ClaimPromotionInput,
+  ClaimPromotionResult,
+  ClaimWithdrawalInput,
+  ClaimWithdrawalResult,
+} from './graph-engine.js';
 import type { PersistedApplicationCommandV1 } from './persisted-state.js';
 
 /** Validated input to a claim promotion. The node_id/edge_id XOR + non-empty reason are also
@@ -28,6 +34,18 @@ export const PromoteClaimRequestSchema = z.object({
 });
 export type PromoteClaimRequest = z.infer<typeof PromoteClaimRequestSchema>;
 export type PromoteClaimResultDto = ClaimPromotionResult;
+
+/** Validated input to a claim withdrawal — clears the effective promotion, reverting to the
+ *  derived state. Same target XOR + reason contract as a promotion, minus the promoted standing. */
+export const WithdrawClaimRequestSchema = z.object({
+  reason: z.string().trim().min(1),
+  node_id: z.string().optional(),
+  edge_id: z.string().optional(),
+  agent_id: z.string().optional(),
+  action_id: z.string().optional(),
+});
+export type WithdrawClaimRequest = z.infer<typeof WithdrawClaimRequestSchema>;
+export type WithdrawClaimResultDto = ClaimWithdrawalResult;
 
 export class PromoteClaimCommandError extends Error {
   constructor(
@@ -139,6 +157,77 @@ export class PromoteClaimCommandService {
       );
     }
     return executionFromRecord<PromoteClaimResultDto>(committed.command, false);
+  }
+
+  withdraw(
+    input: WithdrawClaimRequest,
+    metadata: ApplicationCommandMetadata = {},
+  ): ApplicationCommandExecution<WithdrawClaimResultDto> {
+    const parsed = WithdrawClaimRequestSchema.parse(input);
+    const meta = { ...metadata, action_id: metadata.action_id ?? parsed.action_id };
+    const replay = this.commands.lookup<typeof parsed, WithdrawClaimResultDto>('claim.withdraw', parsed, meta);
+    if (replay) return this.requireSucceeded(replay);
+    const identity = this.commands.buildIdentity('claim.withdraw', parsed, meta);
+    const engineInput: ClaimWithdrawalInput = {
+      node_id: parsed.node_id,
+      edge_id: parsed.edge_id,
+      reason: parsed.reason,
+      by_kind: parsed.agent_id ? 'agent' : 'operator',
+      by: parsed.agent_id,
+      action_id: identity.action_id,
+    };
+    const entityRefs: Record<string, string[]> = parsed.node_id
+      ? { node_ids: [parsed.node_id] }
+      : { edge_ids: [parsed.edge_id as string] };
+    let committed: ReturnType<GraphEngine['withdrawClaimApplicationCommand']>;
+    try {
+      committed = this.engine.withdrawClaimApplicationCommand(engineInput, identity.action_id, result => {
+        const now = this.engine.now();
+        return {
+          ...identity,
+          command_kind: 'claim.withdraw',
+          validated_input: clone(parsed),
+          status: 'succeeded',
+          created_at: now,
+          started_at: now,
+          completed_at: now,
+          result: clone(result),
+          entity_refs: entityRefs,
+        };
+      });
+    } catch (error) {
+      const afterFailure = this.commands.lookup<typeof parsed, WithdrawClaimResultDto>('claim.withdraw', parsed, {
+        ...metadata,
+        action_id: identity.action_id,
+      });
+      if (afterFailure) return this.requireSucceeded(afterFailure);
+      if (!this.engine.isPersistenceWritable()) throw error;
+      const rawCode = typeof (error as { code?: unknown } | null)?.code === 'string'
+        ? (error as { code: string }).code
+        : undefined;
+      const persistenceFailure = rawCode === 'PERSISTENCE_READ_ONLY'
+        || rawCode === 'CONFIG_WRITE_INCOMPLETE'
+        || /\b(?:persistence|durab(?:le|ly|ility)|read[- ]only|journal|WAL|fsync)\b/i.test(
+          error instanceof Error ? error.message : String(error),
+        );
+      const durableError = error instanceof PromoteClaimCommandError
+        ? error
+        : new PromoteClaimCommandError(
+            error instanceof Error ? error.message : String(error),
+            persistenceFailure ? rawCode ?? 'PERSISTENCE_READ_ONLY' : 'CLAIM_WITHDRAWAL_FAILED',
+            persistenceFailure ? 503 : 400,
+          );
+      return this.requireSucceeded(
+        this.commands.recordFailureSync({
+          command_kind: 'claim.withdraw',
+          input: parsed,
+          schema: WithdrawClaimRequestSchema,
+          metadata: { ...metadata, action_id: identity.action_id },
+          error: durableError,
+        }),
+      );
+    }
+    return executionFromRecord<WithdrawClaimResultDto>(committed.command, false);
   }
 
   private requireSucceeded<T>(

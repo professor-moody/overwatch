@@ -102,7 +102,10 @@ export type ActivityEventType =
   | 'agent_query'
   // Phase 2b: an operator/agent durably promoted a claim's standing (validate / refute /
   // correct). The judgment is stored on the node/edge; this records who/why for the timeline.
-  | 'claim_promoted';
+  | 'claim_promoted'
+  // Phase 2b: an operator/agent withdrew a claim's promotion, reverting it to the derived
+  // state. The effective promotion is cleared (history retained); this records who/why.
+  | 'claim_withdrawn';
 
 export type ActivityLogDetails =
   | { parsed_nodes: number; parsed_edges: number; ingested: boolean; new_nodes?: number; new_edges?: number; inferred_edges?: number; [key: string]: unknown }

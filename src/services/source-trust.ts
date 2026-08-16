@@ -63,8 +63,10 @@ export interface ClaimStateInput extends SourceTrustInput {
   credential_status?: 'active' | 'stale' | 'expired' | 'rotated';
   /** A durable operator/agent promotion of this claim's standing (Phase 2b). When present it
    *  overrides the derived signals below — negative/terminal promotions authoritatively, and
-   *  positive promotions as a floor a stronger real signal can still raise. */
-  claim_promotion?: ClaimPromotion;
+   *  positive promotions as a floor a stronger real signal can still raise. `null` is an
+   *  explicitly-withdrawn promotion — treated identically to "no promotion" (derived signals
+   *  alone decide), distinct from `undefined` only in that it durably survived a WAL round-trip. */
+  claim_promotion?: ClaimPromotion | null;
 }
 
 /**
