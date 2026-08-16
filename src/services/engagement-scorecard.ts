@@ -15,7 +15,7 @@ import type { ExportedGraph, ClaimState } from '../types.js';
 import type { ReportFinding } from './report-generator.js';
 import { hasCapturedProof } from './evidence-proof.js';
 import { ATTACK_PATH_EDGE_TYPES } from './edge-semantics.js';
-import { claimContradiction } from './source-trust.js';
+import { claimContradiction, type ClaimContradiction } from './source-trust.js';
 
 const CLAIM_STATES: ClaimState[] = ['candidate', 'asserted', 'observed', 'validated', 'exploited', 'refuted', 'stale'];
 // "verified" = the claim is confirmed (observed/validated/exploited); "unverified" =
@@ -84,12 +84,25 @@ export interface EngagementScorecard {
   /** High/critical findings that carry no captured proof — the claims a reader should be
    *  most skeptical of. */
   unsupported_critical_claims: number;
-  /** Claims whose durable promotion conflicts with their own evidence (e.g. promoted refuted
-   *  yet the signals confirm it, or promoted validated yet a test failed) — a promotion that
-   *  may be out of date or wrong and needs an operator's review. */
+  /** Count of claims whose durable promotion conflicts with their own evidence. Mirror of
+   *  `contradictions.length`, kept for back-compat. */
   contradicted_claims: number;
+  /** The specific contradicted promotions — WHICH claim, the conflict, the promotion's reason —
+   *  so an operator can act, not just see a count. */
+  contradictions: ScorecardContradiction[];
   /** Negative-testing / refutation coverage across graph claims. */
   refutation: ScorecardRefutation;
+}
+
+/** A durable promotion at odds with its own evidence, with enough to act on it. */
+export interface ScorecardContradiction {
+  target_kind: 'node' | 'edge';
+  target_id: string;
+  /** Readable reference — for edges `TYPE source→target`, for nodes the node id. */
+  target_ref: string;
+  kind: ClaimContradiction;
+  promoted_state: string;
+  reason?: string;
 }
 
 /** Claim states that count as "confirmed enough" — mirrors isMatureClaim in source-trust. */
@@ -171,10 +184,28 @@ export function computeEngagementScorecard(
     f => (f.severity === 'critical' || f.severity === 'high') && !isProofReady(f),
   ).length;
   // Promotions whose durable standing conflicts with their own evidence — over ALL elements,
-  // not just the asset/attack-path subsets counted above.
-  let contradicted_claims = 0;
-  for (const n of graph.nodes) if (claimContradiction(n.properties)) contradicted_claims += 1;
-  for (const e of graph.edges) if (claimContradiction(e.properties)) contradicted_claims += 1;
+  // not just the asset/attack-path subsets counted above. Collect the specifics so the report
+  // can name the claim, not just count it.
+  const contradictions: ScorecardContradiction[] = [];
+  for (const n of graph.nodes) {
+    const kind = claimContradiction(n.properties);
+    if (!kind) continue;
+    const promo = n.properties.claim_promotion;
+    contradictions.push({
+      target_kind: 'node', target_id: n.id, target_ref: n.id, kind,
+      promoted_state: String(promo?.state ?? ''), ...(promo?.reason ? { reason: promo.reason } : {}),
+    });
+  }
+  for (const e of graph.edges) {
+    const kind = claimContradiction(e.properties);
+    if (!kind) continue;
+    const promo = e.properties.claim_promotion;
+    contradictions.push({
+      target_kind: 'edge', target_id: e.id ?? `${e.source}→${e.target}`, target_ref: `${String(e.properties.type ?? 'edge')} ${e.source}→${e.target}`, kind,
+      promoted_state: String(promo?.state ?? ''), ...(promo?.reason ? { reason: promo.reason } : {}),
+    });
+  }
+  const contradicted_claims = contradictions.length;
 
   return {
     verification: {
@@ -209,6 +240,7 @@ export function computeEngagementScorecard(
     },
     unsupported_critical_claims,
     contradicted_claims,
+    contradictions,
     refutation: {
       tested,
       refuted: by_state.refuted,
@@ -268,6 +300,18 @@ export function scorecardRows(sc: EngagementScorecard): ScorecardRow[] {
   }
   if (sc.contradicted_claims > 0) {
     rows.push({ label: 'Contradicted promotions', value: `${sc.contradicted_claims} promotion(s) conflict with their own evidence — review` });
+    // Name each one so it's actionable, not just a count (cap the detail so a pathological run
+    // can't flood the section).
+    for (const c of sc.contradictions.slice(0, 10)) {
+      const conflict = c.kind === 'refuted_but_evidence_positive'
+        ? `promoted refuted, but the evidence confirms it`
+        : `promoted ${c.promoted_state}, but a test of it failed`;
+      const why = c.reason ? ` — "${c.reason}"` : '';
+      rows.push({ label: '↳ contradiction', value: `${c.target_ref}: ${conflict}${why}` });
+    }
+    if (sc.contradictions.length > 10) {
+      rows.push({ label: '↳ contradiction', value: `…and ${sc.contradictions.length - 10} more` });
+    }
   }
   if (sc.findings.unverified_cve_candidates > 0) {
     rows.push({ label: 'Unverified CVE candidates', value: `${sc.findings.unverified_cve_candidates} (version-matched, not confirmed on target)` });
