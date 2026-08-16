@@ -12,6 +12,7 @@ function buildHandlers() {
 
   const engine = {
     correctGraph: vi.fn(),
+    promoteClaim: vi.fn(),
   };
 
   registerRemediationTools(fakeServer, engine as any, {
@@ -121,5 +122,47 @@ describe('correct_graph tool', () => {
     expect(result.isError).toBe(true);
     const payload = JSON.parse(result.content[0].text);
     expect(payload.error).toContain('Edge does not exist');
+  });
+});
+
+describe('promote_claim tool', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('promotes an edge and attributes an operator by default', async () => {
+    const { handlers, engine } = buildHandlers();
+    engine.promoteClaim.mockReturnValue({ target_kind: 'edge', target_id: 'edge-1', claim_state: 'refuted' });
+
+    const result = await handlers.promote_claim({ edge_id: 'edge-1', state: 'refuted', reason: 'disproved' });
+
+    expect(engine.promoteClaim).toHaveBeenCalledWith(expect.objectContaining({
+      edge_id: 'edge-1', state: 'refuted', reason: 'disproved', by_kind: 'operator', by: undefined,
+    }));
+    expect(JSON.parse(result.content[0].text).claim_state).toBe('refuted');
+  });
+
+  it('attributes an agent when agent_id is provided', async () => {
+    const { handlers, engine } = buildHandlers();
+    engine.promoteClaim.mockReturnValue({ target_kind: 'node', target_id: 'n1', claim_state: 'validated' });
+
+    await handlers.promote_claim({ node_id: 'n1', state: 'validated', reason: 'tested', agent_id: 'agent-7' });
+
+    expect(engine.promoteClaim).toHaveBeenCalledWith(expect.objectContaining({
+      node_id: 'n1', by_kind: 'agent', by: 'agent-7',
+    }));
+  });
+
+  it('requires exactly one of node_id / edge_id', async () => {
+    const { handlers, engine } = buildHandlers();
+
+    const neither = await handlers.promote_claim({ state: 'validated', reason: 'r' });
+    expect(neither.isError).toBe(true);
+    expect(JSON.parse(neither.content[0].text).error).toContain('exactly one');
+
+    const both = await handlers.promote_claim({ node_id: 'n', edge_id: 'e', state: 'validated', reason: 'r' });
+    expect(both.isError).toBe(true);
+
+    expect(engine.promoteClaim).not.toHaveBeenCalled();
   });
 });

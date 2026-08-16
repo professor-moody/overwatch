@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
-  "tool_count": 95,
-  "registry_sha256": "51bc95479cc2da2ff0d7a6bf2e63c4703b085b5cd07fea915bc41983b4755950",
+  "tool_count": 96,
+  "registry_sha256": "a8222f9794a8eaf706be9c0cf15fbc3c92986fa8c56cabf32e93ad01f70ecede",
   "categories": [
     {
       "id": "state-readiness",
@@ -5112,6 +5112,96 @@
       }
     },
     {
+      "name": "promote_claim",
+      "title": "Promote a Claim",
+      "description": "Durably record an explicit operator/agent judgment about a node or edge's standing (claim lifecycle Phase 2b).\n\nUse this to correct a mis-derived claim, or to record a verification/refutation outcome, so it survives across the engagement rather than being re-derived from signals each time. States:\n- validated — actively tested and confirmed\n- observed  — passively confirmed\n- exploited — exploitation confirmed\n- refuted   — tested and disproven\n- stale     — was true but has decayed\n\nrefuted/stale are authoritative (they override any derived positive); observed/validated set a floor a stronger real signal (an actual exploitation) can still raise. Objective and path evaluation honor the promotion: path-finding stops routing through a refuted access edge immediately, and a validated promotion can complete a not-yet-achieved objective. Target exactly one of node_id or edge_id.",
+      "category": "graph-data",
+      "category_label": "Graph & data",
+      "category_order": 30,
+      "read_only": false,
+      "destructive": false,
+      "idempotent": true,
+      "open_world": false,
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "description": "Action ID to link this promotion back to the triggering workflow.",
+            "type": "string"
+          },
+          "agent_id": {
+            "description": "If an agent is promoting, its id (attributes the promotion to that agent); omit for an operator.",
+            "type": "string"
+          },
+          "command_id": {
+            "description": "Stable client command identifier for correlation.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "edge_id": {
+            "description": "Target edge id (exactly one of node_id / edge_id).",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Stable client retry identity. Reuse it only for the same operation and input; provide it for retries across MCP reconnects or daemon restarts.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "node_id": {
+            "description": "Target node id (exactly one of node_id / edge_id).",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why — the judgment behind this promotion; required for auditability.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_token": {
+            "description": "Opaque retry token returned by a prior application-command response.",
+            "pattern": "^idem_[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "state": {
+            "description": "The promoted standing.",
+            "enum": [
+              "observed",
+              "validated",
+              "exploited",
+              "refuted",
+              "stale"
+            ],
+            "type": "string"
+          },
+          "valid_until": {
+            "description": "Optional ISO timestamp after which the claim decays to stale.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "state"
+        ],
+        "type": "object"
+      },
+      "output_schema": null,
+      "input_schema_sha256": "02633a1e07e853339f56a115fdebacbc6e48cfb847759ecc9f974244e0a8dd91",
+      "output_schema_sha256": null,
+      "documentation": {
+        "path": "tools/promote-claim.md",
+        "purpose": "Durably record an explicit operator/agent judgment about a node or edge's standing (claim lifecycle Phase 2b)."
+      },
+      "archetype_exposure": [
+        "default"
+      ],
+      "persistence": {
+        "mode": "write",
+        "allowed_during_recovery": false
+      }
+    },
+    {
       "name": "propose_plan",
       "title": "Propose Operator Plan",
       "description": "Submit a plan of operator operations for the human operator to confirm. Use this (planner role) to translate a free-form operator command into structured ops.\n\nYou PROPOSE; the operator CONFIRMS; the dashboard EXECUTES. This tool does NOT mutate engagement state — it records a plan for confirmation. Reference ONLY the exact task_ids / action_ids given in your objective; a plan with any op that can't be resolved against live state is rejected so you can revise it.\n\nValid ops: directive (pause/resume/stop/narrow_scope/skip_types/prioritize a running task), scope (add cidrs/domains/exclusions), approve/deny (a pending action), and dispatch (deploy an agent at existing graph node id(s) — this is how you turn \"port-scan X\" / \"dig into host Y\" into a confirmable action; find the node ids with query_graph). If the command still can't be expressed as these ops, do NOT propose — finish with submit_agent_transcript explaining why.",
@@ -9386,7 +9476,7 @@
     }
   ],
   "capabilities": {
-    "mcp_tools": 95,
+    "mcp_tools": 96,
     "skills": 44,
     "parser_aliases": 138,
     "inference_rules": 64,

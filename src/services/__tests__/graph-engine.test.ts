@@ -1957,6 +1957,62 @@ describe('GraphEngine', () => {
     });
   });
 
+  describe('claim promotions (Phase 2b)', () => {
+    it('promoteClaim durably records the promotion; claimState honors it on export + an audit event', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-x', type: 'user', label: 'x' },
+          { id: 'host-x', type: 'host', label: '10.0.0.1', ip: '10.0.0.1' },
+        ],
+        edges: [
+          { source: 'user-x', target: 'host-x', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'ADMIN_TO')!.id;
+
+      // confidence 1.0 alone derives to 'observed'; the operator disproved it.
+      const res = engine.promoteClaim({ edge_id: edgeId, state: 'refuted', reason: 'tested, access denied', by_kind: 'operator' });
+      expect(res.claim_state).toBe('refuted');
+
+      // Durable on the element + honored by the sourceTrust export.
+      const edge = engine.exportGraph({ sourceTrust: true }).edges.find(e => e.id === edgeId)!;
+      expect(edge.properties.claim_state).toBe('refuted');
+      expect((edge.properties as { claim_promotion?: { state?: string; reason?: string } }).claim_promotion?.state).toBe('refuted');
+      expect((edge.properties as { claim_promotion?: { reason?: string } }).claim_promotion?.reason).toBe('tested, access denied');
+
+      // Hash-chained audit event.
+      expect(engine.getFullHistory().some(ev => ev.event_type === 'claim_promoted')).toBe(true);
+    });
+
+    it('a validated promotion completes a not-yet-achieved objective', () => {
+      // An INFERRED credential edge (candidate → not mature) leaves obj-da unachieved; an
+      // operator validating it flips maturity and completes the objective on re-evaluation.
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'cred-da', type: 'credential', label: 'DA', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 0.7, inferred_by_rule: 'guess', discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(false);
+
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'OWNS_CRED')!.id;
+      engine.promoteClaim({ edge_id: edgeId, state: 'validated', reason: 'authenticated over SMB', by_kind: 'agent', by: 'agent-1' });
+
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(true);
+    });
+
+    it('rejects a promotion with no target and requires a reason', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      expect(() => engine.promoteClaim({ state: 'validated', reason: 'x', by_kind: 'operator' })).toThrow(/node_id or edge_id/);
+      expect(() => engine.promoteClaim({ node_id: 'nope', state: 'validated', reason: 'x', by_kind: 'operator' })).toThrow(/No such node/);
+    });
+  });
+
   describe('graph remediation', () => {
     it('repairs a GOAD-style broken graph and clears stale invalid edges', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);

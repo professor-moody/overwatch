@@ -77,6 +77,35 @@ describe('claimState — how well-established a claim is (its lifecycle)', () =>
   });
 });
 
+describe('claimState — durable operator/agent promotions (Phase 2b)', () => {
+  const promo = (state: 'observed' | 'validated' | 'exploited' | 'refuted' | 'stale') =>
+    ({ state, by_kind: 'operator' as const, at: '2026-01-01T00:00:00Z', reason: 'r' });
+
+  it('a refuted promotion is authoritative — overrides a derived positive', () => {
+    // confidence 1 would otherwise be observed; the operator disproved it.
+    expect(claimState({ confidence: 1, claim_promotion: promo('refuted') })).toBe('refuted');
+  });
+
+  it('a stale promotion overrides a derived positive', () => {
+    expect(claimState({ confidence: 1, claim_promotion: promo('stale') })).toBe('stale');
+  });
+
+  it('positive promotions set the standing when no stronger signal exists', () => {
+    expect(claimState({ claim_promotion: promo('validated') })).toBe('validated');
+    expect(claimState({ claim_promotion: promo('observed') })).toBe('observed');
+    expect(claimState({ claim_promotion: promo('exploited') })).toBe('exploited');
+  });
+
+  it('a real exploitation signal still beats a positive validated promotion', () => {
+    expect(claimState({ exploited_at: '2026-01-02T00:00:00Z', claim_promotion: promo('validated') })).toBe('exploited');
+  });
+
+  it('a refuted promotion makes the claim immature (un-satisfies objectives/paths)', () => {
+    expect(isMatureClaim({ confidence: 1, claim_promotion: promo('refuted') })).toBe(false);
+    expect(isMatureClaim({ claim_promotion: promo('validated') })).toBe(true);
+  });
+});
+
 describe('isMatureClaim — established enough to complete an objective / route a path', () => {
   it('confirmed / verified / exploited claims are mature', () => {
     expect(isMatureClaim({ confidence: 1 })).toBe(true);                        // observed

@@ -65,4 +65,58 @@ This is not a normal reporting path. Use report_finding and parse_output for new
       };
     }),
   );
+
+  server.registerTool(
+    'promote_claim',
+    {
+      title: 'Promote a Claim',
+      description: `Durably record an explicit operator/agent judgment about a node or edge's standing (claim lifecycle Phase 2b).
+
+Use this to correct a mis-derived claim, or to record a verification/refutation outcome, so it survives across the engagement rather than being re-derived from signals each time. States:
+- validated — actively tested and confirmed
+- observed  — passively confirmed
+- exploited — exploitation confirmed
+- refuted   — tested and disproven
+- stale     — was true but has decayed
+
+refuted/stale are authoritative (they override any derived positive); observed/validated set a floor a stronger real signal (an actual exploitation) can still raise. Objective and path evaluation honor the promotion: path-finding stops routing through a refuted access edge immediately, and a validated promotion can complete a not-yet-achieved objective. Target exactly one of node_id or edge_id.`,
+      inputSchema: {
+        state: z.enum(['observed', 'validated', 'exploited', 'refuted', 'stale'])
+          .describe('The promoted standing.'),
+        reason: z.string().trim().min(1)
+          .describe('Why — the judgment behind this promotion; required for auditability.'),
+        node_id: z.string().optional().describe('Target node id (exactly one of node_id / edge_id).'),
+        edge_id: z.string().optional().describe('Target edge id (exactly one of node_id / edge_id).'),
+        agent_id: z.string().optional()
+          .describe('If an agent is promoting, its id (attributes the promotion to that agent); omit for an operator.'),
+        valid_until: z.string().optional()
+          .describe('Optional ISO timestamp after which the claim decays to stale.'),
+        action_id: z.string().optional().describe('Action ID to link this promotion back to the triggering workflow.'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    withErrorBoundary('promote_claim', async ({ state, reason, node_id, edge_id, agent_id, valid_until, action_id }) => {
+      if ((node_id ? 1 : 0) + (edge_id ? 1 : 0) !== 1) {
+        throw new Error('promote_claim requires exactly one of node_id or edge_id');
+      }
+      const result = engine.promoteClaim({
+        node_id,
+        edge_id,
+        state,
+        reason,
+        by_kind: agent_id ? 'agent' : 'operator',
+        by: agent_id,
+        valid_until,
+        action_id,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }),
+  );
 }
