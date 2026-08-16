@@ -98,9 +98,13 @@ Remaining hardening slices (not yet committed):
 - **Supporting-chain proof-backing** — an objective is "proof-backed" only when the
   obtaining ACCESS/action chain carries evidence, not merely that its target node
   was observed to exist.
-- **Exhaustive edge-type registry** — classify the remaining edge types and add an
-  escape guard so a new material-access type can't silently fall through with no
-  role.
+- **Edge-type registry material-access reclassification** — the exhaustiveness
+  escape guard has landed (every edge type is roled or explicitly unroled, so a new
+  type can't silently escape), and topology/hypothesis edges are classified. The
+  remaining decision is whether the AD ACL/control edges (OWNS, GENERIC_WRITE,
+  WRITE_DACL, ADD_MEMBER, FORCE_CHANGE_PASSWORD, ESC1-15, RBCD_TARGET, …) should
+  count as `material_access` — that changes the orchestration-progress and
+  attack-path metrics, so it needs deliberate calibration, not a silent flip.
 - **Phase 2b-3 dashboard operator-correction** — invoke `promote_claim` from the
   graph node/edge drawer via a server action.
 - **Live Engagement Quality dashboard** — the scorecard's split dimensions
