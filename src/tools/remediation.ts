@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { GraphCorrectionOperationSchema } from '../contracts/dashboard-v1.js';
 import { GraphCorrectionCommandService } from '../services/graph-correction-command-service.js';
+import { PromoteClaimCommandService } from '../services/promote-claim-command-service.js';
 import { withErrorBoundary } from './error-boundary.js';
 
 export function registerRemediationTools(
@@ -12,6 +13,10 @@ export function registerRemediationTools(
     GraphCorrectionCommandService,
     'correct'
   > = new GraphCorrectionCommandService(engine),
+  promoteCommands: Pick<
+    PromoteClaimCommandService,
+    'promote'
+  > = new PromoteClaimCommandService(engine),
 ): void {
   server.registerTool(
     'correct_graph',
@@ -107,18 +112,20 @@ refuted/stale are authoritative (they override any derived positive); observed/v
       if ((node_id ? 1 : 0) + (edge_id ? 1 : 0) !== 1) {
         throw new Error('promote_claim requires exactly one of node_id or edge_id');
       }
-      const result = engine.promoteClaim({
-        node_id,
-        edge_id,
-        state,
-        reason,
-        by_kind: agent_id ? 'agent' : 'operator',
-        by: agent_id,
-        valid_until,
-        action_id,
-      });
+      const execution = promoteCommands.promote(
+        { state, reason, node_id, edge_id, agent_id, valid_until, action_id },
+        { transport: 'mcp', action_id },
+      );
       return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ...execution.result,
+            command_id: execution.command_id,
+            idempotency_key: execution.idempotency_key,
+            replayed: execution.replayed,
+          }, null, 2),
+        }],
       };
     }),
   );

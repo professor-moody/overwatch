@@ -200,6 +200,25 @@ function detached<T>(value: T): T {
   return structuredClone(value);
 }
 
+/** Input to a claim promotion (see `promoteClaim` / `promoteClaimApplicationCommand`). */
+export interface ClaimPromotionInput {
+  node_id?: string;
+  edge_id?: string;
+  state: ClaimPromotion['state'];
+  reason: string;
+  by_kind: ClaimPromotion['by_kind'];
+  by?: string;
+  valid_until?: string;
+  action_id?: string;
+}
+
+/** Result of a claim promotion — the target and its resulting derived `claim_state`. */
+export interface ClaimPromotionResult {
+  target_kind: 'node' | 'edge';
+  target_id: string;
+  claim_state: ClaimState;
+}
+
 /** Exact idempotency for arbitrary client keys requires retaining a compact
  * identity after the response body is retired. Stop admitting new identities
  * before that ledger itself can grow without bound. */
@@ -1028,18 +1047,23 @@ export class GraphEngine {
    * the derived signals. The promotion is stored on the element (the source of truth); a
    * hash-chained `claim_promoted` activity event records who/why for the timeline.
    */
-  promoteClaim(input: {
-    node_id?: string;
-    edge_id?: string;
-    state: ClaimPromotion['state'];
-    reason: string;
-    by_kind: ClaimPromotion['by_kind'];
-    by?: string;
-    valid_until?: string;
-    action_id?: string;
-  }): { target_kind: 'node' | 'edge'; target_id: string; claim_state: ClaimState } {
+  /** Build the atomic operations for a claim promotion — the durable attribute merge + the
+   *  hash-chained `claim_promoted` audit event — plus a closure that applies the live graph
+   *  effect. Shared by the direct `promoteClaim` and the application-command variant so both
+   *  commit the promotion and its audit as ONE transaction (not separate durable writes). */
+  private planClaimPromotion(input: ClaimPromotionInput): {
+    targetKind: 'node' | 'edge';
+    targetId: string;
+    claimStateAfter: ClaimState;
+    mergeOp: EngineOperation;
+    auditOperation: EngineOperation;
+    applyGraphMerge: () => void;
+  } {
     this.assertPersistenceWritable();
     if (!input.reason?.trim()) throw new Error('promoteClaim requires a reason');
+    if ((input.edge_id ? 1 : 0) + (input.node_id ? 1 : 0) !== 1) {
+      throw new Error('promoteClaim requires exactly one of node_id or edge_id');
+    }
     const promotion: ClaimPromotion = {
       state: input.state,
       by_kind: input.by_kind,
@@ -1051,34 +1075,60 @@ export class GraphEngine {
 
     let targetKind: 'node' | 'edge';
     let targetId: string;
-    let claim_state: ClaimState;
+    let currentAttrs: NodeProperties | EdgeProperties;
+    let mergeOp: EngineOperation;
+    let applyGraphMerge: () => void;
     let targetEdge: { source: string; target: string; type?: string } | undefined;
 
     if (input.edge_id) {
-      if (!this.ctx.graph.hasEdge(input.edge_id)) throw new Error(`No such edge: ${input.edge_id}`);
-      this.mergeEdgeAttributesDurable(input.edge_id, { claim_promotion: promotion });
+      const edgeId = input.edge_id;
+      if (!this.ctx.graph.hasEdge(edgeId)) throw new Error(`No such edge: ${edgeId}`);
+      currentAttrs = this.ctx.graph.getEdgeAttributes(edgeId) as EdgeProperties;
       targetKind = 'edge';
-      targetId = input.edge_id;
-      const attrs = this.ctx.graph.getEdgeAttributes(input.edge_id) as EdgeProperties;
-      claim_state = claimState(attrs, this.ctx.nowIso());
+      targetId = edgeId;
       targetEdge = {
-        source: this.ctx.graph.source(input.edge_id),
-        target: this.ctx.graph.target(input.edge_id),
-        type: String(attrs.type),
+        source: this.ctx.graph.source(edgeId),
+        target: this.ctx.graph.target(edgeId),
+        type: String((currentAttrs as EdgeProperties).type),
       };
-    } else if (input.node_id) {
-      if (!this.ctx.graph.hasNode(input.node_id)) throw new Error(`No such node: ${input.node_id}`);
-      this.mergeNodeAttributesDurable(input.node_id, { claim_promotion: promotion });
-      targetKind = 'node';
-      targetId = input.node_id;
-      claim_state = claimState(this.ctx.graph.getNodeAttributes(input.node_id) as NodeProperties, this.ctx.nowIso());
+      mergeOp = { type: 'merge_edge_attrs', payload: { edge_id: edgeId, props: { claim_promotion: promotion } } };
+      applyGraphMerge = () => {
+        this.ctx.graph.mergeEdgeAttributes(edgeId, { claim_promotion: promotion });
+        this.invalidatePathGraph();
+        this.invalidateAllCaches();
+      };
     } else {
-      throw new Error('promoteClaim requires node_id or edge_id');
+      const nodeId = input.node_id as string;
+      if (!this.ctx.graph.hasNode(nodeId)) throw new Error(`No such node: ${nodeId}`);
+      currentAttrs = this.ctx.graph.getNodeAttributes(nodeId) as NodeProperties;
+      targetKind = 'node';
+      targetId = nodeId;
+      mergeOp = { type: 'merge_node_attrs', payload: { props: { claim_promotion: promotion, id: nodeId } } };
+      applyGraphMerge = () => {
+        this.ctx.graph.mergeNodeAttributes(nodeId, { claim_promotion: promotion, id: nodeId });
+        this.invalidatePathGraph();
+        this.invalidateAllCaches();
+      };
     }
 
-    this.ctx.logEvent({
+    // The resulting state is deterministic — merge the promotion in memory to compute it for
+    // the audit event without mutating the graph before the transaction.
+    const claimStateAfter = claimState({ ...currentAttrs, claim_promotion: promotion }, promotion.at);
+    const auditOperation = this.claimPromotedAuditOperation(input, promotion, targetKind, targetId, targetEdge, claimStateAfter);
+    return { targetKind, targetId, claimStateAfter, mergeOp, auditOperation, applyGraphMerge };
+  }
+
+  private claimPromotedAuditOperation(
+    input: ClaimPromotionInput,
+    promotion: ClaimPromotion,
+    targetKind: 'node' | 'edge',
+    targetId: string,
+    targetEdge: { source: string; target: string; type?: string } | undefined,
+    claimStateAfter: ClaimState,
+  ): EngineOperation {
+    const prepared = this.ctx.withClock(promotion.at, () => this.ctx.prepareActivityAppend({
       event_type: 'claim_promoted',
-      description: `Claim ${targetKind} ${targetId} promoted to ${input.state} by ${input.by_kind}${input.by ? ` ${input.by}` : ''}: ${input.reason}`,
+      description: `Claim ${targetKind} ${targetId} promoted to ${promotion.state} by ${input.by_kind}${input.by ? ` ${input.by}` : ''}: ${promotion.reason}`,
       provenance: input.by_kind === 'agent' ? 'agent' : 'operator',
       category: 'reasoning',
       ...(input.by_kind === 'agent' && input.by ? { agent_id: input.by } : {}),
@@ -1088,22 +1138,82 @@ export class GraphEngine {
       details: {
         target_kind: targetKind,
         target_id: targetId,
-        promoted_state: input.state,
-        resulting_claim_state: claim_state,
-        reason: input.reason,
-        valid_until: input.valid_until ?? null,
+        promoted_state: promotion.state,
+        resulting_claim_state: claimStateAfter,
+        reason: promotion.reason,
+        valid_until: promotion.valid_until ?? null,
       },
-    });
+    }));
+    return { type: 'activity_append', payload: prepared.payload as unknown as Record<string, unknown> };
+  }
 
-    // Objective evaluation reads claim maturity, so a positive promotion may newly satisfy a
-    // not-yet-achieved objective. A negative promotion (refuted/stale) additionally RECONCILES
-    // already-achieved objectives — one completed by a claim we have since disproven is no
-    // longer met, so it un-achieves. (Path-finding re-reads live edge attributes on every
-    // query, so a refuted access edge stops rooting a path start without any cache work here.)
-    const reconcile = input.state === 'refuted' || input.state === 'stale';
-    this.evaluateObjectives({ reconcile });
+  /** Reconcile objectives after a promotion: a positive promotion may newly satisfy a
+   *  not-yet-achieved objective; a negative one (refuted/stale) un-achieves an objective its
+   *  now-disproven claim had completed. */
+  private reconcileObjectivesAfterPromotion(state: ClaimPromotion['state']): void {
+    this.evaluateObjectives({ reconcile: state === 'refuted' || state === 'stale' });
+  }
 
-    return { target_kind: targetKind, target_id: targetId, claim_state };
+  /** Durably promote a claim's standing. Commits the promotion property + its `claim_promoted`
+   *  audit event as a single atomic transaction. */
+  promoteClaim(input: ClaimPromotionInput): ClaimPromotionResult {
+    const plan = this.planClaimPromotion(input);
+    this.ensureCompositeJournal();
+    const applied = this.ctx.applyEngineTransaction(
+      {
+        operations: [plan.mergeOp, plan.auditOperation],
+        ...(input.action_id ? { source_action_id: input.action_id } : {}),
+      },
+      () => {
+        plan.applyGraphMerge();
+        return this.applyApplicationCommandOperation(plan.auditOperation);
+      },
+      'claim promotion',
+    );
+    if (applied.status !== 'applied') throw new Error(applied.reason);
+    this.reconcileObjectivesAfterPromotion(input.state);
+    this.persist(plan.targetKind === 'node' ? { updated_nodes: [plan.targetId] } : { updated_edges: [plan.targetId] });
+    return { target_kind: plan.targetKind, target_id: plan.targetId, claim_state: plan.claimStateAfter };
+  }
+
+  /** Application-command variant of `promoteClaim`: commits the promotion + audit + a durable
+   *  command receipt as one atomic transaction, so a `PromoteClaimCommandService` can dedup by
+   *  idempotency key and replay. Mirrors `correctGraphApplicationCommand`. */
+  promoteClaimApplicationCommand(
+    input: ClaimPromotionInput,
+    actionId: string | undefined,
+    buildCommand: (result: ClaimPromotionResult) => PersistedApplicationCommandV1,
+  ): { result: ClaimPromotionResult; command: PersistedApplicationCommandV1 } {
+    const plan = this.planClaimPromotion(input);
+    const result: ClaimPromotionResult = { target_kind: plan.targetKind, target_id: plan.targetId, claim_state: plan.claimStateAfter };
+    const command = detached(buildCommand(detached(result)));
+    if (command.status !== 'succeeded') {
+      throw new Error('A claim promotion application command must be terminal before it is journaled.');
+    }
+    const commandOperation = this.applicationCommandChangeOperation(command);
+    this.ensureCompositeJournal();
+    const applied = this.ctx.applyEngineTransaction(
+      {
+        operations: [plan.mergeOp, plan.auditOperation, commandOperation],
+        ...(actionId ? { source_action_id: actionId } : {}),
+      },
+      () => {
+        plan.applyGraphMerge();
+        const auditResult = this.applyApplicationCommandOperation(plan.auditOperation);
+        if (auditResult.status === 'skipped') return auditResult;
+        return this.applyApplicationCommandOperation(commandOperation);
+      },
+      'claim promotion application command',
+    );
+    if (applied.status !== 'applied') throw new Error(applied.reason);
+    this.reconcileObjectivesAfterPromotion(input.state);
+    this.persist(plan.targetKind === 'node' ? { updated_nodes: [plan.targetId] } : { updated_edges: [plan.targetId] });
+    const installedCommand = this.getApplicationCommand(command.idempotency_key);
+    if (!installedCommand) {
+      throw new Error('Claim promotion committed without its application-command receipt.');
+    }
+    this.pruneInstalledApplicationCommand(installedCommand);
+    return { result, command: installedCommand };
   }
 
   dropNodeDurable(

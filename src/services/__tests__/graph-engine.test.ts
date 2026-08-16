@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
+import { PromoteClaimCommandService } from '../promote-claim-command-service.js';
 import { parseHashcat, parseNxc, parseResponder, parseSecretsdump } from '../parsers/index.js';
 import { readFileSync, rmSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
@@ -2066,6 +2067,34 @@ describe('GraphEngine', () => {
       engine.promoteClaim({ edge_id: adminEdge, state: 'refuted', reason: 'unrelated admin was wrong', by_kind: 'operator' });
 
       expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(true);
+    });
+
+    it('the promote command service commits atomically and replays a duplicate by idempotency key', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'u', type: 'user', label: 'u' },
+          { id: 'h', type: 'host', label: '10.0.0.1', ip: '10.0.0.1' },
+        ],
+        edges: [
+          { source: 'u', target: 'h', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'ADMIN_TO')!.id;
+      const service = new PromoteClaimCommandService(engine);
+
+      const first = service.promote({ edge_id: edgeId, state: 'refuted', reason: 'disproved' }, { transport: 'mcp', idempotency_key: 'k1' });
+      expect(first.replayed).toBe(false);
+      expect(first.result?.claim_state).toBe('refuted');
+      // The promotion + its audit committed atomically: the property is durable and one event fired.
+      expect(engine.exportGraph({ sourceTrust: true }).edges.find(e => e.id === edgeId)!.properties.claim_state).toBe('refuted');
+      expect(engine.getFullHistory().filter(e => e.event_type === 'claim_promoted').length).toBe(1);
+
+      // Duplicate with the same idempotency key → replays the receipt; no second promotion event.
+      const second = service.promote({ edge_id: edgeId, state: 'refuted', reason: 'disproved' }, { transport: 'mcp', idempotency_key: 'k1' });
+      expect(second.replayed).toBe(true);
+      expect(second.command_id).toBe(first.command_id);
+      expect(engine.getFullHistory().filter(e => e.event_type === 'claim_promoted').length).toBe(1);
     });
 
     it('rejects a promotion with no target and requires a reason', () => {

@@ -12,8 +12,8 @@ function buildHandlers() {
 
   const engine = {
     correctGraph: vi.fn(),
-    promoteClaim: vi.fn(),
   };
+  const promote = vi.fn();
 
   registerRemediationTools(fakeServer, engine as any, {
     correct(input: any) {
@@ -28,8 +28,8 @@ function buildHandlers() {
         ),
       };
     },
-  } as any);
-  return { handlers, engine };
+  } as any, { promote } as any);
+  return { handlers, engine, promote };
 }
 
 describe('correct_graph tool', () => {
@@ -130,31 +130,40 @@ describe('promote_claim tool', () => {
     vi.clearAllMocks();
   });
 
-  it('promotes an edge and attributes an operator by default', async () => {
-    const { handlers, engine } = buildHandlers();
-    engine.promoteClaim.mockReturnValue({ target_kind: 'edge', target_id: 'edge-1', claim_state: 'refuted' });
+  it('routes an edge promotion through the command service and surfaces the receipt', async () => {
+    const { handlers, promote } = buildHandlers();
+    promote.mockReturnValue({
+      result: { target_kind: 'edge', target_id: 'edge-1', claim_state: 'refuted' },
+      command_id: 'cmd-1', idempotency_key: 'idem-1', replayed: false,
+    });
 
     const result = await handlers.promote_claim({ edge_id: 'edge-1', state: 'refuted', reason: 'disproved' });
 
-    expect(engine.promoteClaim).toHaveBeenCalledWith(expect.objectContaining({
-      edge_id: 'edge-1', state: 'refuted', reason: 'disproved', by_kind: 'operator', by: undefined,
-    }));
-    expect(JSON.parse(result.content[0].text).claim_state).toBe('refuted');
+    expect(promote).toHaveBeenCalledWith(
+      expect.objectContaining({ edge_id: 'edge-1', state: 'refuted', reason: 'disproved' }),
+      expect.objectContaining({ transport: 'mcp' }),
+    );
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload).toMatchObject({ claim_state: 'refuted', command_id: 'cmd-1', idempotency_key: 'idem-1', replayed: false });
   });
 
-  it('attributes an agent when agent_id is provided', async () => {
-    const { handlers, engine } = buildHandlers();
-    engine.promoteClaim.mockReturnValue({ target_kind: 'node', target_id: 'n1', claim_state: 'validated' });
+  it('passes agent_id through (the service maps it to agent attribution)', async () => {
+    const { handlers, promote } = buildHandlers();
+    promote.mockReturnValue({
+      result: { target_kind: 'node', target_id: 'n1', claim_state: 'validated' },
+      command_id: 'c', idempotency_key: 'i', replayed: false,
+    });
 
     await handlers.promote_claim({ node_id: 'n1', state: 'validated', reason: 'tested', agent_id: 'agent-7' });
 
-    expect(engine.promoteClaim).toHaveBeenCalledWith(expect.objectContaining({
-      node_id: 'n1', by_kind: 'agent', by: 'agent-7',
-    }));
+    expect(promote).toHaveBeenCalledWith(
+      expect.objectContaining({ node_id: 'n1', agent_id: 'agent-7' }),
+      expect.anything(),
+    );
   });
 
-  it('requires exactly one of node_id / edge_id', async () => {
-    const { handlers, engine } = buildHandlers();
+  it('requires exactly one of node_id / edge_id before calling the command service', async () => {
+    const { handlers, promote } = buildHandlers();
 
     const neither = await handlers.promote_claim({ state: 'validated', reason: 'r' });
     expect(neither.isError).toBe(true);
@@ -163,6 +172,6 @@ describe('promote_claim tool', () => {
     const both = await handlers.promote_claim({ node_id: 'n', edge_id: 'e', state: 'validated', reason: 'r' });
     expect(both.isError).toBe(true);
 
-    expect(engine.promoteClaim).not.toHaveBeenCalled();
+    expect(promote).not.toHaveBeenCalled();
   });
 });
