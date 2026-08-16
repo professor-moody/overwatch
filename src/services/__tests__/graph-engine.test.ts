@@ -2046,6 +2046,26 @@ describe('GraphEngine', () => {
       expect(daObj?.achieved_at).toBeUndefined();
     });
 
+    it('refuting the target NODE (not just the access edge) un-achieves the objective', () => {
+      // Dogfood-found: an operator disproving the credential itself should un-complete the
+      // objective, even though the OWNS_CRED edge is untouched.
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'u', type: 'user', label: 'u' },
+          { id: 'cred-da', type: 'credential', label: 'DA', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          { source: 'u', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(true);
+
+      engine.promoteClaim({ node_id: 'cred-da', state: 'refuted', reason: 'credential is bogus', by_kind: 'operator' });
+
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(false);
+    });
+
     it('reconciliation leaves an objective achieved when its own support is still mature', () => {
       // obj-da is supported by a mature OWNS_CRED; refuting an UNRELATED edge reconciles all
       // objectives but must not un-achieve obj-da, whose own claim is untouched.

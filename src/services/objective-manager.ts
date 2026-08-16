@@ -8,7 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { EngineContext, ActivityLogEntry } from './engine-context.js';
 import { isCredentialUsableForAuth } from './credential-utils.js';
 import { isLiveSessionEdge } from './session-edge-utils.js';
-import { isMatureClaim } from './source-trust.js';
+import { claimState, isMatureClaim, type ClaimStateInput } from './source-trust.js';
 import { OBJECTIVE_ACCESS_EDGE_TYPES } from './edge-semantics.js';
 import type {
   NodeProperties, NodeType, EdgeType,
@@ -107,6 +107,11 @@ function isObjectiveObtained(
     : OBJECTIVE_ACCESS_EDGE_TYPES;
   return matching.nodes.some(n => {
     const nodeProps = n.properties;
+    // A target whose OWN claim has been refuted or staled (an operator disproved the
+    // credential, or it rotated) no longer counts as obtained, even if a mature access edge
+    // still points at it — refuting/staling the target node propagates to the objective.
+    const nodeState = claimState(nodeProps as ClaimStateInput, host.nowIso());
+    if (nodeState === 'refuted' || nodeState === 'stale') return false;
     if (nodeProps.type === 'credential' && !isCredentialUsableForAuth(nodeProps)) {
       return false;
     }
