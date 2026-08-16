@@ -51,6 +51,16 @@ version changes.
   un-complete one — and every promotion ever applied is retained in an
   append-only per-element `claim_promotion_history` (a withdrawal clears the
   effective promotion but never erases the record).
+- A temporal objective model: alongside the settled `achieved` milestone, an
+  objective now carries a live `currently_satisfied` state (plus `lost_at`),
+  recomputed on every evaluation. A supporting claim that passively decays — a
+  credential past its `valid_until`, a rotated credential — reconciles the live
+  view WITHOUT needing a promotion, while the milestone stays recorded (a settled
+  achievement is not erased by later decay; only an explicit refutation revokes
+  it). `lost_at` stamps a genuine observed lapse (not a milestone the operator
+  marked done that the graph never supported). The scorecard counts
+  `currently_satisfied` and names lapsed milestones ("N of M achieved objectives
+  lapsed — re-validate"); the operator prompt marks a lapsed objective `[LAPSED]`.
 
 ### Changed
 

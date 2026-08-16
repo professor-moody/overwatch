@@ -85,19 +85,18 @@ refuting a target node (not just an access edge) un-achieves its objective;
 which claim, the conflict, the promotion's reason — not just a count);
 **supporting-chain proof-backing** (an objective reads "proof-backed" only when
 the mature obtaining access edge was created by an evidenced action, not when the
-target was merely observed to exist); and **withdraw + promotion history** (a
+target was merely observed to exist); **withdraw + promotion history** (a
 `withdraw_claim` op reverts a claim to its derived state, re-reconciling objectives
 in both directions, while every promotion ever applied is retained in an
-append-only per-element history).
+append-only per-element history); and the **temporal objective model** (an objective
+carries a settled `achieved` milestone alongside a live `currently_satisfied` state
+recomputed on every evaluation, so a decayed supporting claim — a credential past its
+`valid_until`, a rotated credential — reconciles the live view WITHOUT a promotion
+while the milestone stays recorded; `lost_at` stamps the genuine lapse, the scorecard
+counts and names lapsed milestones, and the operator prompt marks them `[LAPSED]`).
 
 Remaining hardening slices (not yet committed):
 
-- **Temporal objective model + passive-expiry reconciliation** — distinguish
-  `ever_achieved` / `currently_satisfied` / `lost_at` / `revoked_as_unproven`, so a
-  claim that decays (a rotated credential → `stale`) reconciles the objective it
-  supported without a promotion — while a settled milestone stays recorded.
-  (Dogfooding confirmed these are coupled: a naive always-reconcile breaks
-  milestone stability, so the temporal split is the right shape, not a shortcut.)
 - **Edge-type registry material-access reclassification** — the exhaustiveness
   escape guard has landed (every edge type is roled or explicitly unroled, so a new
   type can't silently escape), and topology/hypothesis edges are classified. The

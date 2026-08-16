@@ -1140,7 +1140,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
-        "200": "c53e8c7aea41a802497b5716b09683ace0d742ace315b5f8af296e33a41cc5d3"
+        "200": "175edf9b11d209c466f2daf1baeac50c44dd1831802f96d8cb4a301abfd9ceb6"
       }
     },
     "getGraph": {
@@ -1462,7 +1462,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
-        "200": "d36d6ba3f25bb82897d78aacd89065290207975b9417b4bd700420b4c77206fe"
+        "200": "4345ad84637b7c0c63b2bb340b7efd60f73a164fe0a2fe3352e87fada4333da1"
       }
     },
     "updateConfig": {
@@ -1470,7 +1470,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "0d9e7094895c7591181c0541ffc9e13083377874a297c34e22f1036bef724fc5",
       "responses": {
-        "200": "135ffe2ffdaa0a51efda95a3000e233572b254ab80b52942b3e30db3b7973bca"
+        "200": "d6e21d8f56c7bea3e19847699ae321349719d3840271e0cca9bc55622de333b9"
       }
     },
     "previewScope": {
@@ -1494,7 +1494,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "99f86836e553e140b136ac0daf8bfef5a42225f85fcd25ac75491352d92c9cd3",
       "responses": {
-        "201": "f33e6a9c80641fd98cd617b39cc9a02cf62cd408d502f82895a6b067247ba079"
+        "201": "49c221f3e8c9ae45b88bc129bb02c2c732d0b18155dc249e642042a5872621a6"
       }
     },
     "getFrontierWeights": {
@@ -2010,7 +2010,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
-        "200": "d36d6ba3f25bb82897d78aacd89065290207975b9417b4bd700420b4c77206fe"
+        "200": "4345ad84637b7c0c63b2bb340b7efd60f73a164fe0a2fe3352e87fada4333da1"
       }
     },
     "updateEngagement": {
@@ -2026,7 +2026,7 @@
     "main": {
       "operation_id": "dashboardMainSocket",
       "path": "/ws",
-      "server_events": "5ed2fe782b948b58bd39c4791babf3ad005ce2d3c4e0a699e4b5ee23cad0755a"
+      "server_events": "26ebe1ea1a50d0a875f944764f90f00222daa03a8a8ec28a23b9a9593987724e"
     },
     "session": {
       "operation_id": "dashboardSessionSocket",
@@ -2040,5 +2040,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "c2bb348ea0498169233f83966923bfaa8e8c071e0fd6aa7edcb40a329aaa4024"
+  "schema_hash": "387da681d7f4901fcea44499bb8bd238a43c00266c98546eefeda0d9fafb289a"
 }

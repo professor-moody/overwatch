@@ -311,6 +311,8 @@ export interface NodeProperties {
   objective_description?: string;
   objective_achieved?: boolean;
   objective_achieved_at?: string;
+  objective_currently_satisfied?: boolean; // live satisfaction mirror (may differ from objective_achieved after passive decay)
+  objective_lost_at?: string;              // when live satisfaction last lapsed
 
   // High-Value Target (populated by BloodHoundPathEnricher)
   hvt?: boolean;
@@ -639,8 +641,15 @@ export interface EngagementObjective {
   target_node_type?: NodeType;
   target_criteria?: Record<string, unknown>;  // match against node props
   achievement_edge_types?: EdgeType[];        // custom edge types that count as "obtained" (default: HAS_SESSION, ADMIN_TO, OWNS_CRED)
+  // `achieved` is the SETTLED MILESTONE: once obtained it latches true, and only an explicit
+  // reconcile (a refute/stale promotion or a withdraw) un-latches it. `currently_satisfied` is
+  // the LIVE state, recomputed on every evaluation, so passive decay (a credential past its
+  // valid_until, a rotated credential) is reflected WITHOUT any promotion — a settled milestone
+  // stays recorded (`achieved`) while the live view (`currently_satisfied`) shows it lapsed.
   achieved: boolean;
   achieved_at?: string;
+  currently_satisfied?: boolean;              // live satisfaction (may differ from `achieved` after passive decay)
+  lost_at?: string;                           // when `currently_satisfied` last went true → false
 }
 
 export type ApprovalMode = 'auto-approve' | 'approve-critical' | 'approve-all';
@@ -807,6 +816,10 @@ export const engagementObjectiveSchema = z.object({
   achievement_edge_types: z.array(edgeTypeSchema).optional(),
   achieved: z.boolean(),
   achieved_at: z.string().optional(),
+  // Live satisfaction, distinct from the `achieved` milestone (see EngagementObjective). Declared
+  // here so the config validator preserves them through a durable round-trip rather than stripping.
+  currently_satisfied: z.boolean().optional(),
+  lost_at: z.string().optional(),
 });
 
 export const opsecProfileSchema = z.object({

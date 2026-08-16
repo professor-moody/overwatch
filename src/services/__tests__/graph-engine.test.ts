@@ -2276,6 +2276,85 @@ describe('GraphEngine', () => {
     });
   });
 
+  describe('temporal objective model (currently_satisfied / lost_at)', () => {
+    function seedAchievedDaCred(engine: GraphEngine): string {
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'cred-da', type: 'credential', label: 'DA', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      return engine.exportGraph().edges.find(e => e.properties.type === 'OWNS_CRED')!.id as string;
+    }
+
+    it('a freshly achieved objective is both a settled milestone and currently satisfied', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      seedAchievedDaCred(engine);
+      const obj = engine.getState().objectives.find(o => o.id === 'obj-da')!;
+      expect(obj.achieved).toBe(true);
+      expect(obj.currently_satisfied).toBe(true);
+      expect(obj.lost_at).toBeUndefined();
+    });
+
+    it('passive decay (a support claim past its valid_until) lapses the live view but KEEPS the milestone — no promotion needed to un-achieve', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const edgeId = seedAchievedDaCred(engine);
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')!.currently_satisfied).toBe(true);
+
+      // Promote the supporting edge with a validity window that has ALREADY elapsed. The promotion
+      // state is 'validated' (a POSITIVE promotion → NOT the refuted/stale reconcile path), yet
+      // claimState reads it 'stale' because the window passed. The live view must reflect that on
+      // the next evaluation, without any refute/withdraw.
+      engine.promoteClaim({ edge_id: edgeId, state: 'validated', reason: 'was valid at capture', by_kind: 'operator', valid_until: '2000-01-01T00:00:00Z' });
+
+      const obj = engine.getState().objectives.find(o => o.id === 'obj-da')!;
+      expect(obj.currently_satisfied).toBe(false); // live: the credential's window elapsed
+      expect(obj.lost_at).toBeTruthy();             // stamped when it lapsed
+      expect(obj.achieved).toBe(true);              // milestone stays recorded — we DID reach DA
+      expect(obj.achieved_at).toBeTruthy();
+    });
+
+    it('re-validating decayed support restores the live view and clears lost_at', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const edgeId = seedAchievedDaCred(engine);
+      engine.promoteClaim({ edge_id: edgeId, state: 'validated', reason: 'expired window', by_kind: 'operator', valid_until: '2000-01-01T00:00:00Z' });
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')!.currently_satisfied).toBe(false);
+
+      // Withdraw the expired promotion → the edge reverts to its derived 'observed' (confidence
+      // 1.0) → mature again → live satisfaction restored, lost_at cleared.
+      engine.withdrawClaim({ edge_id: edgeId, reason: 're-verified', by_kind: 'operator' });
+      const obj = engine.getState().objectives.find(o => o.id === 'obj-da')!;
+      expect(obj.currently_satisfied).toBe(true);
+      expect(obj.lost_at).toBeUndefined();
+      expect(obj.achieved).toBe(true);
+    });
+
+    it('an explicit refutation revokes BOTH the milestone and the live view', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const edgeId = seedAchievedDaCred(engine);
+      engine.promoteClaim({ edge_id: edgeId, state: 'refuted', reason: 'never actually worked', by_kind: 'operator' });
+      const obj = engine.getState().objectives.find(o => o.id === 'obj-da')!;
+      expect(obj.achieved).toBe(false);            // milestone revoked (disproven, not merely decayed)
+      expect(obj.currently_satisfied).toBe(false); // live view also false
+      expect(obj.lost_at).toBeTruthy();
+    });
+
+    it('mirrors currently_satisfied / lost_at onto the objective graph node', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const edgeId = seedAchievedDaCred(engine);
+      engine.promoteClaim({ edge_id: edgeId, state: 'validated', reason: 'expired', by_kind: 'operator', valid_until: '2000-01-01T00:00:00Z' });
+      const objNode = engine.exportGraph().nodes.find(n => n.id === 'obj-obj-da');
+      if (objNode) {
+        expect(objNode.properties.objective_currently_satisfied).toBe(false);
+        expect(objNode.properties.objective_lost_at).toBeTruthy();
+        expect(objNode.properties.objective_achieved).toBe(true);
+      }
+    });
+  });
+
   describe('graph remediation', () => {
     it('repairs a GOAD-style broken graph and clears stale invalid edges', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
