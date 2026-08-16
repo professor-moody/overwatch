@@ -591,8 +591,14 @@ function generateIdentitySection(config: EngagementConfig): string {
   if (config.objectives && config.objectives.length > 0) {
     lines.push('', '### Objectives');
     for (const obj of config.objectives) {
-      const status = obj.achieved ? '[DONE]' : '[    ]';
-      lines.push(`- ${status} **${obj.description}**`);
+      // A settled milestone whose supporting access has since decayed is flagged [LAPSED] so it
+      // prompts re-validation rather than reading as done. Gated on `lost_at` (a genuine observed
+      // true→false transition), so a milestone the operator marked done that the graph never
+      // supported is not mislabelled as lapsed.
+      const lapsed = obj.achieved && obj.currently_satisfied === false && !!obj.lost_at;
+      const status = lapsed ? '[LAPSED]' : obj.achieved ? '[DONE]' : '[    ]';
+      const note = lapsed ? ' — reached earlier but its supporting access has decayed; re-validate' : '';
+      lines.push(`- ${status} **${obj.description}**${note}`);
     }
   }
 

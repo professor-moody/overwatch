@@ -144,12 +144,30 @@ function evaluateObjectiveDraft(
     // Only target-criteria objectives are (un)obtained via the graph here; criterion-based
     // ones (e.g. access_level) have their own evaluation path.
     if (!obj.target_criteria) continue;
-    // Normally an achieved objective is a settled milestone. With `reconcile` (used when a
-    // claim was refuted/decayed) we re-check achieved ones too and un-achieve any whose
-    // supporting access is no longer obtained — an objective completed by a claim we have
-    // since disproven is no longer met.
-    if (obj.achieved && !opts?.reconcile) continue;
+
     const obtained = isObjectiveObtained(host, obj);
+
+    // LIVE satisfaction — recomputed on EVERY evaluation (not gated by the milestone), so passive
+    // decay is reflected without any promotion: a credential whose validity window elapsed, or a
+    // rotated credential, reads as no longer satisfied on the next evaluation. `lost_at` stamps a
+    // genuine OBSERVED true→false transition (an objective that was actually satisfied and then
+    // lapsed) — NOT a milestone that an operator marked done but the graph never supported — and
+    // clears when it is satisfied again.
+    const wasSatisfied = obj.currently_satisfied === true;
+    if (obj.currently_satisfied !== obtained) {
+      obj.currently_satisfied = obtained;
+      changed = true;
+    }
+    if (!obtained && wasSatisfied) {
+      if (!obj.lost_at) { obj.lost_at = host.nowIso(); changed = true; }
+    } else if (obtained && obj.lost_at) {
+      obj.lost_at = undefined;
+      changed = true;
+    }
+
+    // SETTLED MILESTONE — unchanged: first obtainment latches `achieved`, and only an explicit
+    // reconcile (a refute/stale promotion or a withdraw) un-latches it. A passively-decayed claim
+    // reconciles the live view above but leaves the milestone recorded.
     if (obtained && !obj.achieved) {
       obj.achieved = true;
       obj.achieved_at = host.nowIso();
@@ -176,6 +194,8 @@ export function recomputeObjectives(
   for (const obj of objectives) {
     obj.achieved = false;
     delete obj.achieved_at;
+    delete obj.currently_satisfied;
+    delete obj.lost_at;
   }
   evaluateObjectiveDraft(host, objectives);
   host.commitObjectives(objectives, 'objective.recompute');
@@ -199,6 +219,8 @@ export function syncObjectiveNodes(host: ObjectiveManagerHost): void {
       objective_description: objective.description,
       objective_achieved: objective.achieved,
       objective_achieved_at: objective.achieved_at,
+      objective_currently_satisfied: objective.currently_satisfied,
+      objective_lost_at: objective.lost_at,
       last_seen_at: now,
     });
   }

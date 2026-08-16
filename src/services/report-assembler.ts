@@ -429,6 +429,7 @@ export function assembleReport(
   // evidence (the durable node→evidence index) — attainment alone can be an unproven state.
   const scorecardObjectives = (config.objectives ?? []).map(obj => ({
     achieved: obj.achieved,
+    currently_satisfied: obj.currently_satisfied ?? obj.achieved,
     proof_ready: objectiveProofBacked(engine, graph, obj),
   }));
   const engagement_scorecard = computeEngagementScorecard(

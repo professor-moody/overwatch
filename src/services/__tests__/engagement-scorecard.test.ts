@@ -91,7 +91,19 @@ describe('computeEngagementScorecard', () => {
       { achieved: false },
       {},
     ]);
-    expect(sc.objectives).toEqual({ total: 4, achieved: 2, proof_ready: 1 });
+    // currently_satisfied defaults to the milestone when a live value isn't supplied.
+    expect(sc.objectives).toEqual({ total: 4, achieved: 2, currently_satisfied: 2, proof_ready: 1 });
+  });
+
+  it('counts currently_satisfied below achieved when a milestone has lapsed (passive decay)', () => {
+    const sc = computeEngagementScorecard(graphOf([]), [], [
+      { achieved: true, currently_satisfied: true, proof_ready: true },
+      { achieved: true, currently_satisfied: false, proof_ready: false }, // reached, support decayed
+    ]);
+    expect(sc.objectives).toEqual({ total: 2, achieved: 2, currently_satisfied: 1, proof_ready: 1 });
+    // The rendered scorecard names the gap so a lapsed milestone doesn't read as silently done.
+    const rows = scorecardRows(sc);
+    expect(rows.some(r => r.label === '↳ no longer satisfied' && /1 of 2/.test(r.value))).toBe(true);
   });
 
   it('excludes synthetic/claim nodes (objective, vulnerability) from inventory coverage', () => {

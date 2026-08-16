@@ -74,8 +74,11 @@ export interface EngagementScorecard {
   verification: ScorecardVerification;
   findings: ScorecardFindings;
   /** Objective attainment AND how many of the achieved objectives are backed by captured
-   *  evidence (`proof_ready`) — attainment alone can be an unproven graph state. */
-  objectives: { total: number; achieved: number; proof_ready: number };
+   *  evidence (`proof_ready`) — attainment alone can be an unproven graph state. `achieved` is the
+   *  settled milestone (ever reached); `currently_satisfied` is the live count (a milestone whose
+   *  supporting claim has since decayed drops out of it), so a gap between them flags lapsed
+   *  access that needs re-validation. */
+  objectives: { total: number; achieved: number; currently_satisfied: number; proof_ready: number };
   // ---- v2 dimensions: the same evidence, split so one headline can't mask a weak spot ----
   /** Asset-inventory observation coverage (nodes). */
   inventory: ScorecardInventoryCoverage;
@@ -135,7 +138,7 @@ export const isProofReady = hasCapturedProof;
 export function computeEngagementScorecard(
   graph: ExportedGraph,
   findings: ReportFinding[],
-  objectives: ReadonlyArray<{ achieved?: boolean; proof_ready?: boolean }> = [],
+  objectives: ReadonlyArray<{ achieved?: boolean; currently_satisfied?: boolean; proof_ready?: boolean }> = [],
 ): EngagementScorecard {
   const by_state = Object.fromEntries(CLAIM_STATES.map(s => [s, 0])) as Record<ClaimState, number>;
   let total = 0;
@@ -226,6 +229,9 @@ export function computeEngagementScorecard(
     objectives: {
       total: objectives.length,
       achieved: objectives.filter(o => o.achieved === true).length,
+      // Default to the milestone when a live value isn't supplied (pre-field objectives), so the
+      // count never spuriously drops for callers that don't yet populate currently_satisfied.
+      currently_satisfied: objectives.filter(o => (o.currently_satisfied ?? o.achieved) === true).length,
       proof_ready: objectives.filter(o => o.proof_ready === true).length,
     },
     inventory: {
@@ -322,6 +328,15 @@ export function scorecardRows(sc: EngagementScorecard): ScorecardRow[] {
       ? `${sc.objectives.achieved} of ${sc.objectives.total} (${sc.objectives.proof_ready} proof-backed)`
       : `${sc.objectives.achieved} of ${sc.objectives.total}`,
   });
+  // A settled milestone whose supporting access has since decayed drops out of the live count —
+  // surface the gap so it reads as "reached, but no longer holding" rather than silently done.
+  const lapsed = sc.objectives.achieved - sc.objectives.currently_satisfied;
+  if (lapsed > 0) {
+    rows.push({
+      label: '↳ no longer satisfied',
+      value: `${lapsed} of ${sc.objectives.achieved} achieved objective${lapsed === 1 ? '' : 's'} lapsed (supporting access decayed — re-validate)`,
+    });
+  }
   return rows;
 }
 

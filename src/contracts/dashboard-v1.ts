@@ -1132,6 +1132,12 @@ export const ObjectiveDtoSchema = z.object({
   description: z.string(),
   achieved: z.boolean(),
   achieved_at: z.string().optional(),
+  // Live satisfaction, distinct from the `achieved` milestone: server-computed and read-only
+  // (deliberately absent from the strict create/update request schemas below so a client cannot
+  // spoof it). A settled milestone whose supporting claim has decayed reads achieved:true,
+  // currently_satisfied:false.
+  currently_satisfied: z.boolean().optional(),
+  lost_at: z.string().optional(),
   target_node_type: nodeTypeSchema.optional(),
   target_criteria: z.record(z.unknown()).optional(),
   achievement_edge_types: z.array(edgeTypeSchema).optional(),
