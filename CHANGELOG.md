@@ -56,6 +56,12 @@ version changes.
 - "Proof-ready" is one canonical predicate (`hasCapturedProof`) shared by the
   scorecard and finding-readiness: retrievable evidence (captured bytes or a
   matched-signal excerpt), not a bare command line or exit code.
+- Objective **proof-backing** now requires the supporting chain: an objective is
+  "proof-backed" only when the mature access edge that obtained it was created by
+  an action that captured evidence — not merely that a node satisfying the target
+  was observed to exist (a discovery scan on the target used to qualify, which
+  over-reported proof). An objective with no inspectable target is still never
+  proof-backed.
 - Objective evaluation and path-start selection require **claim maturity**
   (`isMatureClaim`) instead of bare `confidence >= 0.9`: a rule inference, a
   refuted edge, or a stale/rotated credential no longer completes an objective

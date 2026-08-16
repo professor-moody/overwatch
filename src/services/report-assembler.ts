@@ -11,7 +11,9 @@
 
 import type { GraphEngine } from './graph-engine.js';
 import type { SkillIndex } from './skill-index.js';
-import type { EngagementObjective } from '../types.js';
+import type { EngagementObjective, ExportedGraph } from '../types.js';
+import { OBJECTIVE_ACCESS_EDGE_TYPES } from './edge-semantics.js';
+import { isMatureClaim } from './source-trust.js';
 import {
   buildAttackNarrative, buildRemediationRanking,
   buildAttackPaths,
@@ -111,22 +113,34 @@ function scrubMarkdownForClient(md: string): string {
   return out;
 }
 
-/** An achieved objective is "proof-backed" when a node satisfying its target carries captured
- *  evidence (the durable node→evidence index). Attainment alone is a graph state; this asks
- *  whether that state is backed by retrievable proof.
+/** An achieved objective is "proof-backed" when the ACCESS that obtained it is evidenced — the
+ *  mature obtaining access edge into a target node was created by an action that captured
+ *  evidence. This is the supporting-CHAIN bar: it asks whether we can show HOW the target was
+ *  obtained, not merely that the target node was observed to EXIST (any node evidence, including
+ *  a discovery scan, previously satisfied it — over-reporting).
  *
  *  An objective with no inspectable target is NOT proof-backed — without a target we cannot
- *  point at proof, so claiming it would over-report (it previously auto-returned true).
- *  NOTE (deferred, Phase-2b hardening cluster C): this still counts any evidence on the target
- *  node, including evidence that only proves the target EXISTS. Requiring evidence for the
- *  supporting ACCESS/action chain (the obtaining edge's creating action) is the stronger bar. */
-function objectiveProofBacked(engine: GraphEngine, obj: EngagementObjective): boolean {
+ *  point at proof. */
+function objectiveProofBacked(engine: GraphEngine, graph: ExportedGraph, obj: EngagementObjective): boolean {
   if (!obj.achieved) return false;
   if (!obj.target_node_type && !obj.target_criteria) return false;
   try {
     const store = engine.getEvidenceStore();
+    const now = engine.now();
     const matches = engine.queryGraph({ node_type: obj.target_node_type, node_filter: obj.target_criteria });
-    return matches.nodes.some(n => store.list({ node_id: n.id }).length > 0);
+    const matchIds = new Set(matches.nodes.map(n => n.id));
+    if (matchIds.size === 0) return false;
+    const accessEdgeTypes = obj.achievement_edge_types
+      ? new Set<string>(obj.achievement_edge_types)
+      : OBJECTIVE_ACCESS_EDGE_TYPES;
+    const actionHasEvidence = (actionId: unknown): boolean =>
+      typeof actionId === 'string' && store.list({ action_id: actionId }).length > 0;
+    return graph.edges.some(e =>
+      matchIds.has(e.target)
+      && accessEdgeTypes.has(String(e.properties.type ?? ''))
+      && isMatureClaim(e.properties, now)
+      && actionHasEvidence(e.properties.discovered_by_action_id),
+    );
   } catch {
     return false;
   }
@@ -415,7 +429,7 @@ export function assembleReport(
   // evidence (the durable node→evidence index) — attainment alone can be an unproven state.
   const scorecardObjectives = (config.objectives ?? []).map(obj => ({
     achieved: obj.achieved,
-    proof_ready: objectiveProofBacked(engine, obj),
+    proof_ready: objectiveProofBacked(engine, graph, obj),
   }));
   const engagement_scorecard = computeEngagementScorecard(
     engine.exportGraph({ sourceTrust: true }),
