@@ -3,6 +3,7 @@ import { EDGE_CATEGORIES, DEFAULT_EDGE_COLOR, NODE_COLORS } from '../../lib/grap
 import { getNodeDisplayLabel } from '../../lib/node-display';
 import { formatRelativeTime } from '../../lib/utils';
 import { cn } from '../../lib/utils';
+import { ClaimStandingSection } from './NodeDetailDrawer';
 
 interface EdgeDetailPanelProps {
   graph: Graph;
@@ -38,6 +39,12 @@ export function EdgeDetailPanel({ graph, edgeId, onClose, onFocusNode }: EdgeDet
   const extraProps = Object.entries(props).filter(([k]) =>
     !['type', 'confidence', 'discovered_at', 'discovered_by'].includes(k)
   );
+
+  // The graphology edge KEY equals the engine edge id when the edge carries one (see
+  // useGraph.getEdgeKey); otherwise it is a synthesized `source--type--target` fallback that is
+  // NOT a valid engine edge_id. Only offer claim actions when we have the real id to target.
+  const rawEdgeType = (attrs.edgeType as string) || '';
+  const engineEdgeId = edgeId !== `${source}--${rawEdgeType}--${target}` ? edgeId : null;
 
   return (
     <div className="pointer-events-auto absolute bottom-4 left-3 w-80 z-30 bg-surface border border-border rounded-lg shadow-xl text-xs">
@@ -106,6 +113,16 @@ export function EdgeDetailPanel({ graph, edgeId, onClose, onFocusNode }: EdgeDet
                 <span className="text-foreground break-all">{String(v)}</span>
               </div>
             ))}
+          </div>
+        )}
+
+        {engineEdgeId && (
+          <div className="border-t border-border pt-2">
+            <div className="text-[9px] uppercase tracking-wider text-muted-foreground mb-1.5">Claim standing</div>
+            <ClaimStandingSection
+              target={{ edge_id: engineEdgeId }}
+              claimState={typeof props.claim_state === 'string' ? props.claim_state : undefined}
+            />
           </div>
         )}
       </div>

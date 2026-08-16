@@ -61,6 +61,12 @@ version changes.
   marked done that the graph never supported). The scorecard counts
   `currently_satisfied` and names lapsed milestones ("N of M achieved objectives
   lapsed — re-validate"); the operator prompt marks a lapsed objective `[LAPSED]`.
+- A dashboard operator-correction surface for the claim lifecycle: the graph node
+  drawer and edge panel can record or clear a claim judgment directly, through new
+  authenticated `POST /api/claims/promote` and `POST /api/claims/withdraw`
+  endpoints that route through the same transactional, idempotent
+  `PromoteClaimCommandService` as the MCP tools. Edge actions target the real
+  engine edge id and are hidden when the graph key is a synthesized fallback.
 
 ### Changed
 

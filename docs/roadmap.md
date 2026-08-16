@@ -93,7 +93,12 @@ carries a settled `achieved` milestone alongside a live `currently_satisfied` st
 recomputed on every evaluation, so a decayed supporting claim — a credential past its
 `valid_until`, a rotated credential — reconciles the live view WITHOUT a promotion
 while the milestone stays recorded; `lost_at` stamps the genuine lapse, the scorecard
-counts and names lapsed milestones, and the operator prompt marks them `[LAPSED]`).
+counts and names lapsed milestones, and the operator prompt marks them `[LAPSED]`); and
+the **dashboard operator-correction surface** (Phase 2b-3 — the graph node drawer and
+edge panel invoke `promote_claim` / `withdraw_claim` through authenticated
+`/api/claims/promote` and `/api/claims/withdraw` command endpoints, so an operator can
+validate, refute, observe, mark exploited/stale, or withdraw a claim directly from the
+graph; edge actions guard against synthesized keys and target the real engine edge id).
 
 Remaining hardening slices (not yet committed):
 
@@ -104,8 +109,6 @@ Remaining hardening slices (not yet committed):
   WRITE_DACL, ADD_MEMBER, FORCE_CHANGE_PASSWORD, ESC1-15, RBCD_TARGET, …) should
   count as `material_access` — that changes the orchestration-progress and
   attack-path metrics, so it needs deliberate calibration, not a silent flip.
-- **Phase 2b-3 dashboard operator-correction** — invoke `promote_claim` from the
-  graph node/edge drawer via a server action.
 - **Live Engagement Quality dashboard** — the scorecard's split dimensions
   surfaced in the dashboard with trends, drill-down to weak claims, and one-click
   validation tasks. The report side has landed; the dashboard card plus the

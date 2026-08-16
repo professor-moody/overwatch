@@ -1225,6 +1225,49 @@ export type GraphCorrectionResultDto = z.infer<
   typeof GraphCorrectionResultSchema
 >;
 
+// ---- Claim lifecycle (promote / withdraw) operator corrections ----
+// Mirror the promote_claim / withdraw_claim MCP tools onto the dashboard so an operator can record
+// or clear a claim judgment from the graph drawer. Exactly one of node_id / edge_id.
+const claimTargetXor = (
+  val: { node_id?: string; edge_id?: string },
+  ctx: z.RefinementCtx,
+): void => {
+  if ((val.node_id ? 1 : 0) + (val.edge_id ? 1 : 0) !== 1) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'exactly one of node_id or edge_id is required' });
+  }
+};
+export const ClaimPromoteRequestSchema = z.object({
+  state: z.enum(['observed', 'validated', 'exploited', 'refuted', 'stale']),
+  reason: z.string().trim().min(1),
+  node_id: z.string().trim().min(1).optional(),
+  edge_id: z.string().trim().min(1).optional(),
+  agent_id: z.string().trim().min(1).optional(),
+  valid_until: z.string().trim().min(1).optional(),
+  action_id: z.string().trim().min(1).optional(),
+}).strict().superRefine(claimTargetXor);
+export type ClaimPromoteRequestDto = z.infer<typeof ClaimPromoteRequestSchema>;
+export const ClaimWithdrawRequestSchema = z.object({
+  reason: z.string().trim().min(1),
+  node_id: z.string().trim().min(1).optional(),
+  edge_id: z.string().trim().min(1).optional(),
+  agent_id: z.string().trim().min(1).optional(),
+  action_id: z.string().trim().min(1).optional(),
+}).strict().superRefine(claimTargetXor);
+export type ClaimWithdrawRequestDto = z.infer<typeof ClaimWithdrawRequestSchema>;
+export const ClaimPromoteResultSchema = z.object({
+  target_kind: z.enum(['node', 'edge']),
+  target_id: z.string(),
+  claim_state: z.string(),
+}).passthrough();
+export type ClaimPromoteResultDto = z.infer<typeof ClaimPromoteResultSchema>;
+export const ClaimWithdrawResultSchema = z.object({
+  target_kind: z.enum(['node', 'edge']),
+  target_id: z.string(),
+  claim_state: z.string(),
+  withdrew: z.string().nullable(),
+}).passthrough();
+export type ClaimWithdrawResultDto = z.infer<typeof ClaimWithdrawResultSchema>;
+
 export const FrontierWeightsDtoSchema = z.object({
   fan_out: z.record(z.number().nonnegative()),
   noise: z.record(z.number().min(0).max(1)),

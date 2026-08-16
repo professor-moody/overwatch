@@ -684,6 +684,26 @@
       "summary": "Apply graph corrections"
     },
     {
+      "operation_id": "promoteClaim",
+      "method": "POST",
+      "path": "/api/claims/promote",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Promote a claim standing"
+    },
+    {
+      "operation_id": "withdrawClaim",
+      "method": "POST",
+      "path": "/api/claims/withdraw",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Withdraw a claim promotion"
+    },
+    {
       "operation_id": "getTapeStatus",
       "method": "GET",
       "path": "/api/tape",
@@ -1673,6 +1693,22 @@
         "200": "eaa7f96c8cc9fe80aaf99498d30772a5e50f007549f698f12c99b1079a9c0380"
       }
     },
+    "promoteClaim": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "ccb9b9a3da219390ca00662f92798e38fb90e67021f5bad36fe3b61f2a41cd5e",
+      "responses": {
+        "200": "1e321127ba3696a0a9a95cc5850a2f68a78be0f25eff66588b2810399b2733a4"
+      }
+    },
+    "withdrawClaim": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "a46989d103e83e7cf49d003d27dbd8c0b3f556c4fd91e13b82c84957227589c5",
+      "responses": {
+        "200": "f974c7e84cd806e951acc219ce222e35d935fe2bc988804c83509811fd9c4145"
+      }
+    },
     "getTapeStatus": {
       "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
@@ -2040,5 +2076,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "387da681d7f4901fcea44499bb8bd238a43c00266c98546eefeda0d9fafb289a"
+  "schema_hash": "9daff20e1b6a049db4ba270bdac3a9ea15138dfd0debeef3fc963aeaadef9ead"
 }

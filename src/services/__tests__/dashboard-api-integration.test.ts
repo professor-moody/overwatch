@@ -26,6 +26,8 @@ import {
   FrontierWeightsResetResultSchema,
   FrontierWeightsUpdateResultSchema,
   GraphCorrectionResultSchema,
+  ClaimPromoteResultSchema,
+  ClaimWithdrawResultSchema,
   HealthDtoSchema,
   ObjectiveDeleteResponseSchema,
   ObjectiveCreateResponseSchema,
@@ -316,6 +318,56 @@ describe('GET /api/graph', () => {
     const graph = RawGraphDtoSchema.parse(exported.body);
     expect(graph.nodes.some(node => node.id === 'cloud-id-power')).toBe(true);
     expect(graph.nodes.find(node => node.id === 'cloud-id-power')?.properties.type).toBe('cloud_identity');
+  });
+});
+
+describe('POST /api/claims/promote + /api/claims/withdraw', () => {
+  it('promotes a node claim, then withdraws it back to the derived state', async () => {
+    engine.addNode({
+      id: 'claim-api-node',
+      type: 'host',
+      label: 'claim target',
+      ip: '10.0.0.77',
+      discovered_at: NOW,
+      confidence: 1, // derives to 'observed'
+    });
+
+    const promoted = await postJson('/api/claims/promote', {
+      state: 'refuted',
+      reason: 'tested, access denied',
+      node_id: 'claim-api-node',
+    });
+    expect(promoted.status).toBe(200);
+    expect(ClaimPromoteResultSchema.parse(promoted.body)).toMatchObject({
+      target_kind: 'node',
+      target_id: 'claim-api-node',
+      claim_state: 'refuted',
+      replayed: false,
+    });
+    expect(engine.getFullHistory().some(e => e.event_type === 'claim_promoted')).toBe(true);
+
+    const withdrawn = await postJson('/api/claims/withdraw', {
+      reason: 'it works after all',
+      node_id: 'claim-api-node',
+    });
+    expect(withdrawn.status).toBe(200);
+    expect(ClaimWithdrawResultSchema.parse(withdrawn.body)).toMatchObject({
+      target_kind: 'node',
+      target_id: 'claim-api-node',
+      claim_state: 'observed', // back to the derived state
+      withdrew: 'refuted',
+    });
+    expect(engine.getFullHistory().some(e => e.event_type === 'claim_withdrawn')).toBe(true);
+  });
+
+  it('rejects a promotion with neither node_id nor edge_id (400)', async () => {
+    const res = await postJson('/api/claims/promote', { state: 'validated', reason: 'no target' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a promotion targeting a missing node (400)', async () => {
+    const res = await postJson('/api/claims/promote', { state: 'validated', reason: 'x', node_id: 'no-such-node' });
+    expect(res.status).toBe(400);
   });
 });
 
