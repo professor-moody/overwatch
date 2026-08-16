@@ -83,58 +83,76 @@ export function removeObjective(
 // Objective Evaluation
 // =============================================
 
-export function evaluateObjectives(host: ObjectiveManagerHost): void {
+export function evaluateObjectives(host: ObjectiveManagerHost, opts?: { reconcile?: boolean }): void {
   const objectives = structuredClone(host.ctx.config.objectives);
-  const changed = evaluateObjectiveDraft(host, objectives);
+  const changed = evaluateObjectiveDraft(host, objectives, opts);
   if (changed) host.commitObjectives(objectives, 'objective.evaluate');
   syncObjectiveNodes(host);
+}
+
+/** Whether an objective's target is currently obtained: a matching node reached via a MATURE
+ *  access edge, an explicit `obtained` flag, or (for shares) readable/writable access. Pure
+ *  read over the live graph — the single check both achievement and reconciliation use. */
+function isObjectiveObtained(
+  host: ObjectiveManagerHost,
+  obj: EngagementConfig['objectives'][number],
+): boolean {
+  if (!obj.target_criteria) return false;
+  const matching = host.queryGraph({
+    node_type: obj.target_node_type,
+    node_filter: obj.target_criteria,
+  });
+  const accessEdgeTypes = obj.achievement_edge_types
+    ? new Set<string>(obj.achievement_edge_types)
+    : OBJECTIVE_ACCESS_EDGE_TYPES;
+  return matching.nodes.some(n => {
+    const nodeProps = n.properties;
+    if (nodeProps.type === 'credential' && !isCredentialUsableForAuth(nodeProps)) {
+      return false;
+    }
+    if (n.properties.obtained === true) return true;
+    // Shares with readable/writable access count as obtained
+    if (nodeProps.type === 'share' && (nodeProps.readable === true || nodeProps.writable === true)) {
+      return true;
+    }
+    return host.ctx.graph.inEdges(n.id).some((e: string) => {
+      const ep = host.ctx.graph.getEdgeAttributes(e);
+      // F1: a HAS_SESSION edge that's been marked dead does NOT count
+      // as obtaining the objective. Other access edges (ADMIN_TO,
+      // OWNS_CRED, custom achievement_edge_types) are unaffected.
+      if (ep.type === 'HAS_SESSION' && !isLiveSessionEdge(ep)) return false;
+      if (ep.type !== 'OWNS_CRED') {
+        return accessEdgeTypes.has(ep.type) && isMatureClaim(ep, host.nowIso());
+      }
+      return nodeProps.type === 'credential' && isCredentialUsableForAuth(nodeProps) && isMatureClaim(ep, host.nowIso());
+    });
+  });
 }
 
 function evaluateObjectiveDraft(
   host: ObjectiveManagerHost,
   objectives: EngagementConfig['objectives'],
+  opts?: { reconcile?: boolean },
 ): boolean {
   let changed = false;
   for (const obj of objectives) {
-    if (obj.achieved) continue;
-    // Check if objective criteria are met in the graph
-    if (obj.target_criteria) {
-      const matching = host.queryGraph({
-        node_type: obj.target_node_type,
-        node_filter: obj.target_criteria
-      });
-      const accessEdgeTypes = obj.achievement_edge_types
-        ? new Set<string>(obj.achievement_edge_types)
-        : OBJECTIVE_ACCESS_EDGE_TYPES;
-      // A matching node must also be obtained — via an access edge, an explicit
-      // obtained flag, or (for shares) readable/writable properties.
-      const obtained = matching.nodes.some(n => {
-        const nodeProps = n.properties;
-        if (nodeProps.type === 'credential' && !isCredentialUsableForAuth(nodeProps)) {
-          return false;
-        }
-        if (n.properties.obtained === true) return true;
-        // Shares with readable/writable access count as obtained
-        if (nodeProps.type === 'share' && (nodeProps.readable === true || nodeProps.writable === true)) {
-          return true;
-        }
-        return host.ctx.graph.inEdges(n.id).some((e: string) => {
-          const ep = host.ctx.graph.getEdgeAttributes(e);
-          // F1: a HAS_SESSION edge that's been marked dead does NOT count
-          // as obtaining the objective. Other access edges (ADMIN_TO,
-          // OWNS_CRED, custom achievement_edge_types) are unaffected.
-          if (ep.type === 'HAS_SESSION' && !isLiveSessionEdge(ep)) return false;
-          if (ep.type !== 'OWNS_CRED') {
-            return accessEdgeTypes.has(ep.type) && isMatureClaim(ep, host.nowIso());
-          }
-          return nodeProps.type === 'credential' && isCredentialUsableForAuth(nodeProps) && isMatureClaim(ep, host.nowIso());
-        });
-      });
-      if (obtained) {
-        obj.achieved = true;
-        obj.achieved_at = host.nowIso();
-        changed = true;
-      }
+    // Only target-criteria objectives are (un)obtained via the graph here; criterion-based
+    // ones (e.g. access_level) have their own evaluation path.
+    if (!obj.target_criteria) continue;
+    // Normally an achieved objective is a settled milestone. With `reconcile` (used when a
+    // claim was refuted/decayed) we re-check achieved ones too and un-achieve any whose
+    // supporting access is no longer obtained — an objective completed by a claim we have
+    // since disproven is no longer met.
+    if (obj.achieved && !opts?.reconcile) continue;
+    const obtained = isObjectiveObtained(host, obj);
+    if (obtained && !obj.achieved) {
+      obj.achieved = true;
+      obj.achieved_at = host.nowIso();
+      changed = true;
+    } else if (!obtained && obj.achieved && opts?.reconcile) {
+      obj.achieved = false;
+      obj.achieved_at = undefined;
+      changed = true;
     }
   }
   return changed;

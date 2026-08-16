@@ -1096,10 +1096,12 @@ export class GraphEngine {
     });
 
     // Objective evaluation reads claim maturity, so a positive promotion may newly satisfy a
-    // not-yet-achieved objective — re-evaluate now so the change is reflected immediately.
-    // (Path-finding re-reads live edge attributes on every query, so a refuted access edge
-    // stops rooting a path start without any cache work here.)
-    this.evaluateObjectives();
+    // not-yet-achieved objective. A negative promotion (refuted/stale) additionally RECONCILES
+    // already-achieved objectives — one completed by a claim we have since disproven is no
+    // longer met, so it un-achieves. (Path-finding re-reads live edge attributes on every
+    // query, so a refuted access edge stops rooting a path start without any cache work here.)
+    const reconcile = input.state === 'refuted' || input.state === 'stale';
+    this.evaluateObjectives({ reconcile });
 
     return { target_kind: targetKind, target_id: targetId, claim_state };
   }
@@ -3433,8 +3435,8 @@ export class GraphEngine {
   // Objective Tracking (delegated to ObjectiveManager)
   // =============================================
 
-  private evaluateObjectives(): void {
-    _evaluateObjectives(this.objectiveHost);
+  private evaluateObjectives(opts?: { reconcile?: boolean }): void {
+    _evaluateObjectives(this.objectiveHost, opts);
     // P4.1: detect phase transitions whenever objectives change. The
     // `phase_entered` / `phase_exited` events get hash-chained and feed
     // the dashboard timeline + decision log.
