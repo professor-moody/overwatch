@@ -33,6 +33,25 @@ describe('computeEngagementScorecard', () => {
     expect(sc.verification.by_state.exploited).toBe(1);
   });
 
+  it('excludes synthetic objective nodes and PATH_TO_OBJECTIVE edges from the verified share', () => {
+    // The derived objective goal node and pathfinding edges are not epistemic claims about
+    // the target — counting them (a PATH_TO_OBJECTIVE is always candidate) diluted the headline.
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'h', properties: { type: 'host', claim_state: 'observed' } as unknown as NodeProperties },
+        { id: 'obj', properties: { type: 'objective', claim_state: 'candidate' } as unknown as NodeProperties },
+      ],
+      edges: [
+        { id: 'e1', source: 'a', target: 'b', properties: { type: 'ADMIN_TO', claim_state: 'validated' } as unknown as EdgeProperties },
+        { id: 'e2', source: 'a', target: 'obj', properties: { type: 'PATH_TO_OBJECTIVE', claim_state: 'candidate' } as unknown as EdgeProperties },
+      ],
+    };
+    const sc = computeEngagementScorecard(graph, [], []);
+    expect(sc.verification.total).toBe(2);          // host + ADMIN_TO; obj + PATH_TO_OBJECTIVE excluded
+    expect(sc.verification.verified).toBe(2);
+    expect(sc.verification.verified_share).toBe(1); // 100%, not diluted by the synthetic candidate edge
+  });
+
   it('leaves an unlabeled graph (exported without sourceTrust) at zero, never over-claiming', () => {
     const graph: ExportedGraph = { nodes: [{ id: 'n', properties: {} as NodeProperties }], edges: [] };
     const sc = computeEngagementScorecard(graph, [], []);

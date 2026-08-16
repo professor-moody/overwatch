@@ -100,6 +100,13 @@ const MATURE_STATES: ReadonlySet<ClaimState> = new Set<ClaimState>(['observed', 
  *  asset itself. Counting them as inventory overstated observation coverage. */
 const NON_ASSET_NODE_TYPES: ReadonlySet<string> = new Set(['objective', 'vulnerability']);
 
+/** Synthetic bookkeeping elements that are NOT epistemic claims about the target: the derived
+ *  `objective` goal node and the `PATH_TO_OBJECTIVE` pathfinding edges. Excluded from the
+ *  verified-share tally so a large objective/path graph can't dilute it with candidate
+ *  synthetic edges (a `PATH_TO_OBJECTIVE` is always `candidate`, and would read as "unverified"). */
+const SYNTHETIC_CLAIM_NODE_TYPES: ReadonlySet<string> = new Set(['objective']);
+const SYNTHETIC_CLAIM_EDGE_TYPES: ReadonlySet<string> = new Set(['PATH_TO_OBJECTIVE']);
+
 
 function share(numerator: number, denominator: number): number {
   return denominator > 0 ? Number((numerator / denominator).toFixed(4)) : 0;
@@ -118,15 +125,19 @@ export function computeEngagementScorecard(
   objectives: ReadonlyArray<{ achieved?: boolean; proof_ready?: boolean }> = [],
 ): EngagementScorecard {
   const by_state = Object.fromEntries(CLAIM_STATES.map(s => [s, 0])) as Record<ClaimState, number>;
-  const claims = [
-    ...graph.nodes.map(n => n.properties.claim_state),
-    ...graph.edges.map(e => e.properties.claim_state),
-  ];
   let total = 0;
-  for (const state of claims) {
-    if (!state) continue; // graph not exported with sourceTrust — element is unclassified
+  const tally = (state: ClaimState | undefined): void => {
+    if (!state) return; // graph not exported with sourceTrust — element is unclassified
     by_state[state] += 1;
     total += 1;
+  };
+  for (const n of graph.nodes) {
+    if (SYNTHETIC_CLAIM_NODE_TYPES.has(String(n.properties.type ?? ''))) continue;
+    tally(n.properties.claim_state);
+  }
+  for (const e of graph.edges) {
+    if (SYNTHETIC_CLAIM_EDGE_TYPES.has(String(e.properties.type ?? ''))) continue;
+    tally(e.properties.claim_state);
   }
   const verified = by_state.observed + by_state.validated + by_state.exploited;
   const unverified = by_state.candidate + by_state.asserted;
