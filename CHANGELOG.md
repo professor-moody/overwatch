@@ -30,6 +30,19 @@ version changes.
   a split `rank` (priority_score / evidence_confidence / expected_value /
   expected_noise / explanation), so `next_task`, `get_state`, the dashboard,
   campaigns, and dispatch all read the same ordered, explained frontier.
+- A canonical edge-type semantics registry (`edge-semantics.ts`): one metadata
+  source tagging each edge type with roles (material_access / exploitation /
+  credential_access / objective_default / host_access / topology / hypothesis),
+  from which the objective, orchestration-measurement, scorecard, and
+  path-analysis consumers derive their sets — retiring four hand-maintained
+  allowlists that had drifted.
+- Durable claim promotions (claim lifecycle Phase 2b, backend): a `promote_claim`
+  tool records an operator/agent judgment (validate / refute / observe /
+  exploited / stale) as a durable property `claimState()` honors above the
+  derived signals. Promotions can carry a `valid_until` window (they decay to
+  `stale` once elapsed; `refuted` is terminal); a promotion that conflicts with
+  its own evidence is flagged in the scorecard (`contradicted_claims`); and
+  refuting the claim that completed an objective un-achieves it.
 
 ### Changed
 

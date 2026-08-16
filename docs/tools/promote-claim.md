@@ -20,7 +20,9 @@ The promotion is stored on the target element and a hash-chained `claim_promoted
 - **`refuted` / `stale`** are **authoritative** — they override any derived positive standing.
 - **`observed` / `validated` / `exploited`** set a **floor** — a stronger *real* signal (an actual exploitation) can still raise the standing above a positive promotion.
 
-Objective and path evaluation honor the promotion: path-finding stops routing through a refuted access edge immediately, and a `validated` promotion can complete a not-yet-achieved objective. (An objective already marked achieved is not automatically un-achieved — contradictory-evidence handling comes in a later phase.)
+Objective and path evaluation honor the promotion: path-finding stops routing through a refuted access edge immediately, a `validated` promotion can complete a not-yet-achieved objective, and refuting (or staling) the claim that completed an objective **un-achieves** it — an already-achieved objective whose only supporting access is now disproven is no longer met.
+
+A promotion can carry `valid_until`; once elapsed the positive standing decays and the claim reads `stale` until re-validated (a `refuted` verdict is terminal and does not expire).
 
 Target exactly one of `node_id` or `edge_id`. This is **not** a discovery path — use [`report_finding`](report-finding.md) and [`parse_output`](parse-output.md) for new observations, and [`correct_graph`](correct-graph.md) to change the graph's structure.
 

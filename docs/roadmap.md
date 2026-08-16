@@ -76,12 +76,19 @@ program, delivered as small reviewed PRs, and it is measured cheaply alongside
 | Orchestration measurement | Landed; material progress is a real before/after edge-ID delta over genuine offensive-access edge types. |
 | Scorecard v2 → HTML/PDF | Landed; split dimensions (inventory observation vs. attack-path validation, unsupported critical claims, refutation coverage, objective proof-backing) rendered from a shared model into a first-class "Evidence Integrity" section in Markdown, HTML, and PDF — not only JSON. Inventory excludes synthetic/claim nodes; a fully-refuted engagement is never suppressed. |
 | Canonical edge-type registry | Landed; one metadata source (`edge-semantics.ts`) tags each edge type with roles (material_access / exploitation / credential_access / objective_default / host_access / topology / hypothesis). The objective, orchestration-measurement, scorecard, and path-analysis consumers derive their sets from it instead of four hand-maintained allowlists — retiring the drift class that had let topology edges count as offensive progress. |
+| Claim lifecycle Phase 2b (backend) | Landed; durable operator/agent `promote_claim` (validate / refute / observe / exploited / stale) stored on the node/edge and honored by `claimState()` everywhere; `valid_until` validity windows that decay a promotion to `stale`; promotion-vs-evidence contradiction detection surfaced in the scorecard; and refuting a supporting claim un-achieves the objective it completed. Hardening tracked below (transactional command service, temporal objective model, withdraw + history, actionable contradictions). |
 
 Candidate next slices in this program (not yet committed):
 
-- **Claim lifecycle Phase 2b** — durable operator/agent validate-refute
-  promotions, contradictory-evidence tracking, and validity periods, so maturity
-  is asserted and corrected, not only derived.
+- **Claim lifecycle Phase 2b hardening** — a transactional, idempotent
+  claim-promotion command service (atomic merge + audit + reconcile, dedup by
+  key) with a withdraw/clear op + promotion history; passive-expiry objective
+  reconciliation and a temporal objective model (`ever_achieved` /
+  `currently_satisfied` / `lost_at` / `revoked_as_unproven`); proof-backing that
+  requires evidence for the supporting access chain, not target existence; and
+  actionable contradictions (claim ids / reasons / competing evidence).
+- **Phase 2b-3 dashboard operator-correction** — invoke `promote_claim` from the
+  graph node/edge drawer via a server action.
 - **Live Engagement Quality dashboard** — the scorecard's split dimensions
   surfaced in the dashboard with trends, drill-down to weak claims, and one-click
   validation tasks. The report side has landed; the dashboard card plus the

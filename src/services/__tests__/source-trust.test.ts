@@ -117,6 +117,15 @@ describe('claimState — durable operator/agent promotions (Phase 2b)', () => {
     const p = { ...promo('refuted'), valid_until: '2026-06-01T00:00:00Z' };
     expect(claimState({ confidence: 1, claim_promotion: p }, '2026-07-01T00:00:00Z')).toBe('refuted');
   });
+
+  it('expiry PARSES datetimes (not string compare) and never decays on an unparseable window', () => {
+    const withUntil = (valid_until: string) => ({ ...promo('validated'), valid_until });
+    // valid_until at +06:00 is 2026-05-31T23:00Z — earlier than the Z `now`, so it IS expired.
+    // A lexical string compare ("...05:00:00+06:00" >= "...00:00:00Z") would wrongly say no.
+    expect(claimState({ claim_promotion: withUntil('2026-06-01T05:00:00+06:00') }, '2026-06-01T00:00:00Z')).toBe('stale');
+    // an unparseable window never decays the claim (conservative).
+    expect(claimState({ claim_promotion: withUntil('not-a-date') }, '2026-06-01T00:00:00Z')).toBe('validated');
+  });
 });
 
 describe('claimContradiction — a promotion at odds with its own evidence', () => {

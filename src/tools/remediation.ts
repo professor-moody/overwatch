@@ -96,7 +96,10 @@ refuted/stale are authoritative (they override any derived positive); observed/v
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        // NOT idempotent: each call restamps the promotion's `at` and emits a fresh
+        // claim_promoted event, and the merge/audit/reconcile are separate durable writes. A
+        // transactional, dedup-keyed command service is the tracked follow-up.
+        idempotentHint: false,
         openWorldHint: false,
       },
     },
