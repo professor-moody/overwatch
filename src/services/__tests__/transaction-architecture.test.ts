@@ -93,6 +93,7 @@ const ALLOWED_RAW_SCOPES = new Map<string, Set<string>>([
     'applyDropNodeMutation',
     'applyIdentityRewriteMutation',
     'applyGraphCorrectedMutation',
+    'applyClaimPromotionMerge',
     'applyScopeUpdatedMutation',
     'applyCommandCoordinationChangeMutation',
     'applyAgentCoordinationChangeMutation',

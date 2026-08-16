@@ -1057,7 +1057,9 @@ export class GraphEngine {
     claimStateAfter: ClaimState;
     mergeOp: EngineOperation;
     auditOperation: EngineOperation;
-    applyGraphMerge: () => void;
+    /** The raw merge target. The live write is performed inline inside each transaction
+     *  callback (not here) so it stays lexically within the applyEngineTransaction boundary. */
+    mergeTarget: { kind: 'node' | 'edge'; id: string; props: Record<string, unknown> };
   } {
     this.assertPersistenceWritable();
     if (!input.reason?.trim()) throw new Error('promoteClaim requires a reason');
@@ -1077,7 +1079,7 @@ export class GraphEngine {
     let targetId: string;
     let currentAttrs: NodeProperties | EdgeProperties;
     let mergeOp: EngineOperation;
-    let applyGraphMerge: () => void;
+    let mergeTarget: { kind: 'node' | 'edge'; id: string; props: Record<string, unknown> };
     let targetEdge: { source: string; target: string; type?: string } | undefined;
 
     if (input.edge_id) {
@@ -1092,11 +1094,7 @@ export class GraphEngine {
         type: String((currentAttrs as EdgeProperties).type),
       };
       mergeOp = { type: 'merge_edge_attrs', payload: { edge_id: edgeId, props: { claim_promotion: promotion } } };
-      applyGraphMerge = () => {
-        this.ctx.graph.mergeEdgeAttributes(edgeId, { claim_promotion: promotion });
-        this.invalidatePathGraph();
-        this.invalidateAllCaches();
-      };
+      mergeTarget = { kind: 'edge', id: edgeId, props: { claim_promotion: promotion } };
     } else {
       const nodeId = input.node_id as string;
       if (!this.ctx.graph.hasNode(nodeId)) throw new Error(`No such node: ${nodeId}`);
@@ -1104,18 +1102,24 @@ export class GraphEngine {
       targetKind = 'node';
       targetId = nodeId;
       mergeOp = { type: 'merge_node_attrs', payload: { props: { claim_promotion: promotion, id: nodeId } } };
-      applyGraphMerge = () => {
-        this.ctx.graph.mergeNodeAttributes(nodeId, { claim_promotion: promotion, id: nodeId });
-        this.invalidatePathGraph();
-        this.invalidateAllCaches();
-      };
+      mergeTarget = { kind: 'node', id: nodeId, props: { claim_promotion: promotion, id: nodeId } };
     }
 
     // The resulting state is deterministic — merge the promotion in memory to compute it for
     // the audit event without mutating the graph before the transaction.
     const claimStateAfter = claimState({ ...currentAttrs, claim_promotion: promotion }, promotion.at);
     const auditOperation = this.claimPromotedAuditOperation(input, promotion, targetKind, targetId, targetEdge, claimStateAfter);
-    return { targetKind, targetId, claimStateAfter, mergeOp, auditOperation, applyGraphMerge };
+    return { targetKind, targetId, claimStateAfter, mergeOp, auditOperation, mergeTarget };
+  }
+
+  /** Perform the live claim-promotion attribute merge + cache invalidation. Called ONLY from
+   *  inside a transaction callback (kept a named applier so the mutation stays within the
+   *  canonical write boundary). */
+  private applyClaimPromotionMerge(target: { kind: 'node' | 'edge'; id: string; props: Record<string, unknown> }): void {
+    if (target.kind === 'edge') this.ctx.graph.mergeEdgeAttributes(target.id, target.props);
+    else this.ctx.graph.mergeNodeAttributes(target.id, target.props);
+    this.invalidatePathGraph();
+    this.invalidateAllCaches();
   }
 
   private claimPromotedAuditOperation(
@@ -1165,7 +1169,7 @@ export class GraphEngine {
         ...(input.action_id ? { source_action_id: input.action_id } : {}),
       },
       () => {
-        plan.applyGraphMerge();
+        this.applyClaimPromotionMerge(plan.mergeTarget);
         return this.applyApplicationCommandOperation(plan.auditOperation);
       },
       'claim promotion',
@@ -1198,7 +1202,7 @@ export class GraphEngine {
         ...(actionId ? { source_action_id: actionId } : {}),
       },
       () => {
-        plan.applyGraphMerge();
+        this.applyClaimPromotionMerge(plan.mergeTarget);
         const auditResult = this.applyApplicationCommandOperation(plan.auditOperation);
         if (auditResult.status === 'skipped') return auditResult;
         return this.applyApplicationCommandOperation(commandOperation);
