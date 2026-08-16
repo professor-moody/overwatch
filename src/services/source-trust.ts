@@ -88,6 +88,16 @@ export interface ClaimStateInput extends SourceTrustInput {
  * A confirmed rule-inferred claim is `observed`/`validated`, not `candidate` — origin
  * (source_trust: inferred) and current standing (claim_state) are deliberately distinct.
  */
+/** Whether a promotion's validity window has strictly elapsed. Parses both timestamps rather
+ *  than comparing strings, so timezone offsets and non-normalized formats compare correctly; an
+ *  unparseable value is treated as NOT expired (conservative — never decay a claim on bad data). */
+function isPromotionExpired(validUntil: string | undefined, now: string | undefined): boolean {
+  if (!validUntil || !now) return false;
+  const until = Date.parse(validUntil);
+  const at = Date.parse(now);
+  return Number.isFinite(until) && Number.isFinite(at) && at >= until;
+}
+
 export function claimState(p: ClaimStateInput, now?: string): ClaimState {
   const promo = p.claim_promotion;
   const promoted = promo?.state;
@@ -95,7 +105,7 @@ export function claimState(p: ClaimStateInput, now?: string): ClaimState {
   // longer current, so the claim reads `stale` until re-validated. (A `refuted` verdict is
   // terminal — it does not expire back into "maybe true".) Only evaluated when the caller
   // supplies `now`; callers without a clock treat the promotion as non-expiring.
-  const expired = !!promo?.valid_until && !!now && now >= promo.valid_until;
+  const expired = isPromotionExpired(promo?.valid_until, now);
 
   // Negative / terminal — authoritative: an operator/agent saying "refuted" or "stale" wins.
   if (promoted === 'refuted' || (p.tested === true && p.test_result === 'failure')) return 'refuted';

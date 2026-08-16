@@ -111,14 +111,18 @@ function scrubMarkdownForClient(md: string): string {
   return out;
 }
 
-/** An achieved objective is "proof-backed" when at least one node satisfying its target
- *  carries captured evidence (the durable node→evidence index). Attainment alone is a graph
- *  state; this asks whether that state is backed by retrievable proof. */
+/** An achieved objective is "proof-backed" when a node satisfying its target carries captured
+ *  evidence (the durable node→evidence index). Attainment alone is a graph state; this asks
+ *  whether that state is backed by retrievable proof.
+ *
+ *  An objective with no inspectable target is NOT proof-backed — without a target we cannot
+ *  point at proof, so claiming it would over-report (it previously auto-returned true).
+ *  NOTE (deferred, Phase-2b hardening cluster C): this still counts any evidence on the target
+ *  node, including evidence that only proves the target EXISTS. Requiring evidence for the
+ *  supporting ACCESS/action chain (the obtaining edge's creating action) is the stronger bar. */
 function objectiveProofBacked(engine: GraphEngine, obj: EngagementObjective): boolean {
   if (!obj.achieved) return false;
-  // Achieved via an obtained-flag with no target to inspect — count attainment as the best
-  // available signal rather than asserting absence of proof.
-  if (!obj.target_node_type && !obj.target_criteria) return true;
+  if (!obj.target_node_type && !obj.target_criteria) return false;
   try {
     const store = engine.getEvidenceStore();
     const matches = engine.queryGraph({ node_type: obj.target_node_type, node_filter: obj.target_criteria });

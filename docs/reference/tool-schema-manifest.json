@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "tool_count": 96,
-  "registry_sha256": "a8222f9794a8eaf706be9c0cf15fbc3c92986fa8c56cabf32e93ad01f70ecede",
+  "registry_sha256": "4f6e6533460006c2d37ebb395513e677c278f948d0549f0daf6a23a2730391cf",
   "categories": [
     {
       "id": "state-readiness",
@@ -5120,7 +5120,7 @@
       "category_order": 30,
       "read_only": false,
       "destructive": false,
-      "idempotent": true,
+      "idempotent": false,
       "open_world": false,
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
