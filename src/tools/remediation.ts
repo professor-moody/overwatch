@@ -15,7 +15,7 @@ export function registerRemediationTools(
   > = new GraphCorrectionCommandService(engine),
   promoteCommands: Pick<
     PromoteClaimCommandService,
-    'promote'
+    'promote' | 'withdraw'
   > = new PromoteClaimCommandService(engine),
 ): void {
   server.registerTool(
@@ -101,9 +101,9 @@ refuted/stale are authoritative (they override any derived positive); observed/v
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        // NOT idempotent: each call restamps the promotion's `at` and emits a fresh
-        // claim_promoted event, and the merge/audit/reconcile are separate durable writes. A
-        // transactional, dedup-keyed command service is the tracked follow-up.
+        // NOT idempotent by content: each distinct call restamps the promotion's `at` and emits a
+        // fresh claim_promoted event. Exact retries are deduped by the command service's
+        // idempotency key (a repeat replays the stored receipt instead of restamping).
         idempotentHint: false,
         openWorldHint: false,
       },
@@ -114,6 +114,51 @@ refuted/stale are authoritative (they override any derived positive); observed/v
       }
       const execution = promoteCommands.promote(
         { state, reason, node_id, edge_id, agent_id, valid_until, action_id },
+        { transport: 'mcp', action_id },
+      );
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ...execution.result,
+            command_id: execution.command_id,
+            idempotency_key: execution.idempotency_key,
+            replayed: execution.replayed,
+          }, null, 2),
+        }],
+      };
+    }),
+  );
+
+  server.registerTool(
+    'withdraw_claim',
+    {
+      title: 'Withdraw a Claim Promotion',
+      description: `Durably clear a node or edge's \`promote_claim\` judgment, reverting the claim to its DERIVED standing (claim lifecycle Phase 2b).
+
+Use this to undo a mistaken or superseded promotion — e.g. you refuted an edge, then confirmed it really is exploitable after all, and want the evidence-derived state to govern again rather than promoting to a second explicit verdict. The effective promotion is cleared; the append-only promotion history is retained, and a \`claim_withdrawn\` timeline event records who/why. Objectives are re-reconciled in both directions: withdrawing a refutation can re-complete an objective, and withdrawing a positive verdict can un-complete one. Target exactly one of node_id or edge_id.`,
+      inputSchema: {
+        reason: z.string().trim().min(1)
+          .describe('Why — the judgment behind withdrawing this promotion; required for auditability.'),
+        node_id: z.string().optional().describe('Target node id (exactly one of node_id / edge_id).'),
+        edge_id: z.string().optional().describe('Target edge id (exactly one of node_id / edge_id).'),
+        agent_id: z.string().optional()
+          .describe('If an agent is withdrawing, its id (attributes the withdrawal to that agent); omit for an operator.'),
+        action_id: z.string().optional().describe('Action ID to link this withdrawal back to the triggering workflow.'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    withErrorBoundary('withdraw_claim', async ({ reason, node_id, edge_id, agent_id, action_id }) => {
+      if ((node_id ? 1 : 0) + (edge_id ? 1 : 0) !== 1) {
+        throw new Error('withdraw_claim requires exactly one of node_id or edge_id');
+      }
+      const execution = promoteCommands.withdraw(
+        { reason, node_id, edge_id, agent_id, action_id },
         { transport: 'mcp', action_id },
       );
       return {

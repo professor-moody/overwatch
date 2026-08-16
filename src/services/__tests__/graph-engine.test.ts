@@ -2122,6 +2122,158 @@ describe('GraphEngine', () => {
       expect(() => engine.promoteClaim({ state: 'validated', reason: 'x', by_kind: 'operator' })).toThrow(/node_id or edge_id/);
       expect(() => engine.promoteClaim({ node_id: 'nope', state: 'validated', reason: 'x', by_kind: 'operator' })).toThrow(/No such node/);
     });
+
+    it('withdrawClaim clears the effective promotion, reverting to the derived state, and fires an audit event', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'u', type: 'user', label: 'u' },
+          { id: 'h', type: 'host', label: '10.0.0.1', ip: '10.0.0.1' },
+        ],
+        edges: [
+          { source: 'u', target: 'h', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'ADMIN_TO')!.id;
+      // confidence 1.0 derives to 'observed'; refute it, then withdraw the refutation.
+      engine.promoteClaim({ edge_id: edgeId, state: 'refuted', reason: 'looked wrong', by_kind: 'operator' });
+      expect(engine.exportGraph({ sourceTrust: true }).edges.find(e => e.id === edgeId)!.properties.claim_state).toBe('refuted');
+
+      const res = engine.withdrawClaim({ edge_id: edgeId, reason: 'confirmed it really works after all', by_kind: 'operator' });
+      expect(res.withdrew).toBe('refuted');
+      expect(res.claim_state).toBe('observed'); // back to the derived state
+
+      const edge = engine.exportGraph({ sourceTrust: true }).edges.find(e => e.id === edgeId)!;
+      expect(edge.properties.claim_state).toBe('observed');
+      expect((edge.properties as { claim_promotion?: unknown }).claim_promotion ?? null).toBeNull();
+      expect(engine.getFullHistory().some(ev => ev.event_type === 'claim_withdrawn')).toBe(true);
+    });
+
+    it('retains an append-only promotion history that a withdraw does not erase', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'u', type: 'user', label: 'u' },
+          { id: 'h', type: 'host', label: '10.0.0.1', ip: '10.0.0.1' },
+        ],
+        edges: [
+          { source: 'u', target: 'h', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'ADMIN_TO')!.id;
+      engine.promoteClaim({ edge_id: edgeId, state: 'refuted', reason: 'first verdict', by_kind: 'operator' });
+      engine.promoteClaim({ edge_id: edgeId, state: 'validated', reason: 'second verdict', by_kind: 'operator' });
+      engine.withdrawClaim({ edge_id: edgeId, reason: 'clear it', by_kind: 'operator' });
+
+      const props = engine.exportGraph().edges.find(e => e.id === edgeId)!.properties as {
+        claim_promotion?: unknown; claim_promotion_history?: Array<{ state: string; reason: string }>;
+      };
+      // Effective promotion cleared, but every judgment ever applied is retained in order.
+      expect(props.claim_promotion ?? null).toBeNull();
+      expect(props.claim_promotion_history?.map(h => h.state)).toEqual(['refuted', 'validated']);
+      expect(props.claim_promotion_history?.map(h => h.reason)).toEqual(['first verdict', 'second verdict']);
+    });
+
+    it('withdrawing a refutation re-achieves the objective it had blocked (positive reconcile)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'cred-da', type: 'credential', label: 'DA', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'OWNS_CRED')!.id;
+      engine.promoteClaim({ edge_id: edgeId, state: 'refuted', reason: 'thought it was bogus', by_kind: 'operator' });
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(false);
+
+      engine.withdrawClaim({ edge_id: edgeId, reason: 'it authenticates after all', by_kind: 'operator' });
+      // The derived state (observed, mature) governs again → the objective is re-completed.
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(true);
+    });
+
+    it('withdrawing a validating promotion un-achieves the objective it had completed (negative reconcile)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'cred-da', type: 'credential', label: 'DA', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          // Inferred (candidate → not mature) → the objective is NOT met until validated.
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 0.7, inferred_by_rule: 'guess', discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'OWNS_CRED')!.id;
+      engine.promoteClaim({ edge_id: edgeId, state: 'validated', reason: 'authenticated', by_kind: 'operator' });
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(true);
+
+      engine.withdrawClaim({ edge_id: edgeId, reason: 'retracting the validation', by_kind: 'operator' });
+      // Back to the inferred candidate (not mature) → the objective is no longer met.
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(false);
+    });
+
+    it('a withdrawal (cleared with null, not undefined) survives WAL replay on reload', () => {
+      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine1.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'u', type: 'user', label: 'u' },
+          { id: 'h', type: 'host', label: '10.0.0.1', ip: '10.0.0.1' },
+        ],
+        edges: [
+          { source: 'u', target: 'h', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine1.exportGraph().edges.find(e => e.properties.type === 'ADMIN_TO')!.id;
+      engine1.promoteClaim({ edge_id: edgeId, state: 'refuted', reason: 'disproved', by_kind: 'operator' });
+      engine1.withdrawClaim({ edge_id: edgeId, reason: 'undo', by_kind: 'operator' });
+
+      // Reload from disk — had the clear used `undefined`, JSON serialization would drop it from
+      // the WAL merge and the refutation would resurrect on replay.
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const props = engine2.exportGraph({ sourceTrust: true }).edges.find(e => e.id === edgeId)!.properties as {
+        claim_state?: string; claim_promotion?: unknown; claim_promotion_history?: unknown[];
+      };
+      expect(props.claim_promotion ?? null).toBeNull();
+      expect(props.claim_state).toBe('observed'); // derived, not the withdrawn 'refuted'
+      expect(props.claim_promotion_history?.length).toBe(1); // history durable too
+    });
+
+    it('the withdraw command service commits atomically and replays a duplicate by idempotency key', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'u', type: 'user', label: 'u' },
+          { id: 'h', type: 'host', label: '10.0.0.1', ip: '10.0.0.1' },
+        ],
+        edges: [
+          { source: 'u', target: 'h', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'ADMIN_TO')!.id;
+      const service = new PromoteClaimCommandService(engine);
+      service.promote({ edge_id: edgeId, state: 'refuted', reason: 'disproved' }, { transport: 'mcp', idempotency_key: 'p1' });
+
+      const first = service.withdraw({ edge_id: edgeId, reason: 'undo' }, { transport: 'mcp', idempotency_key: 'w1' });
+      expect(first.replayed).toBe(false);
+      expect(first.result?.withdrew).toBe('refuted');
+      expect(first.result?.claim_state).toBe('observed');
+      expect(engine.getFullHistory().filter(e => e.event_type === 'claim_withdrawn').length).toBe(1);
+
+      const second = service.withdraw({ edge_id: edgeId, reason: 'undo' }, { transport: 'mcp', idempotency_key: 'w1' });
+      expect(second.replayed).toBe(true);
+      expect(second.command_id).toBe(first.command_id);
+      expect(engine.getFullHistory().filter(e => e.event_type === 'claim_withdrawn').length).toBe(1);
+    });
+
+    it('rejects a withdrawal with no target and requires a reason', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      expect(() => engine.withdrawClaim({ reason: 'x', by_kind: 'operator' })).toThrow(/node_id or edge_id/);
+      expect(() => engine.withdrawClaim({ node_id: 'nope', reason: 'x', by_kind: 'operator' })).toThrow(/No such node/);
+      expect(() => engine.withdrawClaim({ node_id: 'u', reason: '  ', by_kind: 'operator' })).toThrow(/reason/);
+    });
   });
 
   describe('graph remediation', () => {

@@ -219,6 +219,30 @@ export interface ClaimPromotionResult {
   claim_state: ClaimState;
 }
 
+/** Input to a claim withdrawal — clears the effective promotion, reverting the claim to its
+ *  derived state (see `withdrawClaim`). Exactly one of node_id / edge_id. */
+export interface ClaimWithdrawalInput {
+  node_id?: string;
+  edge_id?: string;
+  reason: string;
+  by_kind: ClaimPromotion['by_kind'];
+  by?: string;
+  action_id?: string;
+}
+
+/** Result of a claim withdrawal — the target, its resulting derived `claim_state` after the
+ *  effective promotion was cleared, and the standing that was withdrawn (null if none). */
+export interface ClaimWithdrawalResult {
+  target_kind: 'node' | 'edge';
+  target_id: string;
+  claim_state: ClaimState;
+  withdrew: ClaimPromotion['state'] | null;
+}
+
+/** Cap on retained promotion history per node/edge. Promotions are rare, deliberate
+ *  operator/agent actions, so this is generous; the oldest are dropped past it. */
+const CLAIM_PROMOTION_HISTORY_LIMIT = 50;
+
 /** Exact idempotency for arbitrary client keys requires retaining a compact
  * identity after the response body is retired. Stop admitting new identities
  * before that ledger itself can grow without bound. */
@@ -1051,6 +1075,57 @@ export class GraphEngine {
    *  hash-chained `claim_promoted` audit event — plus a closure that applies the live graph
    *  effect. Shared by the direct `promoteClaim` and the application-command variant so both
    *  commit the promotion and its audit as ONE transaction (not separate durable writes). */
+  /** Resolve a claim operation's target (node XOR edge) to its current attributes. Shared by the
+   *  promotion and withdrawal plans so both validate and read the target identically. */
+  private resolveClaimTarget(input: { node_id?: string; edge_id?: string }): {
+    targetKind: 'node' | 'edge';
+    targetId: string;
+    currentAttrs: NodeProperties | EdgeProperties;
+    targetEdge?: { source: string; target: string; type?: string };
+  } {
+    if ((input.edge_id ? 1 : 0) + (input.node_id ? 1 : 0) !== 1) {
+      throw new Error('a claim operation requires exactly one of node_id or edge_id');
+    }
+    if (input.edge_id) {
+      const edgeId = input.edge_id;
+      if (!this.ctx.graph.hasEdge(edgeId)) throw new Error(`No such edge: ${edgeId}`);
+      const currentAttrs = this.ctx.graph.getEdgeAttributes(edgeId) as EdgeProperties;
+      return {
+        targetKind: 'edge',
+        targetId: edgeId,
+        currentAttrs,
+        targetEdge: {
+          source: this.ctx.graph.source(edgeId),
+          target: this.ctx.graph.target(edgeId),
+          type: String(currentAttrs.type),
+        },
+      };
+    }
+    const nodeId = input.node_id as string;
+    if (!this.ctx.graph.hasNode(nodeId)) throw new Error(`No such node: ${nodeId}`);
+    return { targetKind: 'node', targetId: nodeId, currentAttrs: this.ctx.graph.getNodeAttributes(nodeId) as NodeProperties };
+  }
+
+  /** Build the WAL merge op + inline-apply target for a claim attribute change. A node merge
+   *  carries the `id` (the node merge op keys on it); an edge merge keys on `edge_id`. */
+  private buildClaimMerge(
+    targetKind: 'node' | 'edge',
+    targetId: string,
+    props: Record<string, unknown>,
+  ): { mergeOp: EngineOperation; mergeTarget: { kind: 'node' | 'edge'; id: string; props: Record<string, unknown> } } {
+    if (targetKind === 'edge') {
+      return {
+        mergeOp: { type: 'merge_edge_attrs', payload: { edge_id: targetId, props } },
+        mergeTarget: { kind: 'edge', id: targetId, props },
+      };
+    }
+    const nodeProps = { ...props, id: targetId };
+    return {
+      mergeOp: { type: 'merge_node_attrs', payload: { props: nodeProps } },
+      mergeTarget: { kind: 'node', id: targetId, props: nodeProps },
+    };
+  }
+
   private planClaimPromotion(input: ClaimPromotionInput): {
     targetKind: 'node' | 'edge';
     targetId: string;
@@ -1063,9 +1138,7 @@ export class GraphEngine {
   } {
     this.assertPersistenceWritable();
     if (!input.reason?.trim()) throw new Error('promoteClaim requires a reason');
-    if ((input.edge_id ? 1 : 0) + (input.node_id ? 1 : 0) !== 1) {
-      throw new Error('promoteClaim requires exactly one of node_id or edge_id');
-    }
+    const { targetKind, targetId, currentAttrs, targetEdge } = this.resolveClaimTarget(input);
     const promotion: ClaimPromotion = {
       state: input.state,
       by_kind: input.by_kind,
@@ -1074,42 +1147,42 @@ export class GraphEngine {
       ...(input.by ? { by: input.by } : {}),
       ...(input.valid_until ? { valid_until: input.valid_until } : {}),
     };
-
-    let targetKind: 'node' | 'edge';
-    let targetId: string;
-    let currentAttrs: NodeProperties | EdgeProperties;
-    let mergeOp: EngineOperation;
-    let mergeTarget: { kind: 'node' | 'edge'; id: string; props: Record<string, unknown> };
-    let targetEdge: { source: string; target: string; type?: string } | undefined;
-
-    if (input.edge_id) {
-      const edgeId = input.edge_id;
-      if (!this.ctx.graph.hasEdge(edgeId)) throw new Error(`No such edge: ${edgeId}`);
-      currentAttrs = this.ctx.graph.getEdgeAttributes(edgeId) as EdgeProperties;
-      targetKind = 'edge';
-      targetId = edgeId;
-      targetEdge = {
-        source: this.ctx.graph.source(edgeId),
-        target: this.ctx.graph.target(edgeId),
-        type: String((currentAttrs as EdgeProperties).type),
-      };
-      mergeOp = { type: 'merge_edge_attrs', payload: { edge_id: edgeId, props: { claim_promotion: promotion } } };
-      mergeTarget = { kind: 'edge', id: edgeId, props: { claim_promotion: promotion } };
-    } else {
-      const nodeId = input.node_id as string;
-      if (!this.ctx.graph.hasNode(nodeId)) throw new Error(`No such node: ${nodeId}`);
-      currentAttrs = this.ctx.graph.getNodeAttributes(nodeId) as NodeProperties;
-      targetKind = 'node';
-      targetId = nodeId;
-      mergeOp = { type: 'merge_node_attrs', payload: { props: { claim_promotion: promotion, id: nodeId } } };
-      mergeTarget = { kind: 'node', id: nodeId, props: { claim_promotion: promotion, id: nodeId } };
-    }
+    // Append to the durable, append-only history (retained across a later withdraw) rather than
+    // overwriting — so the sequence of judgments is auditable, not just the current one.
+    const history = [...(currentAttrs.claim_promotion_history ?? []), promotion].slice(-CLAIM_PROMOTION_HISTORY_LIMIT);
+    const { mergeOp, mergeTarget } = this.buildClaimMerge(targetKind, targetId, {
+      claim_promotion: promotion,
+      claim_promotion_history: history,
+    });
 
     // The resulting state is deterministic — merge the promotion in memory to compute it for
     // the audit event without mutating the graph before the transaction.
     const claimStateAfter = claimState({ ...currentAttrs, claim_promotion: promotion }, promotion.at);
     const auditOperation = this.claimPromotedAuditOperation(input, promotion, targetKind, targetId, targetEdge, claimStateAfter);
     return { targetKind, targetId, claimStateAfter, mergeOp, auditOperation, mergeTarget };
+  }
+
+  /** Build the atomic operations for a claim WITHDRAWAL — clears the effective `claim_promotion`
+   *  (reverting to the derived state) + a `claim_withdrawn` audit event. The clear is a merge of
+   *  an explicit `null` (not `undefined`, which JSON serialization would drop from the WAL,
+   *  silently failing to clear on replay); the append-only history is left intact. */
+  private planClaimWithdrawal(input: ClaimWithdrawalInput): {
+    targetKind: 'node' | 'edge';
+    targetId: string;
+    claimStateAfter: ClaimState;
+    withdrew: ClaimPromotion['state'] | null;
+    mergeOp: EngineOperation;
+    auditOperation: EngineOperation;
+    mergeTarget: { kind: 'node' | 'edge'; id: string; props: Record<string, unknown> };
+  } {
+    this.assertPersistenceWritable();
+    if (!input.reason?.trim()) throw new Error('withdrawClaim requires a reason');
+    const { targetKind, targetId, currentAttrs, targetEdge } = this.resolveClaimTarget(input);
+    const withdrew = currentAttrs.claim_promotion?.state ?? null;
+    const { mergeOp, mergeTarget } = this.buildClaimMerge(targetKind, targetId, { claim_promotion: null });
+    const claimStateAfter = claimState({ ...currentAttrs, claim_promotion: null }, this.ctx.nowIso());
+    const auditOperation = this.claimWithdrawnAuditOperation(input, targetKind, targetId, targetEdge, withdrew, claimStateAfter);
+    return { targetKind, targetId, claimStateAfter, withdrew, mergeOp, auditOperation, mergeTarget };
   }
 
   /** Perform the live claim-promotion attribute merge + cache invalidation. Called ONLY from
@@ -1151,11 +1224,47 @@ export class GraphEngine {
     return { type: 'activity_append', payload: prepared.payload as unknown as Record<string, unknown> };
   }
 
+  private claimWithdrawnAuditOperation(
+    input: ClaimWithdrawalInput,
+    targetKind: 'node' | 'edge',
+    targetId: string,
+    targetEdge: { source: string; target: string; type?: string } | undefined,
+    withdrew: ClaimPromotion['state'] | null,
+    claimStateAfter: ClaimState,
+  ): EngineOperation {
+    const at = this.ctx.nowIso();
+    const prepared = this.ctx.withClock(at, () => this.ctx.prepareActivityAppend({
+      event_type: 'claim_withdrawn',
+      description: `Claim ${targetKind} ${targetId} promotion${withdrew ? ` (${withdrew})` : ''} withdrawn by ${input.by_kind}${input.by ? ` ${input.by}` : ''} → derived ${claimStateAfter}: ${input.reason}`,
+      provenance: input.by_kind === 'agent' ? 'agent' : 'operator',
+      category: 'reasoning',
+      ...(input.by_kind === 'agent' && input.by ? { agent_id: input.by } : {}),
+      ...(input.action_id ? { action_id: input.action_id } : {}),
+      ...(targetKind === 'node' ? { target_node_ids: [targetId] } : {}),
+      ...(targetEdge ? { target_edge: targetEdge } : {}),
+      details: {
+        target_kind: targetKind,
+        target_id: targetId,
+        withdrew_state: withdrew,
+        resulting_claim_state: claimStateAfter,
+        reason: input.reason,
+      },
+    }));
+    return { type: 'activity_append', payload: prepared.payload as unknown as Record<string, unknown> };
+  }
+
   /** Reconcile objectives after a promotion: a positive promotion may newly satisfy a
    *  not-yet-achieved objective; a negative one (refuted/stale) un-achieves an objective its
    *  now-disproven claim had completed. */
   private reconcileObjectivesAfterPromotion(state: ClaimPromotion['state']): void {
     this.evaluateObjectives({ reconcile: state === 'refuted' || state === 'stale' });
+  }
+
+  /** Reconcile objectives after a withdrawal. A withdraw can flip achievement in EITHER
+   *  direction — clearing a `refuted`/`stale` verdict can re-satisfy an objective, while clearing
+   *  a positive promotion can un-satisfy one it had completed — so both directions are checked. */
+  private reconcileObjectivesAfterWithdrawal(): void {
+    this.evaluateObjectives({ reconcile: true });
   }
 
   /** Durably promote a claim's standing. Commits the promotion property + its `claim_promoted`
@@ -1215,6 +1324,72 @@ export class GraphEngine {
     const installedCommand = this.getApplicationCommand(command.idempotency_key);
     if (!installedCommand) {
       throw new Error('Claim promotion committed without its application-command receipt.');
+    }
+    this.pruneInstalledApplicationCommand(installedCommand);
+    return { result, command: installedCommand };
+  }
+
+  /** Durably withdraw a claim's promotion, reverting it to its derived state. Commits the
+   *  cleared `claim_promotion` + its `claim_withdrawn` audit event as one atomic transaction. */
+  withdrawClaim(input: ClaimWithdrawalInput): ClaimWithdrawalResult {
+    const plan = this.planClaimWithdrawal(input);
+    this.ensureCompositeJournal();
+    const applied = this.ctx.applyEngineTransaction(
+      {
+        operations: [plan.mergeOp, plan.auditOperation],
+        ...(input.action_id ? { source_action_id: input.action_id } : {}),
+      },
+      () => {
+        this.applyClaimPromotionMerge(plan.mergeTarget);
+        return this.applyApplicationCommandOperation(plan.auditOperation);
+      },
+      'claim withdrawal',
+    );
+    if (applied.status !== 'applied') throw new Error(applied.reason);
+    this.reconcileObjectivesAfterWithdrawal();
+    this.persist(plan.targetKind === 'node' ? { updated_nodes: [plan.targetId] } : { updated_edges: [plan.targetId] });
+    return { target_kind: plan.targetKind, target_id: plan.targetId, claim_state: plan.claimStateAfter, withdrew: plan.withdrew };
+  }
+
+  /** Application-command variant of `withdrawClaim`: commits the cleared promotion + audit + a
+   *  durable command receipt as one atomic transaction so a command service can dedup + replay. */
+  withdrawClaimApplicationCommand(
+    input: ClaimWithdrawalInput,
+    actionId: string | undefined,
+    buildCommand: (result: ClaimWithdrawalResult) => PersistedApplicationCommandV1,
+  ): { result: ClaimWithdrawalResult; command: PersistedApplicationCommandV1 } {
+    const plan = this.planClaimWithdrawal(input);
+    const result: ClaimWithdrawalResult = {
+      target_kind: plan.targetKind,
+      target_id: plan.targetId,
+      claim_state: plan.claimStateAfter,
+      withdrew: plan.withdrew,
+    };
+    const command = detached(buildCommand(detached(result)));
+    if (command.status !== 'succeeded') {
+      throw new Error('A claim withdrawal application command must be terminal before it is journaled.');
+    }
+    const commandOperation = this.applicationCommandChangeOperation(command);
+    this.ensureCompositeJournal();
+    const applied = this.ctx.applyEngineTransaction(
+      {
+        operations: [plan.mergeOp, plan.auditOperation, commandOperation],
+        ...(actionId ? { source_action_id: actionId } : {}),
+      },
+      () => {
+        this.applyClaimPromotionMerge(plan.mergeTarget);
+        const auditResult = this.applyApplicationCommandOperation(plan.auditOperation);
+        if (auditResult.status === 'skipped') return auditResult;
+        return this.applyApplicationCommandOperation(commandOperation);
+      },
+      'claim withdrawal application command',
+    );
+    if (applied.status !== 'applied') throw new Error(applied.reason);
+    this.reconcileObjectivesAfterWithdrawal();
+    this.persist(plan.targetKind === 'node' ? { updated_nodes: [plan.targetId] } : { updated_edges: [plan.targetId] });
+    const installedCommand = this.getApplicationCommand(command.idempotency_key);
+    if (!installedCommand) {
+      throw new Error('Claim withdrawal committed without its application-command receipt.');
     }
     this.pruneInstalledApplicationCommand(installedCommand);
     return { result, command: installedCommand };

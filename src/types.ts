@@ -87,7 +87,8 @@ export interface NodeProperties {
   confidence: number;           // 0.0 - 1.0
   source_trust?: SourceTrust;   // derived on export (services/source-trust.ts); not stored
   claim_state?: ClaimState;    // derived on export (services/source-trust.ts:claimState); not stored
-  claim_promotion?: ClaimPromotion; // durable operator/agent promotion (Phase 2b); honored by claimState()
+  claim_promotion?: ClaimPromotion; // durable operator/agent promotion (Phase 2b); honored by claimState(). `null` = explicitly withdrawn back to the derived state.
+  claim_promotion_history?: ClaimPromotion[]; // append-only log of every promotion applied (Phase 2b); the effective one is `claim_promotion`. A withdraw clears the effective promotion but leaves this record.
   notes?: string;
   identity_status?: 'canonical' | 'unresolved' | 'superseded';
   identity_family?: string;
@@ -504,7 +505,8 @@ export interface EdgeProperties {
   confidence: number;           // 0.0 = hypothesis, 1.0 = confirmed
   source_trust?: SourceTrust;   // derived on export (services/source-trust.ts); not stored
   claim_state?: ClaimState;    // derived on export (services/source-trust.ts:claimState); not stored
-  claim_promotion?: ClaimPromotion; // durable operator/agent promotion (Phase 2b); honored by claimState()
+  claim_promotion?: ClaimPromotion; // durable operator/agent promotion (Phase 2b); honored by claimState(). `null` = explicitly withdrawn back to the derived state.
+  claim_promotion_history?: ClaimPromotion[]; // append-only log of every promotion applied (Phase 2b); the effective one is `claim_promotion`. A withdraw clears the effective promotion but leaves this record.
   discovered_by?: string;
   discovered_by_action_id?: string; // most-recent observing action (paired with discovered_by; overwritten on re-observation like the edge's other provenance) — pivot to the run/evidence via explain_action
   discovered_at: string;
