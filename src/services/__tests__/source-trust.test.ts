@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { claimState, sourceTrust, isMatureClaim } from '../source-trust.js';
+import { claimState, sourceTrust, isMatureClaim, claimContradiction } from '../source-trust.js';
 
 describe('sourceTrust', () => {
   it('inferred: created by an inference rule (a hypothesis), regardless of confidence', () => {
@@ -103,6 +103,39 @@ describe('claimState — durable operator/agent promotions (Phase 2b)', () => {
   it('a refuted promotion makes the claim immature (un-satisfies objectives/paths)', () => {
     expect(isMatureClaim({ confidence: 1, claim_promotion: promo('refuted') })).toBe(false);
     expect(isMatureClaim({ claim_promotion: promo('validated') })).toBe(true);
+  });
+
+  it('a positive promotion decays to stale once its validity window has elapsed (needs `now`)', () => {
+    const p = { ...promo('validated'), valid_until: '2026-06-01T00:00:00Z' };
+    expect(claimState({ claim_promotion: p }, '2026-07-01T00:00:00Z')).toBe('stale');       // now > valid_until
+    expect(claimState({ claim_promotion: p }, '2026-05-01T00:00:00Z')).toBe('validated');    // still within window
+    expect(claimState({ claim_promotion: p })).toBe('validated');                            // no clock → no expiry
+    expect(isMatureClaim({ claim_promotion: p }, '2026-07-01T00:00:00Z')).toBe(false);       // decayed → immature
+  });
+
+  it('a refuted promotion is terminal — it does not expire back to maybe-true', () => {
+    const p = { ...promo('refuted'), valid_until: '2026-06-01T00:00:00Z' };
+    expect(claimState({ confidence: 1, claim_promotion: p }, '2026-07-01T00:00:00Z')).toBe('refuted');
+  });
+});
+
+describe('claimContradiction — a promotion at odds with its own evidence', () => {
+  const promo = (state: 'observed' | 'validated' | 'exploited' | 'refuted' | 'stale') =>
+    ({ state, by_kind: 'operator' as const, at: '2026-01-01T00:00:00Z', reason: 'r' });
+
+  it('flags a refuted promotion that the evidence positively confirms', () => {
+    expect(claimContradiction({ confidence: 1, claim_promotion: promo('refuted') })).toBe('refuted_but_evidence_positive');
+    expect(claimContradiction({ tested: true, test_result: 'success', claim_promotion: promo('refuted') })).toBe('refuted_but_evidence_positive');
+  });
+
+  it('flags a positive promotion that a test disproved', () => {
+    expect(claimContradiction({ tested: true, test_result: 'failure', claim_promotion: promo('validated') })).toBe('promoted_positive_but_tested_failed');
+  });
+
+  it('returns null when the promotion and evidence agree, or there is no promotion', () => {
+    expect(claimContradiction({ confidence: 1, claim_promotion: promo('validated') })).toBeNull();
+    expect(claimContradiction({ confidence: 1 })).toBeNull();
+    expect(claimContradiction({})).toBeNull();
   });
 });
 

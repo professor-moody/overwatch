@@ -1060,7 +1060,7 @@ export class GraphEngine {
       targetKind = 'edge';
       targetId = input.edge_id;
       const attrs = this.ctx.graph.getEdgeAttributes(input.edge_id) as EdgeProperties;
-      claim_state = claimState(attrs);
+      claim_state = claimState(attrs, this.ctx.nowIso());
       targetEdge = {
         source: this.ctx.graph.source(input.edge_id),
         target: this.ctx.graph.target(input.edge_id),
@@ -1071,7 +1071,7 @@ export class GraphEngine {
       this.mergeNodeAttributesDurable(input.node_id, { claim_promotion: promotion });
       targetKind = 'node';
       targetId = input.node_id;
-      claim_state = claimState(this.ctx.graph.getNodeAttributes(input.node_id) as NodeProperties);
+      claim_state = claimState(this.ctx.graph.getNodeAttributes(input.node_id) as NodeProperties, this.ctx.nowIso());
     } else {
       throw new Error('promoteClaim requires node_id or edge_id');
     }
@@ -9370,7 +9370,7 @@ export class GraphEngine {
       // than paying clone setup cost for every node and edge at 50k scale.
       const properties = this.projectNodeProperties(id, attrs, withCommunities, false);
       if (withTrust) properties.source_trust = sourceTrust(attrs);
-      if (withTrust) properties.claim_state = claimState(attrs);
+      if (withTrust) properties.claim_state = claimState(attrs, this.ctx.nowIso());
       nodes.push({ id, properties });
     });
 
@@ -9382,7 +9382,7 @@ export class GraphEngine {
       }
       const properties = { ...attrs } as EdgeProperties;
       if (withTrust) properties.source_trust = sourceTrust(attrs);
-      if (withTrust) properties.claim_state = claimState(attrs);
+      if (withTrust) properties.claim_state = claimState(attrs, this.ctx.nowIso());
       edges.push({ id: edgeId, source, target, properties });
     });
 
@@ -9440,7 +9440,7 @@ export class GraphEngine {
       }
       const properties = this.projectNodeProperties(id, attrs, includeDerivedCommunities);
       if (withTrust) properties.source_trust = sourceTrust(attrs);
-      if (withTrust) properties.claim_state = claimState(attrs);
+      if (withTrust) properties.claim_state = claimState(attrs, this.ctx.nowIso());
       nodes.push({ id, properties });
       if (includeIncidentEdges || incidentNodeIds.has(id)) {
         for (const edgeId of this.ctx.graph.edges(id)) edgeIds.add(edgeId);
@@ -9466,7 +9466,7 @@ export class GraphEngine {
       const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
       const properties = detached(attrs);
       if (withTrust) properties.source_trust = sourceTrust(attrs);
-      if (withTrust) properties.claim_state = claimState(attrs);
+      if (withTrust) properties.claim_state = claimState(attrs, this.ctx.nowIso());
       edges.push({ id: edgeId, source, target, properties });
     }
 

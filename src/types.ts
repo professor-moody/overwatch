@@ -66,8 +66,9 @@ export interface ClaimPromotion {
   at: string;
   /** Why — the judgment, required for auditability. */
   reason: string;
-  /** Optional validity window; after this the claim decays to `stale` (evaluated in a later
-   *  phase — stored now so a promotion can carry it). */
+  /** Optional validity window; once elapsed the promotion decays and the claim reads `stale`
+   *  (evaluated on read wherever a clock is available — objective/path evaluation and the
+   *  trust export). A `refuted` promotion is terminal and does not expire. */
   valid_until?: string;
 }
 

@@ -139,6 +139,23 @@ describe('computeEngagementScorecard — v2 split dimensions', () => {
     expect(sc.refutation.coverage).toBeCloseTo(2 / 3, 4);
   });
 
+  it('counts contradicted promotions (promotion vs evidence conflict) across nodes and edges', () => {
+    const p = (state: string) => ({ state, by_kind: 'operator', at: 't', reason: 'r' });
+    const graph: ExportedGraph = {
+      nodes: [
+        // refuted promotion, yet confidence 1 confirms it → contradiction
+        { id: 'n1', properties: { claim_state: 'refuted', confidence: 1, claim_promotion: p('refuted') } as unknown as NodeProperties },
+        // validated promotion with no conflicting evidence → no contradiction
+        { id: 'n2', properties: { claim_state: 'validated', claim_promotion: p('validated') } as unknown as NodeProperties },
+      ],
+      edges: [
+        // validated promotion, yet a test failed → contradiction
+        { id: 'e1', source: 'a', target: 'b', properties: { type: 'ADMIN_TO', claim_state: 'validated', tested: true, test_result: 'failure', claim_promotion: p('validated') } as unknown as EdgeProperties },
+      ],
+    };
+    expect(computeEngagementScorecard(graph, [], []).contradicted_claims).toBe(2);
+  });
+
   it('scorecardRows renders the split dimensions; scorecardHasContent gates the section', () => {
     const graph: ExportedGraph = {
       nodes: [{ id: 'n', properties: { claim_state: 'observed' } as NodeProperties }],

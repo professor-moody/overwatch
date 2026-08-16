@@ -88,31 +88,68 @@ export interface ClaimStateInput extends SourceTrustInput {
  * A confirmed rule-inferred claim is `observed`/`validated`, not `candidate` — origin
  * (source_trust: inferred) and current standing (claim_state) are deliberately distinct.
  */
-export function claimState(p: ClaimStateInput): ClaimState {
-  const promoted = p.claim_promotion?.state;
+export function claimState(p: ClaimStateInput, now?: string): ClaimState {
+  const promo = p.claim_promotion;
+  const promoted = promo?.state;
+  // A promotion whose validity window has elapsed has DECAYED: its positive standing is no
+  // longer current, so the claim reads `stale` until re-validated. (A `refuted` verdict is
+  // terminal — it does not expire back into "maybe true".) Only evaluated when the caller
+  // supplies `now`; callers without a clock treat the promotion as non-expiring.
+  const expired = !!promo?.valid_until && !!now && now >= promo.valid_until;
+
   // Negative / terminal — authoritative: an operator/agent saying "refuted" or "stale" wins.
   if (promoted === 'refuted' || (p.tested === true && p.test_result === 'failure')) return 'refuted';
   if (promoted === 'stale'
+    || (expired && promoted !== undefined) // a positive promotion whose window elapsed has decayed
     || p.identity_status === 'superseded'
     || p.credential_status === 'stale'
     || p.credential_status === 'expired'
     || p.credential_status === 'rotated') {
     return 'stale';
   }
+  // An expired promotion no longer sets a positive floor (handled as stale above; guarded here
+  // so the derived signals alone decide).
+  const activePromo = expired ? undefined : promoted;
   const confirmed = (typeof p.confidence === 'number' && p.confidence >= CONFIRMED)
     || !!p.confirmed_at
     || (p.tested === true && p.test_result === 'success');
   // Exploited — a real exploitation signal (or an explicit exploited promotion) beats a
   // positive validated/observed promotion.
-  if (promoted === 'exploited' || !!p.exploited_at || p.exploitation_confirmed === true
+  if (activePromo === 'exploited' || !!p.exploited_at || p.exploitation_confirmed === true
     || (p.type === 'EXPLOITS' && confirmed)) {
     return 'exploited';
   }
   // Positive promotions set a floor alongside the equivalent derived signals.
-  if (promoted === 'validated' || (p.tested === true && p.test_result === 'success')) return 'validated';
-  if (promoted === 'observed' || confirmed) return 'observed';
+  if (activePromo === 'validated' || (p.tested === true && p.test_result === 'success')) return 'validated';
+  if (activePromo === 'observed' || confirmed) return 'observed';
   if (p.inferred_by_rule || p.tested === false || p.exploitable === true) return 'candidate';
   return 'asserted';
+}
+
+/** A durable promotion conflicting with the claim's own evidence — worth an operator's
+ *  attention (the promotion may be out of date or wrong). */
+export type ClaimContradiction =
+  /** Promoted `refuted`, yet the claim's evidence positively confirms it. */
+  | 'refuted_but_evidence_positive'
+  /** Promoted `observed`/`validated`/`exploited`, yet a test of it FAILED. */
+  | 'promoted_positive_but_tested_failed';
+
+/** Detect a promotion-vs-evidence contradiction. Pure, computed on read; null when the
+ *  promotion and the evidence agree (or there is no promotion). */
+export function claimContradiction(p: ClaimStateInput): ClaimContradiction | null {
+  const promoted = p.claim_promotion?.state;
+  if (!promoted) return null;
+  const evidencePositive = (typeof p.confidence === 'number' && p.confidence >= CONFIRMED)
+    || !!p.confirmed_at
+    || (p.tested === true && p.test_result === 'success')
+    || !!p.exploited_at
+    || p.exploitation_confirmed === true;
+  const testedFailed = p.tested === true && p.test_result === 'failure';
+  if (promoted === 'refuted' && evidencePositive) return 'refuted_but_evidence_positive';
+  if ((promoted === 'observed' || promoted === 'validated' || promoted === 'exploited') && testedFailed) {
+    return 'promoted_positive_but_tested_failed';
+  }
+  return null;
 }
 
 /** The historical "confident enough" floor for a directly-recorded observation. */
@@ -135,8 +172,8 @@ const MATURE_CONFIDENCE_FLOOR = 0.9;
  * Replaces the bare `confidence >= 0.9` gates in objective + path evaluation, which treated
  * a rule's hypothesis — and a refuted or stale claim — the same as a validated observation.
  */
-export function isMatureClaim(p: ClaimStateInput): boolean {
-  const s = claimState(p);
+export function isMatureClaim(p: ClaimStateInput, now?: string): boolean {
+  const s = claimState(p, now);
   if (s === 'observed' || s === 'validated' || s === 'exploited') return true;
   if (s === 'refuted' || s === 'stale') return false;
   if (p.inferred_by_rule) return false; // a hypothesis is never mature, whatever its confidence

@@ -2006,6 +2006,23 @@ describe('GraphEngine', () => {
       expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(true);
     });
 
+    it('a promotion past its valid_until exports as stale (expiry honored on export)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'u', type: 'user', label: 'u' },
+          { id: 'h', type: 'host', label: '10.0.0.1', ip: '10.0.0.1' },
+        ],
+        edges: [
+          { source: 'u', target: 'h', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'ADMIN_TO')!.id;
+      engine.promoteClaim({ edge_id: edgeId, state: 'validated', reason: 'was valid', by_kind: 'operator', valid_until: '2000-01-01T00:00:00Z' });
+      const edge = engine.exportGraph({ sourceTrust: true }).edges.find(e => e.id === edgeId)!;
+      expect(edge.properties.claim_state).toBe('stale'); // window elapsed → decayed
+    });
+
     it('rejects a promotion with no target and requires a reason', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       expect(() => engine.promoteClaim({ state: 'validated', reason: 'x', by_kind: 'operator' })).toThrow(/node_id or edge_id/);
