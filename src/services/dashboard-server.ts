@@ -60,6 +60,10 @@ import {
   GraphCorrectionCommandError,
   GraphCorrectionCommandService,
 } from './graph-correction-command-service.js';
+import {
+  PromoteClaimCommandError,
+  PromoteClaimCommandService,
+} from './promote-claim-command-service.js';
 import { parseAndMaybeIngest } from './parse-ingest.js';
 import {
   ParseCommandService,
@@ -140,6 +144,10 @@ import {
   ConfigDivergenceResolveResponseSchema,
   GraphCorrectionRequestSchema,
   GraphCorrectionResultSchema,
+  ClaimPromoteRequestSchema,
+  ClaimPromoteResultSchema,
+  ClaimWithdrawRequestSchema,
+  ClaimWithdrawResultSchema,
   FrontierWeightsPatchSchema,
   FrontierWeightsResetResultSchema,
   FrontierWeightsUpdateResultSchema,
@@ -367,6 +375,7 @@ export class DashboardServer {
   private readonly engagementCommands: EngagementCommandService;
   private readonly recoveryCommands: RecoveryCommandService;
   private readonly graphCorrectionCommands: GraphCorrectionCommandService;
+  private readonly promoteClaimCommands: PromoteClaimCommandService;
   private readonly parseCommands: ParseCommandService;
   private readonly playbookRuns: PlaybookRunService;
   private readonly playbookCommands: PlaybookCommandService;
@@ -446,6 +455,10 @@ export class DashboardServer {
       this.applicationCommands,
     );
     this.graphCorrectionCommands = new GraphCorrectionCommandService(
+      engine,
+      this.applicationCommands,
+    );
+    this.promoteClaimCommands = new PromoteClaimCommandService(
       engine,
       this.applicationCommands,
     );
@@ -1005,6 +1018,8 @@ export class DashboardServer {
       getTelemetry: () => this.serveTelemetry(res),
       exportGraph: () => this.handleGraphExport(res),
       correctGraph: () => { void this.handleGraphCorrect(req, res); },
+      promoteClaim: () => { void this.handlePromoteClaim(req, res); },
+      withdrawClaim: () => { void this.handleWithdrawClaim(req, res); },
       getTapeStatus: () => this.handleTapeStatus(res),
       toggleTape: () => { void this.handleTapeToggle(req, res); },
       getFindings: () => this.serveFindings(res),
@@ -5365,5 +5380,78 @@ export class DashboardServer {
     } catch (error: unknown) {
       this.respondGraphCorrectionCommandFailure(res, error);
     }
+  }
+
+  private async handlePromoteClaim(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
+    try {
+      const body = await this.readJsonBody(req);
+      if (!this.requireWritablePersistence(res)) return;
+      const parsed = ClaimPromoteRequestSchema.safeParse(body);
+      if (!parsed.success) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid claim promotion request', issues: parsed.error.issues }));
+        return;
+      }
+      const execution = this.promoteClaimCommands.promote(parsed.data, { transport: 'dashboard', action_id: parsed.data.action_id });
+      const payload = ClaimPromoteResultSchema.parse({
+        ...execution.result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error: unknown) {
+      this.respondClaimCommandFailure(res, error);
+    }
+  }
+
+  private async handleWithdrawClaim(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
+    try {
+      const body = await this.readJsonBody(req);
+      if (!this.requireWritablePersistence(res)) return;
+      const parsed = ClaimWithdrawRequestSchema.safeParse(body);
+      if (!parsed.success) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid claim withdrawal request', issues: parsed.error.issues }));
+        return;
+      }
+      const execution = this.promoteClaimCommands.withdraw(parsed.data, { transport: 'dashboard', action_id: parsed.data.action_id });
+      const payload = ClaimWithdrawResultSchema.parse({
+        ...execution.result,
+        command_id: execution.command_id,
+        idempotency_key: execution.idempotency_key,
+        replayed: execution.replayed,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error: unknown) {
+      this.respondClaimCommandFailure(res, error);
+    }
+  }
+
+  private respondClaimCommandFailure(res: ServerResponse, error: unknown): void {
+    if (error instanceof z.ZodError) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.issues.map(issue => issue.message).join('; '), code: 'VALIDATION_ERROR' }));
+      return;
+    }
+    if (error instanceof ApplicationCommandConflictError) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message, code: error.code, command_id: error.existing.command_id }));
+      return;
+    }
+    if (error instanceof PromoteClaimCommandError) {
+      if (error.http_status === 503) {
+        this.respondMutationFailure(res, error);
+        return;
+      }
+      res.writeHead(error.http_status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message, code: error.code }));
+      return;
+    }
+    this.respondMutationFailure(res, error);
   }
 }

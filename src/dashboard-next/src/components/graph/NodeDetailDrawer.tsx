@@ -7,7 +7,7 @@ import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
 import { useNavigation } from '../../hooks/useNavigation';
-import { dispatchAgent, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
+import { dispatchAgent, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, promoteClaim, withdrawClaim, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useWs } from '../../providers/ws-provider';
@@ -268,6 +268,10 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           )}
         </InspectorSection>
 
+        <InspectorSection title="Claim standing">
+          <ClaimStandingSection target={{ node_id: nodeId }} claimState={typeof props.claim_state === 'string' ? props.claim_state : undefined} />
+        </InspectorSection>
+
         <InspectorSection title="Sessions" count={relationships.sessions.length} actionLabel="Open" onAction={() => navigateToPanel('sessions')}>
           {relationships.sessions.length === 0 ? (
             <EmptyLine>No sessions tied to this node.</EmptyLine>
@@ -496,6 +500,99 @@ function EdgeGroup({ edgeType, group, onPeer }: {
     </div>
   );
 }
+
+const PROMOTE_STATES: Array<{ state: 'observed' | 'validated' | 'exploited' | 'refuted' | 'stale'; label: string; hint: string }> = [
+  { state: 'validated', label: 'Validated', hint: 'Actively tested and confirmed' },
+  { state: 'observed', label: 'Observed', hint: 'Passively confirmed' },
+  { state: 'exploited', label: 'Exploited', hint: 'Exploitation confirmed' },
+  { state: 'refuted', label: 'Refuted', hint: 'Tested and disproven — overrides derived positives' },
+  { state: 'stale', label: 'Stale', hint: 'Was true but has decayed' },
+];
+
+/** Operator claim-correction controls: record a durable judgment on a node or edge's standing
+ *  (promote_claim), or clear one back to the derived state (withdraw_claim). Targets exactly one
+ *  of a node or an edge. Exported for DOM testing in isolation. */
+export function ClaimStandingSection({ target, claimState }: { target: { node_id: string } | { edge_id: string }; claimState?: string }) {
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const addToast = useToastStore(s => s.addToast);
+  const trimmed = reason.trim();
+
+  const run = useCallback(async (op: 'withdraw' | ClaimStandingState, label: string) => {
+    if (!trimmed) {
+      addToast({ type: 'error', title: 'Reason required', message: 'Add a short reason so the judgment is auditable.' });
+      return;
+    }
+    setBusy(label);
+    try {
+      const result = op === 'withdraw'
+        ? await withdrawClaim({ reason: trimmed, ...target })
+        : await promoteClaim({ state: op, reason: trimmed, ...target });
+      addToast({
+        type: 'success',
+        title: op === 'withdraw' ? 'Promotion withdrawn' : `Promoted to ${op}`,
+        message: `Claim now reads "${result.claim_state}".`,
+      });
+      setReason('');
+    } catch (error) {
+      addToast({ type: 'error', title: 'Claim update failed', message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBusy(null);
+    }
+  }, [trimmed, target, addToast]);
+
+  return (
+    <div className="space-y-2">
+      {claimState && (
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="text-muted-foreground">current</span>
+          <StatusPill className="bg-elevated text-foreground">{claimState}</StatusPill>
+        </div>
+      )}
+      <input
+        type="text"
+        value={reason}
+        onChange={e => setReason(e.target.value)}
+        placeholder="Reason (required) — why this judgment"
+        aria-label="Claim judgment reason"
+        className="w-full rounded border border-border bg-background/60 px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-accent/50 focus:outline-none"
+      />
+      <div className="grid grid-cols-2 gap-1.5">
+        {PROMOTE_STATES.map(({ state, label, hint }) => (
+          <button
+            key={state}
+            title={hint}
+            disabled={busy !== null || !trimmed}
+            onClick={() => run(state, label)}
+            className={cn(
+              'rounded border border-border bg-background/40 px-2 py-1 text-[11px] text-foreground transition-colors',
+              'hover:border-accent/40 hover:bg-hover/30 disabled:cursor-not-allowed disabled:opacity-40',
+              state === 'refuted' && 'hover:border-destructive/50',
+            )}
+          >
+            {busy === label ? '…' : label}
+          </button>
+        ))}
+        <button
+          title="Clear the promotion, reverting to the evidence-derived standing"
+          disabled={busy !== null || !trimmed}
+          onClick={() => run('withdraw', 'Withdraw')}
+          className={cn(
+            'rounded border border-dashed border-border bg-background/40 px-2 py-1 text-[11px] text-muted-foreground transition-colors',
+            'hover:border-accent/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40',
+          )}
+        >
+          {busy === 'Withdraw' ? '…' : 'Withdraw'}
+        </button>
+      </div>
+      <p className="text-[10px] text-muted-foreground">
+        Records a durable judgment the graph honors over its derived signals. Refuted/stale override positives; withdraw reverts to the derived state.
+      </p>
+    </div>
+  );
+}
+
+type ClaimStandingState = 'observed' | 'validated' | 'exploited' | 'refuted' | 'stale';
 
 function InspectorSection({
   title,

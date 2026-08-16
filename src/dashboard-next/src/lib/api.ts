@@ -79,6 +79,10 @@ import {
   type ConfigDivergenceResolveResponse,
   type GraphCorrectionOperationDto,
   type GraphCorrectionResultDto,
+  type ClaimPromoteRequestDto,
+  type ClaimPromoteResultDto,
+  type ClaimWithdrawRequestDto,
+  type ClaimWithdrawResultDto,
   type FindingsResponseDto,
   type ObjectiveCreateRequest,
   type ObjectiveUpdateRequest,
@@ -847,6 +851,24 @@ export async function correctGraph(
   operations: GraphCorrectionOperation[],
 ): Promise<GraphCorrectionResult> {
   return request('correctGraph', { body: { reason, operations } });
+}
+
+// --- Claim lifecycle (promote / withdraw) ---
+
+export type ClaimPromoteRequest = ClaimPromoteRequestDto;
+export type ClaimPromoteResult = ClaimPromoteResultDto;
+export type ClaimWithdrawRequest = ClaimWithdrawRequestDto;
+export type ClaimWithdrawResult = ClaimWithdrawResultDto;
+
+/** Record a durable operator judgment on a node or edge's standing (the dashboard face of the
+ *  promote_claim tool). Exactly one of node_id / edge_id. */
+export async function promoteClaim(body: ClaimPromoteRequest): Promise<ClaimPromoteResult> {
+  return request('promoteClaim', { body });
+}
+
+/** Clear a node or edge's promotion, reverting it to the derived standing (withdraw_claim). */
+export async function withdrawClaim(body: ClaimWithdrawRequest): Promise<ClaimWithdrawResult> {
+  return request('withdrawClaim', { body });
 }
 
 // --- Telemetry ---
