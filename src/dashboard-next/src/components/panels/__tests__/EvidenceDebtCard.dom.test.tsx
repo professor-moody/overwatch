@@ -65,4 +65,19 @@ describe('EvidenceDebtCard', () => {
     render(<EvidenceDebtCard />);
     await waitFor(() => expect(screen.getByText(/No open evidence debt/)).toBeTruthy());
   });
+
+  it('compact: renders a warning-toned Console rail with the debt items', async () => {
+    render(<EvidenceDebtCard compact />);
+    await waitFor(() => expect(screen.getByText(/Evidence debt/)).toBeTruthy());
+    expect(screen.getByText(/promoted refuted/)).toBeTruthy();
+  });
+
+  it('compact: hides itself entirely when there is no debt (no Console clutter)', async () => {
+    vi.mocked(api.getEvidenceDebt).mockResolvedValue({ items: [], total: 0 } as never);
+    const { container } = render(<EvidenceDebtCard compact />);
+    // Give the fetch a tick to resolve; the compact variant renders nothing when clean.
+    await waitFor(() => expect(api.getEvidenceDebt).toHaveBeenCalled());
+    expect(screen.queryByText(/Evidence debt/)).toBeNull();
+    expect(container.textContent).toBe('');
+  });
 });
