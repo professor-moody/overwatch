@@ -136,6 +136,33 @@ export function isObjectiveObtained(
   });
 }
 
+/** Whether an objective's supporting access has been affirmatively DISPROVEN — a `refuted`
+ *  promotion on a matching target node, or on an access edge into one. This (and only this) REVOKES
+ *  the settled milestone: a refutation says the access was never truly established, so an objective
+ *  it completed was never really achieved. Decay (`stale`) or mere absence does NOT revoke it —
+ *  those lapse the live `currently_satisfied` while the milestone stays recorded. Deterministic over
+ *  the live graph, so the milestone is un-achieved consistently on EVERY evaluation (self-healing at
+ *  startup / on the next mutation), never dependent on a post-transaction reconcile call that a
+ *  crash could skip. */
+function isObjectiveSupportRefuted(
+  host: ObjectiveManagerHost,
+  obj: EngagementConfig['objectives'][number],
+): boolean {
+  if (!obj.target_criteria) return false;
+  const now = host.nowIso();
+  const matching = host.queryGraph({ node_type: obj.target_node_type, node_filter: obj.target_criteria });
+  const accessEdgeTypes = obj.achievement_edge_types
+    ? new Set<string>(obj.achievement_edge_types)
+    : OBJECTIVE_ACCESS_EDGE_TYPES;
+  return matching.nodes.some(n => {
+    if (claimState(n.properties as ClaimStateInput, now) === 'refuted') return true;
+    return host.ctx.graph.inEdges(n.id).some((e: string) => {
+      const ep = host.ctx.graph.getEdgeAttributes(e);
+      return accessEdgeTypes.has(ep.type) && claimState(ep as ClaimStateInput, now) === 'refuted';
+    });
+  });
+}
+
 function evaluateObjectiveDraft(
   host: ObjectiveManagerHost,
   objectives: EngagementConfig['objectives'],
@@ -167,14 +194,19 @@ function evaluateObjectiveDraft(
       changed = true;
     }
 
-    // SETTLED MILESTONE — unchanged: first obtainment latches `achieved`, and only an explicit
-    // reconcile (a refute/stale promotion or a withdraw) un-latches it. A passively-decayed claim
-    // reconciles the live view above but leaves the milestone recorded.
+    // SETTLED MILESTONE — first obtainment latches `achieved`. It is revoked when the supporting
+    // access is affirmatively DISPROVEN (`refuted`), evaluated deterministically here on EVERY pass
+    // so that revocation SELF-HEALS — a refuting promotion whose post-transaction reconcile is lost
+    // to a crash is repaired on the next evaluation (startup or any later mutation), not left
+    // dependent on a single reconcile call. A decayed (`stale`) claim leaves the milestone recorded.
+    // `opts.reconcile` additionally allows an EXPLICIT operator action (a withdrawal) to un-achieve
+    // when the support reverts to any un-obtained state — e.g. retracting the sole validation that
+    // completed the objective drops it back to an unproven candidate.
     if (obtained && !obj.achieved) {
       obj.achieved = true;
       obj.achieved_at = host.nowIso();
       changed = true;
-    } else if (!obtained && obj.achieved && opts?.reconcile) {
+    } else if (!obtained && obj.achieved && (isObjectiveSupportRefuted(host, obj) || opts?.reconcile)) {
       obj.achieved = false;
       obj.achieved_at = undefined;
       changed = true;
