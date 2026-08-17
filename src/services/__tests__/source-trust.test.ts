@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { claimState, sourceTrust, isMatureClaim, claimContradiction } from '../source-trust.js';
+import { claimState, sourceTrust, isMatureClaim, claimContradiction, attachDerivedTrust } from '../source-trust.js';
+import type { ExportedGraph } from '../../types.js';
 
 describe('sourceTrust', () => {
   it('inferred: created by an inference rule (a hypothesis), regardless of confidence', () => {
@@ -173,5 +174,25 @@ describe('isMatureClaim — established enough to complete an objective / route 
     expect(isMatureClaim({ tested: true, test_result: 'failure', confidence: 1 })).toBe(false); // refuted
     expect(isMatureClaim({ credential_status: 'rotated', confidence: 1 })).toBe(false);          // stale
     expect(isMatureClaim({ identity_status: 'superseded', confidence: 1 })).toBe(false);         // stale
+  });
+});
+
+describe('attachDerivedTrust', () => {
+  it('re-derives claim_state / source_trust against `now`, so an elapsed validity window reads stale', () => {
+    const graph = {
+      nodes: [{ id: 'n1', properties: { type: 'host', confidence: 1.0, claim_promotion: { state: 'validated', by_kind: 'operator', at: '2026-07-16T00:00:00.000Z', reason: 'x', valid_until: '2026-07-16T01:00:00.000Z' } } }],
+      edges: [{ id: 'e1', source: 'n1', target: 'n1', properties: { type: 'ADMIN_TO', confidence: 1.0 } }],
+    } as unknown as ExportedGraph;
+
+    const within = attachDerivedTrust(graph, '2026-07-16T00:30:00.000Z');
+    expect(within.nodes[0].properties.claim_state).toBe('validated');
+    expect(within.edges[0].properties.claim_state).toBe('observed'); // confidence 1.0, no promotion
+
+    const after = attachDerivedTrust(graph, '2026-07-16T09:00:00.000Z');
+    expect(after.nodes[0].properties.claim_state).toBe('stale'); // window elapsed → decayed
+    expect(after.edges[0].properties.claim_state).toBe('observed');
+
+    // The input graph is never mutated (a revision-cached base can be re-labelled repeatedly).
+    expect((graph.nodes[0].properties as { claim_state?: string }).claim_state).toBeUndefined();
   });
 });

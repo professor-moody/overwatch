@@ -11,7 +11,7 @@
 // no backfill — and the default is the conservative one (`asserted` = "we have it
 // but haven't confirmed it"), so an unclassifiable element never over-claims.
 
-import type { ClaimState, ClaimPromotion, SourceTrust } from '../types.js';
+import type { ClaimState, ClaimPromotion, SourceTrust, ExportedGraph } from '../types.js';
 
 // The minimal shape we classify from — satisfied by both NodeProperties and
 // EdgeProperties (extra fields are simply ignored).
@@ -190,4 +190,29 @@ export function isMatureClaim(p: ClaimStateInput, now?: string): boolean {
   if (s === 'refuted' || s === 'stale') return false;
   if (p.inferred_by_rule) return false; // a hypothesis is never mature, whatever its confidence
   return typeof p.confidence === 'number' && p.confidence >= MATURE_CONFIDENCE_FLOOR;
+}
+
+/**
+ * Attach the derived honesty labels (`source_trust`, `claim_state`) to every node and edge of an
+ * already-exported graph, computed against `now`. This is the TIME-SENSITIVE part of a
+ * sourceTrust export — a promotion whose `valid_until` has elapsed reads `stale` here even though
+ * the underlying graph topology is unchanged. Returns a NEW graph (shallow-cloned elements); the
+ * input is not mutated, so a revision-cached base topology can be re-labelled fresh on every read
+ * without the cache freezing time. The base export preserves all claimState inputs (it is a
+ * `{ ...attrs }` projection), so re-deriving from `properties` matches `exportGraph({sourceTrust})`.
+ */
+export function attachDerivedTrust(graph: ExportedGraph, now: string): ExportedGraph {
+  const label = <T extends { properties: Record<string, unknown> }>(el: T): T => ({
+    ...el,
+    properties: {
+      ...el.properties,
+      source_trust: sourceTrust(el.properties as SourceTrustInput),
+      claim_state: claimState(el.properties as ClaimStateInput, now),
+    },
+  });
+  return {
+    ...graph,
+    nodes: graph.nodes.map(label),
+    edges: graph.edges.map(label),
+  };
 }
