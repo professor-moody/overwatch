@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getEvidenceDebt, type EvidenceDebtItem } from '../../lib/api';
+import { getEvidenceDebt, dispatchAgent, type EvidenceDebtItem } from '../../lib/api';
 import { PanelSection } from '../shared/primitives';
 import { useNavigation } from '../../hooks/useNavigation';
+import { useToastStore } from '../../stores/toast-store';
 import { cn } from '../../lib/utils';
 
 const KIND_META: Record<EvidenceDebtItem['kind'], { label: string; color: string; dot: string }> = {
@@ -22,7 +23,9 @@ const MAX_SHOWN = 12;
 export function EvidenceDebtCard() {
   const [items, setItems] = useState<EvidenceDebtItem[] | null>(null);
   const [error, setError] = useState(false);
+  const [dispatching, setDispatching] = useState<string | null>(null);
   const { navigateToGraph, navigateToFinding, navigateToEvidenceObjective } = useNavigation();
+  const addToast = useToastStore(s => s.addToast);
 
   const refresh = useCallback(async () => {
     try {
@@ -45,6 +48,23 @@ export function EvidenceDebtCard() {
     if (item.objective_id) { navigateToEvidenceObjective(item.objective_id); return; }
     if (item.node_id) { navigateToGraph(item.node_id, 2); return; }
   }, [navigateToFinding, navigateToEvidenceObjective, navigateToGraph]);
+
+  /** Dispatch a validation agent against the debt item's target node to re-establish or re-test it. */
+  const validate = useCallback(async (key: string, nodeId: string) => {
+    setDispatching(key);
+    try {
+      const res = await dispatchAgent({ target_node_ids: [nodeId] });
+      if (res.dispatched) {
+        addToast({ type: 'success', title: 'Validation agent dispatched', message: `Re-validating ${nodeId}` });
+      } else {
+        addToast({ type: 'error', title: 'Not dispatched', message: res.reason || 'Agent could not be dispatched' });
+      }
+    } catch (e) {
+      addToast({ type: 'error', title: 'Dispatch failed', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setDispatching(null);
+    }
+  }, [addToast]);
 
   if (!items) {
     return (
@@ -69,19 +89,35 @@ export function EvidenceDebtCard() {
       <div className="space-y-1">
         {shown.map((item, index) => {
           const meta = KIND_META[item.kind];
+          const key = `${item.kind}-${item.node_id ?? item.edge_id ?? item.objective_id ?? item.finding_id ?? index}`;
           return (
-            <button
-              key={`${item.kind}-${item.node_id ?? item.edge_id ?? item.objective_id ?? item.finding_id ?? index}`}
-              onClick={() => drillDown(item)}
-              className="w-full flex items-start gap-2 text-left rounded px-1.5 py-1 -mx-1 hover:bg-hover transition-colors"
-              title="Open its target to inspect or correct it"
-            >
-              <span className={cn('mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full', meta.dot)} />
-              <span className="flex-1 min-w-0">
-                <span className={cn('text-[10px] uppercase tracking-wide font-medium mr-1.5', meta.color)}>{meta.label}</span>
-                <span className="text-xs text-foreground break-words">{item.summary}</span>
-              </span>
-            </button>
+            <div key={key} className="group flex items-start gap-1 rounded px-1.5 py-1 -mx-1 hover:bg-hover transition-colors">
+              <button
+                onClick={() => drillDown(item)}
+                className="flex-1 min-w-0 flex items-start gap-2 text-left"
+                title="Open its target to inspect or correct it"
+              >
+                <span className={cn('mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full', meta.dot)} />
+                <span className="flex-1 min-w-0">
+                  <span className={cn('text-[10px] uppercase tracking-wide font-medium mr-1.5', meta.color)}>{meta.label}</span>
+                  <span className="text-xs text-foreground break-words">{item.summary}</span>
+                </span>
+              </button>
+              {item.node_id && (
+                <button
+                  onClick={() => validate(key, item.node_id!)}
+                  disabled={dispatching !== null}
+                  title="Dispatch a validation agent against this target"
+                  className={cn(
+                    'flex-shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors',
+                    'hover:border-accent/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40',
+                    'opacity-0 group-hover:opacity-100 focus:opacity-100',
+                  )}
+                >
+                  {dispatching === key ? '…' : 'Validate'}
+                </button>
+              )}
+            </div>
           );
         })}
         {items.length > MAX_SHOWN && (

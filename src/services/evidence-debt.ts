@@ -80,9 +80,17 @@ export function computeEvidenceDebt(engine: GraphEngine): EvidenceDebtItem[] {
 
   // 2. Lapsed objectives — reached (settled milestone) but no longer currently satisfied (support
   //    decayed). Uses the live, clock-evaluated check so a time-decayed claim counts immediately.
+  //    Carry the matching target node so a validation agent can be dispatched against it.
   for (const obj of config.objectives ?? []) {
     if (obj.achieved && !engine.isObjectiveCurrentlySatisfied(obj)) {
-      items.push({ kind: 'lapsed_objective', severity: 90, summary: `Objective "${obj.description}" was reached, but its supporting access has decayed — re-validate`, objective_id: obj.id });
+      const target = obj.target_criteria
+        ? engine.queryGraph({ node_type: obj.target_node_type, node_filter: obj.target_criteria }).nodes[0]?.id
+        : undefined;
+      items.push({
+        kind: 'lapsed_objective', severity: 90,
+        summary: `Objective "${obj.description}" was reached, but its supporting access has decayed — re-validate`,
+        objective_id: obj.id, ...(target ? { node_id: target } : {}),
+      });
     }
   }
 

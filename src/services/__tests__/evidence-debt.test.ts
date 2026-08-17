@@ -73,5 +73,6 @@ describe('computeEvidenceDebt', () => {
     const lapsed = (engine as any).ctx.withClock('2026-07-16T09:00:00.000Z', () => computeEvidenceDebt(engine)).find((d: any) => d.kind === 'lapsed_objective');
     expect(lapsed).toBeTruthy();
     expect(lapsed.objective_id).toBe('obj-da');
+    expect(lapsed.node_id).toBe('cred-da'); // the matching target node, so a validation agent can be dispatched
   });
 });
