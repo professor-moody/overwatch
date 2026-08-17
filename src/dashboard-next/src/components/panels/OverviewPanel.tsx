@@ -7,6 +7,7 @@ import { SkeletonPanel } from '../shared/Skeleton';
 import { OpsecGauge } from '../shared';
 import { TelemetrySection } from './TelemetrySection';
 import { EngagementQualityCard } from './EngagementQualityCard';
+import { EvidenceDebtCard } from './EvidenceDebtCard';
 import * as api from '../../lib/api';
 import type { TrustSignalDto } from '../../lib/api';
 import type { Campaign, ActivityEntry } from '../../lib/types';
@@ -328,6 +329,8 @@ export function OverviewPanel() {
       </div>
 
       <EngagementQualityCard />
+
+      <EvidenceDebtCard />
 
       {recentFindings.length > 0 && (
         <PanelSection title="Recent Findings" meta={`(${recentFindings.length})`}>

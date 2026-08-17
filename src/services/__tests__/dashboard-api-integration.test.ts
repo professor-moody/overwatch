@@ -29,6 +29,7 @@ import {
   ClaimPromoteResultSchema,
   ClaimWithdrawResultSchema,
   ScorecardDtoSchema,
+  EvidenceDebtResponseSchema,
   HealthDtoSchema,
   ObjectiveDeleteResponseSchema,
   ObjectiveCreateResponseSchema,
@@ -350,6 +351,24 @@ describe('GET /api/scorecard', () => {
     const sc = ScorecardDtoSchema.parse(body);
     expect(sc.contradicted_claims).toBeGreaterThanOrEqual(1);
     expect(sc.contradictions.some(c => c.target_id === 'scorecard-contradiction-node')).toBe(true);
+  });
+});
+
+describe('GET /api/evidence-debt', () => {
+  it('returns a ranked debt queue and surfaces a promotion contradiction with a drill-down target', async () => {
+    const empty = await getJson('/api/evidence-debt');
+    expect(empty.status).toBe(200);
+    expect(EvidenceDebtResponseSchema.parse(empty.body)).toHaveProperty('items');
+
+    engine.addNode({ id: 'debt-node', type: 'host', label: 'debt', ip: '10.0.0.33', discovered_at: NOW, confidence: 1 });
+    await postJson('/api/claims/promote', { state: 'refuted', reason: 'disputing confirmed host', node_id: 'debt-node' });
+
+    const { status, body } = await getJson('/api/evidence-debt');
+    expect(status).toBe(200);
+    const debt = EvidenceDebtResponseSchema.parse(body);
+    const item = debt.items.find(i => i.kind === 'contradiction' && i.node_id === 'debt-node');
+    expect(item).toBeTruthy();
+    expect(debt.total).toBe(debt.items.length);
   });
 });
 

@@ -1311,6 +1311,24 @@ export const ScorecardDtoSchema = z.object({
 }).passthrough();
 export type ScorecardDto = z.infer<typeof ScorecardDtoSchema>;
 
+// ---- Evidence Debt Queue ----
+// Ranked, drill-downable quality problems (read-only), so the scorecard becomes an operating loop.
+export const EvidenceDebtItemSchema = z.object({
+  kind: z.enum(['contradiction', 'lapsed_objective', 'unsupported_critical', 'expiring_validation']),
+  severity: z.number(),
+  summary: z.string(),
+  node_id: z.string().optional(),
+  edge_id: z.string().optional(),
+  objective_id: z.string().optional(),
+  finding_id: z.string().optional(),
+}).passthrough();
+export type EvidenceDebtItemDto = z.infer<typeof EvidenceDebtItemSchema>;
+export const EvidenceDebtResponseSchema = z.object({
+  items: z.array(EvidenceDebtItemSchema),
+  total: z.number(),
+}).passthrough();
+export type EvidenceDebtResponseDto = z.infer<typeof EvidenceDebtResponseSchema>;
+
 export const FrontierWeightsDtoSchema = z.object({
   fan_out: z.record(z.number().nonnegative()),
   noise: z.record(z.number().min(0).max(1)),

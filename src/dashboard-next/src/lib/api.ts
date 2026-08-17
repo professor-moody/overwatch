@@ -84,6 +84,8 @@ import {
   type ClaimWithdrawRequestDto,
   type ClaimWithdrawResultDto,
   type ScorecardDto,
+  type EvidenceDebtItemDto,
+  type EvidenceDebtResponseDto,
   type FindingsResponseDto,
   type ObjectiveCreateRequest,
   type ObjectiveUpdateRequest,
@@ -902,6 +904,14 @@ export type Scorecard = ScorecardDto;
 /** The live engagement-quality scorecard (same ground-truth-free dimensions as the report). */
 export async function getScorecard(): Promise<Scorecard> {
   return request('getScorecard') as unknown as Promise<Scorecard>;
+}
+
+export type EvidenceDebtItem = EvidenceDebtItemDto;
+export type EvidenceDebtResponse = EvidenceDebtResponseDto;
+
+/** The ranked evidence-debt queue — quality problems to act on, each with a drill-down target. */
+export async function getEvidenceDebt(): Promise<EvidenceDebtResponse> {
+  return request('getEvidenceDebt') as unknown as Promise<EvidenceDebtResponse>;
 }
 
 // --- Tape recorder ---
