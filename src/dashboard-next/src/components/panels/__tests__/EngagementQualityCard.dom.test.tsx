@@ -24,7 +24,7 @@ describe('EngagementQualityCard', () => {
   it('renders the split quality dimensions from the live scorecard', async () => {
     render(<EngagementQualityCard />);
     await waitFor(() => expect(screen.getByText('75%')).toBeTruthy()); // verified share
-    expect(screen.getByText('Attack path validated')).toBeTruthy();
+    expect(screen.getByText('Access edges verified')).toBeTruthy();
     expect(screen.getByText('80%')).toBeTruthy(); // attack-path validation share
     expect(screen.getByText('Proof-ready findings')).toBeTruthy();
   });

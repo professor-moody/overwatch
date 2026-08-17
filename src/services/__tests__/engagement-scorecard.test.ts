@@ -205,7 +205,7 @@ describe('computeEngagementScorecard — v2 split dimensions', () => {
     const sc = computeEngagementScorecard(graph, [], []);
     const labels = scorecardRows(sc).map(r => r.label);
     expect(labels).toContain('Inventory observed');
-    expect(labels).toContain('Attack path validated');
+    expect(labels).toContain('Access edges verified');
     expect(scorecardHasContent(sc)).toBe(true);
     // An entirely empty engagement has no section.
     expect(scorecardHasContent(computeEngagementScorecard(graphOf([]), [], []))).toBe(false);

@@ -21,6 +21,23 @@ import {
   type NextActionItem,
 } from '../../lib/overview-workspace';
 
+type ObjectiveDisplayState = 'satisfied' | 'lapsed' | 'revoked' | 'unreached';
+
+/** Four legible objective states from the temporal model, so a lapsed or revoked objective no
+ *  longer reads as a plain green ✓ — nor gets conflated with a never-reached one. `achieved` is the
+ *  settled milestone; `currently_satisfied` the live state; `lost_at` marks a genuine lapse. */
+export function objectiveState(obj: { achieved?: boolean; currently_satisfied?: boolean; lost_at?: string }): ObjectiveDisplayState {
+  if (obj.achieved) return obj.currently_satisfied === false ? 'lapsed' : 'satisfied';
+  return obj.lost_at ? 'revoked' : 'unreached';
+}
+
+const OBJECTIVE_STATES: Record<ObjectiveDisplayState, { icon: string; color: string; muted: boolean; note: string; title: string }> = {
+  satisfied: { icon: '✓', color: 'text-success', muted: false, note: '', title: 'Satisfied — currently obtained' },
+  lapsed: { icon: '⚠', color: 'text-warning', muted: false, note: 'lapsed — re-validate', title: 'Reached earlier, but its supporting access has decayed' },
+  revoked: { icon: '✕', color: 'text-destructive', muted: true, note: 'revoked (unproven)', title: 'Was recorded reached, then its supporting access was disproven' },
+  unreached: { icon: '○', color: 'text-muted', muted: true, note: '', title: 'Not reached yet' },
+};
+
 export function OverviewPanel() {
   const { navigateToGraph, navigateToGraphFilter, navigateToGraphTarget, navigateToPanel, navigateToEvidence } = useNavigation();
   const graphSummary = useEngagementStore((s) => s.graphSummary);
@@ -288,25 +305,23 @@ export function OverviewPanel() {
             <p className="text-xs text-muted-foreground">No objectives defined</p>
           ) : (
             <div className="space-y-2">
-              {objectives.map((obj) => (
-                <button
-                  key={obj.id}
-                  onClick={() => navigateToEvidence(obj.id)}
-                  className="w-full flex items-start gap-2 text-xs text-left hover:bg-hover rounded px-1 py-0.5 -mx-1 transition-colors"
-                >
-                  <span className={cn(
-                    'mt-0.5 flex-shrink-0',
-                    obj.achieved ? 'text-success' : 'text-muted',
-                  )}>
-                    {obj.achieved ? '✓' : '○'}
-                  </span>
-                  <span className={cn(
-                    obj.achieved ? 'text-foreground' : 'text-muted-foreground',
-                  )}>
-                    {obj.description}
-                  </span>
-                </button>
-              ))}
+              {objectives.map((obj) => {
+                const st = OBJECTIVE_STATES[objectiveState(obj)];
+                return (
+                  <button
+                    key={obj.id}
+                    onClick={() => navigateToEvidence(obj.id)}
+                    className="w-full flex items-start gap-2 text-xs text-left hover:bg-hover rounded px-1 py-0.5 -mx-1 transition-colors"
+                    title={st.title}
+                  >
+                    <span className={cn('mt-0.5 flex-shrink-0', st.color)}>{st.icon}</span>
+                    <span className={cn('flex-1', st.muted ? 'text-muted-foreground' : 'text-foreground')}>
+                      {obj.description}
+                      {st.note && <span className={cn('ml-1.5 text-[10px]', st.color)}>· {st.note}</span>}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
         </PanelSection>

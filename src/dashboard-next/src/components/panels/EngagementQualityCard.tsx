@@ -52,7 +52,7 @@ export function EngagementQualityCard() {
         />
         <MetricTile
           dense
-          label="Attack path validated"
+          label="Access edges verified"
           value={pct(sc.attack_paths.validation_share)}
           sub={`${sc.attack_paths.validated} of ${sc.attack_paths.total} access edges`}
         />

@@ -110,6 +110,15 @@ version changes.
   refuted edge, or a stale/rotated credential no longer completes an objective
   or roots an attack path, while legitimately-confirmed access at 0.9–0.99 is
   unaffected.
+- The scorecard's access-edge dimension is labelled **"Access edges verified"**
+  (report row and dashboard tile), not "Attack path validated": it measures the
+  maturity of access/escalation edges globally, not the validation of actual paths
+  to objectives. The honest label stands until path-aware scoring lands.
+- The dashboard Overview shows an objective's **four temporal states** — Satisfied,
+  Lapsed (reached, support decayed), Revoked/unproven (reached, then disproven), and
+  Not reached — derived from `achieved` / `currently_satisfied` / `lost_at`, so a
+  lapsed objective no longer reads as a plain green check and a revoked one is not
+  conflated with never-reached.
 - Frontier ranking no longer clamps the KB/chain confidence boost to 1.0 and now
   folds the attack-chain `chain_score` into expected value; both signals were
   previously discarded.
