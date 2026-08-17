@@ -97,6 +97,7 @@ import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
 import { assembleReport, type ReportFormat } from './report-assembler.js';
 import { computeEngagementScorecardForEngine } from './engagement-quality.js';
+import { computeEvidenceDebt } from './evidence-debt.js';
 import { buildBundle } from './bundle-builder.js';
 import { buildFindings, buildEvidenceChainsForNode, type EvidenceChain } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
@@ -150,6 +151,7 @@ import {
   ClaimWithdrawRequestSchema,
   ClaimWithdrawResultSchema,
   ScorecardDtoSchema,
+  EvidenceDebtResponseSchema,
   FrontierWeightsPatchSchema,
   FrontierWeightsResetResultSchema,
   FrontierWeightsUpdateResultSchema,
@@ -1019,6 +1021,7 @@ export class DashboardServer {
       getInferenceRules: () => this.serveInferenceRules(res),
       getTelemetry: () => this.serveTelemetry(res),
       getScorecard: () => this.serveScorecard(res),
+      getEvidenceDebt: () => this.serveEvidenceDebt(res),
       exportGraph: () => this.handleGraphExport(res),
       correctGraph: () => { void this.handleGraphCorrect(req, res); },
       promoteClaim: () => { void this.handlePromoteClaim(req, res); },
@@ -4927,6 +4930,15 @@ export class DashboardServer {
     const scorecard = ScorecardDtoSchema.parse(computeEngagementScorecardForEngine(this.engine));
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(scorecard));
+  }
+
+  private serveEvidenceDebt(res: ServerResponse): void {
+    // The ranked evidence-debt queue — the quality problems worth acting on, each with a drill-down
+    // target. Read-only, computed live from the graph.
+    const items = computeEvidenceDebt(this.engine);
+    const payload = EvidenceDebtResponseSchema.parse({ items, total: items.length });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
   }
 
   private serveTelemetry(res: ServerResponse): void {

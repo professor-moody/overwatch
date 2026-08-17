@@ -86,6 +86,12 @@ version changes.
   milestones called out, unsupported critical claims, and actionable
   promotion-vs-evidence contradictions). Operators see engagement quality live
   without generating a report.
+- An **Evidence Debt Queue** (`GET /api/evidence-debt` + an Overview card): the
+  engagement's open quality problems — contradictions, lapsed objectives,
+  unsupported critical findings, and expiring validations — ranked into one
+  prioritized list, each item drilling straight down to its target (graph
+  node/edge, objective, or finding) so an operator can inspect the evidence or
+  correct the judgment. Turns the scorecard from a readout into an operating loop.
 
 ### Changed
 

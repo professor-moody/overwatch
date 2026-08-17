@@ -674,6 +674,16 @@
       "summary": "Read the live engagement quality scorecard"
     },
     {
+      "operation_id": "getEvidenceDebt",
+      "method": "GET",
+      "path": "/api/evidence-debt",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read the ranked evidence-debt queue"
+    },
+    {
       "operation_id": "exportGraph",
       "method": "POST",
       "path": "/api/graph/export",
@@ -1695,6 +1705,14 @@
         "200": "a2761f4a19d9f7f3d8508f170534c06c8dc4d5302af441007b3f81ee50737509"
       }
     },
+    "getEvidenceDebt": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "87a79fe7c1668cf58fe3f4282d48e2fdbc42c7402c4adee605c1b3451698ae79"
+      }
+    },
     "exportGraph": {
       "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
@@ -2094,5 +2112,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "73ea4736266197f3c5e41acea935b069d2b17df5a511acca9671ab5599976a5a"
+  "schema_hash": "b8ed5675f793cce2cad4c48302817a3ac7322192cbeedddce9791295a8c1bbcb"
 }
