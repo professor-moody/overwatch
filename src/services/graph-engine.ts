@@ -157,6 +157,7 @@ import {
 } from './transaction-footprint.js';
 import {
   evaluateObjectives as _evaluateObjectives,
+  isObjectiveObtained as _isObjectiveObtained,
   recomputeObjectives as _recomputeObjectives,
   getPhaseStatuses as _getPhaseStatuses,
   getCurrentPhaseId as _getCurrentPhaseId,
@@ -3733,6 +3734,15 @@ export class GraphEngine {
     // `phase_entered` / `phase_exited` events get hash-chained and feed
     // the dashboard timeline + decision log.
     this.recordPhaseTransitionsIfAny();
+  }
+
+  /** Whether an objective is CURRENTLY satisfied by the live graph, evaluated against `now` — a
+   *  read-only check that reflects time-based decay (an elapsed `valid_until`, a rotated
+   *  credential) without a mutating re-evaluation. For criterion-based objectives (no
+   *  `target_criteria`) there is no live graph check, so the stored/settled value is used. */
+  isObjectiveCurrentlySatisfied(obj: EngagementConfig['objectives'][number]): boolean {
+    if (!obj.target_criteria) return obj.currently_satisfied ?? obj.achieved;
+    return _isObjectiveObtained(this.objectiveHost, obj);
   }
 
   /**

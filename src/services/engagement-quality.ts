@@ -22,7 +22,10 @@ export function computeEngagementScorecardForEngine(engine: GraphEngine): Engage
   const findings = buildFindings(graph, history, config, { evidenceLoader });
   const scorecardObjectives = (config.objectives ?? []).map(obj => ({
     achieved: obj.achieved,
-    currently_satisfied: obj.currently_satisfied ?? obj.achieved,
+    // Derive current satisfaction LIVE against `now` rather than trusting the stored value, so a
+    // supporting claim that decayed by time (elapsed valid_until) is reflected immediately —
+    // stored `currently_satisfied` only updates on a mutating re-evaluation.
+    currently_satisfied: engine.isObjectiveCurrentlySatisfied(obj),
     proof_ready: objectiveProofBacked(engine, graph, obj),
   }));
   return computeEngagementScorecard(graph, findings, scorecardObjectives);

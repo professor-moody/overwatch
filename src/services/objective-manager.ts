@@ -92,8 +92,10 @@ export function evaluateObjectives(host: ObjectiveManagerHost, opts?: { reconcil
 
 /** Whether an objective's target is currently obtained: a matching node reached via a MATURE
  *  access edge, an explicit `obtained` flag, or (for shares) readable/writable access. Pure
- *  read over the live graph — the single check both achievement and reconciliation use. */
-function isObjectiveObtained(
+ *  read over the live graph (evaluated against `now`) — the single check achievement,
+ *  reconciliation, AND the live scorecard's `currently_satisfied` all use, so a claim decaying by
+ *  time is reflected on read without a mutating re-evaluation. */
+export function isObjectiveObtained(
   host: ObjectiveManagerHost,
   obj: EngagementConfig['objectives'][number],
 ): boolean {

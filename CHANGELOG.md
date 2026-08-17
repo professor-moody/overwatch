@@ -69,9 +69,15 @@ version changes.
   engine edge id and are hidden when the graph key is a synthesized fallback.
 - The live dashboard graph (`GET /api/graph` and the state projection) now exports
   derived `claim_state` / `source_trust`, so the node drawer and edge panel show a
-  node's or edge's **current claim standing** inline. It is computed once per graph
-  revision (the projection is revision-cached), not on every poll; the canonical
-  export and its golden-replay hash are unchanged.
+  node's or edge's **current claim standing** inline. These labels are TIME-SENSITIVE
+  and re-derived against `now` on every read (the projection caches only the
+  revision-keyed base topology, then re-attaches trust labels), so a promotion whose
+  `valid_until` has elapsed converges to `stale` in the dashboard without waiting for
+  a graph change. The canonical export and its golden-replay hash are unchanged.
+- The live Engagement Quality scorecard derives each objective's `currently_satisfied`
+  from the graph against `now`, rather than trusting the value stored at the last
+  evaluation, so a supporting claim that decayed by time is reflected immediately
+  (the settled `achieved` milestone still reads from stored state).
 - A live **Engagement Quality** scorecard in the dashboard: a `GET /api/scorecard`
   endpoint computes the same ground-truth-free scorecard the report renders — from
   the live graph, reusing the report's findings builder and objective
