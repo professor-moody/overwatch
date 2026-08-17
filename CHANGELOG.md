@@ -110,6 +110,14 @@ version changes.
   refuted edge, or a stale/rotated credential no longer completes an objective
   or roots an attack path, while legitimately-confirmed access at 0.9–0.99 is
   unaffected.
+- Milestone revocation on refutation is now **deterministic and self-healing**:
+  "the settled `achieved` milestone is revoked ⟺ the supporting access is
+  `refuted`" is evaluated from the graph on every objective evaluation, not as a
+  one-shot side effect of the promotion call. So if a crash lands between a
+  refuting promotion's committed receipt and its post-transaction reconcile, the
+  next evaluation (at startup or on any later mutation) repairs the objective
+  state. Decay (`stale`) still preserves the milestone; an explicit `withdraw`
+  still fully re-reconciles.
 - Frontier ranking no longer clamps the KB/chain confidence boost to 1.0 and now
   folds the attack-chain `chain_score` into expected value; both signals were
   previously discarded.

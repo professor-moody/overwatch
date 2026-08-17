@@ -2066,6 +2066,34 @@ describe('GraphEngine', () => {
       expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(false);
     });
 
+    it('un-achievement SELF-HEALS: a plain re-evaluation revokes a milestone whose support is refuted (crash-safe reconciliation)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'cred-da', type: 'credential', label: 'DA', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'OWNS_CRED')!.id;
+      engine.promoteClaim({ edge_id: edgeId, state: 'refuted', reason: 'disproved', by_kind: 'operator' });
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(false);
+
+      // Simulate a crash that landed AFTER the refutation's durable receipt but BEFORE its
+      // post-transaction objective reconcile: the edge is durably refuted, yet the objective is
+      // still marked achieved. (updateObjective sets the flag WITHOUT re-evaluating.)
+      engine.updateObjective('obj-da', { achieved: true });
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(true);
+
+      // Any later evaluation — here a plain, unrelated ingest carrying NO reconcile flag — must
+      // repair it, because "milestone revoked ⟺ support refuted" is a deterministic graph property,
+      // not a one-shot side effect of the promotion call.
+      engine.ingestFinding(makeFinding({ nodes: [{ id: 'host-unrelated', type: 'host', label: '10.0.0.9', ip: '10.0.0.9' }], edges: [] }));
+      expect(engine.getState().objectives.find(o => o.id === 'obj-da')?.achieved).toBe(false);
+    });
+
     it('reconciliation leaves an objective achieved when its own support is still mature', () => {
       // obj-da is supported by a mature OWNS_CRED; refuting an UNRELATED edge reconciles all
       // objectives but must not un-achieve obj-da, whose own claim is untouched.
