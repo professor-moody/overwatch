@@ -94,8 +94,8 @@ refuted/stale are authoritative (they override any derived positive); observed/v
         edge_id: z.string().optional().describe('Target edge id (exactly one of node_id / edge_id).'),
         agent_id: z.string().optional()
           .describe('If an agent is promoting, its id (attributes the promotion to that agent); omit for an operator.'),
-        valid_until: z.string().optional()
-          .describe('Optional ISO timestamp after which the claim decays to stale.'),
+        valid_until: z.string().datetime({ offset: true }).optional()
+          .describe('Optional offset-aware ISO-8601 datetime (e.g. 2026-09-01T00:00:00Z) after which the claim decays to stale.'),
         action_id: z.string().optional().describe('Action ID to link this promotion back to the triggering workflow.'),
       },
       annotations: {

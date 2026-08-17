@@ -1242,7 +1242,8 @@ export const ClaimPromoteRequestSchema = z.object({
   node_id: z.string().trim().min(1).optional(),
   edge_id: z.string().trim().min(1).optional(),
   agent_id: z.string().trim().min(1).optional(),
-  valid_until: z.string().trim().min(1).optional(),
+  // Offset-aware ISO-8601 datetime — reject a free-form string that would silently never expire.
+  valid_until: z.string().datetime({ offset: true }).optional(),
   action_id: z.string().trim().min(1).optional(),
 }).strict().superRefine(claimTargetXor);
 export type ClaimPromoteRequestDto = z.infer<typeof ClaimPromoteRequestSchema>;

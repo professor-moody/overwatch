@@ -29,7 +29,9 @@ export const PromoteClaimRequestSchema = z.object({
   node_id: z.string().optional(),
   edge_id: z.string().optional(),
   agent_id: z.string().optional(),
-  valid_until: z.string().optional(),
+  // Offset-aware ISO-8601 datetime. A plain string let `valid_until: "not-a-timestamp"` through;
+  // Date.parse then returned NaN and the window was silently treated as never-expiring.
+  valid_until: z.string().datetime({ offset: true }).optional(),
   action_id: z.string().optional(),
 });
 export type PromoteClaimRequest = z.infer<typeof PromoteClaimRequestSchema>;
