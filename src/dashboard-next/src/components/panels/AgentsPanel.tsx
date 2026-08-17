@@ -13,6 +13,7 @@ import { formatFrontierScore, getFrontierKey } from '../../lib/frontier-workspac
 import { POLL } from '../../lib/polling';
 import { ContextualCommandBar } from './ContextualCommandBar';
 import { AttentionQueue } from './AttentionQueue';
+import { EvidenceDebtCard } from './EvidenceDebtCard';
 import { MissionCard } from './MissionCard';
 import { AgentThread } from './AgentThread';
 import { AddTargetsModal } from './AddTargetsModal';
@@ -446,6 +447,10 @@ export function AgentsPanel() {
         onForceRemove={forceRemoveAgent}
         onTriageAll={() => navigateToPanel('actions')}
       />
+
+      {/* Quality intervention rail — the compact Evidence Debt Queue alongside the approvals/agent
+          "Needs you" surface. Hides itself when there is no debt. Full card lives in the Overview. */}
+      <EvidenceDebtCard compact />
 
       {/* Batch bar */}
       {selectedIds.size > 0 && (
