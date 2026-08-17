@@ -20,7 +20,7 @@ The promotion is stored on the target element and a hash-chained `claim_promoted
 - **`refuted` / `stale`** are **authoritative** — they override any derived positive standing.
 - **`observed` / `validated` / `exploited`** set a **floor** — a stronger *real* signal (an actual exploitation) can still raise the standing above a positive promotion.
 
-Objective and path evaluation honor the promotion: path-finding stops routing through a refuted access edge immediately, a `validated` promotion can complete a not-yet-achieved objective, and refuting (or staling) the claim that completed an objective **un-achieves** it — an already-achieved objective whose only supporting access is now disproven is no longer met.
+Objective and path evaluation honor the promotion: path-finding stops routing through a refuted access edge immediately, and a `validated` promotion can complete a not-yet-achieved objective. **Refuting** the claim that completed an objective **un-achieves** it — a refutation says the access was never truly established, so the milestone is revoked. **Staling** is different: it is decay, not disproof, so the settled milestone (`achieved` / `achieved_at`) is **preserved** and only the live `currently_satisfied` state drops — the engagement still records that the objective *was* reached, and flags that its supporting access needs re-validation.
 
 A promotion can carry `valid_until`; once elapsed the positive standing decays and the claim reads `stale` until re-validated (a `refuted` verdict is terminal and does not expire).
 
