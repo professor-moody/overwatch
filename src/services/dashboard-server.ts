@@ -2495,7 +2495,9 @@ export class DashboardServer {
   }
 
   private serveGraph(res: ServerResponse): void {
-    const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
+    // sourceTrust attaches derived claim_state / source_trust so the dashboard can render current
+    // claim standing (matches the revision-cached getFullGraph projection).
+    const graph = this.engine.exportGraph({ includeDerivedCommunities: true, sourceTrust: true });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(graph));
   }

@@ -111,9 +111,10 @@ Remaining hardening slices (not yet committed):
   attack-path metrics, so it needs deliberate calibration, not a silent flip.
 - **Live Engagement Quality dashboard** — the scorecard's split dimensions
   surfaced in the dashboard with trends, drill-down to weak claims, and one-click
-  validation tasks. The report side has landed; the dashboard card plus the
-  operator-intervention and cost/time-per-result metrics remain, and need a
-  server endpoint (the live graph exports without `claim_state`) + data plumbing.
+  validation tasks. The report side has landed, and the live graph now exports
+  `claim_state` (so the graph drawer/edge panel show current standing); the
+  scorecard dashboard card plus the operator-intervention and cost/time-per-result
+  metrics remain, and need a server endpoint + data plumbing.
 - **OverwatchBench + replay policy lab** — versioned ground-truth scenarios and
   offline replay of stored frontier snapshots against candidate ranking
   policies. Scoped separately; the expensive track.

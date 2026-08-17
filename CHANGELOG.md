@@ -67,6 +67,11 @@ version changes.
   endpoints that route through the same transactional, idempotent
   `PromoteClaimCommandService` as the MCP tools. Edge actions target the real
   engine edge id and are hidden when the graph key is a synthesized fallback.
+- The live dashboard graph (`GET /api/graph` and the state projection) now exports
+  derived `claim_state` / `source_trust`, so the node drawer and edge panel show a
+  node's or edge's **current claim standing** inline. It is computed once per graph
+  revision (the projection is revision-cached), not on every poll; the canonical
+  export and its golden-replay hash are unchanged.
 
 ### Changed
 
