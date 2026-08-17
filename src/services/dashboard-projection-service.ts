@@ -21,7 +21,10 @@ export class DashboardProjectionService {
     // playbook-run compatibility aliases that can change without graph IDs.
     const key = `${revisions.graph}:${revisions.state}:${configRevision}:${coldRevision}`;
     if (this.cachedGraph?.key === key) return this.cachedGraph.graph;
-    const graph = this.engine.exportGraph({ includeDerivedCommunities: true });
+    // sourceTrust attaches derived `claim_state` / `source_trust` to every node and edge so the
+    // dashboard (node drawer, edge panel, quality views) can show current claim standing. It is
+    // computed once per revision here (this projection is revision-cached), not on every poll.
+    const graph = this.engine.exportGraph({ includeDerivedCommunities: true, sourceTrust: true });
     this.cachedGraph = { key, graph };
     return graph;
   }

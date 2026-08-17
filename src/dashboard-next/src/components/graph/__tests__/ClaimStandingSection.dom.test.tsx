@@ -16,6 +16,17 @@ describe('ClaimStandingSection — operator claim correction', () => {
   });
   afterEach(() => vi.clearAllMocks());
 
+  it('shows the current claim standing when the graph carries it', () => {
+    render(<ClaimStandingSection target={{ node_id: 'n1' }} claimState="refuted" />);
+    expect(screen.getByText('current')).toBeTruthy();
+    expect(screen.getByText('refuted')).toBeTruthy();
+  });
+
+  it('omits the current-standing row when the graph has no claim_state', () => {
+    render(<ClaimStandingSection target={{ node_id: 'n1' }} />);
+    expect(screen.queryByText('current')).toBeNull();
+  });
+
   it('disables every action until a reason is entered (auditability)', () => {
     render(<ClaimStandingSection target={{ node_id: 'n1' }} />);
     const refute = screen.getByRole('button', { name: 'Refuted' }) as HTMLButtonElement;

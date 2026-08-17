@@ -360,6 +360,22 @@ describe('POST /api/claims/promote + /api/claims/withdraw', () => {
     expect(engine.getFullHistory().some(e => e.event_type === 'claim_withdrawn')).toBe(true);
   });
 
+  it('surfaces the resulting claim_state on the live graph so the dashboard can display it', async () => {
+    engine.addNode({
+      id: 'claim-display-node',
+      type: 'host',
+      label: 'display target',
+      ip: '10.0.0.66',
+      discovered_at: NOW,
+      confidence: 1,
+    });
+    await postJson('/api/claims/promote', { state: 'refuted', reason: 'disproved', node_id: 'claim-display-node' });
+    const graph = await getJson<{ nodes: Array<{ id: string; properties: Record<string, unknown> }> }>('/api/graph');
+    expect(graph.status).toBe(200);
+    const node = graph.body.nodes.find(n => n.id === 'claim-display-node');
+    expect(node?.properties.claim_state).toBe('refuted'); // the live export now carries derived standing
+  });
+
   it('rejects a promotion with neither node_id nor edge_id (400)', async () => {
     const res = await postJson('/api/claims/promote', { state: 'validated', reason: 'no target' });
     expect(res.status).toBe(400);
