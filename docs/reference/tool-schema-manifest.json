@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "tool_count": 97,
-  "registry_sha256": "2102f54b76b2eede698e822959b9e425385b46148d425bc705e37a64186c6707",
+  "registry_sha256": "5ac258b6473400db0a9631d10258723ffe7f0bc80cac9c8e3d5061a20766244d",
   "categories": [
     {
       "id": "state-readiness",
@@ -5176,7 +5176,8 @@
             "type": "string"
           },
           "valid_until": {
-            "description": "Optional ISO timestamp after which the claim decays to stale.",
+            "description": "Optional offset-aware ISO-8601 datetime (e.g. 2026-09-01T00:00:00Z) after which the claim decays to stale.",
+            "format": "date-time",
             "type": "string"
           }
         },
@@ -5187,7 +5188,7 @@
         "type": "object"
       },
       "output_schema": null,
-      "input_schema_sha256": "02633a1e07e853339f56a115fdebacbc6e48cfb847759ecc9f974244e0a8dd91",
+      "input_schema_sha256": "b1dd78e1d697092e8779871c4419a3c9d607b9286dbe7b3f892a03c07dfb10e4",
       "output_schema_sha256": null,
       "documentation": {
         "path": "tools/promote-claim.md",

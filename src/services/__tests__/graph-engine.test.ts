@@ -2123,6 +2123,19 @@ describe('GraphEngine', () => {
       expect(() => engine.promoteClaim({ node_id: 'nope', state: 'validated', reason: 'x', by_kind: 'operator' })).toThrow(/No such node/);
     });
 
+    it('the command service rejects a non-datetime valid_until (would otherwise never expire)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'u', type: 'user', label: 'u' }, { id: 'h', type: 'host', label: '10.0.0.1', ip: '10.0.0.1' }],
+        edges: [{ source: 'u', target: 'h', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'ADMIN_TO')!.id;
+      const service = new PromoteClaimCommandService(engine);
+      expect(() => service.promote({ edge_id: edgeId, state: 'validated', reason: 'x', valid_until: 'not-a-timestamp' }, { transport: 'mcp' })).toThrow();
+      // A valid offset-aware datetime is accepted.
+      expect(() => service.promote({ edge_id: edgeId, state: 'validated', reason: 'x', valid_until: '2030-01-01T00:00:00Z' }, { transport: 'mcp' })).not.toThrow();
+    });
+
     it('withdrawClaim clears the effective promotion, reverting to the derived state, and fires an audit event', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({

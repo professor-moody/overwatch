@@ -417,6 +417,15 @@ describe('POST /api/claims/promote + /api/claims/withdraw', () => {
     const res = await postJson('/api/claims/promote', { state: 'validated', reason: 'x', node_id: 'no-such-node' });
     expect(res.status).toBe(400);
   });
+
+  it('rejects a non-datetime valid_until but accepts a valid offset-aware one', async () => {
+    engine.addNode({ id: 'vu-node', type: 'host', label: 'vu', ip: '10.0.0.44', discovered_at: NOW, confidence: 1 });
+    const bad = await postJson('/api/claims/promote', { state: 'validated', reason: 'x', node_id: 'vu-node', valid_until: 'not-a-timestamp' });
+    expect(bad.status).toBe(400); // would previously be accepted and silently never expire
+
+    const ok = await postJson('/api/claims/promote', { state: 'validated', reason: 'x', node_id: 'vu-node', valid_until: '2030-01-01T00:00:00Z' });
+    expect(ok.status).toBe(200);
+  });
 });
 
 describe('POST /api/graph/correct', () => {

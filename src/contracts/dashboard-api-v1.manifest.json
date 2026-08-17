@@ -1714,7 +1714,7 @@
     "promoteClaim": {
       "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
-      "body": "ccb9b9a3da219390ca00662f92798e38fb90e67021f5bad36fe3b61f2a41cd5e",
+      "body": "06941a966777eb9422a056e9af3c185aee203a180bccabf09f8f971eb78ea66b",
       "responses": {
         "200": "1e321127ba3696a0a9a95cc5850a2f68a78be0f25eff66588b2810399b2733a4"
       }
@@ -2094,5 +2094,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "cc0c89b6fe8ea41263e7dd961c2a8aa5cec0e76287724decddeaa0523a9bbd50"
+  "schema_hash": "73ea4736266197f3c5e41acea935b069d2b17df5a511acca9671ab5599976a5a"
 }
