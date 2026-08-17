@@ -96,6 +96,7 @@ import {
 import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
 import { assembleReport, type ReportFormat } from './report-assembler.js';
+import { computeEngagementScorecardForEngine } from './engagement-quality.js';
 import { buildBundle } from './bundle-builder.js';
 import { buildFindings, buildEvidenceChainsForNode, type EvidenceChain } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
@@ -148,6 +149,7 @@ import {
   ClaimPromoteResultSchema,
   ClaimWithdrawRequestSchema,
   ClaimWithdrawResultSchema,
+  ScorecardDtoSchema,
   FrontierWeightsPatchSchema,
   FrontierWeightsResetResultSchema,
   FrontierWeightsUpdateResultSchema,
@@ -1016,6 +1018,7 @@ export class DashboardServer {
       getTrustSignals: () => this.serveTrustSignals(url, res),
       getInferenceRules: () => this.serveInferenceRules(res),
       getTelemetry: () => this.serveTelemetry(res),
+      getScorecard: () => this.serveScorecard(res),
       exportGraph: () => this.handleGraphExport(res),
       correctGraph: () => { void this.handleGraphCorrect(req, res); },
       promoteClaim: () => { void this.handlePromoteClaim(req, res); },
@@ -4917,6 +4920,14 @@ export class DashboardServer {
   }
 
   // ---- Telemetry endpoint ----
+
+  private serveScorecard(res: ServerResponse): void {
+    // The same ground-truth-free quality scorecard the report renders, computed live from the
+    // graph (findings are rebuilt per call, as in serveFindings). Read-only.
+    const scorecard = ScorecardDtoSchema.parse(computeEngagementScorecardForEngine(this.engine));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(scorecard));
+  }
 
   private serveTelemetry(res: ServerResponse): void {
     const telemetry = getTelemetry();

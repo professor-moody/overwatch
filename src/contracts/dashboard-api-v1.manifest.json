@@ -664,6 +664,16 @@
       "summary": "Read telemetry"
     },
     {
+      "operation_id": "getScorecard",
+      "method": "GET",
+      "path": "/api/scorecard",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read the live engagement quality scorecard"
+    },
+    {
       "operation_id": "exportGraph",
       "method": "POST",
       "path": "/api/graph/export",
@@ -1677,6 +1687,14 @@
         "200": "e1daae8791bf3cb0dc9e89d6fd6bcd0cf83c6749b212f916f07b0b869810788b"
       }
     },
+    "getScorecard": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "a2761f4a19d9f7f3d8508f170534c06c8dc4d5302af441007b3f81ee50737509"
+      }
+    },
     "exportGraph": {
       "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
@@ -2076,5 +2094,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "9daff20e1b6a049db4ba270bdac3a9ea15138dfd0debeef3fc963aeaadef9ead"
+  "schema_hash": "cc0c89b6fe8ea41263e7dd961c2a8aa5cec0e76287724decddeaa0523a9bbd50"
 }

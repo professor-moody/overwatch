@@ -121,7 +121,7 @@ function scrubMarkdownForClient(md: string): string {
  *
  *  An objective with no inspectable target is NOT proof-backed — without a target we cannot
  *  point at proof. */
-function objectiveProofBacked(engine: GraphEngine, graph: ExportedGraph, obj: EngagementObjective): boolean {
+export function objectiveProofBacked(engine: GraphEngine, graph: ExportedGraph, obj: EngagementObjective): boolean {
   if (!obj.achieved) return false;
   if (!obj.target_node_type && !obj.target_criteria) return false;
   try {

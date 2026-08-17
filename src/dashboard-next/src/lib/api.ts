@@ -83,6 +83,7 @@ import {
   type ClaimPromoteResultDto,
   type ClaimWithdrawRequestDto,
   type ClaimWithdrawResultDto,
+  type ScorecardDto,
   type FindingsResponseDto,
   type ObjectiveCreateRequest,
   type ObjectiveUpdateRequest,
@@ -892,6 +893,15 @@ export interface TelemetryResponse {
 
 export async function getTelemetry(): Promise<TelemetryResponse> {
   return request('getTelemetry') as unknown as Promise<TelemetryResponse>;
+}
+
+// --- Engagement quality scorecard ---
+
+export type Scorecard = ScorecardDto;
+
+/** The live engagement-quality scorecard (same ground-truth-free dimensions as the report). */
+export async function getScorecard(): Promise<Scorecard> {
+  return request('getScorecard') as unknown as Promise<Scorecard>;
 }
 
 // --- Tape recorder ---

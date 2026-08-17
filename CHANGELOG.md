@@ -72,6 +72,14 @@ version changes.
   node's or edge's **current claim standing** inline. It is computed once per graph
   revision (the projection is revision-cached), not on every poll; the canonical
   export and its golden-replay hash are unchanged.
+- A live **Engagement Quality** scorecard in the dashboard: a `GET /api/scorecard`
+  endpoint computes the same ground-truth-free scorecard the report renders — from
+  the live graph, reusing the report's findings builder and objective
+  proof-backing — and the Overview panel surfaces it as a card (verified claims,
+  attack-path validation, proof-ready findings, objectives satisfied with lapsed
+  milestones called out, unsupported critical claims, and actionable
+  promotion-vs-evidence contradictions). Operators see engagement quality live
+  without generating a report.
 
 ### Changed
 
