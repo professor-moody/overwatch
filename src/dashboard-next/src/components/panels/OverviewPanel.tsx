@@ -6,6 +6,7 @@ import { cn, formatTimestamp } from '../../lib/utils';
 import { SkeletonPanel } from '../shared/Skeleton';
 import { OpsecGauge } from '../shared';
 import { TelemetrySection } from './TelemetrySection';
+import { EngagementQualityCard } from './EngagementQualityCard';
 import * as api from '../../lib/api';
 import type { TrustSignalDto } from '../../lib/api';
 import type { Campaign, ActivityEntry } from '../../lib/types';
@@ -310,6 +311,8 @@ export function OverviewPanel() {
           )}
         </PanelSection>
       </div>
+
+      <EngagementQualityCard />
 
       {recentFindings.length > 0 && (
         <PanelSection title="Recent Findings" meta={`(${recentFindings.length})`}>

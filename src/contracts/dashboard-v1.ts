@@ -1268,6 +1268,48 @@ export const ClaimWithdrawResultSchema = z.object({
 }).passthrough();
 export type ClaimWithdrawResultDto = z.infer<typeof ClaimWithdrawResultSchema>;
 
+// ---- Engagement scorecard (live quality) ----
+// Read-only mirror of the report's EngagementScorecard, served from the live graph so the
+// dashboard can show engagement quality without generating a report. Nested objects use
+// .passthrough() so additive scorecard fields never break the contract.
+export const ScorecardDtoSchema = z.object({
+  verification: z.object({
+    by_state: z.record(z.number()),
+    total: z.number(),
+    verified: z.number(),
+    unverified: z.number(),
+    refuted: z.number(),
+    stale: z.number(),
+    verified_share: z.number(),
+  }).passthrough(),
+  findings: z.object({
+    total: z.number(),
+    proof_ready: z.number(),
+    proof_ready_share: z.number(),
+    unverified_cve_candidates: z.number(),
+  }).passthrough(),
+  objectives: z.object({
+    total: z.number(),
+    achieved: z.number(),
+    currently_satisfied: z.number(),
+    proof_ready: z.number(),
+  }).passthrough(),
+  inventory: z.object({ total: z.number(), observed: z.number(), coverage: z.number() }).passthrough(),
+  attack_paths: z.object({ total: z.number(), validated: z.number(), validation_share: z.number() }).passthrough(),
+  unsupported_critical_claims: z.number(),
+  contradicted_claims: z.number(),
+  contradictions: z.array(z.object({
+    target_kind: z.enum(['node', 'edge']),
+    target_id: z.string(),
+    target_ref: z.string(),
+    kind: z.string(),
+    promoted_state: z.string(),
+    reason: z.string().optional(),
+  }).passthrough()),
+  refutation: z.object({ tested: z.number(), refuted: z.number(), coverage: z.number() }).passthrough(),
+}).passthrough();
+export type ScorecardDto = z.infer<typeof ScorecardDtoSchema>;
+
 export const FrontierWeightsDtoSchema = z.object({
   fan_out: z.record(z.number().nonnegative()),
   noise: z.record(z.number().min(0).max(1)),

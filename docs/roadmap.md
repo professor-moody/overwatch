@@ -109,12 +109,15 @@ Remaining hardening slices (not yet committed):
   WRITE_DACL, ADD_MEMBER, FORCE_CHANGE_PASSWORD, ESC1-15, RBCD_TARGET, …) should
   count as `material_access` — that changes the orchestration-progress and
   attack-path metrics, so it needs deliberate calibration, not a silent flip.
-- **Live Engagement Quality dashboard** — the scorecard's split dimensions
-  surfaced in the dashboard with trends, drill-down to weak claims, and one-click
-  validation tasks. The report side has landed, and the live graph now exports
-  `claim_state` (so the graph drawer/edge panel show current standing); the
-  scorecard dashboard card plus the operator-intervention and cost/time-per-result
-  metrics remain, and need a server endpoint + data plumbing.
+- **Live Engagement Quality dashboard** — the scorecard's split dimensions are now
+  surfaced live in the dashboard: a `GET /api/scorecard` endpoint computes the same
+  ground-truth-free scorecard the report renders (from the live graph), and the
+  Overview panel shows an **Engagement Quality** card (verified claims, attack-path
+  validation, proof-ready findings, objectives satisfied incl. lapsed milestones,
+  unsupported critical claims, and actionable promotion/evidence contradictions).
+  The live graph also exports `claim_state`, so the graph drawer/edge panel show
+  current standing. Remaining: trends over time, drill-down to weak claims, one-click
+  validation tasks, and operator-intervention / cost-per-result metrics.
 - **OverwatchBench + replay policy lab** — versioned ground-truth scenarios and
   offline replay of stored frontier snapshots against candidate ranking
   policies. Scoped separately; the expensive track.

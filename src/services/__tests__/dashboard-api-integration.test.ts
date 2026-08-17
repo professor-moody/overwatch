@@ -28,6 +28,7 @@ import {
   GraphCorrectionResultSchema,
   ClaimPromoteResultSchema,
   ClaimWithdrawResultSchema,
+  ScorecardDtoSchema,
   HealthDtoSchema,
   ObjectiveDeleteResponseSchema,
   ObjectiveCreateResponseSchema,
@@ -318,6 +319,37 @@ describe('GET /api/graph', () => {
     const graph = RawGraphDtoSchema.parse(exported.body);
     expect(graph.nodes.some(node => node.id === 'cloud-id-power')).toBe(true);
     expect(graph.nodes.find(node => node.id === 'cloud-id-power')?.properties.type).toBe('cloud_identity');
+  });
+});
+
+describe('GET /api/scorecard', () => {
+  it('returns the live engagement-quality scorecard with all dimensions', async () => {
+    const { status, body } = await getJson('/api/scorecard');
+    expect(status).toBe(200);
+    const sc = ScorecardDtoSchema.parse(body);
+    // Shape sanity — the split dimensions the report renders are all present.
+    expect(sc.verification.total).toBeGreaterThanOrEqual(0);
+    expect(sc.objectives).toHaveProperty('currently_satisfied');
+    expect(sc.attack_paths).toHaveProperty('validation_share');
+    expect(Array.isArray(sc.contradictions)).toBe(true);
+  });
+
+  it('reflects a promotion contradiction in the live scorecard', async () => {
+    // Promote a confirmed (evidence-positive) node to refuted → a promotion-vs-evidence
+    // contradiction the scorecard must surface with enough to act on.
+    engine.addNode({
+      id: 'scorecard-contradiction-node',
+      type: 'host',
+      label: 'contradiction target',
+      ip: '10.0.0.55',
+      discovered_at: NOW,
+      confidence: 1, // evidence-positive
+    });
+    await postJson('/api/claims/promote', { state: 'refuted', reason: 'disputing confirmed access', node_id: 'scorecard-contradiction-node' });
+    const { body } = await getJson('/api/scorecard');
+    const sc = ScorecardDtoSchema.parse(body);
+    expect(sc.contradicted_claims).toBeGreaterThanOrEqual(1);
+    expect(sc.contradictions.some(c => c.target_id === 'scorecard-contradiction-node')).toBe(true);
   });
 });
 
