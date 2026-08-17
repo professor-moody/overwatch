@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EvidenceDebtCard } from '../EvidenceDebtCard';
 import * as api from '../../../lib/api';
 
-vi.mock('../../../lib/api', () => ({ getEvidenceDebt: vi.fn() }));
+vi.mock('../../../lib/api', () => ({ getEvidenceDebt: vi.fn(), dispatchAgent: vi.fn() }));
 
 const navigateToGraph = vi.fn();
 const navigateToFinding = vi.fn();
@@ -24,6 +24,7 @@ describe('EvidenceDebtCard', () => {
     navigateToFinding.mockClear();
     navigateToEvidenceObjective.mockClear();
     vi.mocked(api.getEvidenceDebt).mockResolvedValue({ items: ITEMS, total: ITEMS.length } as never);
+    vi.mocked(api.dispatchAgent).mockResolvedValue({ dispatched: true } as never);
   });
   afterEach(() => vi.clearAllMocks());
 
@@ -47,6 +48,16 @@ describe('EvidenceDebtCard', () => {
 
     fireEvent.click(screen.getByText(/SMB signing disabled/));   // unsupported → finding
     expect(navigateToFinding).toHaveBeenCalledWith('find-1');
+  });
+
+  it('dispatches a validation agent against a debt item that has a target node', async () => {
+    render(<EvidenceDebtCard />);
+    await waitFor(() => expect(screen.getByText(/promoted refuted/)).toBeTruthy());
+    // The contradiction item (node_id 'u') and the lapsed item both carry a node → two Validate buttons.
+    const validateButtons = screen.getAllByRole('button', { name: 'Validate' });
+    expect(validateButtons.length).toBeGreaterThanOrEqual(1);
+    fireEvent.click(validateButtons[0]);
+    await waitFor(() => expect(api.dispatchAgent).toHaveBeenCalledWith({ target_node_ids: ['u'] }));
   });
 
   it('shows a clean state when there is no debt', async () => {
