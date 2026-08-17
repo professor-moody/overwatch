@@ -2342,6 +2342,27 @@ describe('GraphEngine', () => {
       expect(obj.lost_at).toBeTruthy();
     });
 
+    it('an explicit STALE promotion lapses the live view but PRESERVES the milestone (decay ≠ disproof)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const edgeId = seedAchievedDaCred(engine);
+      const achievedAt = engine.getState().objectives.find(o => o.id === 'obj-da')!.achieved_at;
+      expect(achievedAt).toBeTruthy();
+
+      engine.promoteClaim({ edge_id: edgeId, state: 'stale', reason: 'credential rotated', by_kind: 'operator' });
+      const obj = engine.getState().objectives.find(o => o.id === 'obj-da')!;
+      expect(obj.currently_satisfied).toBe(false); // live: no longer satisfiable
+      expect(obj.lost_at).toBeTruthy();
+      expect(obj.achieved).toBe(true);             // milestone STAYS — only refuted revokes "ever achieved"
+      expect(obj.achieved_at).toBe(achievedAt);    // the ORIGINAL achievement timestamp is intact
+
+      // Withdrawing the stale judgment restores the live view WITHOUT minting a new achievement time.
+      engine.withdrawClaim({ edge_id: edgeId, reason: 're-verified', by_kind: 'operator' });
+      const after = engine.getState().objectives.find(o => o.id === 'obj-da')!;
+      expect(after.currently_satisfied).toBe(true);
+      expect(after.achieved).toBe(true);
+      expect(after.achieved_at).toBe(achievedAt);  // not restamped — it was never un-achieved
+    });
+
     it('mirrors currently_satisfied / lost_at onto the objective graph node', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const edgeId = seedAchievedDaCred(engine);

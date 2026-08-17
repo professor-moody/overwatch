@@ -1253,11 +1253,14 @@ export class GraphEngine {
     return { type: 'activity_append', payload: prepared.payload as unknown as Record<string, unknown> };
   }
 
-  /** Reconcile objectives after a promotion: a positive promotion may newly satisfy a
-   *  not-yet-achieved objective; a negative one (refuted/stale) un-achieves an objective its
-   *  now-disproven claim had completed. */
+  /** Reconcile objectives after a promotion. Only `refuted` REVOKES the settled milestone: a
+   *  refutation says the claim was never truly established, so an objective it completed was never
+   *  really achieved. `stale` is decay, NOT disproof — the objective WAS achieved and that milestone
+   *  stays recorded (`achieved`/`achieved_at` preserved); only the live `currently_satisfied` drops,
+   *  which `evaluateObjectives` recomputes on every call regardless of `reconcile`. A positive
+   *  promotion may newly satisfy a not-yet-achieved objective (handled without `reconcile`). */
   private reconcileObjectivesAfterPromotion(state: ClaimPromotion['state']): void {
-    this.evaluateObjectives({ reconcile: state === 'refuted' || state === 'stale' });
+    this.evaluateObjectives({ reconcile: state === 'refuted' });
   }
 
   /** Reconcile objectives after a withdrawal. A withdraw can flip achievement in EITHER
