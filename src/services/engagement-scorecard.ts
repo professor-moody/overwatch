@@ -292,7 +292,10 @@ export function scorecardRows(sc: EngagementScorecard): ScorecardRow[] {
     rows.push({ label: 'Inventory observed', value: `${sc.inventory.observed} of ${sc.inventory.total} asset(s) confirmed (${pct(sc.inventory.coverage)})` });
   }
   if (sc.attack_paths.total > 0) {
-    rows.push({ label: 'Attack path validated', value: `${sc.attack_paths.validated} of ${sc.attack_paths.total} access edge(s) validated (${pct(sc.attack_paths.validation_share)})` });
+    // "Access edges verified", not "attack path validated": this measures the maturity of access/
+    // escalation EDGES globally, not the validation of actual paths TO objectives. The honest label
+    // stands until path-aware scoring lands.
+    rows.push({ label: 'Access edges verified', value: `${sc.attack_paths.validated} of ${sc.attack_paths.total} access edge(s) verified (${pct(sc.attack_paths.validation_share)})` });
   }
   if (v.refuted > 0 || v.stale > 0) {
     rows.push({ label: 'Refuted / stale claims', value: `${v.refuted} refuted, ${v.stale} stale` });
