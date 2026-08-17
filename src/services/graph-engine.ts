@@ -1254,19 +1254,20 @@ export class GraphEngine {
     return { type: 'activity_append', payload: prepared.payload as unknown as Record<string, unknown> };
   }
 
-  /** Reconcile objectives after a promotion. Only `refuted` REVOKES the settled milestone: a
-   *  refutation says the claim was never truly established, so an objective it completed was never
-   *  really achieved. `stale` is decay, NOT disproof — the objective WAS achieved and that milestone
-   *  stays recorded (`achieved`/`achieved_at` preserved); only the live `currently_satisfied` drops,
-   *  which `evaluateObjectives` recomputes on every call regardless of `reconcile`. A positive
-   *  promotion may newly satisfy a not-yet-achieved objective (handled without `reconcile`). */
-  private reconcileObjectivesAfterPromotion(state: ClaimPromotion['state']): void {
-    this.evaluateObjectives({ reconcile: state === 'refuted' });
+  /** Re-evaluate objectives after a PROMOTION. No reconcile flag is needed: the milestone-revoking
+   *  case (the supporting access is now `refuted`) is a deterministic function of the graph that
+   *  `evaluateObjectives` applies on every call, so it SELF-HEALS — if a crash lands between the
+   *  promotion's committed receipt and this call, the next evaluation (startup or any later
+   *  mutation) repairs the objective state. A positive promotion latches a newly-satisfied
+   *  objective; a decayed (`stale`) promotion lapses `currently_satisfied` but keeps the milestone. */
+  private reconcileObjectivesAfterPromotion(): void {
+    this.evaluateObjectives();
   }
 
-  /** Reconcile objectives after a withdrawal. A withdraw can flip achievement in EITHER
-   *  direction — clearing a `refuted`/`stale` verdict can re-satisfy an objective, while clearing
-   *  a positive promotion can un-satisfy one it had completed — so both directions are checked. */
+  /** Re-evaluate objectives after a WITHDRAWAL — an explicit operator retraction. `reconcile`
+   *  additionally un-achieves when the support reverts to ANY un-obtained state (e.g. retracting the
+   *  sole validation that completed an objective drops it to an unproven candidate), and can
+   *  re-achieve when clearing a refutation restores the access. */
   private reconcileObjectivesAfterWithdrawal(): void {
     this.evaluateObjectives({ reconcile: true });
   }
@@ -1288,7 +1289,7 @@ export class GraphEngine {
       'claim promotion',
     );
     if (applied.status !== 'applied') throw new Error(applied.reason);
-    this.reconcileObjectivesAfterPromotion(input.state);
+    this.reconcileObjectivesAfterPromotion();
     this.persist(plan.targetKind === 'node' ? { updated_nodes: [plan.targetId] } : { updated_edges: [plan.targetId] });
     return { target_kind: plan.targetKind, target_id: plan.targetId, claim_state: plan.claimStateAfter };
   }
@@ -1323,7 +1324,7 @@ export class GraphEngine {
       'claim promotion application command',
     );
     if (applied.status !== 'applied') throw new Error(applied.reason);
-    this.reconcileObjectivesAfterPromotion(input.state);
+    this.reconcileObjectivesAfterPromotion();
     this.persist(plan.targetKind === 'node' ? { updated_nodes: [plan.targetId] } : { updated_edges: [plan.targetId] });
     const installedCommand = this.getApplicationCommand(command.idempotency_key);
     if (!installedCommand) {
