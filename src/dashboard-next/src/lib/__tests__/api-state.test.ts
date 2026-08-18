@@ -44,7 +44,7 @@ describe('dashboard state adapter', () => {
       history_count: 17,
       runtime_build: {
         schema_version: 1,
-        release_version: '0.2.0',
+        release_version: '0.3.0',
         input_sha256: 'd'.repeat(64),
         runtime_pid: 42,
         runtime_started_at: '2026-07-18T00:00:00.000Z',
@@ -57,7 +57,7 @@ describe('dashboard state adapter', () => {
     await expect(getState()).resolves.toMatchObject({
       history_count: 17,
       state_revision: undefined,
-      runtime_build: { release_version: '0.2.0' },
+      runtime_build: { release_version: '0.3.0' },
     });
   });
 });

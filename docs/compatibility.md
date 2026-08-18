@@ -1,10 +1,12 @@
 # Compatibility and releases
 
-Overwatch `0.2.0` is the first explicit source-release and compatibility
-baseline. Earlier `main` revisions were pullable development snapshots, but the
-repository did not carry a tag, package-version transition, or dated retirement
-ledger. A comment saying “one release” therefore does not prove that a public
-wire field or persisted reader is safe to delete.
+Overwatch `0.3.0` is the current source-release. `0.2.0` was the first explicit
+source-release and compatibility baseline; earlier `main` revisions were pullable
+development snapshots, but the repository did not carry a tag, package-version
+transition, or dated retirement ledger. A comment saying “one release” therefore
+does not prove that a public wire field or persisted reader is safe to delete.
+`0.3.0` retains every compatibility surface from the `0.2.0` baseline and keeps
+the persisted state (v1) and transaction journal (v2) formats unchanged.
 
 The generated ledger below is the release contract. `npm run check:docs` rejects
 drift between this page, the machine-readable
@@ -14,20 +16,20 @@ source registry.
 <!-- BEGIN:compatibility-ledger -->
 | Compatibility surface | Status | Canonical replacement | Release boundary |
 |---|---|---|---|
-| <a id="agent-identity-aliases"></a>`id`/`agent_id` task fields and legacy label input | Retained | `task_id` and `agent_label` | 0.3.0 |
+| <a id="agent-identity-aliases"></a>`id`/`agent_id` task fields and legacy label input | Retained | `task_id` and `agent_label` | 0.4.0 |
 | <a id="agent-identity-v1-fields"></a>legacy agent identity fields stored in PersistedStateV1 relationships | Migration path retained | a future versioned state migration to canonical task identity | Evidence-gated |
 | <a id="agent-work-v1-fallback"></a>PersistedStateV1 agent tasks without explicit `work` metadata | Migration path retained | versioned `AgentWorkMetadataV1` attached to every task | Evidence-gated |
 | <a id="coordination-owner-aliases"></a>legacy owner/source fields in approvals, questions, and proposed plans | Retained | `owner_task_id` and `owner_agent_label` | Evidence-gated |
-| <a id="parser-response-aliases"></a>`parse_status: "no_parser"` and `parser_exception` | Retained | `parse_outcome` and `error` | 0.3.0 |
-| <a id="playbook-projection-aliases"></a>credential expansion stamps and AWS `principal` response field | Retained | durable playbook runs and `bindings.principal_name` | 0.3.0 |
+| <a id="parser-response-aliases"></a>`parse_status: "no_parser"` and `parser_exception` | Retained | `parse_outcome` and `error` | 0.4.0 |
+| <a id="playbook-projection-aliases"></a>credential expansion stamps and AWS `principal` response field | Retained | durable playbook runs and `bindings.principal_name` | 0.4.0 |
 | <a id="dashboard-http-v1"></a>dashboard HTTP compatibility contract v1 | Retained | the current stable endpoint and envelope registry | Evidence-gated |
-| <a id="dashboard-websocket-v1"></a>full-state main WebSocket envelopes when no contract is selected | Retained | main WebSocket contract v2 keyed patches | 0.3.0 |
+| <a id="dashboard-websocket-v1"></a>full-state main WebSocket envelopes when no contract is selected | Retained | main WebSocket contract v2 keyed patches | 0.4.0 |
 | <a id="state-v0-journal-v1-readers"></a>absent-version state V0 and primitive journal V1 readers | Migration path retained | PersistedStateV1 and transaction journal V2 | Evidence-gated |
 | <a id="legacy-playbook-placeholders"></a>schema-less playbook run placeholders recovered from legacy state | Migration path retained | versioned durable PlaybookRun records and explicit new-run replacement | Evidence-gated |
 | <a id="session-v1-rollback-lifecycle"></a>conservative V1 `closed`/`error` lifecycle plus additive recovery metadata | Retained | `resume_available` and `interrupted` runtime lifecycle | Evidence-gated |
-| <a id="subagent-control-prompt"></a>`OVERWATCH_PROMPT_VARIANT=control` rollback selection | Retained | the context-first `lean` sub-agent prompt | 0.3.0 |
+| <a id="subagent-control-prompt"></a>`OVERWATCH_PROMPT_VARIANT=control` rollback selection | Retained | the context-first `lean` sub-agent prompt | 0.4.0 |
 | <a id="subagent-isolation-config"></a>`subagent_isolation` from the Node IPC worker scaffold | Retained | managed-daemon worker runtime settings | Evidence-gated |
-| <a id="dashboard-hash-deep-links"></a>`#panel=...` dashboard navigation | Retained | route and query-string deep links | 0.3.0 |
+| <a id="dashboard-hash-deep-links"></a>`#panel=...` dashboard navigation | Retained | route and query-string deep links | 0.4.0 |
 | <a id="dashboard-v1-state-consumer"></a>bundled-dashboard consumption of WebSocket v1 full-state updates | Retired in 0.2.0 | WebSocket v2 full base plus revisioned keyed patches | 0.2.0 |
 | <a id="pending-action-label-wrapper"></a>internal `PendingActionQueue.abortByAgent()` label-only wrapper | Retired in 0.2.0 | `abortByTask(task_id, legacy_label)` | 0.2.0 |
 <!-- END:compatibility-ledger -->
@@ -81,24 +83,41 @@ rewrite configuration, state, WAL, snapshots, evidence, reports, tapes, cookie
 jars, or migration backups.
 
 Version 0.2.0 is the first supported source-release baseline, so there is no
-supported 0.1 binary rollback claim. For a future same-format rollback, stop
-Overwatch and restore a complete pre-upgrade copy or bundle of the engagement
-file family into a separate directory; never mix individual files from two
-points in time. If an upgrade changes the persisted state or journal format,
-restore the complete checksummed migration backup instead. Confirm the config,
-state, WAL, snapshots, artifacts, and available manifest checksums before
-starting the older binary. N-1 rollback becomes a release gate beginning with
-the release after 0.2.0; the current same-checkout lifecycle smoke is not
-presented as N-1 evidence.
+supported 0.1 binary rollback claim. For a same-format rollback, stop Overwatch
+and restore a complete pre-upgrade copy or bundle of the engagement file family
+into a separate directory; never mix individual files from two points in time.
+If an upgrade changes the persisted state or journal format, restore the
+complete checksummed migration backup instead. Confirm the config, state, WAL,
+snapshots, artifacts, and available manifest checksums before starting the older
+binary.
+
+`0.3.0` is the first release after the `0.2.0` baseline, so N-1 rollback is now
+an exercised release gate rather than a promise. Because `0.3.0` leaves the
+persisted state and journal formats unchanged, its `0.2.0 → 0.3.0` rollback is a
+same-format restore: the `0.2.0` binary reopens a pre-upgrade copy of the
+engagement file family without a migration backup and without classifying the
+state as corrupt. The upgrade and rollback drill is run before the tag.
 
 ## Version 0.2.0 boundary
 
-This release removes two internal paths: WebSocket V1 state consumption inside
-the bundled V2 dashboard and the unused label-only pending-action abort
-wrapper. It deliberately retains hash-link redirects, HTTP and WebSocket V1,
+The 0.2.0 release removed two internal paths: WebSocket V1 state consumption
+inside the bundled V2 dashboard and the unused label-only pending-action abort
+wrapper. It deliberately retained hash-link redirects, HTTP and WebSocket V1,
 public identity, parser, playbook, session, and persisted-format compatibility.
 Their first eligible breaking boundary is documented in the ledger rather than
 inferred from merge count.
+
+## Version 0.3.0 boundary
+
+The 0.3.0 release removes no compatibility surface. It is an efficacy and
+correctness release — claim maturity and lifecycle, the scorecard model,
+canonical edge types, and evidence-provenance work — and touches no public wire
+field, persisted reader, or migration path. The six entries that were eligible
+for removal at 0.3.0 (public identity aliases, parser response aliases, playbook
+projection aliases, the default WebSocket v1 channel, the sub-agent control
+prompt, and hash deep-link redirects) are retained; their earliest removal
+boundary moves to `0.4.0` in the ledger. Removing any of them remains gated on
+its retirement-evidence list, not on the version number alone.
 
 ## Release validation
 

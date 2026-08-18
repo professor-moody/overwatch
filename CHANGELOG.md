@@ -4,7 +4,7 @@ All notable source releases are documented here. Overwatch follows semantic
 versioning for public wire/configuration contracts and uses explicit persisted
 state and journal versions for durable engagement data.
 
-## [Unreleased]
+## 0.3.0 — 2026-08-18
 
 The efficacy & evidence program — an outcome-honesty train that narrows the gap
 between what Overwatch reports and what an engagement has actually proven. All
