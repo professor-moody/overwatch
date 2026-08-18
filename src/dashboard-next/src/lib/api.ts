@@ -86,6 +86,7 @@ import {
   type ScorecardDto,
   type EvidenceDebtItemDto,
   type EvidenceDebtResponseDto,
+  type ClaimImpactResponseDto,
   type FindingsResponseDto,
   type ObjectiveCreateRequest,
   type ObjectiveUpdateRequest,
@@ -912,6 +913,14 @@ export type EvidenceDebtResponse = EvidenceDebtResponseDto;
 /** The ranked evidence-debt queue — quality problems to act on, each with a drill-down target. */
 export async function getEvidenceDebt(): Promise<EvidenceDebtResponse> {
   return request('getEvidenceDebt') as unknown as Promise<EvidenceDebtResponse>;
+}
+
+export type ClaimImpact = ClaimImpactResponseDto;
+
+/** Read-only editor context for a node/edge claim: derived state, active promotion + history, and
+ *  the objectives it supports (for the impact preview). Exactly one of node_id / edge_id. */
+export async function getClaimImpact(target: { node_id?: string; edge_id?: string }): Promise<ClaimImpact> {
+  return request('getClaimImpact', { query: target }) as unknown as Promise<ClaimImpact>;
 }
 
 // --- Tape recorder ---

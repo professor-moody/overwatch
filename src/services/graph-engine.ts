@@ -158,13 +158,14 @@ import {
 import {
   evaluateObjectives as _evaluateObjectives,
   isObjectiveObtained as _isObjectiveObtained,
+  objectivesSupportedByElement as _objectivesSupportedByElement,
   recomputeObjectives as _recomputeObjectives,
   getPhaseStatuses as _getPhaseStatuses,
   getCurrentPhaseId as _getCurrentPhaseId,
   getCurrentPhase as _getCurrentPhase,
   computeAccessLevel as _computeAccessLevel,
 } from './objective-manager.js';
-import type { ObjectiveManagerHost } from './objective-manager.js';
+import type { ObjectiveManagerHost, ObjectiveSupportRef } from './objective-manager.js';
 import { queryGraphImpl } from './graph-query.js';
 import { CredentialCoverageTracker } from './credential-coverage.js';
 import type { OperatorOp } from './command-interpreter.js';
@@ -3744,6 +3745,29 @@ export class GraphEngine {
   isObjectiveCurrentlySatisfied(obj: EngagementConfig['objectives'][number]): boolean {
     if (!obj.target_criteria) return obj.currently_satisfied ?? obj.achieved;
     return _isObjectiveObtained(this.objectiveHost, obj);
+  }
+
+  /** Read-only snapshot for the claim editor: the element's current DERIVED standing (against
+   *  `now`), its explicit durable promotion (if any) + append-only history, and which objectives it
+   *  supports — so the UI can show current-vs-promoted, who/when/reason/expiry, the history, and an
+   *  impact preview ("refuting this may lapse objective X"). Throws for an unknown target. */
+  getClaimImpact(target: { node_id?: string; edge_id?: string }): {
+    target_kind: 'node' | 'edge';
+    target_id: string;
+    claim_state: ClaimState;
+    promotion: ClaimPromotion | null;
+    history: ClaimPromotion[];
+    supports_objectives: ObjectiveSupportRef[];
+  } {
+    const { targetKind, targetId, currentAttrs } = this.resolveClaimTarget(target);
+    return {
+      target_kind: targetKind,
+      target_id: targetId,
+      claim_state: claimState(currentAttrs as Parameters<typeof claimState>[0], this.ctx.nowIso()),
+      promotion: (currentAttrs.claim_promotion as ClaimPromotion | undefined) ?? null,
+      history: (currentAttrs.claim_promotion_history as ClaimPromotion[] | undefined) ?? [],
+      supports_objectives: _objectivesSupportedByElement(this.objectiveHost, target),
+    };
   }
 
   /**

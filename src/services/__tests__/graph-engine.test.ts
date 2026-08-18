@@ -2315,6 +2315,35 @@ describe('GraphEngine', () => {
       expect(() => engine.withdrawClaim({ node_id: 'nope', reason: 'x', by_kind: 'operator' })).toThrow(/No such node/);
       expect(() => engine.withdrawClaim({ node_id: 'u', reason: '  ', by_kind: 'operator' })).toThrow(/reason/);
     });
+
+    it('getClaimImpact returns derived state, the active promotion, history, and supported objectives', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'u', type: 'user', label: 'u' },
+          { id: 'cred-da', type: 'credential', label: 'DA', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          { source: 'u', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const edgeId = engine.exportGraph().edges.find(e => e.properties.type === 'OWNS_CRED')!.id!;
+      engine.promoteClaim({ edge_id: edgeId, state: 'refuted', reason: 'disproved', by_kind: 'operator' });
+
+      const impact = engine.getClaimImpact({ edge_id: edgeId });
+      expect(impact.target_kind).toBe('edge');
+      expect(impact.claim_state).toBe('refuted');
+      expect(impact.promotion?.state).toBe('refuted');
+      expect(impact.history.map(h => h.state)).toEqual(['refuted']);
+      // The OWNS_CRED access edge into the DA credential supports obj-da (its impact preview target).
+      expect(impact.supports_objectives.map(o => o.id)).toContain('obj-da');
+
+      // The credential NODE (a matching target) supports it; so does 'u' as the source of the
+      // OWNS_CRED access edge into it.
+      expect(engine.getClaimImpact({ node_id: 'cred-da' }).supports_objectives.map(o => o.id)).toContain('obj-da');
+      expect(engine.getClaimImpact({ node_id: 'u' }).supports_objectives.map(o => o.id)).toContain('obj-da');
+      expect(() => engine.getClaimImpact({ node_id: 'nope' })).toThrow(/No such node/);
+    });
   });
 
   describe('temporal objective model (currently_satisfied / lost_at)', () => {

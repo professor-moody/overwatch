@@ -163,6 +163,58 @@ function isObjectiveSupportRefuted(
   });
 }
 
+export interface ObjectiveSupportRef {
+  id: string;
+  description: string;
+  achieved: boolean;
+  currently_satisfied: boolean;
+}
+
+/** Which objectives an element (a node or an edge) is part of the support chain for — i.e. the
+ *  objectives that a refutation/staling of this element could lapse. A node supports an objective
+ *  when it IS a matching target, or when it is the source of an access edge into one; an edge
+ *  supports when it is an access edge (of the objective's achievement types) into a matching target.
+ *  Pure read over the live graph — powers the claim editor's impact preview. */
+export function objectivesSupportedByElement(
+  host: ObjectiveManagerHost,
+  target: { node_id?: string; edge_id?: string },
+): ObjectiveSupportRef[] {
+  const supported: ObjectiveSupportRef[] = [];
+  let edge: { target: string; type: string } | undefined;
+  if (target.edge_id && host.ctx.graph.hasEdge(target.edge_id)) {
+    edge = { target: host.ctx.graph.target(target.edge_id), type: String(host.ctx.graph.getEdgeAttributes(target.edge_id).type) };
+  }
+  for (const obj of host.ctx.config.objectives) {
+    if (!obj.target_criteria) continue;
+    const matching = new Set(
+      host.queryGraph({ node_type: obj.target_node_type, node_filter: obj.target_criteria }).nodes.map(n => n.id),
+    );
+    if (matching.size === 0) continue;
+    const accessEdgeTypes = obj.achievement_edge_types
+      ? new Set<string>(obj.achievement_edge_types)
+      : OBJECTIVE_ACCESS_EDGE_TYPES;
+    let supports = false;
+    if (target.node_id) {
+      supports = matching.has(target.node_id)
+        || host.ctx.graph.outEdges(target.node_id).some((e: string) => {
+          const ep = host.ctx.graph.getEdgeAttributes(e);
+          return accessEdgeTypes.has(ep.type) && matching.has(host.ctx.graph.target(e));
+        });
+    } else if (edge) {
+      supports = accessEdgeTypes.has(edge.type) && matching.has(edge.target);
+    }
+    if (supports) {
+      supported.push({
+        id: obj.id,
+        description: obj.description,
+        achieved: !!obj.achieved,
+        currently_satisfied: obj.currently_satisfied ?? !!obj.achieved,
+      });
+    }
+  }
+  return supported;
+}
+
 function evaluateObjectiveDraft(
   host: ObjectiveManagerHost,
   objectives: EngagementConfig['objectives'],

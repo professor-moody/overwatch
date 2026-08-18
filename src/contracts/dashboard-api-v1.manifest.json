@@ -684,6 +684,16 @@
       "summary": "Read the ranked evidence-debt queue"
     },
     {
+      "operation_id": "getClaimImpact",
+      "method": "GET",
+      "path": "/api/claims/impact",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read a claim editor impact snapshot"
+    },
+    {
       "operation_id": "exportGraph",
       "method": "POST",
       "path": "/api/graph/export",
@@ -1713,6 +1723,14 @@
         "200": "87a79fe7c1668cf58fe3f4282d48e2fdbc42c7402c4adee605c1b3451698ae79"
       }
     },
+    "getClaimImpact": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "e8db69f5d50c36c9211c2bb041e71d1c822b082a3f7ae1386dc8f70f0f5349c3",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "a374c45cd9d5417b8c3cf410e0baa45322195fadcd095952973ab5f50970f488"
+      }
+    },
     "exportGraph": {
       "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
@@ -2112,5 +2130,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "b8ed5675f793cce2cad4c48302817a3ac7322192cbeedddce9791295a8c1bbcb"
+  "schema_hash": "63cde31e936a35265ed075c37d21609167195eb5e3943f84bf122afda9cdc7d1"
 }
