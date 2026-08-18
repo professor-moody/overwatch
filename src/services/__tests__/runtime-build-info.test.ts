@@ -36,7 +36,7 @@ describe('runtime build identity', () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       runtime_build: {
         schema_version: 1,
-        release_version: '0.2.0',
+        release_version: '0.3.0',
         git_sha: 'abc123',
         input_sha256: 'a'.repeat(64),
         runtime_pid: 42,
@@ -47,7 +47,7 @@ describe('runtime build identity', () => {
     await expect(probeRunningDashboard(8384, fetchImpl as typeof fetch, async () => true)).resolves.toMatchObject({
       running: true,
       runtime_build: {
-        release_version: '0.2.0',
+        release_version: '0.3.0',
         input_sha256: 'a'.repeat(64),
         runtime_pid: 42,
       },

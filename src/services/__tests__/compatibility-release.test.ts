@@ -92,7 +92,7 @@ describe('compatibility release contract', () => {
     expect(sourceFiles.filter(path => readFileSync(path, 'utf8').includes('.abortByAgent('))).toEqual([]);
   });
 
-  it('retains public identity, parser, playbook, WebSocket, and state migration paths in 0.2', () => {
+  it('retains public identity, parser, playbook, WebSocket, and state migration paths in 0.3', () => {
     const status = new Map(COMPATIBILITY_ENTRIES.map(entry => [entry.id, entry.status]));
     for (const id of [
       'agent-identity-aliases',

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const OVERWATCH_RELEASE_VERSION = '0.2.0' as const;
+export const OVERWATCH_RELEASE_VERSION = '0.3.0' as const;
 export const COMPATIBILITY_MANIFEST_VERSION = 1 as const;
 
 export type CompatibilityStatus = 'retained' | 'retired' | 'migration_required';
@@ -42,7 +42,7 @@ export const COMPATIBILITY_ENTRIES: readonly CompatibilityEntry[] = [
     compatibility: '`id`/`agent_id` task fields and legacy label input',
     canonical: '`task_id` and `agent_label`',
     reason: 'Existing commands, dashboards, and V1 durable relationships may still contain the legacy identity fields.',
-    removal_not_before: '0.3.0',
+    removal_not_before: '0.4.0',
     retirement_evidence: [
       'N-1 HTTP/MCP/dashboard interoperability passes',
       'saved-state scan proves every relationship has canonical task identity',
@@ -108,7 +108,7 @@ export const COMPATIBILITY_ENTRIES: readonly CompatibilityEntry[] = [
     compatibility: '`parse_status: "no_parser"` and `parser_exception`',
     canonical: '`parse_outcome` and `error`',
     reason: 'Older MCP and dashboard consumers still read the response aliases.',
-    removal_not_before: '0.3.0',
+    removal_not_before: '0.4.0',
     retirement_evidence: [
       'all in-repo consumers use canonical parse outcomes',
       'N-1 response-contract fixture passes without the aliases',
@@ -121,7 +121,7 @@ export const COMPATIBILITY_ENTRIES: readonly CompatibilityEntry[] = [
     compatibility: 'credential expansion stamps and AWS `principal` response field',
     canonical: 'durable playbook runs and `bindings.principal_name`',
     reason: 'The fields are read-only projections used by clients from before durable playbook runs.',
-    removal_not_before: '0.3.0',
+    removal_not_before: '0.4.0',
     retirement_evidence: [
       'N-1 playbook client fixtures consume only durable run state',
       'schema usage proves the AWS principal alias has no remaining consumer',
@@ -142,7 +142,7 @@ export const COMPATIBILITY_ENTRIES: readonly CompatibilityEntry[] = [
     compatibility: 'full-state main WebSocket envelopes when no contract is selected',
     canonical: 'main WebSocket contract v2 keyed patches',
     reason: 'Older dashboards and external clients still negotiate the default v1 channel; the bundled dashboard uses v2 only.',
-    removal_not_before: '0.3.0',
+    removal_not_before: '0.4.0',
     retirement_evidence: [
       'one released minor defaults bundled clients to v2',
       'N-1 dashboard behavior is covered by an explicit unsupported-version diagnostic',
@@ -192,8 +192,8 @@ export const COMPATIBILITY_ENTRIES: readonly CompatibilityEntry[] = [
     status: 'retained',
     compatibility: '`OVERWATCH_PROMPT_VARIANT=control` rollback selection',
     canonical: 'the context-first `lean` sub-agent prompt',
-    reason: 'Version 0.2.0 establishes the first explicit release boundary for the documented one-release rollback.',
-    removal_not_before: '0.3.0',
+    reason: 'Retained through 0.3.0: the runtime rollback selector stays available one more release so an operator relying on it upgrades without a behavior change; the removal gate moves to 0.4.0.',
+    removal_not_before: '0.4.0',
     retirement_evidence: [
       '0.2.x real-model and deterministic prompt gates remain green',
       'release notes announce removal of the runtime rollback selector',
@@ -218,7 +218,7 @@ export const COMPATIBILITY_ENTRIES: readonly CompatibilityEntry[] = [
     compatibility: '`#panel=...` dashboard navigation',
     canonical: 'route and query-string deep links',
     reason: 'Existing bookmarks are not observable from repository usage, so the first explicit release retains the redirect.',
-    removal_not_before: '0.3.0',
+    removal_not_before: '0.4.0',
     retirement_evidence: [
       'all in-repo navigation producers use route paths',
       'route deep-link journeys cover the supported replacement',

@@ -272,7 +272,7 @@ describe('GET /api/state', () => {
     expect(body).toHaveProperty('graph');
     expect(body).toHaveProperty('history_count');
     expect(body.runtime_build).toMatchObject({
-      release_version: '0.2.0',
+      release_version: '0.3.0',
       input_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       runtime_pid: process.pid,
     });
@@ -641,7 +641,7 @@ describe('GET /api/health', () => {
     expect(health.health_checks).toHaveProperty('counts_by_severity');
     expect(Array.isArray(health.health_checks.issues)).toBe(true);
     expect(health.runtime_build).toMatchObject({
-      release_version: '0.2.0',
+      release_version: '0.3.0',
       input_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       runtime_pid: process.pid,
     });
@@ -671,7 +671,7 @@ describe('GET /api/runtime', () => {
     const { status, body } = await getJson<{ runtime_build?: { input_sha256?: string; runtime_pid?: number } }>('/api/runtime');
     expect(status).toBe(200);
     expect(body.runtime_build).toMatchObject({
-      release_version: '0.2.0',
+      release_version: '0.3.0',
       input_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       runtime_pid: process.pid,
     });
