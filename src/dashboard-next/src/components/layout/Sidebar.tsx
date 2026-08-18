@@ -108,7 +108,10 @@ export function Sidebar({ activePanel, onPanelChange, expanded, onExpandedChange
         expanded ? 'w-16 md:w-56' : 'w-16',
       )}
     >
-      <div className="flex flex-col gap-2 flex-1 px-2">
+      {/* min-h-0 lets this flex child shrink below its intrinsic height so overflow-y-auto actually
+          scrolls; without it the 18 destinations overflow the fixed sidebar and push the collapse
+          button (a pinned sibling below) off-screen on short viewports. */}
+      <div className="flex flex-col gap-2 flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2">
         {NAV_GROUPS.map((group) => (
           <div key={group.label} className="flex flex-col gap-1">
             <div className={cn(
