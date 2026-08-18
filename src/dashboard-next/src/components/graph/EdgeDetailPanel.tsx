@@ -119,10 +119,7 @@ export function EdgeDetailPanel({ graph, edgeId, onClose, onFocusNode }: EdgeDet
         {engineEdgeId && (
           <div className="border-t border-border pt-2">
             <div className="text-[9px] uppercase tracking-wider text-muted-foreground mb-1.5">Claim standing</div>
-            <ClaimStandingSection
-              target={{ edge_id: engineEdgeId }}
-              claimState={typeof props.claim_state === 'string' ? props.claim_state : undefined}
-            />
+            <ClaimStandingSection target={{ edge_id: engineEdgeId }} />
           </div>
         )}
       </div>

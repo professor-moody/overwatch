@@ -3,53 +3,71 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClaimStandingSection } from '../NodeDetailDrawer';
 import * as api from '../../../lib/api';
 
-// Only the two claim mutations are exercised here; other api exports are unused by this component.
-vi.mock('../../../lib/api', () => ({
-  promoteClaim: vi.fn(),
-  withdrawClaim: vi.fn(),
-}));
+vi.mock('../../../lib/api', () => ({ getClaimImpact: vi.fn(), promoteClaim: vi.fn(), withdrawClaim: vi.fn() }));
 
-describe('ClaimStandingSection — operator claim correction', () => {
+const IMPACT_NO_PROMO = {
+  target_kind: 'node', target_id: 'n1', claim_state: 'observed',
+  promotion: null, history: [],
+  supports_objectives: [{ id: 'obj-da', description: 'Domain Admin', achieved: true, currently_satisfied: true }],
+};
+const IMPACT_WITH_PROMO = {
+  target_kind: 'edge', target_id: 'e1', claim_state: 'refuted',
+  promotion: { state: 'refuted', by_kind: 'operator', at: '2026-08-18T00:00:00Z', reason: 'disproved it' },
+  history: [
+    { state: 'validated', by_kind: 'operator', at: '2026-08-17T00:00:00Z', reason: 'first verdict' },
+    { state: 'refuted', by_kind: 'operator', at: '2026-08-18T00:00:00Z', reason: 'disproved it' },
+  ],
+  supports_objectives: [],
+};
+
+describe('ClaimStandingSection — claim judgment workflow', () => {
   beforeEach(() => {
+    vi.mocked(api.getClaimImpact).mockResolvedValue(IMPACT_NO_PROMO as never);
     vi.mocked(api.promoteClaim).mockResolvedValue({ target_kind: 'node', target_id: 'n1', claim_state: 'refuted' } as never);
-    vi.mocked(api.withdrawClaim).mockResolvedValue({ target_kind: 'node', target_id: 'n1', claim_state: 'observed', withdrew: 'refuted' } as never);
+    vi.mocked(api.withdrawClaim).mockResolvedValue({ target_kind: 'edge', target_id: 'e1', claim_state: 'observed', withdrew: 'refuted' } as never);
   });
   afterEach(() => vi.clearAllMocks());
 
-  it('shows the current claim standing when the graph carries it', () => {
-    render(<ClaimStandingSection target={{ node_id: 'n1' }} claimState="refuted" />);
-    expect(screen.getByText('current')).toBeTruthy();
-    expect(screen.getByText('refuted')).toBeTruthy();
+  it('shows the derived state + no-promotion note, and hides Withdraw when there is no active promotion', async () => {
+    render(<ClaimStandingSection target={{ node_id: 'n1' }} />);
+    await waitFor(() => expect(screen.getByText(/No explicit promotion/)).toBeTruthy());
+    expect(api.getClaimImpact).toHaveBeenCalledWith({ node_id: 'n1' });
+    expect(screen.getByText('observed')).toBeTruthy(); // derived-state pill
+    expect(screen.queryByRole('button', { name: 'Withdraw' })).toBeNull();
   });
 
-  it('omits the current-standing row when the graph has no claim_state', () => {
+  it('applies the selected state + reason in one action (single Apply)', async () => {
     render(<ClaimStandingSection target={{ node_id: 'n1' }} />);
-    expect(screen.queryByText('current')).toBeNull();
-  });
-
-  it('disables every action until a reason is entered (auditability)', () => {
-    render(<ClaimStandingSection target={{ node_id: 'n1' }} />);
-    const refute = screen.getByRole('button', { name: 'Refuted' }) as HTMLButtonElement;
-    const withdraw = screen.getByRole('button', { name: 'Withdraw' }) as HTMLButtonElement;
-    expect(refute.disabled).toBe(true);
-    expect(withdraw.disabled).toBe(true);
-    fireEvent.click(refute); // a disabled button must not fire
-    expect(api.promoteClaim).not.toHaveBeenCalled();
-  });
-
-  it('promotes a NODE with the chosen state + typed reason', async () => {
-    render(<ClaimStandingSection target={{ node_id: 'n1' }} />);
-    fireEvent.change(screen.getByLabelText('Claim judgment reason'), { target: { value: 'tested, access denied' } });
+    await waitFor(() => expect(screen.getByText(/No explicit promotion/)).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Refuted' }));
+    fireEvent.change(screen.getByLabelText('Claim judgment reason'), { target: { value: 'tested, access denied' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply refuted' }));
     await waitFor(() => expect(api.promoteClaim).toHaveBeenCalledWith({ state: 'refuted', reason: 'tested, access denied', node_id: 'n1' }));
-    expect(api.withdrawClaim).not.toHaveBeenCalled();
   });
 
-  it('withdraws an EDGE claim, passing edge_id (the canonical access-edge case)', async () => {
-    render(<ClaimStandingSection target={{ edge_id: 'user-a->cred-da:OWNS_CRED' }} />);
+  it('previews the objective impact only for a negative verdict on a supporting element', async () => {
+    render(<ClaimStandingSection target={{ node_id: 'n1' }} />);
+    await waitFor(() => expect(screen.getByText(/No explicit promotion/)).toBeTruthy());
+    // default 'validated' → no impact warning
+    expect(screen.queryByText(/will revoke|will lapse/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Refuted' }));
+    expect(screen.getByText(/will revoke/)).toBeTruthy();
+    expect(screen.getByText(/Domain Admin/)).toBeTruthy();
+  });
+
+  it('shows the active promotion + collapsible history and offers Withdraw only then', async () => {
+    vi.mocked(api.getClaimImpact).mockResolvedValue(IMPACT_WITH_PROMO as never);
+    render(<ClaimStandingSection target={{ edge_id: 'e1' }} />);
+    await waitFor(() => expect(screen.getByText(/disproved it/)).toBeTruthy()); // active promotion reason
+    expect(api.getClaimImpact).toHaveBeenCalledWith({ edge_id: 'e1' });
+
+    // History is collapsible.
+    fireEvent.click(screen.getByRole('button', { name: /history \(2\)/ }));
+    expect(screen.getByText(/first verdict/)).toBeTruthy();
+
+    // Withdraw is available (a promotion exists) and requires a reason.
     fireEvent.change(screen.getByLabelText('Claim judgment reason'), { target: { value: 'reinstating' } });
     fireEvent.click(screen.getByRole('button', { name: 'Withdraw' }));
-    await waitFor(() => expect(api.withdrawClaim).toHaveBeenCalledWith({ reason: 'reinstating', edge_id: 'user-a->cred-da:OWNS_CRED' }));
-    expect(api.promoteClaim).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.withdrawClaim).toHaveBeenCalledWith({ reason: 'reinstating', edge_id: 'e1' }));
   });
 });

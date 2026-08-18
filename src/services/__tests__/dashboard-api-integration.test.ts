@@ -354,6 +354,27 @@ describe('GET /api/scorecard', () => {
   });
 });
 
+describe('GET /api/claims/impact', () => {
+  it('returns the claim editor snapshot (derived state, promotion, history) for a node', async () => {
+    engine.addNode({ id: 'impact-node', type: 'host', label: 'impact', ip: '10.0.0.22', discovered_at: NOW, confidence: 1 });
+    await postJson('/api/claims/promote', { state: 'refuted', reason: 'disputing this host', node_id: 'impact-node' });
+
+    const { status, body } = await getJson<{ claim_state: string; promotion: { state: string } | null; history: unknown[]; supports_objectives: unknown[] }>(
+      '/api/claims/impact?node_id=impact-node',
+    );
+    expect(status).toBe(200);
+    expect(body.claim_state).toBe('refuted');
+    expect(body.promotion?.state).toBe('refuted');
+    expect(body.history.length).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(body.supports_objectives)).toBe(true);
+  });
+
+  it('rejects a request with neither node_id nor edge_id (400) and a missing target (404)', async () => {
+    expect((await getJson('/api/claims/impact')).status).toBe(400);
+    expect((await getJson('/api/claims/impact?node_id=no-such')).status).toBe(404);
+  });
+});
+
 describe('GET /api/evidence-debt', () => {
   it('returns a ranked debt queue and surfaces a promotion contradiction with a drill-down target', async () => {
     const empty = await getJson('/api/evidence-debt');

@@ -152,6 +152,7 @@ import {
   ClaimWithdrawResultSchema,
   ScorecardDtoSchema,
   EvidenceDebtResponseSchema,
+  ClaimImpactResponseSchema,
   FrontierWeightsPatchSchema,
   FrontierWeightsResetResultSchema,
   FrontierWeightsUpdateResultSchema,
@@ -1022,6 +1023,7 @@ export class DashboardServer {
       getTelemetry: () => this.serveTelemetry(res),
       getScorecard: () => this.serveScorecard(res),
       getEvidenceDebt: () => this.serveEvidenceDebt(res),
+      getClaimImpact: () => this.serveClaimImpact(url, res),
       exportGraph: () => this.handleGraphExport(res),
       correctGraph: () => { void this.handleGraphCorrect(req, res); },
       promoteClaim: () => { void this.handlePromoteClaim(req, res); },
@@ -4939,6 +4941,27 @@ export class DashboardServer {
     const payload = EvidenceDebtResponseSchema.parse({ items, total: items.length });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(payload));
+  }
+
+  private serveClaimImpact(url: string, res: ServerResponse): void {
+    // Read-only editor context for a node/edge: derived state, active promotion + history, and the
+    // objectives it supports (for the refute impact preview). Exactly one of node_id / edge_id.
+    const params = new URL(url, 'http://localhost').searchParams;
+    const nodeId = params.get('node_id') || undefined;
+    const edgeId = params.get('edge_id') || undefined;
+    if ((nodeId ? 1 : 0) + (edgeId ? 1 : 0) !== 1) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'exactly one of node_id or edge_id is required' }));
+      return;
+    }
+    try {
+      const payload = ClaimImpactResponseSchema.parse(this.engine.getClaimImpact({ node_id: nodeId, edge_id: edgeId }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    }
   }
 
   private serveTelemetry(res: ServerResponse): void {

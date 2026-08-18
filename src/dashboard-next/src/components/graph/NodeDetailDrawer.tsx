@@ -7,7 +7,7 @@ import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
 import { useNavigation } from '../../hooks/useNavigation';
-import { dispatchAgent, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, promoteClaim, withdrawClaim, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
+import { dispatchAgent, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, promoteClaim, withdrawClaim, getClaimImpact, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto, type ClaimImpact } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useWs } from '../../providers/ws-provider';
@@ -269,7 +269,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
         </InspectorSection>
 
         <InspectorSection title="Claim standing">
-          <ClaimStandingSection target={{ node_id: nodeId }} claimState={typeof props.claim_state === 'string' ? props.claim_state : undefined} />
+          <ClaimStandingSection target={{ node_id: nodeId }} />
         </InspectorSection>
 
         <InspectorSection title="Sessions" count={relationships.sessions.length} actionLabel="Open" onAction={() => navigateToPanel('sessions')}>
@@ -509,46 +509,126 @@ const PROMOTE_STATES: Array<{ state: 'observed' | 'validated' | 'exploited' | 'r
   { state: 'stale', label: 'Stale', hint: 'Was true but has decayed' },
 ];
 
-/** Operator claim-correction controls: record a durable judgment on a node or edge's standing
- *  (promote_claim), or clear one back to the derived state (withdraw_claim). Targets exactly one
- *  of a node or an edge. Exported for DOM testing in isolation. */
-export function ClaimStandingSection({ target, claimState }: { target: { node_id: string } | { edge_id: string }; claimState?: string }) {
-  const [reason, setReason] = useState('');
-  const [busy, setBusy] = useState<string | null>(null);
+type ClaimStandingState = 'observed' | 'validated' | 'exploited' | 'refuted' | 'stale';
+
+/** Operator claim-correction workflow for a node/edge: shows the current DERIVED standing vs. any
+ *  explicit promotion (who/when/reason/expiry), a state selector with an optional validity window, a
+ *  single Apply, an impact preview ("this will lapse objective X"), collapsible promotion history,
+ *  and Withdraw only when an active promotion exists. Fetches its context from /api/claims/impact.
+ *  Targets exactly one of a node or an edge. Exported for DOM testing in isolation. */
+export function ClaimStandingSection({ target }: { target: { node_id: string } | { edge_id: string } }) {
   const addToast = useToastStore(s => s.addToast);
+  const nodeId = 'node_id' in target ? target.node_id : undefined;
+  const edgeId = 'edge_id' in target ? target.edge_id : undefined;
+  const [impact, setImpact] = useState<ClaimImpact | null>(null);
+  const [selected, setSelected] = useState<ClaimStandingState>('validated');
+  const [reason, setReason] = useState('');
+  const [validUntil, setValidUntil] = useState('');
+  const [busy, setBusy] = useState<'apply' | 'withdraw' | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const trimmed = reason.trim();
 
-  const run = useCallback(async (op: 'withdraw' | ClaimStandingState, label: string) => {
-    if (!trimmed) {
-      addToast({ type: 'error', title: 'Reason required', message: 'Add a short reason so the judgment is auditable.' });
-      return;
-    }
-    setBusy(label);
+  const refresh = useCallback(async () => {
     try {
-      const result = op === 'withdraw'
-        ? await withdrawClaim({ reason: trimmed, ...target })
-        : await promoteClaim({ state: op, reason: trimmed, ...target });
-      addToast({
-        type: 'success',
-        title: op === 'withdraw' ? 'Promotion withdrawn' : `Promoted to ${op}`,
-        message: `Claim now reads "${result.claim_state}".`,
-      });
-      setReason('');
+      const data = await getClaimImpact(nodeId ? { node_id: nodeId } : { edge_id: edgeId! });
+      setImpact(data);
+      if (data.promotion?.state) setSelected(data.promotion.state as ClaimStandingState);
+    } catch {
+      setImpact(null);
+    }
+  }, [nodeId, edgeId]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const requireReason = (): boolean => {
+    if (trimmed) return true;
+    addToast({ type: 'error', title: 'Reason required', message: 'Add a short reason so the judgment is auditable.' });
+    return false;
+  };
+
+  const apply = useCallback(async () => {
+    if (!requireReason()) return;
+    let valid_until: string | undefined;
+    if (validUntil) {
+      const d = new Date(validUntil);
+      if (Number.isNaN(d.getTime())) { addToast({ type: 'error', title: 'Invalid expiry', message: 'Pick a valid date and time.' }); return; }
+      valid_until = d.toISOString(); // offset-aware ISO the API requires
+    }
+    setBusy('apply');
+    try {
+      const result = await promoteClaim({ state: selected, reason: trimmed, ...(valid_until ? { valid_until } : {}), ...target });
+      addToast({ type: 'success', title: `Promoted to ${selected}`, message: `Claim now reads "${result.claim_state}".` });
+      setReason(''); setValidUntil('');
+      await refresh();
     } catch (error) {
       addToast({ type: 'error', title: 'Claim update failed', message: error instanceof Error ? error.message : String(error) });
     } finally {
       setBusy(null);
     }
-  }, [trimmed, target, addToast]);
+  }, [trimmed, selected, validUntil, target, addToast, refresh]);
+
+  const withdraw = useCallback(async () => {
+    if (!requireReason()) return;
+    setBusy('withdraw');
+    try {
+      const result = await withdrawClaim({ reason: trimmed, ...target });
+      addToast({ type: 'success', title: 'Promotion withdrawn', message: `Claim now reads "${result.claim_state}".` });
+      setReason('');
+      await refresh();
+    } catch (error) {
+      addToast({ type: 'error', title: 'Withdraw failed', message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBusy(null);
+    }
+  }, [trimmed, target, addToast, refresh]);
+
+  const promotion = impact?.promotion ?? null;
+  const supports = impact?.supports_objectives ?? [];
+  // Impact preview: a negative verdict on a supporting element affects the objectives it supports —
+  // refuting revokes the milestone, staling lapses the live view.
+  const willAffect = selected === 'refuted' || selected === 'stale' ? supports : [];
 
   return (
-    <div className="space-y-2">
-      {claimState && (
+    <div className="space-y-2.5 text-xs">
+      {/* Current standing — derived vs. explicit promotion. */}
+      <div className="space-y-1">
         <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-muted-foreground">current</span>
-          <StatusPill className="bg-elevated text-foreground">{claimState}</StatusPill>
+          <span className="w-16 flex-shrink-0 text-muted-foreground">derived</span>
+          <StatusPill className="bg-elevated text-foreground">{impact?.claim_state ?? '…'}</StatusPill>
         </div>
-      )}
+        {promotion ? (
+          <div className="flex items-start gap-2 text-[11px]">
+            <span className="w-16 flex-shrink-0 text-muted-foreground">promoted</span>
+            <div className="min-w-0 flex-1">
+              <StatusPill className="bg-accent/10 text-accent">{promotion.state}</StatusPill>
+              <span className="ml-1.5 text-muted-foreground">by {promotion.by_kind}{promotion.by ? ` ${promotion.by}` : ''} · {formatRelativeTime(promotion.at)}</span>
+              {promotion.valid_until && <span className="ml-1 text-muted-foreground">· expires {formatRelativeTime(promotion.valid_until)}</span>}
+              {promotion.reason && <div className="break-words text-muted-foreground">“{promotion.reason}”</div>}
+            </div>
+          </div>
+        ) : (
+          <div className="pl-[4.5rem] text-[11px] text-muted-foreground">No explicit promotion — the derived state governs.</div>
+        )}
+      </div>
+
+      {/* State selector. */}
+      <div className="flex flex-wrap gap-1" role="group" aria-label="Promotion state">
+        {PROMOTE_STATES.map(({ state, label, hint }) => (
+          <button
+            key={state}
+            title={hint}
+            aria-pressed={selected === state}
+            onClick={() => setSelected(state)}
+            className={cn(
+              'rounded border px-2 py-0.5 text-[11px] transition-colors',
+              selected === state ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <input
         type="text"
         value={reason}
@@ -557,42 +637,73 @@ export function ClaimStandingSection({ target, claimState }: { target: { node_id
         aria-label="Claim judgment reason"
         className="w-full rounded border border-border bg-background/60 px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-accent/50 focus:outline-none"
       />
-      <div className="grid grid-cols-2 gap-1.5">
-        {PROMOTE_STATES.map(({ state, label, hint }) => (
-          <button
-            key={state}
-            title={hint}
-            disabled={busy !== null || !trimmed}
-            onClick={() => run(state, label)}
-            className={cn(
-              'rounded border border-border bg-background/40 px-2 py-1 text-[11px] text-foreground transition-colors',
-              'hover:border-accent/40 hover:bg-hover/30 disabled:cursor-not-allowed disabled:opacity-40',
-              state === 'refuted' && 'hover:border-destructive/50',
-            )}
-          >
-            {busy === label ? '…' : label}
-          </button>
-        ))}
+
+      {/* Optional validity window. */}
+      <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <span className="w-16 flex-shrink-0">expires</span>
+        <input
+          type="datetime-local"
+          value={validUntil}
+          onChange={e => setValidUntil(e.target.value)}
+          aria-label="Promotion expiry (optional)"
+          className="min-w-0 flex-1 rounded border border-border bg-background/60 px-2 py-1 text-[11px] text-foreground focus:border-accent/50 focus:outline-none"
+        />
+        {validUntil && <button onClick={() => setValidUntil('')} className="flex-shrink-0 hover:text-foreground">clear</button>}
+      </label>
+
+      {/* Impact preview. */}
+      {willAffect.length > 0 && (
+        <div className="rounded border border-warning/40 bg-warning/5 px-2 py-1 text-[11px] text-warning">
+          ⚠ Applying <strong>{selected}</strong> {selected === 'refuted' ? 'will revoke' : 'will lapse'} objective{willAffect.length > 1 ? 's' : ''}: {willAffect.map(o => o.description).join(', ')}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
         <button
-          title="Clear the promotion, reverting to the evidence-derived standing"
+          onClick={apply}
           disabled={busy !== null || !trimmed}
-          onClick={() => run('withdraw', 'Withdraw')}
           className={cn(
-            'rounded border border-dashed border-border bg-background/40 px-2 py-1 text-[11px] text-muted-foreground transition-colors',
-            'hover:border-accent/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40',
+            'rounded border border-accent/50 bg-accent/10 px-3 py-1 text-xs font-medium text-accent transition-colors',
+            'hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-40',
           )}
         >
-          {busy === 'Withdraw' ? '…' : 'Withdraw'}
+          {busy === 'apply' ? 'Applying…' : `Apply ${selected}`}
         </button>
+        {promotion && (
+          <button
+            onClick={withdraw}
+            disabled={busy !== null || !trimmed}
+            title="Clear the promotion, reverting to the derived standing"
+            className={cn(
+              'rounded border border-dashed border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors',
+              'hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40',
+            )}
+          >
+            {busy === 'withdraw' ? '…' : 'Withdraw'}
+          </button>
+        )}
       </div>
-      <p className="text-[10px] text-muted-foreground">
-        Records a durable judgment the graph honors over its derived signals. Refuted/stale override positives; withdraw reverts to the derived state.
-      </p>
+
+      {/* Collapsible promotion history. */}
+      {impact && impact.history.length > 0 && (
+        <div>
+          <button onClick={() => setShowHistory(s => !s)} className="text-[10px] text-muted-foreground hover:text-foreground">
+            {showHistory ? '▾' : '▸'} history ({impact.history.length})
+          </button>
+          {showHistory && (
+            <div className="mt-1 space-y-1 border-l border-border pl-2">
+              {impact.history.slice().reverse().map((h, index) => (
+                <div key={index} className="text-[10px] text-muted-foreground break-words">
+                  <span className="text-foreground">{h.state}</span> · {h.by_kind}{h.by ? ` ${h.by}` : ''} · {formatRelativeTime(h.at)}{h.reason ? ` — “${h.reason}”` : ''}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
-
-type ClaimStandingState = 'observed' | 'validated' | 'exploited' | 'refuted' | 'stale';
 
 function InspectorSection({
   title,

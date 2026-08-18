@@ -86,6 +86,14 @@ version changes.
   milestones called out, unsupported critical claims, and actionable
   promotion-vs-evidence contradictions). Operators see engagement quality live
   without generating a report.
+- The claim-correction drawer is a proper **judgment workflow** rather than five
+  fire-immediately buttons: it shows the current DERIVED standing vs. any explicit
+  promotion (who / when / reason / expiry), a state selector with an optional
+  validity window, a single **Apply**, collapsible promotion history, and
+  **Withdraw only when an active promotion exists** — fed by a new read-only
+  `GET /api/claims/impact` snapshot. Choosing `refuted` / `stale` shows an **impact
+  preview** ("Applying refuted will revoke objective X") from the objectives the
+  element supports, so the operator sees the consequence before committing.
 - An **Evidence Debt Queue** (`GET /api/evidence-debt` + an Overview card, and a
   compact intervention rail in the Console alongside the "Needs you" surface): the
   engagement's open quality problems — contradictions, lapsed objectives,

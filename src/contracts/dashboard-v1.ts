@@ -1269,6 +1269,34 @@ export const ClaimWithdrawResultSchema = z.object({
 }).passthrough();
 export type ClaimWithdrawResultDto = z.infer<typeof ClaimWithdrawResultSchema>;
 
+// ---- Claim impact (read-only editor context) ----
+const ClaimPromotionDtoSchema = z.object({
+  state: z.string(),
+  by_kind: z.string(),
+  by: z.string().optional(),
+  at: z.string(),
+  reason: z.string(),
+  valid_until: z.string().optional(),
+}).passthrough();
+export const ClaimImpactQuerySchema = z.object({
+  node_id: z.string().optional(),
+  edge_id: z.string().optional(),
+}).passthrough();
+export const ClaimImpactResponseSchema = z.object({
+  target_kind: z.enum(['node', 'edge']),
+  target_id: z.string(),
+  claim_state: z.string(),
+  promotion: ClaimPromotionDtoSchema.nullable(),
+  history: z.array(ClaimPromotionDtoSchema),
+  supports_objectives: z.array(z.object({
+    id: z.string(),
+    description: z.string(),
+    achieved: z.boolean(),
+    currently_satisfied: z.boolean(),
+  }).passthrough()),
+}).passthrough();
+export type ClaimImpactResponseDto = z.infer<typeof ClaimImpactResponseSchema>;
+
 // ---- Engagement scorecard (live quality) ----
 // Read-only mirror of the report's EngagementScorecard, served from the live graph so the
 // dashboard can show engagement quality without generating a report. Nested objects use

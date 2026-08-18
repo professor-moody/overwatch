@@ -280,9 +280,11 @@ test.describe('dashboard operator journeys', () => {
     await expect(page.getByRole('heading', { name: 'Claim standing' })).toBeVisible();
 
     // Refute a confidence-1.0 (evidence-positive) node → a promotion-vs-evidence contradiction,
-    // committed through the real POST /api/claims/promote command path.
-    await page.getByLabel('Claim judgment reason').fill('browser journey: disputing this host');
+    // committed through the real POST /api/claims/promote command path: select the state, give a
+    // reason, then a single Apply.
     await page.getByRole('button', { name: 'Refuted' }).click();
+    await page.getByLabel('Claim judgment reason').fill('browser journey: disputing this host');
+    await page.getByRole('button', { name: 'Apply refuted' }).click();
     await expect(page.getByText(/Promoted to refuted/)).toBeVisible();
 
     // The contradiction now appears in the evidence-debt queue on the overview.
