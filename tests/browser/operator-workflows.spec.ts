@@ -260,4 +260,33 @@ test.describe('dashboard operator journeys', () => {
     await expect(page.getByRole('button', { name: 'Use durable state' })).toHaveCount(0);
     await expect(page.locator('input[value="Browser Recovery Engagement"]')).toBeVisible();
   });
+
+  test('renders the live engagement-quality scorecard and evidence-debt queue on the overview', async ({ page }) => {
+    await land(page, '/overview');
+    // Computed live from the graph (GET /api/scorecard) and rendered as a card.
+    await expect(page.getByText('Engagement Quality', { exact: false })).toBeVisible();
+    await expect(page.getByText('Access edges verified', { exact: false })).toBeVisible();
+    await expect(page.getByText('Objectives satisfied', { exact: false })).toBeVisible();
+    // The evidence-debt queue (GET /api/evidence-debt) renders; the fresh fixture has no debt yet.
+    await expect(page.getByRole('heading', { name: 'Evidence Debt' })).toBeVisible();
+    await expect(page.getByText(/No open evidence debt/)).toBeVisible();
+  });
+
+  test('corrects a claim from the node drawer and surfaces it as evidence debt', async ({ page }) => {
+    // The deep-link opens the graph with the objective host selected → its inspector drawer.
+    await page.goto(withToken('/graph?node=browser-objective-host&hops=2'), { waitUntil: 'domcontentloaded' });
+    // Wait on the drawer's Claim-standing section directly (the graph page's connection banner
+    // renders differently than the panel views after a direct deep-link goto).
+    await expect(page.getByRole('heading', { name: 'Claim standing' })).toBeVisible();
+
+    // Refute a confidence-1.0 (evidence-positive) node → a promotion-vs-evidence contradiction,
+    // committed through the real POST /api/claims/promote command path.
+    await page.getByLabel('Claim judgment reason').fill('browser journey: disputing this host');
+    await page.getByRole('button', { name: 'Refuted' }).click();
+    await expect(page.getByText(/Promoted to refuted/)).toBeVisible();
+
+    // The contradiction now appears in the evidence-debt queue on the overview.
+    await land(page, '/overview');
+    await expect(page.getByText(/promoted refuted, but its evidence is positive/)).toBeVisible();
+  });
 });
