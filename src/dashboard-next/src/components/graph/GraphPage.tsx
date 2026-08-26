@@ -37,6 +37,7 @@ import { clearGraphPositions, loadGraphPositions, saveGraphNodePosition } from '
 import { parseGraphTargetParams, resolveGraphTarget, type ResolvedGraphTarget } from '../../lib/graph-target';
 import { buildGraphFocusApplication } from '../../lib/graph-focus';
 import { RecoveryBanner } from '../shared/RecoveryBanner';
+import { cn } from '../../lib/utils';
 
 const GRAPH_DRAWER_WIDTH = 384;
 const GRAPH_OVERLAY_GUTTER = 12;
@@ -45,7 +46,8 @@ const GRAPH_OVERLAY_GUTTER = 12;
 const TARGET_AUTO_LAYOUT_SPAN = 120;
 const SPAN_PER_NODE = 30;
 
-export function GraphPage() {
+export function GraphPage({ embedded = false }: { embedded?: boolean }) {
+  const [searchParams, setSearchParams] = useSearchParams();
   // ---- Graph data layer ----
   const {
     graph,
@@ -300,8 +302,39 @@ export function GraphPage() {
       onNodePositionCommit: (nodeId, position) => {
         saveGraphNodePosition(engagementId, nodeId, position);
       },
-      onNodeSelect: (nodeId) => { setSelectedNodeId(nodeId); if (nodeId) setSelectedEdgeId(null); },
-      onEdgeSelect: (edgeId) => { setSelectedEdgeId(edgeId); if (edgeId) setSelectedNodeId(null); },
+      onNodeSelect: (nodeId) => {
+        setSelectedNodeId(nodeId);
+        if (nodeId) setSelectedEdgeId(null);
+        if (!embedded) return;
+        const next = new URLSearchParams(searchParams);
+        for (const key of ['context', 'node', 'edge', 'source', 'target', 'edge_type', 'frontier', 'finding', 'nodes', 'edges', 'label', 'hops', 'kind', 'entity', 'item', 'tab']) next.delete(key);
+        if (nodeId) {
+          next.set('lens', 'topology');
+          next.set('context', 'node');
+          next.set('node', nodeId);
+          next.set('entity', 'node');
+          next.set('item', nodeId);
+        }
+        setSearchParams(next, { replace: true });
+      },
+      onEdgeSelect: (edgeId) => {
+        setSelectedEdgeId(edgeId);
+        if (edgeId) setSelectedNodeId(null);
+        if (!embedded) return;
+        const next = new URLSearchParams(searchParams);
+        for (const key of ['context', 'node', 'edge', 'source', 'target', 'edge_type', 'frontier', 'finding', 'nodes', 'edges', 'label', 'hops', 'kind', 'entity', 'item', 'tab']) next.delete(key);
+        if (edgeId && graph.hasEdge(edgeId)) {
+          next.set('lens', 'topology');
+          next.set('context', 'edge');
+          next.set('edge', edgeId);
+          next.set('source', graph.source(edgeId));
+          next.set('target', graph.target(edgeId));
+          next.set('edge_type', String(graph.getEdgeAttribute(edgeId, 'edgeType') || 'RELATED'));
+          next.set('entity', 'edge');
+          next.set('item', edgeId);
+        }
+        setSearchParams(next, { replace: true });
+      },
       onNodeFocus: (nodeId, hops) => {
         // Zoom to the focus neighborhood
         const neighborhood = getNeighborhood(graph, nodeId, hops);
@@ -403,7 +436,6 @@ export function GraphPage() {
   }, [layout, graph]);
 
   // ---- Query param navigation (from frontier/overview/agents) ----
-  const [searchParams, setSearchParams] = useSearchParams();
   const appliedParamsRef = useRef<string | null>(null);
 
   const applyGraphFocusTarget = useCallback((resolved: ResolvedGraphTarget) => {
@@ -488,24 +520,53 @@ export function GraphPage() {
 
   useEffect(() => {
     const key = searchParams.toString();
-    if (!key || appliedParamsRef.current === key || graph.order === 0 || !rendererRef.current) return;
+    if (appliedParamsRef.current === key || graph.order === 0 || !rendererRef.current) return;
+
+    const hasInspectorTarget = [
+      'context', 'node', 'nodes', 'edge', 'edges', 'frontier', 'finding', 'entity', 'item',
+    ].some(param => searchParams.has(param));
+    if (embedded && !hasInspectorTarget && (selectedNodeId || selectedEdgeId)) {
+      const s = stateRef.current;
+      s.selectedNode = null;
+      s.selectedNeighborhood = null;
+      s.inspectedEdgeIds.clear();
+      setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+      refresh();
+    }
 
     const target = parseGraphTargetParams(searchParams);
-    if (!target) return;
+    if (!target) {
+      // Route state is authoritative in the embedded workspace. When the shell
+      // removes a selection, mirror that change into Sigma without issuing a
+      // competing navigation update of our own.
+      if (embedded && (selectedNodeId || selectedEdgeId)) {
+        const s = stateRef.current;
+        s.selectedNode = null;
+        s.selectedNeighborhood = null;
+        s.inspectedEdgeIds.clear();
+        setSelectedNodeId(null);
+        setSelectedEdgeId(null);
+        refresh();
+      }
+      appliedParamsRef.current = key;
+      return;
+    }
 
     const resolved = resolveGraphTarget(graph, target, { frontier });
     if (resolved.missingReason) {
       appliedParamsRef.current = key;
       toast({ type: 'warning', title: 'Graph target not found', message: resolved.missingReason });
-      setSearchParams({}, { replace: true });
+      const next = new URLSearchParams(searchParams);
+      for (const param of ['context', 'node', 'edge', 'source', 'target', 'edge_type', 'frontier', 'finding', 'nodes', 'edges', 'label', 'hops', 'kind', 'entity', 'item', 'tab']) next.delete(param);
+      setSearchParams(next, { replace: true });
       return;
     }
 
     if (applyGraphFocusTarget(resolved)) {
       appliedParamsRef.current = key;
-      setSearchParams({}, { replace: true });
     }
-  }, [applyGraphFocusTarget, frontier, graph, graphVersion, layoutRunning, nodeCount, rendererRef, searchParams, setSearchParams, toast]);
+  }, [applyGraphFocusTarget, embedded, frontier, graph, graphVersion, layoutRunning, nodeCount, refresh, rendererRef, searchParams, selectedEdgeId, selectedNodeId, setSearchParams, stateRef, toast]);
 
   // ---- Toolbar callbacks ----
   const handleReset = useCallback(() => {
@@ -763,6 +824,10 @@ export function GraphPage() {
         case 'Escape':
           e.preventDefault();
           setShowShortcuts(false);
+          // In the four-workspace shell, Escape ordering and URL cleanup belong
+          // to WorkspaceShell. A second graph-level navigation write can race
+          // with inspector/drawer cleanup and resurrect stale legacy targets.
+          if (embedded) break;
           setSelectedEdgeId(null);
           clearSelection();
           clearPathHighlight();
@@ -775,7 +840,7 @@ export function GraphPage() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleFitCurrentContext, zoomIn, zoomOut, handleToggleLayout, clearSelection, clearPathHighlight, handleReset]);
+  }, [embedded, handleFitCurrentContext, zoomIn, zoomOut, handleToggleLayout, clearSelection, clearPathHighlight, handleReset]);
 
   const s = stateRef.current;
   const layers = useMemo(() => buildGraphLayerStates({
@@ -801,8 +866,9 @@ export function GraphPage() {
   }, [rendererRef, editMode]);
 
   return (
-    <div className="h-screen flex flex-col bg-background">
+    <div className={cn(embedded ? 'h-full min-h-0' : 'h-screen', 'flex flex-col bg-background')}>
       <GraphToolbar
+        embedded={embedded}
         nodeCount={nodeCount}
         edgeCount={edgeCount}
         layoutRunning={layoutRunning}
@@ -833,7 +899,7 @@ export function GraphPage() {
         undoCount={undoStackRef.current.length}
       />
 
-      <RecoveryBanner />
+      {!embedded && <RecoveryBanner />}
 
       {/* Edit mode banner */}
       {editMode && (
@@ -843,8 +909,9 @@ export function GraphPage() {
         </div>
       )}
 
+      <div className="relative flex min-h-0 flex-1">
       {/* Main graph area */}
-      <div className="flex-1 relative overflow-hidden">
+      <div className="relative min-w-0 flex-1 overflow-hidden">
         <GraphContainer onMount={mount} rendererRef={rendererRef} />
 
         {renderIssue && (
@@ -955,7 +1022,7 @@ export function GraphPage() {
         )}
       </div>
 
-      {/* Node detail drawer */}
+      {/* Node detail inspector */}
       <NodeDetailDrawer
         graph={graph}
         nodeId={selectedNodeId}
@@ -963,7 +1030,9 @@ export function GraphPage() {
         onFocus={enterNeighborhoodFocus}
         editMode={editMode}
         onUndoPush={handleUndoPush}
+        embedded={embedded}
       />
+      </div>
 
       {/* Context menu (edit mode) */}
       {editMode && (

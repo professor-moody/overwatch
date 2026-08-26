@@ -6,6 +6,7 @@ import { useCallback } from 'react';
 import { useNavigate } from 'react-router';
 import type { PanelId } from '../components/layout/OperatorLayout';
 import { buildGraphTargetPath, type GraphNavigationTarget } from '../lib/graph-target';
+import { legacyPathToWorkspacePath } from '../lib/workspace-navigation';
 
 export const PANEL_IDS = [
   'overview',
@@ -68,26 +69,31 @@ export function parseHash(hash: string): NavigationTarget | null {
 export function useNavigation() {
   const navigate = useNavigate();
 
-  const navigateToGraphTarget = useCallback((target: GraphNavigationTarget) => {
-    navigate(buildGraphTargetPath(target));
+  const navigateLegacyTarget = useCallback((path: string) => {
+    const parsed = new URL(path, 'http://overwatch.local');
+    navigate(legacyPathToWorkspacePath(parsed.pathname, parsed.searchParams));
   }, [navigate]);
+
+  const navigateToGraphTarget = useCallback((target: GraphNavigationTarget) => {
+    navigateLegacyTarget(buildGraphTargetPath(target));
+  }, [navigateLegacyTarget]);
 
   const navigateToGraph = useCallback((nodeId?: string, hops?: number) => {
     if (!nodeId) {
-      navigate('/graph');
+      navigate('/investigate?lens=topology');
       return;
     }
-    navigate(buildGraphTargetPath({ kind: 'node', nodeId, hops }));
-  }, [navigate]);
+    navigateLegacyTarget(buildGraphTargetPath({ kind: 'node', nodeId, hops }));
+  }, [navigate, navigateLegacyTarget]);
 
   const navigateToGraphFilter = useCallback((filter: string) => {
     const params = new URLSearchParams({ filter });
-    navigate(`/graph?${params.toString()}`);
+    navigate(`/investigate?lens=topology&${params.toString()}`);
   }, [navigate]);
 
   const navigateToPanel = useCallback((panel: PanelId, item?: string, subview?: string) => {
-    navigate(buildPanelPath({ panel, item, subview }));
-  }, [navigate]);
+    navigateLegacyTarget(buildPanelPath({ panel, item, subview }));
+  }, [navigateLegacyTarget]);
 
   const navigateToEvidence = useCallback((nodeId: string) => {
     navigateToPanel('evidence', nodeId);
@@ -132,7 +138,7 @@ export function useNavigation() {
     if (params.to) qs.set('to', params.to);
     if (params.objective) qs.set('objective', params.objective);
     const q = qs.toString();
-    navigate(`/paths${q ? `?${q}` : ''}`);
+    navigate(`/investigate?lens=paths${q ? `&${q}` : ''}`);
   }, [navigate]);
 
   return {

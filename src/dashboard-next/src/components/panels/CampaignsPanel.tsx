@@ -31,6 +31,7 @@ import {
   resolveCampaignItems,
 } from '../../lib/campaign-workspace';
 import { getFrontierKey } from '../../lib/frontier-workspace';
+import { setSelectionParams } from '../../lib/workspace-navigation';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 
 const STATUS_ORDER: Record<Campaign['status'], number> = {
@@ -41,7 +42,7 @@ const STATUS_ORDER: Record<Campaign['status'], number> = {
   aborted: 4,
 };
 
-export function CampaignsPanel() {
+export function CampaignsPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const campaigns = useEngagementStore((s) => s.campaigns);
   const frontier = useEngagementStore((s) => s.frontier);
   const agents = useEngagementStore((s) => s.agents);
@@ -52,7 +53,7 @@ export function CampaignsPanel() {
   const [view, setView] = useState<'list' | 'board'>('list');
   const [query, setQuery] = useState('');
   const [agentQueries, setAgentQueries] = useState<AgentQuery[]>([]);
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const requestedCampaignId = searchParams.get('item');
 
   useEffect(() => {
@@ -113,8 +114,8 @@ export function CampaignsPanel() {
   }, []);
 
   return (
-    <div className="h-[calc(100vh-7rem)] min-h-[680px] flex flex-col gap-4">
-      <PageHeader
+    <div className={cn('flex min-h-0 flex-col gap-3', embedded ? 'h-full' : 'h-[calc(100vh-7rem)] min-h-[680px]')}>
+      {!embedded && <PageHeader
         title="Campaigns"
         meta={`(${campaigns.length} total · ${activeCount} active · ${draftCount} drafts)`}
         actions={(
@@ -141,15 +142,21 @@ export function CampaignsPanel() {
             </button>
           </FilterBar>
         )}
-      />
+      />}
+      {embedded && <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle pb-3">
+        <div className="inline-flex rounded border border-border bg-elevated p-0.5"><ViewToggle active={view === 'list'} onClick={() => setView('list')} icon={<LayoutList className="h-3.5 w-3.5" />} label="Campaigns" /><ViewToggle active={view === 'board'} onClick={() => setView('board')} icon={<Columns3 className="h-3.5 w-3.5" />} label="Board" /></div>
+        {view === 'list' && <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Filter campaigns…" className="settings-input h-8 min-w-52" />}
+        <button onClick={refresh} className="inline-flex h-8 items-center gap-1 rounded border border-border bg-elevated px-2 text-xs text-muted-foreground hover:text-foreground"><RefreshCw className="h-3.5 w-3.5" />Refresh</button>
+        <button onClick={() => { setView('list'); setMode('builder'); }} className="settings-save-btn ml-auto inline-flex h-8 items-center gap-1"><Plus className="h-3.5 w-3.5" />New campaign</button>
+      </div>}
 
       {view === 'board' ? (
-        <PanelSection className="flex-1 min-h-0 flex flex-col">
+        <PanelSection className={cn('flex min-h-0 flex-1 flex-col', embedded && 'border-0 bg-transparent p-0')}>
           <CampaignBoard cards={missionCards} />
         </PanelSection>
       ) : (
-      <div className="grid grid-cols-[minmax(340px,420px)_1fr] gap-4 flex-1 min-h-0">
-        <PanelSection className="p-0 overflow-hidden min-h-0 flex flex-col">
+      <div className={cn('grid min-h-0 flex-1 gap-4', embedded ? 'grid-cols-1' : 'grid-cols-[minmax(340px,420px)_1fr]')}>
+        <PanelSection className={cn('min-h-0 overflow-hidden p-0 flex flex-col', embedded && 'border-0 bg-transparent')}>
           <div className="grid grid-cols-3 border-b border-border text-center text-xs">
             <CampaignStat label="Active" value={activeCount} tone="success" />
             <CampaignStat label="Drafts" value={draftCount} tone="accent" />
@@ -163,7 +170,11 @@ export function CampaignsPanel() {
                 key={campaign.id}
                 campaign={campaign}
                 selected={selectedCampaign?.id === campaign.id && mode === 'detail'}
-                onSelect={() => { setSelectedId(campaign.id); setMode('detail'); }}
+                onSelect={() => {
+                  setSelectedId(campaign.id);
+                  setMode('detail');
+                  if (embedded) setSearchParams(setSelectionParams(searchParams, { kind: 'campaign', id: campaign.id }));
+                }}
               />
             ))}
           </div>
@@ -173,15 +184,16 @@ export function CampaignsPanel() {
           <CampaignBuilder frontier={frontier} onCancel={() => setMode('detail')} onCreated={(campaign) => {
             setSelectedId(campaign.id);
             setMode('detail');
+            if (embedded) setSearchParams(setSelectionParams(searchParams, { kind: 'campaign', id: campaign.id }));
             refresh();
           }} />
-        ) : selectedCampaign ? (
+        ) : !embedded && selectedCampaign ? (
           <CampaignDetail campaign={selectedCampaign} frontier={frontier} onRefresh={refresh} />
-        ) : (
+        ) : !embedded ? (
           <PanelSection>
             <EmptyState message="Select a campaign or build one from Frontier items." />
           </PanelSection>
-        )}
+        ) : null}
       </div>
       )}
     </div>
@@ -227,7 +239,7 @@ function CampaignRow({ campaign, selected, onSelect }: { campaign: Campaign; sel
   );
 }
 
-function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign; frontier: FrontierItem[]; onRefresh: () => void }) {
+export function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign; frontier: FrontierItem[]; onRefresh: () => void }) {
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [children, setChildren] = useState<Campaign[]>([]);
@@ -306,7 +318,7 @@ function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign;
   return (
     <div className="min-w-0 min-h-0 flex flex-col gap-3 overflow-y-auto">
       <PanelSection>
-        <div className="flex items-start gap-3">
+        <div className="flex flex-col gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-2">
               <StatusPill className={statusClass(campaign.status)}>{campaign.status}</StatusPill>
@@ -324,7 +336,7 @@ function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign;
             )}
             <div className="text-[11px] text-muted-foreground font-mono truncate">{campaign.id}</div>
           </div>
-          <div className="flex flex-wrap justify-end gap-1.5">
+          <div className="flex w-full flex-wrap justify-start gap-1.5">
             {actions.map(action => (
               <button
                 key={action.action}

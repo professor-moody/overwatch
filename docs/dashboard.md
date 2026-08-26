@@ -21,8 +21,8 @@ existing engagement. If its config is missing beside retained state or other
 engagement artifacts, setup preserves them and enters or requests explicit
 recovery instead of creating a competing empty engagement.
 
-The daemon owns one current active engagement. Use **Console → Add Targets** to
-change its scope and **Settings** to change objectives or OPSEC; the same
+The daemon owns one current active engagement. Use **Operate → Start Work** to
+preview and add target scope, and **Manage → Settings** to change objectives or OPSEC; the same
 changes are available to terminal Claude through `update_scope`,
 `add_objective`, and `set_opsec`. **New Engagement** creates a separate inactive
 configuration. It does not switch this daemon, and the dashboard does not
@@ -90,6 +90,21 @@ beyond the local machine.
 Browser HTTP and WebSocket requests must also be same-origin with the served
 dashboard host. Different ports are accepted only when both authorities are
 loopback; foreign origins are rejected.
+
+## Operator workspaces {#operator-workspaces}
+
+The dashboard uses four labeled destinations at desktop widths of 1024px and above:
+
+| Workspace | Purpose |
+|---|---|
+| **Operate** | Prioritized attention, active work, canonical Frontier order, campaigns, history, steering, commands, and the guided Start Work launcher |
+| **Investigate** | Topology, asset inventory, identities, credentials, and objective/custom attack paths |
+| **Review** | Canonical proof readiness, evidence chains, producing runs, and report generation/archive |
+| **Manage** | Engagement lifecycle, scope/objectives, operator settings, recovery, and diagnostics |
+
+The active engagement plus connection, recovery, synchronization, and OPSEC posture stay visible in the shared header. A right-side inspector preserves surrounding context; it docks at 1280px and overlays at narrower supported widths. Activity, Sessions, and Runs share a fixed-height bottom drawer. `Cmd/Ctrl+K` opens navigation/search over already-loaded workspace entities and never interprets operational commands.
+
+The canonical routes are `/operate`, `/investigate`, `/review`, and `/manage`. Legacy panel routes continue to translate their query context during the documented compatibility window; see [Compatibility and releases](compatibility.md#dashboard-panel-route-aliases).
 
 ## Graph Interactions
 
@@ -164,7 +179,7 @@ Click any node to open the right-side inspector. It shows:
 
 ### Frontier Item Navigation
 
-Click a graph action from Frontier, Credentials, Sessions, Activity, or an inspector relationship to open `/graph?node=...&hops=...`. The graph enters neighborhood focus, opens the inspector, and fits the visible neighborhood while reserving space for graph chrome and the right drawer.
+Click a graph action from Operate, Credentials, Sessions, Activity, or an inspector relationship to open `/investigate?lens=topology&node=...&hops=...`. The graph enters neighborhood focus, opens the inspector, and fits the visible neighborhood while reserving space for graph chrome and the shared inspector.
 
 ### Trust Signals
 
@@ -180,21 +195,6 @@ These signals are operator-facing diagnostics. They do not mean the target is vu
 
 The dashboard derives the summary from `/api/trust-signals`. Activity and Findings show row-level context, Overview shows the newest verification queue, Graph inspectors show signals tied to the selected node, and Smoke checks the endpoint shape.
 
-## Sidebar Panels
-
-The sidebar contains six collapsible panels:
-
-| Panel | Content |
-|-------|---------|
-| **Lab Readiness** | Current readiness status and top issues |
-| **Graph Summary** | Node counts by type, confirmed vs inferred edges |
-| **Objectives** | Engagement objectives with achievement status |
-| **Frontier** | Top 15 frontier items (click to zoom to node) |
-| **Agents** | Active sub-agents with status |
-| **Recent Activity** | Last 20 activity entries with timestamps |
-
-Click any panel header to collapse/expand it. Panel state is persisted in `localStorage`.
-
 ## Controls
 
 ### Recovery status
@@ -205,7 +205,7 @@ distinguishes active-config divergence, underlying WAL/state failure, and
 unresolved process identity, so selecting file/state authority never appears
 to repair an unrelated journal or runtime problem.
 
-Open **Settings → Recovery** for the full outcome, contiguous/on-disk
+Open **Manage → Diagnostics** for the full outcome, contiguous/on-disk
 checkpoints, observed/supported state and journal format versions, migration
 backup path/checksum, file/runtime/state revisions and hashes, write-intent
 state, and operator-facing reason. For a config-only divergence, **Use file**

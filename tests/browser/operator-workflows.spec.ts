@@ -75,19 +75,21 @@ test.describe('dashboard operator journeys', () => {
     await page.goto(withToken('/agents'), { waitUntil: 'domcontentloaded' });
     await expect(page.getByText('Live', { exact: true })).toBeVisible();
     expect(new URL(page.url()).searchParams.has('token')).toBe(false);
-    // The full sidebar is taller than Playwright's default viewport. Invoke
-    // the real React control without making this storage-resilience journey a
-    // sidebar-scroll test, then use the operator shortcut for navigation.
-    await page.getByTitle('Collapse navigation').evaluate((element: HTMLElement) => element.click());
-    await expect(page.getByTitle('Expand navigation')).toHaveCount(1);
-    await page.keyboard.press('g');
-    await expect(page).toHaveURL(/\/graph$/);
+    await page.keyboard.press('Control+k');
+    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+    await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill('Investigate');
+    await page.getByRole('option', { name: /Investigate/ }).click();
+    await expect(page).toHaveURL(/\/investigate$/);
     await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('9');
     await page.getByTitle('More graph controls').click();
     await page.getByText('Reset positions', { exact: true }).click();
     await expect(page.getByText('Positions reset', { exact: true })).toBeVisible();
-    await page.keyboard.press('c');
-    await page.keyboard.press('g');
+    await page.keyboard.press('Control+k');
+    await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill('Operate');
+    await page.getByRole('option', { name: /Operate/ }).click();
+    await page.keyboard.press('Control+k');
+    await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill('Investigate');
+    await page.getByRole('option', { name: /Investigate/ }).click();
     await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('9');
   });
 
@@ -103,10 +105,10 @@ test.describe('dashboard operator journeys', () => {
 
     await page.goto(withToken('/agents'), { waitUntil: 'domcontentloaded' });
     await expect(page.getByText('Live', { exact: true })).toBeVisible();
-    await page.getByTitle('Collapse navigation').evaluate((element: HTMLElement) => element.click());
-    await expect(page.getByTitle('Expand navigation')).toHaveCount(1);
-    await page.keyboard.press('g');
-    await expect(page).toHaveURL(/\/graph$/);
+    await page.keyboard.press('Control+k');
+    await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill('Investigate');
+    await page.getByRole('option', { name: /Investigate/ }).click();
+    await expect(page).toHaveURL(/\/investigate$/);
     await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('9');
   });
 
@@ -127,7 +129,7 @@ test.describe('dashboard operator journeys', () => {
     await expect(page.getByText('Live', { exact: true })).toBeVisible();
 
     const visible = new URL(page.url());
-    expect(visible.pathname).toBe('/overview');
+    expect(visible.pathname).toBe('/operate');
     expect(visible.searchParams.get('keep')).toBe('1');
     expect(visible.searchParams.has('token')).toBe(false);
     expect(visible.hash).toBe('#retained');
@@ -209,11 +211,11 @@ test.describe('dashboard operator journeys', () => {
     await expect(page.getByText('Focused on', { exact: false })).toBeVisible();
     await expect(page.getByText('Browser Objective Host', { exact: false }).first()).toBeVisible();
     const visible = new URL(page.url());
-    // Graph target parameters are one-shot commands: a successful focus consumes
-    // them, while the selected node remains visible in the inspector/banner.
-    expect(visible.pathname).toBe('/graph');
-    expect(visible.searchParams.get('node')).toBeNull();
-    expect(visible.searchParams.get('hops')).toBeNull();
+    // Canonical route state remains shareable after legacy graph translation.
+    expect(visible.pathname).toBe('/investigate');
+    expect(visible.searchParams.get('lens')).toBe('topology');
+    expect(visible.searchParams.get('node')).toBe('browser-objective-host');
+    expect(visible.searchParams.get('hops')).toBe('2');
     expect(visible.searchParams.has('token')).toBe(false);
   });
 
@@ -234,7 +236,7 @@ test.describe('dashboard operator journeys', () => {
     const websocketUrls: string[] = [];
     page.on('websocket', socket => websocketUrls.push(socket.url()));
     await land(page, '/overview');
-    const nodesValue = page.getByText('Nodes', { exact: true }).locator('..').locator('span').first();
+    const nodesValue = page.getByTestId('asset-count');
     const initialNodes = Number.parseInt((await nodesValue.textContent()) ?? '0', 10);
 
     const changed = await request.post(`${controlBase}/drop-main-ws`);
@@ -261,15 +263,82 @@ test.describe('dashboard operator journeys', () => {
     await expect(page.locator('input[value="Browser Recovery Engagement"]')).toBeVisible();
   });
 
-  test('renders the live engagement-quality scorecard and evidence-debt queue on the overview', async ({ page }) => {
+  test('renders the four-workspace shell and the consolidated review queue', async ({ page }) => {
     await land(page, '/overview');
-    // Computed live from the graph (GET /api/scorecard) and rendered as a card.
-    await expect(page.getByText('Engagement Quality', { exact: false })).toBeVisible();
-    await expect(page.getByText('Access edges verified', { exact: false })).toBeVisible();
-    await expect(page.getByText('Objectives satisfied', { exact: false })).toBeVisible();
-    // The evidence-debt queue (GET /api/evidence-debt) renders; the fresh fixture has no debt yet.
+    await expect(page).toHaveURL(/\/operate/);
+    await expect(page.getByRole('heading', { name: 'Operate' })).toBeVisible();
+    const primary = page.getByRole('navigation', { name: 'Primary workspaces' });
+    await expect(primary.getByRole('button')).toHaveCount(4);
+    for (const name of ['Operate', 'Investigate', 'Review', 'Manage']) {
+      await expect(primary.getByRole('button', { name: new RegExp(`^${name}`) })).toBeVisible();
+    }
+    await expect(page.getByRole('tab', { name: /Needs you/ })).toBeVisible();
+    await expect(page.getByRole('tab', { name: /Active/ })).toBeVisible();
+    await expect(page.getByRole('tab', { name: /Ready/ })).toBeVisible();
+
+    await land(page, '/review?view=proof');
     await expect(page.getByRole('heading', { name: 'Evidence Debt' })).toBeVisible();
     await expect(page.getByText(/No open evidence debt/)).toBeVisible();
+  });
+
+  test('keeps labeled navigation, avoids horizontal overflow, and switches inspector mode at 1280px', async ({ page, request }) => {
+    const findingsResponse = await request.get(`${dashboardBase}/api/findings`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(findingsResponse.ok()).toBe(true);
+    const findingBody = await findingsResponse.json() as { findings: Array<{ id: string }> };
+    expect(findingBody.findings.length).toBeGreaterThan(0);
+    const target = findingBody.findings[0].id;
+
+    for (const viewport of [
+      { width: 1440, height: 900, inspectorPosition: 'static' },
+      { width: 1280, height: 800, inspectorPosition: 'static' },
+      { width: 1024, height: 768, inspectorPosition: 'fixed' },
+    ] as const) {
+      await page.setViewportSize(viewport);
+      await land(page, `/review?view=readiness&kind=finding&item=${encodeURIComponent(target)}&drawer=activity`);
+
+      const primary = page.getByRole('navigation', { name: 'Primary workspaces' });
+      for (const label of ['Operate', 'Investigate', 'Review', 'Manage']) {
+        await expect(primary.getByRole('button', { name: new RegExp(`^${label}`) })).toBeVisible();
+      }
+      await expect(page.locator('.workspace-inspector')).toBeVisible();
+      expect(await page.locator('.workspace-inspector').evaluate(element => getComputedStyle(element).position))
+        .toBe(viewport.inspectorPosition);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(viewport.width);
+      expect(await page.evaluate(() => document.body.scrollWidth)).toBe(viewport.width);
+    }
+
+    // At overlay widths Escape closes the transient inspector first, preserving
+    // the independently-targeted drawer, then closes the drawer on the next press.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.workspace-inspector')).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.get('drawer')).toBe('activity');
+    await page.keyboard.press('Escape');
+    expect(new URL(page.url()).searchParams.has('drawer')).toBe(false);
+  });
+
+  test('never indexes or persists credential material in workspace navigation', async ({ page }) => {
+    const credentialId = 'browser-credential';
+    const credentialValue = 'browser-ci-redacted';
+    await land(page, `/credentials?item=${encodeURIComponent(credentialId)}`);
+    expect(decodeURIComponent(page.url())).not.toContain(credentialValue);
+    await page.keyboard.press('Control+k');
+    await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill(credentialValue);
+    await expect(page.getByText('No matches', { exact: true })).toBeVisible();
+
+    const stored = await page.evaluate(() => {
+      const values: string[] = [];
+      for (const storage of [localStorage, sessionStorage]) {
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index);
+          if (key) values.push(`${key}=${storage.getItem(key)}`);
+        }
+      }
+      return values.join('\n');
+    });
+    expect(stored).not.toContain(credentialValue);
+    expect((browserErrors.get(page) ?? []).join('\n')).not.toContain(credentialValue);
   });
 
   test('corrects a claim from the node drawer and surfaces it as evidence debt', async ({ page }) => {
@@ -287,8 +356,8 @@ test.describe('dashboard operator journeys', () => {
     await page.getByRole('button', { name: 'Apply refuted' }).click();
     await expect(page.getByText(/Promoted to refuted/)).toBeVisible();
 
-    // The contradiction now appears in the evidence-debt queue on the overview.
-    await land(page, '/overview');
+    // The contradiction now appears in Review's proof workspace.
+    await land(page, '/review?view=proof');
     await expect(page.getByText(/promoted refuted, but its evidence is positive/)).toBeVisible();
   });
 });

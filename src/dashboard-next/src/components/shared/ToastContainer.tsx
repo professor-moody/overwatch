@@ -39,7 +39,7 @@ export function ToastContainer() {
     removeToast(toast.id);
   };
 
-  const isGraph = location.pathname === '/graph';
+  const isGraph = location.pathname === '/investigate' && new URLSearchParams(location.search).get('lens') === 'topology';
 
   return (
     <div

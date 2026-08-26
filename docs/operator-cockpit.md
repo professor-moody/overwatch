@@ -1,6 +1,6 @@
 # Operator Cockpit
 
-Overwatch is operated as a **multi-agent cockpit**: a human operator drives a primary reasoning model, dispatches headless sub-agents, steers and talks to them, and watches everything live from the dashboard's **Console** (the home of a console-first IA — see [Dashboard](dashboard.md#operator-console-cockpit)). This page explains the runtime and the operator surfaces.
+Overwatch is operated as a **multi-agent cockpit**: a human operator drives a primary reasoning model, dispatches headless sub-agents, steers and talks to them, and watches everything live from the dashboard's **Operate** workspace (see [Dashboard](dashboard.md#operator-workspaces)). This page explains the runtime and the operator surfaces.
 
 ## Safety invariant
 
@@ -75,14 +75,15 @@ The directive substrate ([`manage_agent_directive`](tools/manage-agent-directive
 
 ## Seeing everything
 
-The **Console** is the primary surface, laid out as a focused master-detail workspace:
+The dashboard is organized around four persistent workflows: **Operate**, **Investigate**, **Review**, and **Manage**. Operate is the default master-detail workspace:
 
 - a pinned **command bar** (the NL command line above);
 - a **"Needs you" strip** that surfaces what's waiting on the operator — pending **approvals** (inline Approve / Deny+reason, plus a compact **Approve all (N)** / **Approve safe (N)** bulk-clear over the whole pending set — deny stays per-item), agent **questions** (inline Answer), planner-proposed **plans** (inline Confirm & run / Dismiss), and **stuck agents** (heartbeating but making no progress for a while — View agent → to steer or stop) — and hides itself when nothing needs attention. Proposed plans persist here for their full 10-min TTL, so a plan can't age out unseen just because the operator wasn't watching the command bar during the ~90s the transient card showed. Identical questions from multiple agents **cluster** into one card: answer once and it fans out to every asking agent. *Blocked* (waiting on an approval/answer) is already represented by that approval/question item; *stuck* is the distinct "alive but idle" case the watchdog's heartbeat-TTL can't catch — a pure dashboard-side projection (`isStuck` in `agent-mission.ts`, no new engine state) that flags a still-`running`, **not**-blocked agent whose last attributed activity (`current_action_at`) is older than `STUCK_IDLE_MS` (8 min, deliberately above the heartbeat-TTL and visual-quiet thresholds). It surfaces below approvals/questions but above stale failures, and as the Blocked lane on the campaign board;
-- a **Fleet** roster on the left: select an agent to *focus* it, and the main column becomes that agent's detail + steering + its own activity stream; with nothing selected the main column is a fleet overview over the full primary/sub-agent stream;
-- the activity stream is filterable by Primary/Subagents/Commands/Thoughts/Actions/Findings/Approvals/Sessions/Errors.
+- **Active**, **Ready**, **Campaigns**, and **History** views for live work, canonical Frontier order, structured campaigns, and terminal outcomes;
+- one contextual inspector for agent, target, finding, path, campaign, and proof context;
+- a shared bottom drawer for **Activity**, **Sessions**, and **Runs**, so raw output and terminals do not displace the current workflow.
 
-The live WS push carries source attribution so primary reasoning and operator commands appear inline as they happen. Resolved approvals clear off the `action_resolved` push. The standalone **Approvals** view is the deep triage queue and shares the same approve/deny path.
+The live WS push carries source attribution so primary reasoning and operator commands appear inline as they happen. Resolved approvals clear off the `action_resolved` push. The complete attention queue shares the same approve/deny, answer, plan-confirmation, and steering paths as the former standalone panels.
 
 ## Campaign board & per-campaign OPSEC {#campaign-board}
 
@@ -134,16 +135,16 @@ by a test so it always resolves to a real file):
 | `planner` | Legacy planner role — read state and propose plans, never executes or mutates. | 11 Overwatch tools + ToolSearch; **no target execution** | `operator-planner` |
 <!-- END:archetype-table -->
 
-The system **recommends** a type for a target (`recommendArchetype`, mirroring the frontier→strategy mapping), and the operator can **override** it from the catalog. Deploy two ways:
+The system **recommends** a type for a target (`recommendArchetype`, mirroring the frontier→strategy mapping), and the operator can **override** it in Operate's **Start Work** launcher:
 
-- **Ad-hoc / real-time** — the console **Deploy** button (or `POST /api/agents/quick-deploy`): paste an IP/CIDR/domain → it's added to scope (canonical `updateScope`, so the agent's actions stay in-scope) and the recommended (or chosen) agent is dispatched at it, in one step. No engagement-setup ritual.
-- **At existing nodes** — Deploy with node IDs, or `dispatch_agents`, passing an `archetype`.
+- **Ad-hoc / real-time** — paste an IP/CIDR/domain, review the live scope preview, then use `POST /api/agents/quick-deploy` to atomically add scope and dispatch.
+- **Existing context** — launch one graph node or Frontier item from its review screen, or confirm a calculated multi-node fan-out before batch dispatch.
 
 The engagement/scope/OPSEC substrate is unchanged — ad-hoc deploy just removes the setup friction.
 
-## Analysis workspace {#analysis}
+## Runs drawer {#analysis}
 
-The **Analysis** workspace (Investigate group) is where the operator **assesses the raw output of tools the agents run** and uses it to steer the next move — the run-centric complement to the node-centric **Evidence** view. Today a tool's raw output is captured to the evidence store and the *parsed finding* lands in the graph; Analysis surfaces the raw bytes so "what did nmap actually return?" is one click away.
+The shared **Runs** drawer is where the operator **assesses the raw output of tools the agents run** without leaving Operate, Investigate, or Review. It is the run-centric complement to Review's proof context: raw output remains captured in the evidence store and parsed findings remain in the graph.
 
 - **Run list** — every agent tool run derived from the activity history (status: running / success / failure / partial; tool; command; agent; targets), filterable by status + free text.
 - **Assessment view** — for a selected run: raw **stdout/stderr** (scrollable, stdout↔stderr toggle, find-in-output) **plus** the run's parsed findings and linked graph nodes. Head-by-default with a **Load more** (up to the 1 MiB server cap), and clear banners for truncated / missing / capture-failed streams.
@@ -168,6 +169,8 @@ This makes the workspace a tight assess → re-parse → deploy loop, suggest-on
 | `ws://…/ws/actions/{action_id}/output` | Live stdout/stderr stream of a running action |
 | `POST /api/actions/{action_id}/reparse` | Re-parse an action's output: preview (`ingest:false`) or promote (`ingest:true`) |
 | `GET /api/parsers` | Supported parser names for the re-parse picker |
+| `GET /api/findings/readiness` | Canonical derived finding proof-readiness and concrete evidence gaps |
+| `GET /api/engagements` | Engagement library plus active id; `library_available` distinguishes an attached file-backed library from a runtime-only engagement |
 | `GET /api/plans` | Open planner-proposed plans awaiting confirmation |
 | `GET /api/find-paths` | Structured attack-path query — `from`+`to` or `objective`, `optimize`, `max` (backs the Attack Paths **Custom path** picker; engine-ranked, supports `balanced`) |
 | `POST /api/agents/{task_id}/directive` | Steer one agent (one validated directive op) |

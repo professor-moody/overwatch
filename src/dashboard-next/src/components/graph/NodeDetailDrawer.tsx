@@ -3,17 +3,18 @@
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router';
 import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
 import { useNavigation } from '../../hooks/useNavigation';
-import { dispatchAgent, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, promoteClaim, withdrawClaim, getClaimImpact, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto, type ClaimImpact } from '../../lib/api';
+import { evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, promoteClaim, withdrawClaim, getClaimImpact, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto, type ClaimImpact } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useWs } from '../../providers/ws-provider';
 import { POLL } from '../../lib/polling';
 import { deriveNodeRelationships } from '../../lib/relationships';
-import { ActionButton, StatusPill } from '../shared/primitives';
+import { ActionButton, StatusPill, WorkspaceInspector } from '../shared/primitives';
 import type { EvidenceChainResponse } from '../../lib/types';
 import { computeActionRisk } from '../../lib/action-queue';
 import { formatFrontierScore, getFrontierPrimaryNodeId } from '../../lib/frontier-workspace';
@@ -24,6 +25,7 @@ import { TrustSignalList } from '../shared/TrustSignals';
 import { findingSummary, findingTitle } from '../../lib/finding-display';
 import { AuthenticatedImage } from '../shared/AuthenticatedImage';
 import { NodeSignificanceCard } from './NodeSignificanceCard';
+import { useDashboardUiStore } from '../../stores/dashboard-ui-store';
 
 interface NodeDetailDrawerProps {
   graph: Graph;
@@ -32,12 +34,15 @@ interface NodeDetailDrawerProps {
   onFocus?: (nodeId: string, hops: number) => void;
   editMode?: boolean;
   onUndoPush?: (op: { reason: string; reverse: GraphCorrectionOperation[] }) => void;
+  embedded?: boolean;
 }
 
 type EvidenceStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
 
 export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetailDrawerProps) {
   const { navigateToEvidence, navigateToGraph, navigateToPanel } = useNavigation();
+  const navigate = useNavigate();
+  const setLauncherOpen = useDashboardUiStore(state => state.setStartWorkOpen);
   const storeGraph = useEngagementStore(s => s.graph);
   const sessions = useEngagementStore(s => s.sessions);
   const pendingActions = useEngagementStore(s => s.pendingActions);
@@ -47,8 +52,6 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
   const [evidence, setEvidence] = useState<EvidenceChainResponse | null>(null);
   const [evidenceStatus, setEvidenceStatus] = useState<EvidenceStatus>('idle');
   const [evidenceError, setEvidenceError] = useState<string>('');
-  const [deploying, setDeploying] = useState(false);
-  const addToast = useToastStore(s => s.addToast);
   const { connected } = useWs();
   // Live nodeId for stale-response guarding: a slow fetch that resolves after the
   // operator has moved to another node must not overwrite the new node's data.
@@ -143,30 +146,6 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
   });
   const nodeTrustSignals = trustSignalsForNode(trustSignals, nodeId, relationships.findings.map(finding => finding.id));
 
-  // Deploy an agent to explore THIS node — works on any node, not just frontier
-  // items. Archetype is auto-selected from the node type server-side; the deployed
-  // agent grounds in prior actions on this node (get_agent_context) before acting.
-  const deployHere = async () => {
-    if (deploying) return;
-    setDeploying(true);
-    try {
-      const res = await dispatchAgent({ target_node_ids: [nodeId] });
-      if (res.dispatched) {
-        addToast({ type: 'success', title: 'Agent deployed', message: `exploring ${label}` });
-      } else if (res.existing_agent_id) {
-        addToast({ type: 'warning', title: 'Already being worked', message: `by ${res.existing_agent_id}` });
-      } else if (res.reason === 'dispatch_cap_exceeded') {
-        addToast({ type: 'warning', title: 'Dispatch cap reached', message: 'too many agents running — retry when one frees up' });
-      } else {
-        addToast({ type: 'error', title: 'Not deployed', message: res.reason || 'dispatch refused' });
-      }
-    } catch (err) {
-      addToast({ type: 'error', title: 'Deploy failed', message: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setDeploying(false);
-    }
-  };
-
   const edgeGroups = new Map<string, { count: number; peers: { id: string; label: string; type: string }[] }>();
   graph.forEachEdge(nodeId, (_edgeId, edgeAttrs, source, target) => {
     const edgeType = (edgeAttrs.edgeType as string) || 'RELATED';
@@ -195,34 +174,49 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
   ];
 
   return (
-    <div className="fixed right-0 top-12 bottom-0 w-[min(24rem,calc(100vw-3rem))] bg-surface border-l border-border z-40 flex flex-col shadow-2xl">
-      <div className="px-4 py-3 border-b border-border flex-shrink-0">
-        <div className="flex items-center justify-between mb-1">
+    <WorkspaceInspector
+      label={`${getFriendlyNodeTypeLabel(nodeType).replace(/s$/, '')} inspector`}
+      title={label}
+      identifier={nodeId}
+      onClose={onClose}
+      footer={(
+        <div className="flex flex-col gap-2">
+          <ActionButton
+            onClick={() => {
+              setLauncherOpen(true);
+              navigate(`/operate?view=active&kind=node&item=${encodeURIComponent(nodeId)}`);
+            }}
+            variant="primary"
+            className="w-full"
+          >
+            Start work here
+          </ActionButton>
+          <div className="flex gap-2">
+            <ActionButton onClick={() => onFocus?.(nodeId, 2)} variant="ghost" className="flex-1 text-accent">Focus</ActionButton>
+            <ActionButton onClick={() => navigateToEvidence(nodeId)} variant="secondary" className="flex-1">Evidence</ActionButton>
+            <ActionButton onClick={() => navigateToPanel('frontier', nodeId)} variant="secondary" className="flex-1">Frontier</ActionButton>
+          </div>
+        </div>
+      )}
+    >
+      <div className="space-y-4 overscroll-contain">
+        <div className="flex items-center gap-2">
           <span
-            className="text-[10px] font-mono px-1.5 py-0.5 rounded uppercase tracking-wide"
+            className="rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide"
             style={{ backgroundColor: `${NODE_COLORS[nodeType] || '#888'}20`, color: NODE_COLORS[nodeType] || '#888' }}
           >
             {getFriendlyNodeTypeLabel(nodeType).replace(/s$/, '')}
           </span>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1" title="Close">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
+          <span className="truncate text-[10px] text-muted-foreground">{relationships.findings.length > 0 ? `${relationships.findings.length} linked finding${relationships.findings.length === 1 ? '' : 's'}` : 'No linked findings'}</span>
         </div>
-        <h3 className="text-sm font-semibold truncate" title={label}>{label}</h3>
-        <div className="text-[10px] text-muted-foreground font-mono break-all mt-0.5">{nodeId}</div>
-        <div className="mt-2 grid grid-cols-4 gap-1.5">
+        <div className="grid grid-cols-4 gap-1.5 border-b border-border-subtle pb-3">
           {selectedFacts.map(fact => (
-            <div key={fact.label} className="rounded border border-border bg-elevated/60 px-2 py-1">
+            <div key={fact.label} className="px-1 py-0.5">
               <div className="text-[9px] uppercase text-muted-foreground">{fact.label}</div>
-              <div className="text-xs font-mono text-foreground">{fact.value}</div>
+              <div className="font-mono text-xs text-foreground">{fact.value}</div>
             </div>
           ))}
         </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 overscroll-contain">
         <InspectorSection title="Summary">
           <div className="space-y-1.5 text-xs">
             {entries.slice(0, 5).map((entry, index) => (
@@ -407,41 +401,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           </InspectorSection>
         )}
       </div>
-
-      <div className="flex-shrink-0 px-4 py-2 border-t border-border bg-surface/95 flex flex-col gap-2">
-        <ActionButton
-          onClick={deployHere}
-          variant="primary"
-          disabled={deploying}
-          className="w-full"
-        >
-          {deploying ? 'Deploying…' : 'Deploy agent here'}
-        </ActionButton>
-        <div className="flex gap-2">
-          <ActionButton
-            onClick={() => onFocus?.(nodeId, 2)}
-            variant="ghost"
-            className="flex-1 text-accent"
-          >
-            Focus
-          </ActionButton>
-          <ActionButton
-            onClick={() => navigateToEvidence(nodeId)}
-            variant="secondary"
-            className="flex-1"
-          >
-            Evidence
-          </ActionButton>
-          <ActionButton
-            onClick={() => navigateToPanel('frontier', nodeId)}
-            variant="secondary"
-            className="flex-1"
-          >
-            Frontier
-          </ActionButton>
-        </div>
-      </div>
-    </div>
+    </WorkspaceInspector>
   );
 }
 

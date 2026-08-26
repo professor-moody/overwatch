@@ -241,6 +241,8 @@ export interface EngagementState {
     profile?: string;
     template?: string;
     created_at?: string;
+    scope?: ScopeConfig;
+    opsec?: OpsecConfig;
   };
   config?: {
     id: string;

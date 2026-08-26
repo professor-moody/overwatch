@@ -41,6 +41,7 @@ import {
   EngagementConfigResponseSchema,
   EngagementConfigUpdateResponseSchema,
   EvidenceRawResponseSchema,
+  FindingReadinessReportSchema,
   FindingsResponseSchema,
   FrontierWeightsDtoSchema,
   FrontierWeightsPatchSchema,
@@ -366,6 +367,8 @@ const EngagementListItemSchema = z.object({
 const EngagementListResponseSchema = z.object({
   engagements: z.array(EngagementListItemSchema),
   active_id: z.string().nullable().optional(),
+  /** Whether this runtime has a file-backed engagement library attached. */
+  library_available: z.boolean(),
 }).passthrough();
 const EngagementTemplateSchema = z.object({
   id: z.string(),
@@ -711,7 +714,7 @@ export const DASHBOARD_OPERATION_IDS = [
   'createCampaign', 'listCampaigns', 'getPhases', 'getPendingActions', 'getTools',
   'getParsers', 'getMcpTools', 'getReadiness', 'getTrustSignals',
   'getInferenceRules', 'getTelemetry', 'getScorecard', 'getEvidenceDebt', 'getClaimImpact', 'exportGraph', 'correctGraph', 'promoteClaim', 'withdrawClaim',
-  'getTapeStatus', 'toggleTape', 'getFindings', 'listReports', 'renderReport',
+  'getTapeStatus', 'toggleTape', 'getFindings', 'getFindingReadiness', 'listReports', 'renderReport',
   'bundleEngagement', 'getOperatorConsole', 'getActiveApplicationCommands', 'getApplicationCommand',
   'getAgentContext', 'getAgentHistory', 'getAgentConsole', 'cancelAgent',
   'dismissAgent', 'issueAgentDirective', 'answerAgentQuery', 'updateObjective',
@@ -844,6 +847,7 @@ const dashboardToolingEndpoints = {
   getTapeStatus: endpoint({ operation_id: 'getTapeStatus', method: 'GET', path: '/api/tape', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: TapeStatusResponseSchema }, response_kind: 'json', summary: 'Read tape status' }),
   toggleTape: endpoint({ operation_id: 'toggleTape', method: 'POST', path: '/api/tape/toggle', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: z.object({ action: z.enum(['enable', 'disable']).optional(), dir: z.string().optional(), file: z.string().optional(), session_id: z.string().optional() }).strict(), responses: { 200: TapeStatusResponseSchema, 400: DashboardErrorSchema, 503: DashboardErrorSchema }, response_kind: 'json', summary: 'Set tape capture state (omitted action retains legacy toggle behavior)' }),
   getFindings: endpoint({ operation_id: 'getFindings', method: 'GET', path: '/api/findings', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: FindingsResponseSchema }, response_kind: 'json', summary: 'List findings' }),
+  getFindingReadiness: endpoint({ operation_id: 'getFindingReadiness', method: 'GET', path: '/api/findings/readiness', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: FindingReadinessReportSchema }, response_kind: 'json', summary: 'Read canonical finding proof-readiness' }),
   listReports: endpoint({ operation_id: 'listReports', method: 'GET', path: '/api/reports', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: ReportsListResponseSchema }, response_kind: 'json', summary: 'List reports' }),
   renderReport: endpoint({ operation_id: 'renderReport', method: 'POST', path: '/api/reports/render', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: ReportRenderBodySchema, responses: { 201: ReportRenderResponseSchema }, response_kind: 'json', summary: 'Render a report' }),
   bundleEngagement: endpoint({ operation_id: 'bundleEngagement', method: 'GET', path: '/api/bundle', path_schema: EmptyPathSchema, query_schema: EmptyQuerySchema, body_schema: NoBodySchema, responses: { 200: z.unknown() }, response_kind: 'binary', summary: 'Download an engagement bundle' }),

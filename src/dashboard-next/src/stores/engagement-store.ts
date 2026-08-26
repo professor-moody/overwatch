@@ -178,7 +178,14 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       // `access_level`. Derive the toolbar/layout view-model from the real fields —
       // reading the phantom fields left the toolbar blank, access at 'none', and the
       // graph-layout store keyed on 'default' (positions bleeding across engagements).
-      engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : null,
+      engagement: s.config ? {
+        id: s.config.id,
+        name: s.config.name,
+        profile: s.config.profile,
+        created_at: s.config.created_at,
+        scope: s.config.scope,
+        opsec: s.config.opsec,
+      } : null,
       accessLevel: s.access_summary?.current_access_level || 'none',
       historyCount: data.history_count ?? 0,
       stateRevision: data.state_revision ?? null,
@@ -255,7 +262,14 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       engagement: unset.has('config')
         ? null
         : s.config
-          ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at }
+          ? {
+            id: s.config.id,
+            name: s.config.name,
+            profile: s.config.profile,
+            created_at: s.config.created_at,
+            scope: s.config.scope,
+            opsec: s.config.opsec,
+          }
           : get().engagement,
       accessLevel: unset.has('access_summary')
         ? 'none'

@@ -19,6 +19,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
+import { setSelectionParams } from '../../lib/workspace-navigation';
 
 import { findPaths } from '../../lib/api';
 import type { ExportedEdge, ExportedNode, PathAnalysisStatus } from '../../lib/types';
@@ -241,11 +242,12 @@ function CustomPathFinder({ nodes, byId, onInspect }: {
   );
 }
 
-export function AttackPathsPanel() {
+export function AttackPathsPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const graph = useEngagementStore((s) => s.graph);
   const graphVersion = useEngagementStore((s) => s.graphVersion);
   const initialized = useEngagementStore((s) => s.initialized);
   const { navigateToGraphTarget, navigateToFrontier } = useNavigation();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [laneFilter, setLaneFilter] = useState<AttackPathLaneFilter>('all');
   const [maxHops, setMaxHops] = useState<number>(6);
@@ -276,6 +278,13 @@ export function AttackPathsPanel() {
   const groupedPaths = useMemo(() => groupDisplayAttackPaths(limitedPaths), [limitedPaths]);
 
   const inspectPath = (path: DisplayAttackPath) => {
+    if (embedded) {
+      const next = setSelectionParams(searchParams, { kind: 'path', id: path.id });
+      next.set('nodes', path.nodeIds.join(','));
+      next.set('edges', path.edgeIds.join(','));
+      setSearchParams(next);
+      return;
+    }
     navigateToGraphTarget({
       kind: 'path',
       nodeIds: path.nodeIds,
@@ -293,7 +302,8 @@ export function AttackPathsPanel() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Attack Paths" meta={`(${allPaths.length} computed · ${visiblePaths.length} visible)`} />
+      {!embedded && <PageHeader title="Attack Paths" meta={`(${allPaths.length} computed · ${visiblePaths.length} visible)`} />}
+      {embedded && <div className="border-b border-border-subtle pb-3 text-[11px] text-muted-foreground">{allPaths.length} computed paths · {visiblePaths.length} visible</div>}
 
       <CustomPathFinder nodes={graph.nodes} byId={byId} onInspect={inspectPath} />
 

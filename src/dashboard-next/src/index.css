@@ -73,6 +73,57 @@ body {
   overflow: hidden;
 }
 
+html {
+  color-scheme: dark;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.workspace-shell {
+  background:
+    radial-gradient(circle at 65% -35%, rgba(91, 141, 239, 0.07), transparent 42rem),
+    var(--color-background);
+}
+
+.workspace-pulse {
+  animation: workspace-pulse 1.35s ease-in-out infinite;
+}
+
+@keyframes workspace-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+/* Legacy run/session/activity panels are hosted inside the global drawer. Their
+   old full-page height contracts must yield to the drawer's bounded workspace. */
+.workspace-drawer-content > div,
+.workspace-drawer-content > div > div {
+  min-height: 0 !important;
+  height: 100% !important;
+}
+
+.workspace-drawer-content h2 {
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 #root {
   height: 100vh;
   overflow: hidden;

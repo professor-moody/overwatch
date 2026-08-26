@@ -20,7 +20,7 @@ describe('buildAttentionQueue', () => {
     const v = buildAttentionQueue({ now: NOW });
     expect(v.total).toBe(0);
     expect(v.items).toEqual([]);
-    expect(v.counts).toEqual({ approval: 0, question: 0, plan: 0, failed: 0, stuck: 0 });
+    expect(v.counts).toEqual({ approval: 0, question: 0, plan: 0, failed: 0, stuck: 0, proof_gap: 0 });
   });
 
   it('merges approvals, questions, and failed agents into one queue with counts', () => {
@@ -32,7 +32,7 @@ describe('buildAttentionQueue', () => {
       // a running agent should NOT appear:
     }, );
     expect(v.total).toBe(3);
-    expect(v.counts).toEqual({ approval: 1, question: 1, plan: 0, failed: 1, stuck: 0 });
+    expect(v.counts).toEqual({ approval: 1, question: 1, plan: 0, failed: 1, stuck: 0, proof_gap: 0 });
   });
 
   it('surfaces only OPEN proposed plans (confirm handle + TTL countdown), ranked approval > plan > stuck', () => {
@@ -85,6 +85,27 @@ describe('buildAttentionQueue', () => {
       'approval:normal',
       'failed:tf',
     ]);
+  });
+
+  it('aggregates proof debt into one item between stuck and failed work', () => {
+    const v = buildAttentionQueue({
+      now: NOW,
+      proofGap: { draft: 3, needs_validation: 2 },
+      agents: [
+        agent({
+          id: 'stalled',
+          assigned_at: new Date(NOW - 20 * 60_000).toISOString(),
+          current_action_at: new Date(NOW - 20 * 60_000).toISOString(),
+        }),
+        agent({ id: 'failed', status: 'failed' }),
+      ],
+    });
+    expect(v.counts.proof_gap).toBe(1);
+    expect(v.items.find(item => item.kind === 'proof_gap')).toMatchObject({
+      id: 'proof_gap:findings',
+      title: '5 findings need proof work',
+    });
+    expect(v.items.map(item => item.kind)).toEqual(['stuck', 'proof_gap', 'failed']);
   });
 
   it('drops failed agents older than the recency window, keeps recent + uncompleted ones', () => {

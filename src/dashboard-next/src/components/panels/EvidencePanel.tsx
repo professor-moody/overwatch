@@ -12,7 +12,7 @@ import { EvidenceNarrative } from '../shared/EvidenceNarrative';
 import { narrativeItemsFromChains, resolveEvidenceQuery } from '../../lib/evidence-narrative';
 import { findingTitle, severityDiverseEntryFindings } from '../../lib/finding-display';
 
-export function EvidencePanel() {
+export function EvidencePanel({ embedded = false }: { embedded?: boolean } = {}) {
   const [searchParams] = useSearchParams();
   const initialQuery = searchParams.get('node') || '';
 
@@ -21,7 +21,7 @@ export function EvidencePanel() {
   // copy that used to live here was removed — see multi-agent-roadmap consolidation).
   return (
     <div className="space-y-6">
-      <PageHeader title="Evidence" />
+      {!embedded && <PageHeader title="Evidence" />}
       <EvidenceChainSearch initialQuery={initialQuery} />
     </div>
   );

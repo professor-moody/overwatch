@@ -26,7 +26,7 @@ export function RecoveryBanner({ className }: { className?: string }) {
         <div className="mt-0.5 opacity-90">{presentation.message}</div>
       </div>
       <Link
-        to="/settings"
+        to="/manage?section=diagnostics"
         className="shrink-0 rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/20"
       >
         Review recovery

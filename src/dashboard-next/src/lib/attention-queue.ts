@@ -9,7 +9,7 @@ import { isStuck, stuckIdleMinutes } from './agent-mission';
 // shows one item expanded at a time. Stuck-agent detection joins this in Phase 2
 // (the `kind` union is the extension point).
 
-export type AttentionKind = 'approval' | 'question' | 'plan' | 'failed' | 'stuck';
+export type AttentionKind = 'approval' | 'question' | 'plan' | 'failed' | 'stuck' | 'proof_gap';
 
 export interface AttentionItem {
   /** Stable id so the expanded-item selection survives re-renders: `<kind>:<ref>`. */
@@ -57,6 +57,7 @@ const P_PLAN = 70;
 // than a stale failure sitting in history, but below a live agent explicitly
 // waiting on the operator (approval/question).
 const P_STUCK = 60;
+const P_PROOF_GAP = 50;
 const P_FAILED = 40;
 
 /** Matches the server's proposed-plan TTL (proposed-plan-store.ts). */
@@ -164,10 +165,28 @@ export interface AttentionInput {
   agentQueries?: AgentQuery[];
   proposedPlans?: ProposedPlan[];
   agents?: AgentInfo[];
+  /** Canonical finding-readiness summary. One aggregate item is emitted so proof
+   *  debt is visible without flooding the operator queue with every finding. */
+  proofGap?: { draft: number; needs_validation: number };
   now?: number;
   /** Failed/interrupted agents only stay in the queue this long after finishing,
    *  so historical failures don't pile up forever and bury live approvals. */
   failedWindowMs?: number;
+}
+
+function proofGapItem(gap: NonNullable<AttentionInput['proofGap']>): AttentionItem {
+  const total = gap.draft + gap.needs_validation;
+  const detail = [
+    gap.draft > 0 ? `${gap.draft} need captured evidence` : '',
+    gap.needs_validation > 0 ? `${gap.needs_validation} need validation` : '',
+  ].filter(Boolean).join(' · ');
+  return {
+    id: 'proof_gap:findings',
+    kind: 'proof_gap',
+    priority: P_PROOF_GAP,
+    title: `${total} finding${total === 1 ? '' : 's'} need proof work`,
+    detail,
+  };
 }
 
 const DEFAULT_FAILED_WINDOW_MS = 30 * 60_000;
@@ -215,10 +234,13 @@ export function buildAttentionQueue(input: AttentionInput = {}): AttentionQueueV
       items.push(stuckItem(agent, now));
     }
   }
+  if (input.proofGap && input.proofGap.draft + input.proofGap.needs_validation > 0) {
+    items.push(proofGapItem(input.proofGap));
+  }
 
   items.sort((a, b) => (b.priority - a.priority) || a.id.localeCompare(b.id));
 
-  const counts: Record<AttentionKind, number> = { approval: 0, question: 0, plan: 0, failed: 0, stuck: 0 };
+  const counts: Record<AttentionKind, number> = { approval: 0, question: 0, plan: 0, failed: 0, stuck: 0, proof_gap: 0 };
   for (const it of items) counts[it.kind] += 1;
 
   return { items, total: items.length, counts };

@@ -2173,6 +2173,32 @@ export const FindingsResponseSchema = z.object({
 }).passthrough();
 export type FindingsResponseDto = z.infer<typeof FindingsResponseSchema>;
 
+export const FindingReadinessSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  severity: z.string(),
+  category: z.string(),
+  readiness: z.enum(['client_ready', 'needs_validation', 'draft']),
+  evidence_chains: z.number().int().nonnegative(),
+  proof_cards: z.number().int().nonnegative(),
+  captured_evidence: z.boolean(),
+  classified: z.boolean(),
+  affected_assets: z.number().int().nonnegative(),
+  gaps: z.array(z.string()),
+}).strict();
+export type FindingReadinessDto = z.infer<typeof FindingReadinessSchema>;
+
+export const FindingReadinessReportSchema = z.object({
+  summary: z.object({
+    total: z.number().int().nonnegative(),
+    client_ready: z.number().int().nonnegative(),
+    needs_validation: z.number().int().nonnegative(),
+    draft: z.number().int().nonnegative(),
+  }).strict(),
+  findings: z.array(FindingReadinessSchema),
+}).strict();
+export type FindingReadinessReportDto = z.infer<typeof FindingReadinessReportSchema>;
+
 export const ReportRecordSchema = z.object({
   id: z.string(),
   generated_at: z.string(),

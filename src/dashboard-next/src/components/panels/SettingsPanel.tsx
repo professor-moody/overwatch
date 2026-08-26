@@ -46,7 +46,7 @@ import { recoveryPresentation } from '../../lib/recovery-presentation';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { ActionButton, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
-export function SettingsPanel() {
+export function SettingsPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const [config, setConfig] = useState<EngagementConfig | null>(null);
   const [settings, setSettings] = useState<SettingsDto | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
@@ -121,7 +121,7 @@ export function SettingsPanel() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <PageHeader
+      {!embedded && <PageHeader
         title="Settings"
         actions={
           <>
@@ -135,7 +135,8 @@ export function SettingsPanel() {
           </ActionButton>
           </>
         }
-      />
+      />}
+      {embedded && <div className="flex items-center justify-end gap-2 border-b border-border-subtle pb-3">{saveStatus && <span className={cn('text-xs', saveStatus.includes('Error') ? 'text-destructive' : 'text-success')}>{saveStatus}</span>}<ActionButton onClick={load} variant="secondary">Refresh</ActionButton></div>}
 
       <RecoverySection
         recovery={recovery}

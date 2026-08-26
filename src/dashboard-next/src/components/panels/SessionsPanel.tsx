@@ -164,7 +164,7 @@ export function SessionsPanel() {
   }, [sessions, selectedSessionId, activeTab]);
 
   useEffect(() => {
-    const item = searchParams.get('item');
+    const item = searchParams.get('item') || searchParams.get('drawerItem');
     if (item) setSelectedSessionId(item);
   }, [searchParams]);
 

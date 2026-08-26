@@ -1,19 +1,25 @@
-import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router';
 import { WsProvider } from './providers/ws-provider';
-import { OperatorLayout } from './components/layout/OperatorLayout';
+import { WorkspaceShell } from './components/layout/WorkspaceShell';
 import { ToastContainer } from './components/shared/ToastContainer';
+import { buildPanelPath, parseHash } from './hooks/useNavigation';
+import { isLegacyDashboardPath, isWorkspaceId, legacyPathToWorkspacePath } from './lib/workspace-navigation';
 
-const LazyGraphPage = lazy(() =>
-  import('./components/graph/GraphPage').then(m => ({ default: m.GraphPage })),
-);
-
-function GraphSpinner() {
-  return (
-    <div className="h-screen flex items-center justify-center bg-background">
-      <div className="text-sm text-muted-foreground animate-pulse">Loading Graph Explorer…</div>
-    </div>
-  );
+function DashboardRoute() {
+  const location = useLocation();
+  const segment = location.pathname.replace(/^\//, '').split('/')[0] || undefined;
+  const legacyHash = parseHash(location.hash);
+  if (legacyHash) {
+    const oldPath = buildPanelPath(legacyHash);
+    const parsed = new URL(oldPath, 'http://overwatch.local');
+    return <Navigate to={legacyPathToWorkspacePath(parsed.pathname, parsed.searchParams)} replace />;
+  }
+  if (!segment) return <Navigate to={`/operate${location.search}${location.hash}`} replace />;
+  if (isWorkspaceId(segment)) return <WorkspaceShell workspace={segment} />;
+  if (isLegacyDashboardPath(segment)) {
+    return <Navigate to={`${legacyPathToWorkspacePath(segment, new URLSearchParams(location.search))}${location.hash}`} replace />;
+  }
+  return <Navigate to="/operate" replace />;
 }
 
 export function App() {
@@ -21,17 +27,7 @@ export function App() {
     <WsProvider>
       <BrowserRouter basename={import.meta.env.BASE_URL}>
         <Routes>
-          <Route
-            path="/graph"
-            element={
-              <Suspense fallback={<GraphSpinner />}>
-                <LazyGraphPage />
-              </Suspense>
-            }
-          />
-          <Route path="/" element={<OperatorLayout />} />
-          <Route path="/:panelId" element={<OperatorLayout />} />
-          <Route path="*" element={<Navigate to="/agents" replace />} />
+          <Route path="*" element={<DashboardRoute />} />
         </Routes>
         <ToastContainer />
       </BrowserRouter>

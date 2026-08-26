@@ -19,6 +19,7 @@ import {
 import { ActionButton, DataRow, EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
 import * as api from '../../lib/api';
 import type { PlaybookRun } from '../../lib/types';
+import { setSelectionParams } from '../../lib/workspace-navigation';
 
 type SortMode = 'recent' | 'kind' | 'status';
 type StatusFilter = 'all' | 'active' | 'stale' | 'expired';
@@ -50,7 +51,7 @@ export function preparedExecutionIsClaimed(
     attempt.attempt_id === prepared.attempt_id && attempt.status === 'claimed') === true;
 }
 
-export function CredentialsPanel() {
+export function CredentialsPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const graph = useEngagementStore((s) => s.graph);
   const graphVersion = useEngagementStore((s) => s.graphVersion);
   const playbookRuns = useEngagementStore((s) => s.playbookRuns);
@@ -64,7 +65,7 @@ export function CredentialsPanel() {
   const [playbookBusy, setPlaybookBusy] = useState<string | null>(null);
   const [playbookError, setPlaybookError] = useState<string | null>(null);
   const [preparedExecution, setPreparedExecution] = useState<PreparedExecution | null>(null);
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { navigateToGraphTarget, navigateToPanel } = useNavigation();
   const nowMs = Date.now();
 
@@ -204,10 +205,10 @@ export function CredentialsPanel() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      {!embedded && <PageHeader
         title="Credentials"
         meta={`(${creds.length} total · ${activeCreds} active · ${reachableCreds} reachable)`}
-      />
+      />}
 
       {/* Derived-view chips double as filters — click to scope the list, click
           again to clear. (Active / Expired tokens mirror the lifecycle filter
@@ -351,7 +352,11 @@ export function CredentialsPanel() {
                   {/* Expand toggle */}
                   <ActionButton
                     aria-label={`${isExpanded ? 'Collapse' : 'Expand'} credential ${cred.label || cred.id}`}
-                    onClick={() => setExpandedId(isExpanded ? null : cred.id)}
+                    onClick={() => {
+                      const nextId = isExpanded ? null : cred.id;
+                      setExpandedId(nextId);
+                      if (embedded) setSearchParams(setSelectionParams(searchParams, nextId ? { kind: 'credential', id: nextId } : null));
+                    }}
                     variant="ghost"
                   >
                     {isExpanded ? 'less' : 'more'}

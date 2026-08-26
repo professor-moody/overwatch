@@ -766,6 +766,16 @@
       "summary": "List findings"
     },
     {
+      "operation_id": "getFindingReadiness",
+      "method": "GET",
+      "path": "/api/findings/readiness",
+      "response_kind": "json",
+      "success_statuses": [
+        200
+      ],
+      "summary": "Read canonical finding proof-readiness"
+    },
+    {
       "operation_id": "listReports",
       "method": "GET",
       "path": "/api/reports",
@@ -1600,7 +1610,7 @@
       "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
-        "200": "71f9afd48abe06381ff48ec2380eca8182ae41d606be4a8d0766b96539399d70"
+        "200": "f1237471fdd41649b4486fac83a068f3fe9417690f3efcf559cbebbe691e3b96"
       }
     },
     "createEngagement": {
@@ -1787,6 +1797,14 @@
       "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
       "responses": {
         "200": "cd09642834600db5d94dff153ed91ef21272dda794bce01bbdbcfe2e086d3be7"
+      }
+    },
+    "getFindingReadiness": {
+      "path": "5a789679f7b83424941e2cbb77ece3225809a96d7fbd329d640e841ad188b076",
+      "query": "229e7526e970f46b35e92b8245f0a496ca2ef63f8435da1889722d9a296c1b9e",
+      "body": "98f17e485906d6e7b65a053d87628373d0f7c3d64e322de637458647f1ae7099",
+      "responses": {
+        "200": "54a042989459ca058ed89adaa04974b607c794715de921dbbc2e545ae5e401aa"
       }
     },
     "listReports": {
@@ -2130,5 +2148,5 @@
       "server_events": "43f35cace033f56a4d7764de68e45e7bc8b3a814257c4c1b8b19aa91dad3c6ee"
     }
   },
-  "schema_hash": "63cde31e936a35265ed075c37d21609167195eb5e3943f84bf122afda9cdc7d1"
+  "schema_hash": "473f554953fa00cc9b74943aa7a9b05769a70564e0a8492c6074084c90132927"
 }

@@ -359,7 +359,7 @@ const GROUPS = [...new Set(CHECKS.map(c => c.group))];
 
 // ---- component ----
 
-export function SmokePanel() {
+export function SmokePanel({ embedded = false }: { embedded?: boolean } = {}) {
   const { connected } = useWs();
   const { navigateToPanel } = useNavigation();
   const [results, setResults] = useState<Record<string, CheckResult>>(() =>
@@ -450,7 +450,7 @@ export function SmokePanel() {
 
   return (
     <div className="space-y-5">
-      <PageHeader
+      {!embedded && <PageHeader
         title="Diagnostics"
         meta={
           <span className="inline-flex items-center gap-3">
@@ -480,7 +480,7 @@ export function SmokePanel() {
           </ActionButton>
           </>
         }
-      />
+      />}
 
       <ReadinessStrip readiness={readiness} wsStatus={wsStatus} apiStatus={overallStatus} />
 

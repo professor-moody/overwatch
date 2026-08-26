@@ -17,13 +17,16 @@ export interface PanelCommandDef {
 export interface CommandItem {
   /** Stable key for React + selection. */
   id: string;
-  kind: 'panel' | 'agent';
+  kind: 'panel' | 'workspace' | 'agent' | 'asset' | 'campaign' | 'credential' | 'finding' | 'path';
   label: string;
   /** Secondary context: the nav group for a panel, or the agent's status. */
   hint?: string;
   panelId?: PanelId;
   path?: string;
   taskId?: string;
+  /** Canonical destination for non-agent entities in the four-workspace shell. */
+  selectionKind?: 'agent' | 'node' | 'campaign' | 'credential' | 'finding' | 'path';
+  selectionId?: string;
 }
 
 export function buildCommandItems(input: { panels: PanelCommandDef[]; agents?: AgentInfo[] }): CommandItem[] {
