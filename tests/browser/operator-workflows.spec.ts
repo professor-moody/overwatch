@@ -341,6 +341,38 @@ test.describe('dashboard operator journeys', () => {
     expect(new URL(page.url()).searchParams.has('drawer')).toBe(false);
   });
 
+  test('keeps native Paths and Proof Library controls inside the 1024px workspace', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 768 });
+
+    await land(page, '/investigate?lens=paths');
+    const pathOverflow = await page.getByTestId('paths-lens').locator('select, input, button').evaluateAll(elements => elements.flatMap(element => {
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || (rect.left >= 0 && rect.right <= window.innerWidth + 0.5)) return [];
+      return [{ tag: element.tagName, label: element.getAttribute('aria-label') || element.textContent?.trim().slice(0, 80), left: rect.left, right: rect.right }];
+    }));
+    expect(pathOverflow).toEqual([]);
+
+    await land(page, '/review?view=proof');
+    const proofOverflow = await page.getByTestId('proof-library').locator('select, input, button').evaluateAll(elements => elements.flatMap(element => {
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || (rect.left >= 0 && rect.right <= window.innerWidth + 0.5)) return [];
+      return [{ tag: element.tagName, label: element.getAttribute('aria-label') || element.textContent?.trim().slice(0, 80), left: rect.left, right: rect.right }];
+    }));
+    expect(proofOverflow).toEqual([]);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await land(page, '/investigate?lens=topology&entity=node&item=browser-objective-host&node=browser-objective-host&hops=2');
+    const graphToolbarOverflow = await page.getByTestId('graph-toolbar').evaluate(toolbar => {
+      const boundary = toolbar.getBoundingClientRect();
+      return [...toolbar.querySelectorAll('button')].flatMap(button => {
+        const rect = button.getBoundingClientRect();
+        if (rect.width === 0 || (rect.left >= boundary.left - 0.5 && rect.right <= boundary.right + 0.5)) return [];
+        return [{ label: button.getAttribute('title') || button.textContent?.trim(), left: rect.left, right: rect.right, boundaryRight: boundary.right }];
+      });
+    });
+    expect(graphToolbarOverflow).toEqual([]);
+  });
+
   test('supports keyboard-only workspace flow and removes functional motion when requested', async ({ page, request }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await land(page, '/operate?view=attention&drawer=activity');
@@ -404,6 +436,15 @@ test.describe('dashboard operator journeys', () => {
     const credentialValue = 'browser-ci-redacted';
     await land(page, `/investigate?lens=credentials&kind=credential&item=${encodeURIComponent(credentialId)}`);
     expect(decodeURIComponent(page.url())).not.toContain(credentialValue);
+    await expect(page.getByText('••••••••••••••••', { exact: true })).toBeVisible();
+    const reveal = page.getByRole('button', { name: 'Reveal credential' });
+    const copy = page.getByRole('button', { name: 'Copy revealed credential' });
+    await expect(copy).toBeDisabled();
+    await reveal.click();
+    await expect(page.getByText(credentialValue, { exact: true })).toBeVisible();
+    await expect(copy).toBeEnabled();
+    await page.getByRole('button', { name: 'Close inspector', exact: true }).click();
+    await expect(page.getByText(credentialValue, { exact: true })).toHaveCount(0);
     await page.keyboard.press('Control+k');
     await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill(credentialValue);
     await expect(page.getByText('No matches', { exact: true })).toBeVisible();

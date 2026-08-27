@@ -76,7 +76,9 @@ class DemoPtyHandle implements AdapterHandle {
   }
 
   resize(): void {
-    this.emit('\r\n[demo terminal resized]\r\n' + this.prompt);
+    // A real PTY resize updates terminal dimensions without writing into the
+    // transcript. Emitting here made ResizeObserver-driven layout changes feed
+    // back into the demo buffer and drown the useful prompt in resize notices.
   }
 
   kill(): void {

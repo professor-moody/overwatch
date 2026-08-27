@@ -144,10 +144,10 @@ export function ProofLibrary({ findings }: { findings: api.FindingDto[] }) {
   useWorkspaceInspectorAdapters(proofInspectorAdapters);
 
   return (
-    <div className="relative flex min-h-0 flex-1">
+    <div className="relative flex min-h-0 min-w-0 w-full flex-1 overflow-hidden" data-testid="proof-library">
       <section className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle p-3">
-          <label className="relative min-w-48 flex-1">
+        <div className="grid grid-cols-2 items-center gap-2 border-b border-border-subtle p-3 md:grid-cols-3 xl:grid-cols-[minmax(12rem,1fr)_repeat(5,minmax(7rem,11rem))_auto]">
+          <label className="relative col-span-2 min-w-0 md:col-span-3 xl:col-span-1">
             <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-muted" />
             <input aria-label="Search proof" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search labels, tools, techniques…" className="settings-input h-8 w-full pl-8 text-xs" />
           </label>
@@ -169,7 +169,7 @@ export function ProofLibrary({ findings }: { findings: api.FindingDto[] }) {
           <ProofSelect label="Filter proof by availability" value={availabilityFilter} onChange={value => setAvailabilityFilter(value as typeof availabilityFilter)}>
             <option value="all">All availability</option><option value="captured">Captured proof</option><option value="claim">Claim only</option>
           </ProofSelect>
-          <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">{visible.length} proof records</span>
+          <span className="col-span-2 text-right text-[10px] tabular-nums text-muted-foreground md:col-span-1 xl:col-span-1 xl:text-left">{visible.length} proof records</span>
         </div>
 
         {partialFailures > 0 && <div role="status" className="border-b border-warning/20 bg-warning/5 px-3 py-2 text-[11px] text-warning">{partialFailures} finding context{partialFailures === 1 ? '' : 's'} could not be loaded. Showing available proof.</div>}
@@ -198,7 +198,7 @@ export function ProofLibrary({ findings }: { findings: api.FindingDto[] }) {
 }
 
 function ProofSelect({ label, value, onChange, children }: { label: string; value: string; onChange: (value: string) => void; children: React.ReactNode }) {
-  return <select aria-label={label} value={value} onChange={event => onChange(event.target.value)} className="settings-input h-8 max-w-44 text-xs">{children}</select>;
+  return <select aria-label={label} value={value} onChange={event => onChange(event.target.value)} className="settings-input h-8 min-w-0 w-full max-w-none text-xs">{children}</select>;
 }
 
 function EvidenceInspector({ record, onClose, onOpenRun, onOpenFinding, onOpenAsset }: { record: ProofRecord; onClose: () => void; onOpenRun: (actionId: string) => void; onOpenFinding: (findingId: string) => void; onOpenAsset: (nodeId: string) => void }) {
