@@ -17,10 +17,12 @@ const STATUS_FILTERS: Array<{ value: RunStatus | ''; label: string }> = [
 ];
 
 export function RunsDrawer({
+  mode = 'compact',
   selectedItem,
   onSelect,
   onOpenActivity,
 }: {
+  mode?: 'compact' | 'focus';
   selectedItem?: string;
   onSelect: (item: string | null) => void;
   onOpenActivity: (actionId: string) => void;
@@ -96,9 +98,9 @@ export function RunsDrawer({
         </div>
         <div className="min-w-0 flex-1">
           {selected ? (
-            <div className="flex h-full min-h-0 flex-col">
+            <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
               {!selectedKnown && <div className="flex-shrink-0 border-b border-accent/20 bg-accent/5 px-3 py-1 text-[9px] text-accent">Loaded directly by action ID; this run is outside the recent lifecycle window.</div>}
-              <div className="min-h-0 flex-1"><ExecutionOutputView key={selected.actionId} actionId={selected.actionId} showOpenInRuns={false} /></div>
+              <div className="min-h-0 min-w-0 flex-1 overflow-hidden"><ExecutionOutputView key={selected.actionId} actionId={selected.actionId} showOpenInRuns={false} compact={mode === 'compact'} /></div>
               <button type="button" onClick={() => onOpenActivity(selected.actionId)} className="h-7 flex-shrink-0 border-t border-border-subtle text-[9px] text-muted-foreground hover:bg-hover hover:text-foreground">Show lifecycle in Activity</button>
             </div>
           ) : <DrawerState title="Select a run" detail="Inspect command, lifecycle metadata, stdout, stderr, evidence, and findings." />}
@@ -110,7 +112,7 @@ export function RunsDrawer({
 
 function RunRow({ run, selected, onSelect }: { run: ActionRun; selected: boolean; onSelect: () => void }) {
   return (
-    <button type="button" onClick={onSelect} className={cn('relative flex w-full min-w-0 flex-col gap-1 border-b border-border-subtle px-2.5 py-2 text-left transition-colors hover:bg-hover/45 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/70', selected && 'bg-accent/[0.08] before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-accent')}>
+    <button type="button" onClick={onSelect} className={cn('relative flex min-h-[66px] w-full min-w-0 flex-col gap-1 border-b border-border-subtle px-2.5 py-2 text-left transition-colors [contain-intrinsic-size:66px] [content-visibility:auto] hover:bg-hover/45 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/70', selected && 'bg-accent/[0.08] before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-accent')}>
       <div className="flex min-w-0 items-center gap-2">
         <StatusPill tone={runTone(run.status)}>{runCue(run.status)} {run.status}</StatusPill>
         <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-foreground">{run.tool || 'instrumented action'}</span>

@@ -489,6 +489,7 @@ function WorkspaceDrawer({
             <Suspense fallback={<WorkspaceLoading />}>
               {drawer.kind === 'activity' && (
                 <ActivityDrawer
+                  mode={mode}
                   selectedItem={drawer.item}
                   onSelect={onSelect}
                   onOpenRun={(actionId) => onOpenItem('run', actionId)}
@@ -499,6 +500,7 @@ function WorkspaceDrawer({
               )}
               {drawer.kind === 'run' && (
                 <RunsDrawer
+                  mode={mode}
                   selectedItem={drawer.item}
                   onSelect={onSelect}
                   onOpenActivity={(actionId) => onOpenItem('activity', actionId)}

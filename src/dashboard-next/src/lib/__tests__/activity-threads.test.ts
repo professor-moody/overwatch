@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterActivityThreads, mergeConsoleEvents, threadConsoleEvents } from '../activity-threads';
+import { collectNewConsoleEventIds, filterActivityThreads, mergeConsoleEvents, threadConsoleEvents } from '../activity-threads';
 import type { AgentConsoleEvent } from '../types';
 
 function ev(o: Partial<AgentConsoleEvent> & { id: string; timestamp: string }): AgentConsoleEvent {
@@ -87,6 +87,19 @@ describe('mergeConsoleEvents', () => {
       ev({ id: 'new', timestamp: '2026-06-17T12:00:02Z' }),
     ], 1);
     expect(merged.map(event => event.id)).toEqual(['new']);
+  });
+});
+
+describe('collectNewConsoleEventIds', () => {
+  it('counts stable IDs once across replayed and duplicated transport events', () => {
+    const known = new Set(['known']);
+    const duplicate = ev({ id: 'new', timestamp: '2026-06-17T12:00:02Z' });
+    expect(collectNewConsoleEventIds(known, [
+      ev({ id: 'known', timestamp: '2026-06-17T12:00:01Z' }),
+      duplicate,
+      duplicate,
+      ev({ id: 'newer', timestamp: '2026-06-17T12:00:03Z' }),
+    ])).toEqual(['new', 'newer']);
   });
 });
 

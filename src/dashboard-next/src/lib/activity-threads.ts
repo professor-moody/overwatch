@@ -127,6 +127,25 @@ export function mergeConsoleEvents(current: AgentConsoleEvent[], incoming: Agent
     .slice(0, limit);
 }
 
+/**
+ * Count genuinely new projected events without trusting transport batch size.
+ * Main-channel reconnects and periodic HTTP reconciliation may replay events;
+ * only stable event IDs that have not been observed count as unseen activity.
+ */
+export function collectNewConsoleEventIds(
+  knownIds: ReadonlySet<string>,
+  incoming: AgentConsoleEvent[],
+): string[] {
+  const batchIds = new Set<string>();
+  const newIds: string[] = [];
+  for (const event of incoming) {
+    if (knownIds.has(event.id) || batchIds.has(event.id)) continue;
+    batchIds.add(event.id);
+    newIds.push(event.id);
+  }
+  return newIds;
+}
+
 /** Search only server-projected safe metadata; raw event bodies are excluded. */
 export function filterActivityThreads(threads: ActivityThread[], filter: ActivityFilter, search: string): ActivityThread[] {
   const option = ACTIVITY_FILTERS.find(candidate => candidate.id === filter);

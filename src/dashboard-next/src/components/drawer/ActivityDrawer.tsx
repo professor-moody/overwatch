@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router';
 import * as api from '../../lib/api';
 import {
   ACTIVITY_FILTERS,
+  collectNewConsoleEventIds,
   filterActivityThreads,
   mergeConsoleEvents,
   threadConsoleEvents,
@@ -33,10 +34,12 @@ const INITIAL_LIMIT = 200;
 const MAX_LIMIT = 1000;
 
 export function ActivityDrawer({
+  mode = 'compact',
   selectedItem,
   onSelect,
   onOpenRun,
 }: {
+  mode?: 'compact' | 'focus';
   selectedItem?: string;
   onSelect: (item: string | null) => void;
   onOpenRun: (actionId: string) => void;
@@ -56,44 +59,66 @@ export function ActivityDrawer({
   const [directSelectionLoading, setDirectSelectionLoading] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const initializedSelection = useRef(false);
+  const knownEventIds = useRef(new Set<string>());
+  const hasLoadedTimeline = useRef(false);
+  const reconcileGeneration = useRef(0);
+  const suppressNextAnnouncement = useRef(false);
+  const liveControl = useRef({ paused, follow, search });
+  liveControl.current = { paused, follow, search };
+
+  const acceptEvents = useCallback((incoming: AgentConsoleEvent[], announce: boolean) => {
+    if (incoming.length === 0) return;
+    const newIds = collectNewConsoleEventIds(knownEventIds.current, incoming);
+    for (const event of incoming) knownEventIds.current.add(event.id);
+    setEvents(current => mergeConsoleEvents(current, incoming, limit));
+
+    if (!announce || newIds.length === 0) return;
+    const controls = liveControl.current;
+    if (controls.paused || !controls.follow || controls.search.trim()) {
+      setUnseen(value => value + newIds.length);
+      return;
+    }
+    window.requestAnimationFrame(() => listRef.current?.scrollTo({ top: 0, behavior: 'smooth' }));
+  }, [limit]);
 
   const reconcile = useCallback(async () => {
+    const generation = ++reconcileGeneration.current;
+    const announce = hasLoadedTimeline.current && !suppressNextAnnouncement.current;
+    suppressNextAnnouncement.current = false;
+    setLoading(true);
     try {
       const response = await api.getOperatorConsole({ limit });
-      setEvents(current => mergeConsoleEvents(current, response.events || [], limit));
+      if (generation !== reconcileGeneration.current) return;
+      acceptEvents(response.events || [], announce);
+      hasLoadedTimeline.current = true;
       setStale(false);
       setError(null);
     } catch (cause) {
+      if (generation !== reconcileGeneration.current) return;
       setStale(true);
       setError(cause instanceof Error ? cause.message : 'The operator timeline could not be reconciled.');
     } finally {
-      setLoading(false);
+      if (generation === reconcileGeneration.current) setLoading(false);
     }
-  }, [limit]);
+  }, [acceptEvents, limit]);
 
   useEffect(() => {
     void reconcile();
     const timer = window.setInterval(() => {
-      if (connected && !paused) void reconcile();
+      if (connected) void reconcile();
     }, 10_000);
     return () => window.clearInterval(timer);
-  }, [connected, paused, reconcile]);
+  }, [connected, reconcile]);
 
   useEffect(() => {
     const receive = (event: Event) => {
       const detail = (event as CustomEvent<{ events?: AgentConsoleEvent[] }>).detail;
       const incoming = detail?.events || [];
-      if (paused || incoming.length === 0) {
-        if (incoming.length) setUnseen(value => value + incoming.length);
-        return;
-      }
-      setEvents(current => mergeConsoleEvents(current, incoming, limit));
-      if (!follow || search.trim()) setUnseen(value => value + incoming.length);
-      else window.requestAnimationFrame(() => listRef.current?.scrollTo({ top: 0, behavior: 'smooth' }));
+      acceptEvents(incoming, true);
     };
     window.addEventListener('overwatch-agent-console-update', receive);
     return () => window.removeEventListener('overwatch-agent-console-update', receive);
-  }, [follow, limit, paused, search]);
+  }, [acceptEvents]);
 
   useEffect(() => {
     if (!connected) setStale(true);
@@ -125,13 +150,55 @@ export function ActivityDrawer({
     if (!selectedItem && filtered[0]) onSelect(filtered[0].id);
   }, [filtered, loading, onSelect, selectedItem, threads]);
 
-  const resumeNewest = () => {
+  const resumeNewest = (clearSearch: boolean) => {
+    liveControl.current = { paused: false, follow: true, search: clearSearch ? '' : search };
     setPaused(false);
     setFollow(true);
     setUnseen(0);
-    setSearch('');
+    if (clearSearch) setSearch('');
     listRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
     void reconcile();
+  };
+
+  const togglePaused = () => {
+    if (paused) {
+      resumeNewest(false);
+      return;
+    }
+    liveControl.current = { ...liveControl.current, paused: true, follow: false };
+    setPaused(true);
+    setFollow(false);
+  };
+
+  const changeSearch = (value: string) => {
+    const shouldFollow = !value && !paused && (listRef.current?.scrollTop ?? 0) <= 36;
+    liveControl.current = { paused, follow: shouldFollow ? true : value ? false : follow, search: value };
+    setSearch(value);
+    if (value) setFollow(false);
+    else if (shouldFollow) {
+      setFollow(true);
+      setUnseen(0);
+    }
+  };
+
+  const toggleFollow = () => {
+    if (!follow) {
+      resumeNewest(false);
+      return;
+    }
+    liveControl.current = { ...liveControl.current, follow: false };
+    setFollow(false);
+  };
+
+  const handleListScroll = (scrollTop: number) => {
+    if (scrollTop > 36 && follow) {
+      liveControl.current = { ...liveControl.current, follow: false };
+      setFollow(false);
+    } else if (scrollTop <= 36 && !paused && !search.trim()) {
+      liveControl.current = { ...liveControl.current, follow: true };
+      setFollow(true);
+      setUnseen(0);
+    }
   };
 
   return (
@@ -141,11 +208,9 @@ export function ActivityDrawer({
           <Search className="h-3 w-3 text-muted-foreground" />
           <input
             value={search}
-            onChange={event => {
-              setSearch(event.target.value);
-              if (event.target.value) setFollow(false);
-            }}
+            onChange={event => changeSearch(event.target.value)}
             placeholder="Search operator activity"
+            aria-label="Search operator activity"
             className="min-w-0 flex-1 bg-transparent text-[10px] outline-none placeholder:text-muted"
           />
         </label>
@@ -158,10 +223,10 @@ export function ActivityDrawer({
           {ACTIVITY_FILTERS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
         </select>
         <span className="hidden whitespace-nowrap text-[9px] tabular-nums text-muted-foreground xl:inline">{filtered.length} / {threads.length}</span>
-        <button type="button" onClick={() => setPaused(value => !value)} disabled={!connected} className={cn('flex h-7 items-center gap-1 rounded px-2 text-[9px] disabled:opacity-40', paused ? 'bg-warning/10 text-warning' : 'text-muted-foreground hover:bg-hover hover:text-foreground')} title={paused ? 'Resume live updates' : 'Pause live updates'}>
+        <button type="button" onClick={togglePaused} disabled={!connected} className={cn('flex h-7 items-center gap-1 rounded px-2 text-[9px] disabled:opacity-40', paused ? 'bg-warning/10 text-warning' : 'text-muted-foreground hover:bg-hover hover:text-foreground')} title={paused ? 'Resume live updates' : 'Pause live updates'}>
           {paused ? <CirclePlay className="h-3 w-3" /> : <CirclePause className="h-3 w-3" />}{paused ? 'Resume' : 'Pause'}
         </button>
-        <button type="button" onClick={() => setFollow(value => !value)} disabled={paused || Boolean(search)} className={cn('flex h-7 items-center gap-1 rounded px-2 text-[9px] disabled:opacity-40', follow ? 'bg-accent/10 text-accent' : 'text-muted-foreground hover:bg-hover hover:text-foreground')} title="Follow newest activity"><Radio className="h-3 w-3" />Follow</button>
+        <button type="button" onClick={toggleFollow} disabled={paused || Boolean(search)} className={cn('flex h-7 items-center gap-1 rounded px-2 text-[9px] disabled:opacity-40', follow ? 'bg-accent/10 text-accent' : 'text-muted-foreground hover:bg-hover hover:text-foreground')} title="Follow newest activity"><Radio className="h-3 w-3" />Follow</button>
         <button type="button" onClick={() => void reconcile()} className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-hover hover:text-foreground" title="Reconcile activity"><RefreshCw className={cn('h-3 w-3', loading && 'animate-spin')} /></button>
       </div>
 
@@ -173,7 +238,7 @@ export function ActivityDrawer({
       )}
 
       {unseen > 0 && (
-        <button type="button" onClick={resumeNewest} className="flex h-7 flex-shrink-0 items-center justify-center gap-1.5 border-b border-accent/20 bg-accent/5 text-[10px] font-medium text-accent hover:bg-accent/10">
+        <button type="button" onClick={() => resumeNewest(true)} className="flex h-7 flex-shrink-0 items-center justify-center gap-1.5 border-b border-accent/20 bg-accent/5 text-[10px] font-medium text-accent hover:bg-accent/10" aria-live="polite">
           <Radio className="h-3 w-3" />{unseen} new event{unseen === 1 ? '' : 's'} · return to newest
         </button>
       )}
@@ -182,9 +247,7 @@ export function ActivityDrawer({
         <div className="flex w-[clamp(300px,31vw,360px)] flex-shrink-0 flex-col border-r border-border-subtle">
           <div
             ref={listRef}
-            onScroll={event => {
-              if (event.currentTarget.scrollTop > 36 && follow) setFollow(false);
-            }}
+            onScroll={event => handleListScroll(event.currentTarget.scrollTop)}
             className="min-h-0 flex-1 overflow-y-auto"
           >
             {loading && events.length === 0 ? (
@@ -196,13 +259,13 @@ export function ActivityDrawer({
             ))}
           </div>
           {events.length >= limit && limit < MAX_LIMIT && (
-            <button type="button" onClick={() => setLimit(value => Math.min(MAX_LIMIT, value + 200))} className="h-7 flex-shrink-0 border-t border-border-subtle text-[9px] text-muted-foreground hover:bg-hover hover:text-foreground">Load older activity</button>
+            <button type="button" onClick={() => { suppressNextAnnouncement.current = true; setLimit(value => Math.min(MAX_LIMIT, value + 200)); }} className="h-7 flex-shrink-0 border-t border-border-subtle text-[9px] text-muted-foreground hover:bg-hover hover:text-foreground">Load older activity</button>
           )}
         </div>
 
         <div className="min-w-0 flex-1">
-          {selected ? <ActivityDetail key={selected.id} thread={selected} onOpenRun={onOpenRun} />
-            : directActionId ? <DirectActionDetail actionId={directActionId} onOpenRun={onOpenRun} />
+          {selected ? <ActivityDetail key={selected.id} thread={selected} onOpenRun={onOpenRun} compact={mode === 'compact'} />
+            : directActionId ? <DirectActionDetail actionId={directActionId} onOpenRun={onOpenRun} compact={mode === 'compact'} />
               : directSelectionLoading ? <DrawerState title="Resolving activity" detail="Checking durable action history for this selection…" />
                 : <DrawerState title="Select activity" detail="Inspect lifecycle steps, context, reasoning, command, and captured output without leaving this timeline." />}
         </div>
@@ -211,15 +274,15 @@ export function ActivityDrawer({
   );
 }
 
-function DirectActionDetail({ actionId, onOpenRun }: { actionId: string; onOpenRun: (actionId: string) => void }) {
-  return <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]"><div className="border-b border-border-subtle bg-surface/40 px-3 py-2"><div className="text-xs font-medium text-foreground">Durable action</div><div className="mt-0.5 font-mono text-[9px] text-muted-foreground">{actionId}</div><div className="mt-1 text-[10px] text-muted-foreground">This action is outside the currently loaded timeline window. Its durable command and output remain available directly.</div></div><ExecutionOutputView actionId={actionId} onOpenInRuns={onOpenRun} /></div>;
+function DirectActionDetail({ actionId, onOpenRun, compact }: { actionId: string; onOpenRun: (actionId: string) => void; compact: boolean }) {
+  return <div className="grid h-full min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] overflow-hidden"><div className="border-b border-border-subtle bg-surface/40 px-3 py-2"><div className="text-xs font-medium text-foreground">Durable action</div><div className="mt-0.5 font-mono text-[9px] text-muted-foreground">{actionId}</div><div className="mt-1 text-[10px] text-muted-foreground">This action is outside the currently loaded timeline window. Its durable command and output remain available directly.</div></div><ExecutionOutputView actionId={actionId} onOpenInRuns={onOpenRun} compact={compact} /></div>;
 }
 
 function ActivityRow({ thread, selected, onSelect }: { thread: ActivityThread; selected: boolean; onSelect: () => void }) {
   const latest = thread.latest;
   const context = latest.links?.node_ids?.[0] || latest.links?.session_id || latest.links?.frontier_item_id;
   return (
-    <button type="button" onClick={onSelect} className={cn('relative flex w-full min-w-0 gap-2 border-b border-border-subtle px-2.5 py-2 text-left transition-colors hover:bg-hover/45 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/70', selected && 'bg-accent/[0.08] before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-accent')}>
+    <button type="button" onClick={onSelect} className={cn('relative flex min-h-[66px] w-full min-w-0 gap-2 border-b border-border-subtle px-2.5 py-2 text-left transition-colors [contain-intrinsic-size:66px] [content-visibility:auto] hover:bg-hover/45 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/70', selected && 'bg-accent/[0.08] before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-accent')}>
       <SeverityCue severity={thread.severity} />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
@@ -248,7 +311,7 @@ function SeverityCue({ severity }: { severity: ActivityThread['severity'] }) {
   return <span className="mt-1 text-[10px] text-muted-foreground" title="Information">•</span>;
 }
 
-function ActivityDetail({ thread, onOpenRun }: { thread: ActivityThread; onOpenRun: (actionId: string) => void }) {
+function ActivityDetail({ thread, onOpenRun, compact }: { thread: ActivityThread; onOpenRun: (actionId: string) => void; compact: boolean }) {
   const navigate = useNavigate();
   const actionId = thread.events.find(event => event.links?.action_id)?.links?.action_id;
   const [explanation, setExplanation] = useState<ActionExplanation | null>(null);
@@ -267,7 +330,7 @@ function ActivityDetail({ thread, onOpenRun }: { thread: ActivityThread; onOpenR
   }, [actionId]);
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[minmax(120px,0.8fr)_minmax(0,1.8fr)]">
+    <div className="grid h-full min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(44px,0.4fr)_minmax(0,1.6fr)] overflow-hidden">
       <div className="min-h-0 overflow-y-auto border-b border-border-subtle bg-surface/40 px-3 py-2">
         <div className="flex min-w-0 items-start gap-2">
           <SeverityCue severity={thread.severity} />
@@ -311,8 +374,8 @@ function ActivityDetail({ thread, onOpenRun }: { thread: ActivityThread; onOpenR
         {metadataOpen && <pre className="mt-1 max-h-44 overflow-auto rounded border border-border-subtle bg-background p-2 font-mono text-[9px] leading-4 text-muted-foreground">{JSON.stringify(thread.events.map(event => ({ ...event, raw: event.raw })), null, 2)}</pre>}
       </div>
 
-      <div className="min-h-0">
-        {actionId ? <ExecutionOutputView actionId={actionId} onOpenInRuns={onOpenRun} /> : <EventContext thread={thread} />}
+      <div className="min-h-0 min-w-0 overflow-hidden">
+        {actionId ? <ExecutionOutputView actionId={actionId} onOpenInRuns={onOpenRun} compact={compact} /> : <EventContext thread={thread} />}
       </div>
     </div>
   );

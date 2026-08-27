@@ -161,9 +161,11 @@ empty terminal. Search and filters are local and use safe metadata only.
 
 Live follow never takes control away from the operator. Scrolling away,
 searching, or pausing follow preserves the current viewport and selection while
-the drawer counts unseen events. Disconnection leaves the last-good timeline
-and output visible with a stale marker; reconnect reconciles both HTTP history
-and the selected action's durable output.
+the drawer counts unseen events. Paused activity is still accepted into the
+bounded console and HTTP/WebSocket replays are deduplicated by stable event ID;
+pause controls presentation rather than risking an event gap. Disconnection
+leaves the last-good timeline and live buffer visible with a stale marker;
+reconnect reconciles both HTTP history and the selected action's durable output.
 
 The shared **Runs** drawer is where the operator **assesses the raw output of tools the agents run** without leaving Operate, Investigate, or Review. It is the run-centric complement to Review's proof context: raw output remains captured in the evidence store and parsed findings remain in the graph.
 
@@ -176,7 +178,10 @@ The output component is shared by Activity, Runs, Review proof, evidence
 inspectors, and action-linked agent context. Raw output is never placed in URL
 state, browser storage, the command-palette index, activity labels, analytics,
 or client logs. Copying a command or loaded output always requires an explicit
-operator action.
+operator action. Paging uses the server's byte cursor (not decoded character
+length), and the viewer layout-contains large line blocks so explicit paging can
+continue without turning the entire loaded transcript into one expensive layout
+surface.
 
 **Sessions** is a two-column durable-session workspace. The master list groups
 Live, Waiting, Resume available, Interrupted, Error, and Closed states. The

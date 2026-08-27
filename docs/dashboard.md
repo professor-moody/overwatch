@@ -336,8 +336,16 @@ logs. Copy command and copy loaded output are explicit operator actions.
 Activity keeps last-good events and output visible while disconnected. Follow
 mode pauses when the operator searches, pauses the feed, or scrolls away;
 incoming events increment the new-activity affordance rather than moving the
-selection or viewport. On reconnect, Activity reconciles the console and the
-selected action reloads durable evidence.
+selection or viewport. Pausing changes presentation, not data acceptance:
+WebSocket and HTTP copies continue to merge by stable event ID, so transport
+replays neither disappear nor inflate the unseen count. On reconnect, Activity
+reconciles the console and the selected action reloads durable evidence.
+
+Evidence paging advances with server byte cursors rather than JavaScript
+character counts, which keeps large or non-ASCII command output contiguous.
+Large loaded output is grouped into layout-contained blocks so scrolling the
+terminal-grade view does not require laying out the entire evidence blob at
+once; only explicit **Load more** actions add another bounded page.
 
 See **[Operator Cockpit](operator-cockpit.md)** for the full model (NL command two-phase, the planner role, the directive substrate, escalation, and the safety invariant).
 

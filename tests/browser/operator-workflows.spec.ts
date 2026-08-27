@@ -286,6 +286,8 @@ test.describe('dashboard operator journeys', () => {
     await land(page, `/operate?view=attention&drawer=activity&drawerItem=${browserSuccessActionId}`);
     await expect(page.getByText('nmap -sV 10.44.0.10', { exact: true })).toBeVisible();
     await expect(page.getByText('Browser fixture command completed.', { exact: false })).toBeVisible();
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(page.getByText('Browser fixture durable tail reached.', { exact: false })).toBeAttached();
 
     await page.getByRole('button', { name: 'Runs', exact: true }).click();
     expect(new URL(page.url()).searchParams.get('drawerItem')).toBe(browserSuccessActionId);
