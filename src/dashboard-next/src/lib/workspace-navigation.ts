@@ -44,11 +44,33 @@ export interface DrawerRef {
   item?: string;
 }
 
-const LEGACY_PATHS = new Set([
+/** Action identifiers are the only drawer selections that can move between
+ * Activity and Runs. Production IDs use the `act_` prefix; the deterministic
+ * fixture retains its historical hexadecimal `a…` IDs. */
+export function isActionDrawerItem(item: string): boolean {
+  return /^(?:act(?:_|-)|a[0-9a-f]{8,})/i.test(item);
+}
+
+export function transitionDrawer(current: DrawerRef | null, next: DrawerKind | null): DrawerRef | null {
+  if (!next) return null;
+  if (!current || next === 'sessions' || current.kind === 'sessions') return { kind: next };
+  if (!current.item) return { kind: next };
+  const preserveAction = current.kind === 'run' || isActionDrawerItem(current.item);
+  return { kind: next, item: preserveAction ? current.item : undefined };
+}
+
+/**
+ * Compatibility-only identifiers accepted by the 0.4.x route adapters. Runtime
+ * navigation translates these immediately into a canonical workspace URL.
+ */
+export const LEGACY_PANEL_IDS = [
   'overview', 'campaigns', 'agents', 'sessions', 'actions', 'frontier',
   'activity', 'analysis', 'evidence', 'identity', 'credentials', 'recon',
-  'paths', 'findings', 'engagements', 'smoke', 'settings', 'graph',
-]);
+  'paths', 'findings', 'engagements', 'smoke', 'settings',
+] as const;
+export type LegacyPanelId = typeof LEGACY_PANEL_IDS[number];
+
+const LEGACY_PATHS = new Set<string>([...LEGACY_PANEL_IDS, 'graph']);
 
 export function isWorkspaceId(value: string | undefined): value is WorkspaceId {
   return !!value && (WORKSPACE_IDS as readonly string[]).includes(value);

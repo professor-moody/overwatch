@@ -3,6 +3,8 @@ import {
   Activity,
   Crosshair,
   KeyRound,
+  Maximize2,
+  Minimize2,
   Network,
   Search,
   Settings,
@@ -23,6 +25,7 @@ import {
   drawerFromParams,
   selectionFromParams,
   setDrawerParams,
+  transitionDrawer,
   type DrawerKind,
   type WorkspaceId,
 } from '../../lib/workspace-navigation';
@@ -37,9 +40,11 @@ const InvestigateWorkspace = lazy(() => import('../workspaces/InvestigateWorkspa
 const ReviewWorkspace = lazy(() => import('../workspaces/ReviewWorkspace').then(module => ({ default: module.ReviewWorkspace })));
 const ManageWorkspace = lazy(() => import('../workspaces/ManageWorkspace').then(module => ({ default: module.ManageWorkspace })));
 
-const ActivityPanel = lazy(() => import('../panels/ActivityPanel').then(module => ({ default: module.ActivityPanel })));
-const SessionsPanel = lazy(() => import('../panels/SessionsPanel').then(module => ({ default: module.SessionsPanel })));
-const AnalysisPanel = lazy(() => import('../panels/AnalysisPanel').then(module => ({ default: module.AnalysisPanel })));
+const ActivityDrawer = lazy(() => import('../drawer/ActivityDrawer').then(module => ({ default: module.ActivityDrawer })));
+const SessionsDrawer = lazy(() => import('../drawer/SessionsDrawer').then(module => ({ default: module.SessionsDrawer })));
+const RunsDrawer = lazy(() => import('../drawer/RunsDrawer').then(module => ({ default: module.RunsDrawer })));
+
+type DrawerMode = 'compact' | 'focus';
 
 const WORKSPACES: Array<{
   id: WorkspaceId;
@@ -88,6 +93,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
   const launcherOpen = useDashboardUiStore(state => state.startWorkOpen);
   const setLauncherOpen = useDashboardUiStore(state => state.setStartWorkOpen);
   const drawer = drawerFromParams(searchParams);
+  const [drawerMode, setDrawerMode] = useState<DrawerMode>('compact');
   const [findings, setFindings] = useState<FindingDto[]>([]);
   const [inspectorHost, setInspectorHost] = useState<HTMLDivElement | null>(null);
 
@@ -99,7 +105,12 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
     return () => { cancelled = true; };
   }, [stateRevision]);
 
-  // Global escape ordering: launcher → palette → overlay inspector → drawer.
+  useEffect(() => {
+    if (!drawer) setDrawerMode('compact');
+  }, [drawer]);
+
+  // Global escape ordering: launcher → palette → overlay inspector → focused
+  // drawer returns to compact → drawer closes.
   // Docked inspectors stay as persistent context at 1280px and above.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -128,6 +139,9 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
       } else if (currentSelection && window.innerWidth < 1280) {
         event.preventDefault();
         setSearchParams(clearSelectionParams(currentParams), { replace: true });
+      } else if (currentDrawer && drawerMode === 'focus') {
+        event.preventDefault();
+        setDrawerMode('compact');
       } else if (currentDrawer) {
         event.preventDefault();
         setSearchParams(setDrawerParams(currentParams, null), { replace: true });
@@ -135,7 +149,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [launcherOpen, paletteOpen, setLauncherOpen, setPaletteOpen, setSearchParams]);
+  }, [drawerMode, launcherOpen, paletteOpen, setLauncherOpen, setPaletteOpen, setSearchParams]);
 
   const paletteItems = useMemo<CommandItem[]>(() => {
     const items: CommandItem[] = WORKSPACES.map(item => ({
@@ -367,9 +381,25 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
               </div>
               <div ref={setInspectorHost} className="contents" data-testid="workspace-inspector-host" />
             </div>
-            <WorkspaceDrawer drawer={drawer?.kind ?? null} onChange={(kind) => {
-              setSearchParams(setDrawerParams(searchParams, kind ? { kind } : null), { replace: true });
-            }} />
+            <WorkspaceDrawer
+              drawer={drawer}
+              mode={drawerMode}
+              onModeChange={setDrawerMode}
+              onChange={(kind) => {
+                if (!kind) {
+                  setSearchParams(setDrawerParams(searchParams, null), { replace: true });
+                  return;
+                }
+                setSearchParams(setDrawerParams(searchParams, transitionDrawer(drawer, kind)), { replace: true });
+              }}
+              onSelect={(item) => {
+                if (!drawer) return;
+                setSearchParams(setDrawerParams(searchParams, { kind: drawer.kind, item: item || undefined }), { replace: true });
+              }}
+              onOpenItem={(kind, item) => {
+                setSearchParams(setDrawerParams(searchParams, { kind, item }), { replace: true });
+              }}
+            />
           </main>
         </WorkspaceInspectorHostProvider>
       </div>
@@ -397,20 +427,31 @@ function StatusSignal({ connected }: { connected: boolean }) {
 
 function WorkspaceDrawer({
   drawer,
+  mode,
+  onModeChange,
   onChange,
+  onSelect,
+  onOpenItem,
 }: {
-  drawer: DrawerKind | null;
+  drawer: { kind: DrawerKind; item?: string } | null;
+  mode: DrawerMode;
+  onModeChange: (mode: DrawerMode) => void;
   onChange: (drawer: DrawerKind | null) => void;
+  onSelect: (item: string | null) => void;
+  onOpenItem: (drawer: DrawerKind, item: string) => void;
 }) {
   const tabs: Array<{ id: DrawerKind; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { id: 'activity', label: 'Activity', icon: Activity },
     { id: 'sessions', label: 'Sessions', icon: Terminal },
     { id: 'run', label: 'Runs', icon: KeyRound },
   ];
-  const Active = drawer === 'activity' ? ActivityPanel : drawer === 'sessions' ? SessionsPanel : AnalysisPanel;
+  const activeKind = drawer?.kind ?? null;
 
   return (
-    <section className={cn('z-30 flex flex-shrink-0 flex-col border-t border-border-subtle bg-surface transition-[height] duration-150 motion-reduce:transition-none', drawer ? 'h-[clamp(280px,38vh,480px)]' : 'h-9')} aria-label="Operator drawer">
+    <section className={cn(
+      'z-30 flex flex-shrink-0 flex-col border-t border-border-subtle bg-surface transition-[height] duration-150 motion-reduce:transition-none',
+      !drawer ? 'h-9' : mode === 'focus' ? 'h-[clamp(480px,72vh,760px)]' : 'h-[clamp(280px,38vh,480px)]',
+    )} aria-label="Operator drawer" data-drawer-mode={mode}>
       <div className="flex h-9 flex-shrink-0 items-center gap-1 px-2">
         {tabs.map(tab => {
           const Icon = tab.icon;
@@ -418,10 +459,10 @@ function WorkspaceDrawer({
             <button
               key={tab.id}
               type="button"
-              onClick={() => onChange(drawer === tab.id ? null : tab.id)}
+              onClick={() => onChange(activeKind === tab.id ? null : tab.id)}
               className={cn(
                 'flex h-7 items-center gap-1.5 rounded px-2.5 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70',
-                drawer === tab.id ? 'bg-elevated text-foreground' : 'text-muted-foreground hover:bg-hover/50 hover:text-foreground',
+                activeKind === tab.id ? 'bg-elevated text-foreground' : 'text-muted-foreground hover:bg-hover/50 hover:text-foreground',
               )}
             >
               <Icon className="h-3.5 w-3.5" />
@@ -429,7 +470,13 @@ function WorkspaceDrawer({
             </button>
           );
         })}
-        <span className="ml-auto pr-2 text-[9px] text-muted">Esc closes</span>
+        <span className="ml-auto pr-2 text-[9px] text-muted">{mode === 'focus' ? 'Esc compacts' : 'Esc closes'}</span>
+        {drawer && (
+          <button type="button" onClick={() => onModeChange(mode === 'focus' ? 'compact' : 'focus')} className="flex h-7 items-center gap-1 rounded px-2 text-[9px] text-muted-foreground hover:bg-hover hover:text-foreground" aria-label={mode === 'focus' ? 'Compact drawer' : 'Focus drawer'} title={mode === 'focus' ? 'Compact drawer' : 'Focus drawer'}>
+            {mode === 'focus' ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            {mode === 'focus' ? 'Compact' : 'Focus'}
+          </button>
+        )}
         {drawer && (
           <button type="button" onClick={() => onChange(null)} className="rounded p-1 text-muted-foreground hover:bg-hover hover:text-foreground" aria-label="Close drawer">
             <X className="h-3.5 w-3.5" />
@@ -438,9 +485,25 @@ function WorkspaceDrawer({
       </div>
       {drawer && (
         <div className="workspace-drawer-content min-h-0 flex-1 overflow-hidden border-t border-border-subtle">
-          <ErrorBoundary fallbackLabel={`${drawer} drawer`}>
+          <ErrorBoundary fallbackLabel={`${drawer.kind} drawer`}>
             <Suspense fallback={<WorkspaceLoading />}>
-              <Active />
+              {drawer.kind === 'activity' && (
+                <ActivityDrawer
+                  selectedItem={drawer.item}
+                  onSelect={onSelect}
+                  onOpenRun={(actionId) => onOpenItem('run', actionId)}
+                />
+              )}
+              {drawer.kind === 'sessions' && (
+                <SessionsDrawer selectedItem={drawer.item} onSelect={onSelect} onRequestFocus={() => onModeChange('focus')} />
+              )}
+              {drawer.kind === 'run' && (
+                <RunsDrawer
+                  selectedItem={drawer.item}
+                  onSelect={onSelect}
+                  onOpenActivity={(actionId) => onOpenItem('activity', actionId)}
+                />
+              )}
             </Suspense>
           </ErrorBoundary>
         </div>

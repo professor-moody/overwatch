@@ -103,10 +103,10 @@ button {
   50% { opacity: 1; }
 }
 
-/* Legacy run/session/activity panels are hosted inside the global drawer. Their
-   old full-page height contracts must yield to the drawer's bounded workspace. */
-.workspace-drawer-content > div,
-.workspace-drawer-content > div > div {
+/* Drawer destinations own their internal rows. Only the mounted destination
+   itself inherits the bounded drawer height; forcing its children to 100%
+   makes native toolbars consume the entire drawer. */
+.workspace-drawer-content > div {
   min-height: 0 !important;
   height: 100% !important;
 }
@@ -171,6 +171,23 @@ button {
 }
 .settings-input::placeholder {
   color: var(--color-muted);
+}
+
+.manage-input {
+  min-height: 2rem;
+  width: 100%;
+  background-color: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 10px;
+  color: var(--color-foreground);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.manage-input:focus {
+  border-color: var(--color-accent);
 }
 
 .settings-save-btn {

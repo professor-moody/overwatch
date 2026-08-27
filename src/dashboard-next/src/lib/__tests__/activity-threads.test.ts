@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { threadConsoleEvents } from '../activity-threads';
+import { filterActivityThreads, mergeConsoleEvents, threadConsoleEvents } from '../activity-threads';
 import type { AgentConsoleEvent } from '../types';
 
 function ev(o: Partial<AgentConsoleEvent> & { id: string; timestamp: string }): AgentConsoleEvent {
@@ -26,6 +26,9 @@ describe('threadConsoleEvents', () => {
     expect(threads[0].count).toBe(3);
     expect(threads[0].events.map(e => e.id)).toEqual(['e1', 'e2', 'e3']); // chronological
     expect(threads[0].latest.id).toBe('e3');
+    expect(threads[0].actionId).toBe('act-1');
+    expect(threads[0].startedAt).toBe('2026-06-17T12:00:01Z');
+    expect(threads[0].updatedAt).toBe('2026-06-17T12:00:03Z');
   });
 
   it('keeps the loudest severity for the thread', () => {
@@ -57,5 +60,51 @@ describe('threadConsoleEvents', () => {
     // thread 'k' latest = 12:00:06 → first; 'old' single → after
     expect(threads[0].id).toBe('k');
     expect(threads[1].id).toBe('old');
+  });
+
+  it('uses thread id as a stable tie-breaker', () => {
+    const threads = threadConsoleEvents([
+      ev({ id: 'z', timestamp: '2026-06-17T12:00:01Z' }),
+      ev({ id: 'a', timestamp: '2026-06-17T12:00:01Z' }),
+    ]);
+    expect(threads.map(thread => thread.id)).toEqual(['a', 'z']);
+  });
+});
+
+describe('mergeConsoleEvents', () => {
+  it('deduplicates HTTP and WebSocket copies by stable event id', () => {
+    const old = ev({ id: 'same', timestamp: '2026-06-17T12:00:01Z', summary: 'HTTP' });
+    const fresh = ev({ id: 'same', timestamp: '2026-06-17T12:00:01Z', summary: 'WebSocket' });
+    const later = ev({ id: 'later', timestamp: '2026-06-17T12:00:02Z' });
+    const merged = mergeConsoleEvents([old], [fresh, later], 10);
+    expect(merged).toHaveLength(2);
+    expect(merged[1].summary).toBe('WebSocket');
+  });
+
+  it('applies the bounded limit after stable newest-first ordering', () => {
+    const merged = mergeConsoleEvents([], [
+      ev({ id: 'old', timestamp: '2026-06-17T12:00:01Z' }),
+      ev({ id: 'new', timestamp: '2026-06-17T12:00:02Z' }),
+    ], 1);
+    expect(merged.map(event => event.id)).toEqual(['new']);
+  });
+});
+
+describe('filterActivityThreads', () => {
+  const threads = threadConsoleEvents([
+    ev({ id: 'finding', timestamp: '2026-06-17T12:00:01Z', kind: 'finding', title: 'Credential exposed', links: { finding_ids: ['f-1'], node_ids: ['node-1'] }, raw: { secret: 'must-not-index' } }),
+    ev({ id: 'warning', timestamp: '2026-06-17T12:00:02Z', kind: 'system', severity: 'warning', title: 'Transport stale' }),
+    ev({ id: 'transcript', timestamp: '2026-06-17T12:00:03Z', kind: 'transcript', title: 'Agent wrapped up' }),
+  ]);
+
+  it('filters by semantic kind including transcripts under Sessions', () => {
+    expect(filterActivityThreads(threads, 'finding', '')).toHaveLength(1);
+    expect(filterActivityThreads(threads, 'session', '')[0].latest.kind).toBe('transcript');
+    expect(filterActivityThreads(threads, 'warnings', '')[0].id).toBe('warning');
+  });
+
+  it('searches safe projected identifiers but excludes raw event data', () => {
+    expect(filterActivityThreads(threads, 'all', 'node-1')).toHaveLength(1);
+    expect(filterActivityThreads(threads, 'all', 'must-not-index')).toHaveLength(0);
   });
 });

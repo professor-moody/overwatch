@@ -6,6 +6,7 @@ import {
   selectionFromParams,
   setDrawerParams,
   setSelectionParams,
+  transitionDrawer,
 } from '../workspace-navigation';
 
 describe('workspace navigation', () => {
@@ -82,5 +83,17 @@ describe('workspace navigation', () => {
     const params = new URLSearchParams({ kind: 'credential_value', item: 'secret', drawer: 'terminal' });
     expect(selectionFromParams(params)).toBeNull();
     expect(drawerFromParams(params)).toBeNull();
+  });
+
+  it('preserves action selections between Activity and Runs, including fixture IDs', () => {
+    expect(transitionDrawer({ kind: 'activity', item: 'act_run-1' }, 'run')).toEqual({ kind: 'run', item: 'act_run-1' });
+    expect(transitionDrawer({ kind: 'activity', item: 'a11ca7e0005' }, 'run')).toEqual({ kind: 'run', item: 'a11ca7e0005' });
+    expect(transitionDrawer({ kind: 'run', item: 'arbitrary-deep-linked-action' }, 'activity')).toEqual({ kind: 'activity', item: 'arbitrary-deep-linked-action' });
+  });
+
+  it('clears event and session selections when drawer destinations are incompatible', () => {
+    expect(transitionDrawer({ kind: 'activity', item: 'evt-system-1' }, 'run')).toEqual({ kind: 'run' });
+    expect(transitionDrawer({ kind: 'activity', item: 'act_run-1' }, 'sessions')).toEqual({ kind: 'sessions' });
+    expect(transitionDrawer({ kind: 'sessions', item: 'sess-1' }, 'activity')).toEqual({ kind: 'activity' });
   });
 });
