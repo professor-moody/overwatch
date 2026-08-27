@@ -341,6 +341,64 @@ test.describe('dashboard operator journeys', () => {
     expect(new URL(page.url()).searchParams.has('drawer')).toBe(false);
   });
 
+  test('supports keyboard-only workspace flow and removes functional motion when requested', async ({ page, request }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await land(page, '/operate?view=attention&drawer=activity');
+
+    const primary = page.getByRole('navigation', { name: 'Primary workspaces' });
+    const investigate = primary.getByRole('button', { name: /^Investigate/ });
+    await investigate.focus();
+    await expect(investigate).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/investigate(?:\?|$)/);
+
+    await page.keyboard.press('Control+k');
+    const paletteSearch = page.getByRole('textbox', { name: 'Search workspaces and engagement entities' });
+    await paletteSearch.fill('Review');
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/review(?:\?|$)/);
+
+    const findingsResponse = await request.get(`${dashboardBase}/api/findings`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(findingsResponse.ok()).toBe(true);
+    const findingBody = await findingsResponse.json() as { findings: Array<{ id: string }> };
+    const findingId = findingBody.findings[0]?.id;
+    expect(findingId).toBeTruthy();
+
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await land(page, `/review?view=readiness&kind=finding&item=${encodeURIComponent(findingId!)}&drawer=activity`);
+    const proofTab = page.getByRole('tab', { name: 'proof', exact: true });
+    await proofTab.focus();
+    await proofTab.press('Enter');
+    await expect.poll(() => new URL(page.url()).searchParams.get('tab')).toBe('proof');
+
+    const motionSuppressed = await page.locator('.workspace-inspector, [data-drawer-mode]').evaluateAll(elements => elements.every(element => (
+      getComputedStyle(element).transitionDuration.split(',').every(raw => {
+        const duration = raw.trim();
+        const value = Number.parseFloat(duration);
+        return duration.endsWith('ms') ? value <= 0.01 : value <= 0.00001;
+      })
+    )));
+    expect(motionSuppressed).toBe(true);
+
+    // At overlay widths the inspector is modal context. Close it before moving
+    // keyboard focus into the independently-targeted drawer.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.workspace-inspector')).toHaveCount(0);
+    await expect.poll(() => new URL(page.url()).searchParams.get('drawer')).toBe('activity');
+
+    const runs = page.getByRole('region', { name: 'Operator drawer' }).getByRole('button', { name: 'Runs', exact: true });
+    await runs.focus();
+    await expect(runs).toBeFocused();
+    await runs.press('Enter');
+    await expect(page.getByTestId('runs-drawer')).toBeVisible();
+    await expect.poll(() => new URL(page.url()).searchParams.get('drawer')).toBe('run');
+
+    await page.keyboard.press('Escape');
+    await expect.poll(() => new URL(page.url()).searchParams.has('drawer')).toBe(false);
+  });
+
   test('never indexes or persists credential material in workspace navigation', async ({ page }) => {
     const credentialId = 'browser-credential';
     const credentialValue = 'browser-ci-redacted';
