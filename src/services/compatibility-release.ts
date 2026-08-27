@@ -245,6 +245,12 @@ export const COMPATIBILITY_ENTRIES: readonly CompatibilityEntry[] = [
         path: 'src/dashboard-next/src/lib/__tests__/workspace-navigation.test.ts',
         contains: 'workspace navigation',
       },
+      {
+        id: 'dashboard-canonical-navigation-producers',
+        claim: 'all in-repo navigation producers use canonical workspace paths',
+        path: 'scripts/check-dashboard-navigation.mjs',
+        contains: 'canonical producers; legacy adapters isolated',
+      },
     ],
   },
   {

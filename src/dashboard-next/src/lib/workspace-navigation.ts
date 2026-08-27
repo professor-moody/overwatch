@@ -197,6 +197,7 @@ export function legacyPathToWorkspacePath(
       return pathWithParams('/operate', params);
     case 'activity':
       params.set('drawer', 'activity');
+      move(params, 'item', 'drawerItem');
       return pathWithParams('/operate', params);
     case 'analysis':
       params.set('drawer', 'run');
@@ -207,15 +208,19 @@ export function legacyPathToWorkspacePath(
       return pathWithParams('/investigate', params);
     case 'recon':
       params.set('lens', 'assets');
+      if (params.has('item')) withDefault(params, 'kind', 'node');
       return pathWithParams('/investigate', params);
     case 'identity':
       params.set('lens', 'identity');
+      if (params.has('item')) withDefault(params, 'kind', 'node');
       return pathWithParams('/investigate', params);
     case 'credentials':
       params.set('lens', 'credentials');
+      if (params.has('item')) withDefault(params, 'kind', 'credential');
       return pathWithParams('/investigate', params);
     case 'paths':
       params.set('lens', 'paths');
+      if (params.has('item')) withDefault(params, 'kind', 'path');
       return pathWithParams('/investigate', params);
     case 'evidence': {
       const node = params.get('node');
@@ -231,10 +236,12 @@ export function legacyPathToWorkspacePath(
         return pathWithParams('/investigate', params);
       }
       params.set('view', 'proof');
+      if (params.has('item')) withDefault(params, 'kind', 'evidence');
       return pathWithParams('/review', params);
     }
     case 'findings':
       params.set('view', 'readiness');
+      if (params.has('item')) withDefault(params, 'kind', 'finding');
       return pathWithParams('/review', params);
     case 'engagements':
       params.set('section', 'engagement');

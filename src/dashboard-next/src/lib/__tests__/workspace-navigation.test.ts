@@ -55,6 +55,36 @@ describe('workspace navigation', () => {
     expect(result).toBe('/investigate?node=host-1&hops=2&filter=host&lens=topology');
   });
 
+  it.each([
+    ['/agents', 'item=task-1', '/operate', { item: 'task-1', view: 'active', kind: 'agent' }],
+    ['/frontier', 'node=host-1', '/operate', { item: 'host-1', view: 'ready', kind: 'frontier' }],
+    ['/actions', 'item=approval-1', '/operate', { item: 'approval-1', view: 'attention', kind: 'approval' }],
+    ['/campaigns', 'item=campaign-1', '/operate', { item: 'campaign-1', view: 'campaigns', kind: 'campaign' }],
+    ['/sessions', 'item=session-1', '/operate', { drawer: 'sessions', drawerItem: 'session-1' }],
+    ['/activity', 'item=event-1', '/operate', { drawer: 'activity', drawerItem: 'event-1' }],
+    ['/analysis', 'item=act-1', '/operate', { drawer: 'run', drawerItem: 'act-1' }],
+    ['/recon', 'item=host-1', '/investigate', { item: 'host-1', lens: 'assets', kind: 'node' }],
+    ['/identity', 'item=principal-1', '/investigate', { item: 'principal-1', lens: 'identity', kind: 'node' }],
+    ['/credentials', 'item=credential-1', '/investigate', { item: 'credential-1', lens: 'credentials', kind: 'credential' }],
+    ['/paths', 'item=path-1&nodes=a%2Cb&edges=e-1', '/investigate', { item: 'path-1', nodes: 'a,b', edges: 'e-1', lens: 'paths', kind: 'path' }],
+    ['/findings', 'item=finding-1', '/review', { item: 'finding-1', view: 'readiness', kind: 'finding' }],
+    ['/evidence', 'item=evidence-1', '/review', { item: 'evidence-1', view: 'proof', kind: 'evidence' }],
+  ] as const)('preserves the selected item when translating %s?%s', (legacy, query, pathname, expected) => {
+    const result = new URL(legacyPathToWorkspacePath(legacy, new URLSearchParams(query)), 'https://overwatch.invalid');
+    expect(result.pathname).toBe(pathname);
+    expect(Object.fromEntries(result.searchParams)).toEqual(expected);
+  });
+
+  it('preserves independent filters, inspector tabs, and drawers through legacy translation', () => {
+    const result = new URL(legacyPathToWorkspacePath('/findings', new URLSearchParams({
+      item: 'finding-1', readiness: 'draft', tab: 'proof', drawer: 'run', drawerItem: 'act-1',
+    })), 'https://overwatch.invalid');
+    expect(Object.fromEntries(result.searchParams)).toEqual({
+      item: 'finding-1', readiness: 'draft', tab: 'proof', drawer: 'run', drawerItem: 'act-1',
+      view: 'readiness', kind: 'finding',
+    });
+  });
+
   it('sends contextual evidence to a proof inspector without losing context', () => {
     const result = legacyPathToWorkspacePath('/evidence', new URLSearchParams({
       node: 'host-1', objective: 'obj-1',

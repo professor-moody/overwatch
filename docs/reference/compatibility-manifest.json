@@ -211,6 +211,12 @@
           "claim": "every legacy route and contextual query shape has a deterministic redirect test",
           "path": "src/dashboard-next/src/lib/__tests__/workspace-navigation.test.ts",
           "contains": "workspace navigation"
+        },
+        {
+          "id": "dashboard-canonical-navigation-producers",
+          "claim": "all in-repo navigation producers use canonical workspace paths",
+          "path": "scripts/check-dashboard-navigation.mjs",
+          "contains": "canonical producers; legacy adapters isolated"
         }
       ]
     },
@@ -269,5 +275,5 @@
       ]
     }
   ],
-  "manifest_sha256": "04ca6c82c07c0064f0920f0e1cf0ce537da45ae9e57236b27e3019dd55ba89e3"
+  "manifest_sha256": "3a304e8b91550f2d3e0998e9e283c20fa787de1f8d4d7937ba11768d24cb7169"
 }
