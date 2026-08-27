@@ -1,7 +1,7 @@
 // View-model normalization for the Analysis workspace's assessment view.
 // Pure (no I/O) so it is unit-testable; the panel renders these shapes.
 
-import type { ActionOutputResponse, ActionOutputStream } from './api';
+import type { ActionOutputResponse, ActionOutputStream, EvidenceRawResponse } from './api';
 
 export interface OutputStreamView {
   evidenceId: string | null;
@@ -42,6 +42,7 @@ export interface ActionOutputView {
   agentId: string | null;
   frontierItemId: string | null;
   findingIds: string[];
+  maxBytes: number;
   stdout: OutputStreamView;
   stderr: OutputStreamView;
   hasCaptureError: boolean;
@@ -103,11 +104,56 @@ export function normalizeActionOutput(raw: ActionOutputResponse): ActionOutputVi
     agentId: raw.agent_id ?? null,
     frontierItemId: raw.frontier_item_id ?? null,
     findingIds: raw.linked_finding_ids ?? [],
+    maxBytes: raw.max_bytes,
     stdout,
     stderr,
     hasCaptureError: Boolean(raw.capture_error),
     isEmpty: stdout.isEmpty && stderr.isEmpty,
   };
+}
+
+export interface LoadedOutputStream {
+  text: string;
+  /** Durable byte cursor. This is deliberately not JavaScript string length. */
+  loadedBytes: number;
+  eof: boolean;
+}
+
+/**
+ * Build the initial paging cursor from server byte metadata. UTF-8 text length
+ * cannot be used as a byte offset, and malformed terminal bytes may be decoded
+ * as replacement characters with a different encoded length.
+ */
+export function initialLoadedOutputStream(stream: OutputStreamView, maxBytes: number): LoadedOutputStream {
+  const loadedBytes = stream.headTruncated
+    ? Math.min(stream.totalBytes, Math.max(0, maxBytes))
+    : stream.evidenceId && !stream.missing
+      ? stream.totalBytes
+      : 0;
+  return { text: stream.text, loadedBytes, eof: !stream.headTruncated };
+}
+
+/** Append exactly one contiguous evidence page, rejecting gaps and overlaps. */
+export function appendOutputPage(current: LoadedOutputStream, page: EvidenceRawResponse): LoadedOutputStream {
+  if (page.offset !== current.loadedBytes) {
+    throw new Error(`Output page began at byte ${page.offset}; expected ${current.loadedBytes}. Refresh the run before loading more.`);
+  }
+  if (page.bytes_read === 0 && !page.eof) {
+    throw new Error('Output paging made no progress. Refresh the run before loading more.');
+  }
+  return {
+    text: current.text + page.text,
+    loadedBytes: page.offset + page.bytes_read,
+    eof: page.eof,
+  };
+}
+
+/** Group lines into a small number of layout-containment blocks for large output. */
+export function chunkOutputLines(lines: string[], chunkSize = 200): string[][] {
+  const size = Math.max(1, Math.trunc(chunkSize) || 1);
+  const chunks: string[][] = [];
+  for (let index = 0; index < lines.length; index += size) chunks.push(lines.slice(index, index + size));
+  return chunks;
 }
 
 /** Human-readable byte size for the metadata strip. */

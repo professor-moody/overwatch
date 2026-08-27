@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, Copy, ExternalLink, LoaderCircle, RefreshCw, Search } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { ActionOutputWebSocketEventSchema, buildDashboardWebSocketPath } from '@overwatch/dashboard-contracts';
 import * as api from '../../lib/api';
 import {
   formatBytes,
+  appendOutputPage,
+  chunkOutputLines,
+  initialLoadedOutputStream,
   matchOutputLines,
   normalizeActionOutput,
   type ActionOutputView,
+  type LoadedOutputStream,
   type OutputStreamView,
 } from '../../lib/action-output';
 import { createDashboardWebSocket } from '../../lib/dashboard-transport';
@@ -20,25 +24,21 @@ const PAGE_BYTES = 256 * 1024;
 
 type StreamName = 'stdout' | 'stderr';
 
-interface LoadedStream {
-  text: string;
-  loadedBytes: number;
-  eof: boolean;
-}
-
 export function ExecutionOutputView({
   actionId,
   onOpenInRuns,
   showOpenInRuns = true,
+  compact = false,
 }: {
   actionId: string;
   onOpenInRuns?: (actionId: string) => void;
   showOpenInRuns?: boolean;
+  compact?: boolean;
 }) {
   const navigate = useNavigate();
   const connected = useEngagementStore(state => state.connected);
   const [output, setOutput] = useState<ActionOutputView | null>(null);
-  const [loaded, setLoaded] = useState<Record<StreamName, LoadedStream>>({
+  const [loaded, setLoaded] = useState<Record<StreamName, LoadedOutputStream>>({
     stdout: { text: '', loadedBytes: 0, eof: true },
     stderr: { text: '', loadedBytes: 0, eof: true },
   });
@@ -49,22 +49,27 @@ export function ExecutionOutputView({
   const [error, setError] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [live, setLive] = useState<{ stdout: string; stderr: string; dropped: boolean; done: boolean } | null>(null);
+  const loadGeneration = useRef(0);
+  const previousConnected = useRef(connected);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     setLoading(true);
     setError(null);
     try {
       const normalized = normalizeActionOutput(await api.getActionOutput(actionId, INITIAL_BYTES));
+      if (generation !== loadGeneration.current) return;
       setOutput(normalized);
       setLoaded({
-        stdout: loadedFrom(normalized.stdout),
-        stderr: loadedFrom(normalized.stderr),
+        stdout: initialLoadedOutputStream(normalized.stdout, normalized.maxBytes),
+        stderr: initialLoadedOutputStream(normalized.stderr, normalized.maxBytes),
       });
+      if (!normalized.isRunning) setLive(null);
     } catch (cause) {
-      setOutput(null);
+      if (generation !== loadGeneration.current) return;
       setError(describeActionOutputError(cause));
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
   }, [actionId]);
 
@@ -74,14 +79,27 @@ export function ExecutionOutputView({
     setFind('');
     setStream('stdout');
     setLive(null);
+  }, [actionId]);
+
+  useEffect(() => {
     void load();
+    return () => { loadGeneration.current += 1; };
   }, [load, reloadNonce]);
 
   useEffect(() => {
-    if (!connected || !output?.isRunning) {
-      setLive(null);
+    const wasConnected = previousConnected.current;
+    previousConnected.current = connected;
+    if (connected && !wasConnected) setReloadNonce(value => value + 1);
+  }, [connected]);
+
+  useEffect(() => {
+    if (!output?.isRunning) {
+      if (output) setLive(null);
       return;
     }
+    // Keep the last-good transient buffer visible through a disconnect. A new
+    // socket replaces it from the server's current action buffer on reconnect.
+    if (!connected) return;
     let socket: WebSocket;
     let stdout = '';
     let stderr = '';
@@ -91,7 +109,6 @@ export function ExecutionOutputView({
     } catch {
       return;
     }
-    setLive({ stdout, stderr, dropped, done: false });
     socket.onmessage = event => {
       if (typeof event.data !== 'string') return;
       try {
@@ -125,18 +142,24 @@ export function ExecutionOutputView({
     const evidenceId = activeMeta?.evidenceId;
     if (!evidenceId || loaded[stream].eof || loadingMore) return;
     setLoadingMore(true);
+    setError(null);
     try {
+      const expectedEvidenceId = evidenceId;
+      const requestedOffset = loaded[stream].loadedBytes;
       const page = await api.getEvidenceRaw(evidenceId, {
-        offset: loaded[stream].loadedBytes,
+        offset: requestedOffset,
         maxBytes: PAGE_BYTES,
       });
+      const validatedPage = appendOutputPage({ text: '', loadedBytes: requestedOffset, eof: false }, page);
       setLoaded(current => ({
         ...current,
-        [stream]: {
-          text: current[stream].text + page.text,
-          loadedBytes: page.offset + page.bytes_read,
-          eof: page.eof,
-        },
+        [stream]: output?.[stream].evidenceId === expectedEvidenceId && current[stream].loadedBytes === requestedOffset
+          ? {
+              text: current[stream].text + page.text,
+              loadedBytes: validatedPage.loadedBytes,
+              eof: validatedPage.eof,
+            }
+          : current[stream],
       }));
     } catch (cause) {
       setError(describeActionOutputError(cause));
@@ -161,7 +184,7 @@ export function ExecutionOutputView({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background/25" data-testid="execution-output-view">
+    <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-hidden bg-background/25" data-testid="execution-output-view">
       {!connected && (
         <div className="flex items-center gap-2 border-b border-warning/20 bg-warning/5 px-3 py-1.5 text-[10px] text-warning">
           <AlertTriangle className="h-3 w-3" /> Last captured output remains visible. Live streaming resumes after reconnection.
@@ -171,9 +194,10 @@ export function ExecutionOutputView({
       <div className="flex-shrink-0 border-b border-border-subtle px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <StatusPill tone={statusTone(output.status)}>{statusCue(output.status)} {output.status}</StatusPill>
-          {showingLive && !live?.done && <span className="inline-flex items-center gap-1 text-[10px] text-accent"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />Live</span>}
+          {showingLive && !live?.done && <span className={cn('inline-flex items-center gap-1 text-[10px]', connected ? 'text-accent' : 'text-warning')}><span className={cn('h-1.5 w-1.5 rounded-full', connected ? 'animate-pulse bg-accent' : 'bg-warning')} />{connected ? 'Live' : 'Stale buffer'}</span>}
           <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{output.tool || 'Instrumented action'}</span>
           <button type="button" onClick={() => void copyText(actionId)} className="font-mono text-[9px] text-muted-foreground hover:text-foreground" title={actionId}>{actionId.slice(0, 16)}…</button>
+          <button type="button" onClick={() => setReloadNonce(value => value + 1)} className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-hover hover:text-foreground" title="Refresh durable output" aria-label="Refresh durable output"><RefreshCw className={cn('h-3 w-3', loading && 'animate-spin')} /></button>
           {showOpenInRuns && onOpenInRuns && (
             <ActionButton size="xs" variant="ghost" onClick={() => onOpenInRuns(actionId)}><ExternalLink className="h-3 w-3" />Open in Runs</ActionButton>
           )}
@@ -181,24 +205,24 @@ export function ExecutionOutputView({
 
         {output.command && (
           <div className="mt-2 flex min-w-0 items-start gap-2 rounded border border-border-subtle bg-background/75 px-2 py-1.5">
-            <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[10px] leading-4 text-foreground">{output.command}</code>
+            <code title={output.command} className={cn('min-w-0 flex-1 font-mono text-[10px] leading-4 text-foreground', compact ? 'truncate whitespace-nowrap' : 'whitespace-pre-wrap break-all')}>{output.command}</code>
             <CopyButton label="Copy command" value={output.command} />
           </div>
         )}
 
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+        {!compact && <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
           {output.technique && <Fact label="Technique" value={output.technique} />}
           {output.invokingTool && <Fact label="Surface" value={output.invokingTool} />}
           {output.agentId && <LinkFact label="Agent" value={output.agentId} onClick={() => navigate(`/operate?view=active&kind=agent&item=${encodeURIComponent(output.agentId!)}`)} />}
-          {output.frontierItemId && <Fact label="Frontier" value={output.frontierItemId} />}
+          {output.frontierItemId && <LinkFact label="Frontier" value={output.frontierItemId} onClick={() => navigate(`/operate?view=ready&kind=frontier&item=${encodeURIComponent(output.frontierItemId!)}`)} />}
           {output.timestamp && <Fact label="Updated" value={formatTimestamp(output.timestamp)} />}
           {output.durationMs != null && <Fact label="Duration" value={formatElapsed(output.durationMs)} />}
           {output.exitCode != null && <Fact label="Exit" value={String(output.exitCode)} />}
           {output.signal && <Fact label="Signal" value={output.signal} />}
           {output.timedOut && <Fact label="Timeout" value="yes" />}
-        </div>
+        </div>}
 
-        {output.targets.length > 0 && (
+        {!compact && output.targets.length > 0 && (
           <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
             <span className="mr-1 text-[9px] uppercase tracking-[0.14em] text-muted-foreground">Targets</span>
             {output.targetNodeIds.slice(0, 6).map(id => <button key={id} type="button" onClick={() => navigate(`/investigate?lens=topology&entity=node&item=${encodeURIComponent(id)}&node=${encodeURIComponent(id)}`)} className="max-w-36 truncate rounded bg-accent/10 px-1.5 py-0.5 font-mono text-[9px] text-accent">{id}</button>)}
@@ -206,7 +230,7 @@ export function ExecutionOutputView({
           </div>
         )}
 
-        {output.findingIds.length > 0 && (
+        {!compact && output.findingIds.length > 0 && (
           <div className="mt-2 flex flex-wrap items-center gap-1">
             <span className="mr-1 text-[9px] uppercase tracking-[0.14em] text-muted-foreground">Findings</span>
             {output.findingIds.map(id => <button key={id} type="button" onClick={() => navigate(`/review?view=readiness&kind=finding&item=${encodeURIComponent(id)}&tab=proof`)} className="max-w-36 truncate rounded bg-warning/10 px-1.5 py-0.5 font-mono text-[9px] text-warning">{id}</button>)}
@@ -222,9 +246,15 @@ export function ExecutionOutputView({
         </div>
         <label className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded border border-border-subtle bg-background/60 px-2 focus-within:border-accent/50">
           <Search className="h-3 w-3 text-muted-foreground" />
-          <input value={find} onChange={event => setFind(event.target.value)} placeholder="Find in loaded output" className="min-w-0 flex-1 bg-transparent text-[10px] outline-none placeholder:text-muted" />
+          <input value={find} onChange={event => setFind(event.target.value)} placeholder="Find in loaded output" aria-label="Find in loaded output" className="min-w-0 flex-1 bg-transparent text-[10px] outline-none placeholder:text-muted" />
         </label>
         {find && <span className="whitespace-nowrap text-[9px] tabular-nums text-muted-foreground">{matches.matchCount} matches</span>}
+        {!showingLive && activeMeta && (
+          <span className="hidden whitespace-nowrap text-[9px] tabular-nums text-muted-foreground xl:inline">{formatBytes(loaded[stream].loadedBytes)} / {formatBytes(activeMeta.totalBytes)}</span>
+        )}
+        {!showingLive && activeMeta?.evidenceId && (
+          <button type="button" onClick={() => navigate(`/review?view=proof&kind=evidence&item=${encodeURIComponent(activeMeta.evidenceId!)}`)} className="hidden max-w-28 truncate rounded bg-elevated px-1.5 py-0.5 font-mono text-[9px] text-foreground hover:text-accent 2xl:inline" title={`Open evidence ${activeMeta.evidenceId}`}>{activeMeta.evidenceId.slice(0, 10)}</button>
+        )}
         <CopyButton label="Copy loaded output" value={body} disabled={!body} />
       </div>
 
@@ -232,32 +262,24 @@ export function ExecutionOutputView({
       {showingLive && live?.dropped && <Notice tone="warning">Earlier live bytes left the transient buffer. Durable evidence replaces this view when the action completes.</Notice>}
       {error && <Notice tone="danger">{error}</Notice>}
 
-      <div className="min-h-0 flex-1 overflow-auto bg-background" aria-label={`${stream} output`}>
+      <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-auto bg-background" aria-label={`${stream} output`}>
         <OutputBody
           output={output}
           stream={stream}
           meta={activeMeta}
           showingLive={showingLive}
           text={body}
-          lines={matches.lines}
+          lineChunks={chunkOutputLines(matches.lines)}
           filtered={matches.filtered}
           matchCount={matches.matchCount}
         />
       </div>
 
-      {!showingLive && activeMeta?.evidenceId && (
+      {!compact && !showingLive && activeMeta?.evidenceId && (
         <ReparseBar actionId={actionId} evidenceId={activeMeta.evidenceId} defaultTool={output.tool} />
       )}
     </div>
   );
-}
-
-function loadedFrom(stream: OutputStreamView): LoadedStream {
-  return {
-    text: stream.text,
-    loadedBytes: new TextEncoder().encode(stream.text).byteLength,
-    eof: !stream.headTruncated,
-  };
 }
 
 function describeActionOutputError(cause: unknown): string {
@@ -316,7 +338,7 @@ async function copyText(value: string): Promise<void> {
   await navigator.clipboard?.writeText(value);
 }
 
-function StreamNotices({ stream, loaded, onLoadMore, loadingMore }: { stream: OutputStreamView; loaded: LoadedStream; onLoadMore: () => void; loadingMore: boolean }) {
+function StreamNotices({ stream, loaded, onLoadMore, loadingMore }: { stream: OutputStreamView; loaded: LoadedOutputStream; onLoadMore: () => void; loadingMore: boolean }) {
   return (
     <>
       {stream.captureFailed && <Notice tone="danger">Evidence capture failed. Output bytes that were not retained cannot be recovered.</Notice>}
@@ -336,18 +358,24 @@ function Notice({ tone, children }: { tone: 'warning' | 'danger'; children: Reac
   return <div className={cn('flex flex-shrink-0 items-center gap-2 border-b px-3 py-1 text-[10px]', tone === 'danger' ? 'border-destructive/20 bg-destructive/5 text-destructive' : 'border-warning/20 bg-warning/5 text-warning')}>{children}</div>;
 }
 
-function OutputBody({ output, stream, meta, showingLive, text, lines, filtered, matchCount }: {
+function OutputBody({ output, stream, meta, showingLive, text, lineChunks, filtered, matchCount }: {
   output: ActionOutputView;
   stream: StreamName;
   meta: OutputStreamView | null;
   showingLive: boolean;
   text: string;
-  lines: string[];
+  lineChunks: string[][];
   filtered: boolean;
   matchCount: number;
 }) {
   if (filtered && matchCount === 0) return <CenteredState title="No matching lines" detail="Change the find query to return to the loaded output." />;
-  if (text) return <pre className="min-w-0 whitespace-pre-wrap break-words p-3 font-mono text-[10px] leading-[1.55] text-muted-foreground">{lines.join('\n')}</pre>;
+  if (text) return (
+    <div className="w-full min-w-0 max-w-full overflow-hidden p-3 font-mono text-[10px] leading-[1.55] text-muted-foreground">
+      {lineChunks.map((lines, index) => (
+        <pre key={index} className="w-full min-w-0 max-w-full whitespace-pre-wrap break-all [contain-intrinsic-size:auto_3100px] [content-visibility:auto] [overflow-wrap:anywhere]">{lines.join('\n')}{index < lineChunks.length - 1 ? '\n' : ''}</pre>
+      ))}
+    </div>
+  );
   if (showingLive) return <CenteredState title={`Waiting for ${stream}`} detail="The action is live, but this stream has not emitted output yet." />;
   if (!meta) return <CenteredState title="No output record" detail="The action lifecycle exists without a stream capture object." />;
   if (meta.captureFailed) return <CenteredState title="Capture failed" detail="The process produced output, but Overwatch could not persist it." />;

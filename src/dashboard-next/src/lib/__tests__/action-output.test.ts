@@ -4,6 +4,9 @@ import {
   formatBytes,
   streamHasMore,
   matchOutputLines,
+  appendOutputPage,
+  chunkOutputLines,
+  initialLoadedOutputStream,
   type OutputStreamView,
 } from '../action-output';
 import type { ActionOutputResponse } from '../api';
@@ -64,6 +67,7 @@ describe('normalizeActionOutput', () => {
     expect(view.targetIps).toEqual(['10.0.0.5']);
     expect(view.agentId).toBe('agent-recon-1');
     expect(view.findingIds).toEqual(['f-1', 'f-2']);
+    expect(view.maxBytes).toBe(65536);
     expect(view.stdout.text).toContain('22/tcp open');
     expect(view.stdout.isEmpty).toBe(false);
     expect(view.stderr.isEmpty).toBe(true);
@@ -136,6 +140,30 @@ describe('normalizeActionOutput', () => {
     expect(view.timedOut).toBe(false);
     expect(view.findingIds).toEqual([]);
     expect(view.targets).toEqual([]);
+  });
+});
+
+describe('output paging', () => {
+  it('uses server byte metadata rather than JavaScript character length', () => {
+    const stream: OutputStreamView = {
+      evidenceId: 'e', text: '🙂', totalBytes: 10, capturedTruncated: false,
+      headTruncated: true, droppedBytes: 0, missing: false, captureFailed: false, isEmpty: false,
+    };
+    expect(initialLoadedOutputStream(stream, 4).loadedBytes).toBe(4);
+  });
+
+  it('appends only contiguous byte pages and advances by bytes read', () => {
+    const current = { text: 'head', loadedBytes: 4, eof: false };
+    expect(appendOutputPage(current, {
+      evidence_id: 'e', text: 'tail', total_bytes: 8, offset: 4, bytes_read: 4, eof: true,
+    })).toEqual({ text: 'headtail', loadedBytes: 8, eof: true });
+    expect(() => appendOutputPage(current, {
+      evidence_id: 'e', text: 'gap', total_bytes: 12, offset: 8, bytes_read: 4, eof: true,
+    })).toThrow(/expected 4/);
+  });
+
+  it('chunks rendered output without dropping lines', () => {
+    expect(chunkOutputLines(['1', '2', '3', '4', '5'], 2)).toEqual([['1', '2'], ['3', '4'], ['5']]);
   });
 });
 

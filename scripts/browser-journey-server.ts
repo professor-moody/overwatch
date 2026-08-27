@@ -114,7 +114,15 @@ function seedWritableEngine(): GraphEngine {
   addEdge('browser-principal', hosts[1].id, 'HAS_SESSION', { session_live: true });
   addEdge(hosts[1].id, hosts[0].id, 'ADMIN_TO');
 
-  const successOutput = 'Browser fixture command completed.\nasset=browser-objective-host status=reachable\n';
+  // Keep one successful output larger than the dashboard's bounded head so the
+  // real browser journey exercises byte-based evidence paging and contained
+  // rendering without adding a synthetic client-only fixture path.
+  const successOutput = [
+    'Browser fixture command completed.',
+    'asset=browser-objective-host status=reachable',
+    ...Array.from({ length: 2_400 }, (_, index) => `probe=${String(index + 1).padStart(4, '0')} state=reachable latency_ms=${(index % 17) + 1}`),
+    'Browser fixture durable tail reached.',
+  ].join('\n') + '\n';
   const successEvidenceId = engine.getEvidenceStore().store({
     evidence_type: 'command_output',
     raw_output: successOutput,
