@@ -3,13 +3,13 @@
 A narrated tour of the **Operator Console** — the day-to-day loop of dispatching, steering, talking to, approving, and feeding agents without leaving the page. It complements the [Operator Cockpit](../operator-cockpit.md) reference (the runtime + endpoints) and the [Dashboard](../dashboard.md) panel guide; this page is the *workflow*.
 
 !!! note "Console-first"
-    The dashboard opens on the **Console**. Nav is grouped **Console** (Console · Frontier · Approvals · Campaigns) · **Investigate** (Graph · Findings · Attack Paths · Evidence · Identity · Credentials · Activity · Overview) · **Manage** (Sessions · Engagements · Settings · Smoke). You work in the Console and step out only to *investigate* — one click out, press `c` to come back.
+    The dashboard opens on **Operate**. The four labeled workspaces are **Operate**, **Investigate**, **Review**, and **Manage**. Activity, Sessions, and Runs stay available in the shared bottom drawer, so command output and terminals do not replace the current workspace.
 
 ## The loop
 
 ```mermaid
 flowchart LR
-    A[Add Targets / Dispatch] --> B[Steer & Talk]
+    A[Start work] --> B[Steer & Talk]
     B --> C[Needs you:<br/>Approve · Answer]
     C --> D{Investigate?}
     D -- graph/findings/paths --> E[Investigate panels]
@@ -19,7 +19,7 @@ flowchart LR
 
 ## 1. Add targets
 
-New IPs/CIDRs/domains arrive mid-engagement. Click **Add Targets** in the Console header (beside *Dispatch Subagent*):
+New IPs/CIDRs/domains arrive mid-engagement. Click **Start work** in Operate:
 
 1. Paste them — whitespace or comma separated. Parsing matches the `scan` command exactly: a bare IP becomes `/32`, domains are lowercased, IPv6 and junk are flagged and ignored.
 2. **Preview impact** — a read-only dry-run shows how many known nodes enter/leave scope and which pending scope suggestions resolve.
@@ -61,5 +61,5 @@ When you need the picture — *why* an edge exists, the path to an objective, th
 ## See also
 
 - [Operator Cockpit](../operator-cockpit.md) — the runtime, roles, NL two-phase command flow, directive substrate, escalation, and endpoints.
-- [Dashboard](../dashboard.md#operator-console-cockpit) — Console layout, Add Targets, and the full endpoint reference.
+- [Dashboard](../dashboard.md#operate-and-the-execution-console) — native workspace layout, Start work, the execution console, and the full endpoint reference.
 - [End-to-End Walkthrough](walkthrough.md) — a full engagement arc from empty graph to Domain Admin.

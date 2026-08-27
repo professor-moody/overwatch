@@ -60,7 +60,7 @@ The deterministic fast-path (`interpretCommand`) recognizes these verbs (case-in
 | Steer one agent | `pause` / `resume` / `stop` / `halt` `<agent>` | `halt` aliases `stop`. Exact task IDs win; a legacy label is accepted only when it identifies one task. |
 | Steer the fleet | `pause` / `resume` / `stop` `all` (or `everything`, `all agents`) | Fans out over every running agent. |
 | Talk to an agent | `tell <agent> [to] <text>` · `instruct <agent> [to] <text>` | Delivered as an `instruct` directive on the agent's next heartbeat. |
-| Add scope | `scan <targets>` · `add scope <targets>` · `add to scope <targets>` · `target <targets>` | Targets are whitespace/comma-separated CIDRs, IPs (→`/32`), or domains (lowercased); IPv6/junk is rejected. Same parsing as the Console's **Add Targets** modal. |
+| Add scope | `scan <targets>` · `add scope <targets>` · `add to scope <targets>` · `target <targets>` | Targets are whitespace/comma-separated CIDRs, IPs (→`/32`), or domains (lowercased); IPv6/junk is rejected. Same parsing as Operate's **Start work** launcher. |
 | Resolve an action | `approve [action] <id> [reason]` · `deny [action] <id> [reason]` | The optional `action` keyword is accepted; the trailing text is the reason. |
 
 Each resolves to one or more `OperatorOp`s, previews, and runs through `executeOps` on confirm — never a separate mutation path.
@@ -82,6 +82,13 @@ The dashboard is organized around four persistent workflows: **Operate**, **Inve
 - **Active**, **Ready**, **Campaigns**, and **History** views for live work, canonical Frontier order, structured campaigns, and terminal outcomes;
 - one contextual inspector for agent, target, finding, path, campaign, and proof context;
 - a shared bottom drawer for **Activity**, **Sessions**, and **Runs**, so raw output and terminals do not displace the current workflow.
+
+The drawer opens at a compact working height. **Focus** expands it vertically
+for a terminal or long output stream; focus is local presentation state, stays
+in effect while changing drawer destinations, resets when the drawer closes,
+and never enters a shared URL. Escape closes transient surfaces in this order:
+launcher, command palette, overlay inspector, focused drawer to compact, then
+drawer.
 
 The live WS push carries source attribution so primary reasoning and operator commands appear inline as they happen. Resolved approvals clear off the `action_resolved` push. The complete attention queue shares the same approve/deny, answer, plan-confirmation, and steering paths as the former standalone panels.
 
@@ -142,19 +149,49 @@ The system **recommends** a type for a target (`recommendArchetype`, mirroring t
 
 The engagement/scope/OPSEC substrate is unchanged — ad-hoc deploy just removes the setup friction.
 
-## Runs drawer {#analysis}
+## Activity, Runs, and Sessions drawers {#analysis}
+
+**Activity** is the complete operator timeline. It uses the canonical console
+projection rather than reconstructing event classes in the browser. Action
+lifecycle events collapse into one thread; selecting the thread exposes its
+validation, approval, reasoning, command, stdout/stderr, evidence, findings,
+and linked entities without leaving Activity. Standalone decisions, findings,
+sessions, transcripts, and system events show their own context instead of an
+empty terminal. Search and filters are local and use safe metadata only.
+
+Live follow never takes control away from the operator. Scrolling away,
+searching, or pausing follow preserves the current viewport and selection while
+the drawer counts unseen events. Disconnection leaves the last-good timeline
+and output visible with a stale marker; reconnect reconciles both HTTP history
+and the selected action's durable output.
 
 The shared **Runs** drawer is where the operator **assesses the raw output of tools the agents run** without leaving Operate, Investigate, or Review. It is the run-centric complement to Review's proof context: raw output remains captured in the evidence store and parsed findings remain in the graph.
 
 - **Run list** — every agent tool run derived from the activity history (status: running / success / failure / partial; tool; command; agent; targets), filterable by status + free text.
-- **Assessment view** — for a selected run: raw **stdout/stderr** (scrollable, stdout↔stderr toggle, find-in-output) **plus** the run's parsed findings and linked graph nodes. Head-by-default with a **Load more** (up to the 1 MiB server cap), and clear banners for truncated / missing / capture-failed streams.
+- **Assessment view** — for a selected run: raw **stdout/stderr** (scrollable, stdout↔stderr toggle, find-in-output) plus evidence metadata, related findings, and linked graph nodes. A bounded head loads immediately; **Load more** reads additional bounded pages without discarding bytes already loaded. Missing, execution-truncated, live-buffer-dropped, bounded-head, and capture-failed states are distinct.
 - **Live streaming** — while a run is in flight, its output streams in real time over `ws://…/ws/actions/{action_id}/output` (an engine-owned `ActionOutputBuffer`); on completion the view falls back to the durable evidence (the source of truth).
 - **Re-parse & promote** — pick a parser, **Preview** what it extracts (node/edge counts), then **Promote to graph**. Routes through the same parse→ingest pipeline as the [`parse_output`](tools/parse-output.md) tool (`parseAndMaybeIngest`), so validation/events/graph mutation stay identical. Preview never mutates the graph.
-- **Deploy-at-findings** — one-click deploy a follow-up agent at the run's target nodes (dispatch) or raw IPs/CIDRs (quick-deploy), with a recommended agent type — reusing the same validated dispatch/quick-deploy paths, no retyping node IDs.
+
+The output component is shared by Activity, Runs, Review proof, evidence
+inspectors, and action-linked agent context. Raw output is never placed in URL
+state, browser storage, the command-palette index, activity labels, analytics,
+or client logs. Copying a command or loaded output always requires an explicit
+operator action.
+
+**Sessions** is a two-column durable-session workspace. The master list groups
+Live, Waiting, Resume available, Interrupted, Error, and Closed states. The
+detail switches between an attached Terminal, safe Context metadata, and the
+durable Buffer. The raw buffer is the authoritative transcript: the dashboard
+may highlight command-like lines for navigation, but it does not assert
+command/output boundaries the backend did not record. Leaving focus does not
+detach, and leaving Sessions may close only the UI socket while the durable
+session continues.
 
 All target execution still flows through the agents/MCP path; the workspace reads output and routes deploys through existing validated engine methods.
 
-This makes the workspace a tight assess → re-parse → deploy loop, suggest-only: the operator reviews each recommendation before an agent is dispatched.
+This makes the drawer a tight activity → action → output → evidence → finding
+loop while keeping dispatch and every safety decision on the existing validated
+paths.
 
 ![Analysis workspace loop](assets/analysis-workspace-loop-light.svg#only-light)
 ![Analysis workspace loop](assets/analysis-workspace-loop-dark.svg#only-dark)
@@ -180,7 +217,7 @@ This makes the workspace a tight assess → re-parse → deploy loop, suggest-on
 | `GET /api/agent-queries` · `POST /api/agent-queries/{query_id}/answer` | The agent-question inbox |
 | `POST /api/actions/{action_id}/approve` · `POST /api/actions/{action_id}/deny` | Resolve a pending action inline (canonical `resolveApprovalRequest`) |
 | `POST /api/actions/approve-batch` · `POST /api/actions/deny-batch` | Bulk resolve `{ action_ids[] }` — each id routes through the same canonical path (deny takes one shared reason) |
-| `POST /api/config/scope/preview` · `PATCH /api/config/scope` | Add Targets — read-only impact dry-run, then apply via `updateScope` |
+| `POST /api/config/scope/preview` · `PATCH /api/config/scope` | Start work raw-target flow — read-only impact dry-run, then apply via `updateScope` |
 | `GET /api/agent-archetypes` | The agent-type catalog for the Deploy picker |
 | `POST /api/agents/quick-deploy` | Ad-hoc deploy — scope a raw IP/CIDR/domain + dispatch the recommended/chosen type |
 | `POST /api/agents/dispatch` | Dispatch a sub-agent (`{ target_node_ids, archetype?, skill?, campaign_id?, frontier_item_id? }`) |

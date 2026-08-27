@@ -45,7 +45,7 @@ engagement-only anti-drift hooks inactive. You can run
 Setup is initial selection and client wiring, not the way to edit a running
 engagement. On a fresh checkout you may add `--template`, `--name`, `--cidr`, or
 `--domain`; those values are used only when setup creates `engagement.json`.
-Afterward, add scope from **Console → Add Targets** (or `update_scope`), edit
+Afterward, add scope from **Operate → Start work** (or `update_scope`), edit
 objectives and OPSEC in **Settings** (or `add_objective` / `set_opsec`), and let
 the revisioned write-through service keep the live engine, durable state, and
 active file aligned.
