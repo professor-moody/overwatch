@@ -1,9 +1,9 @@
 import type { AgentConsoleEvent, AgentConsoleSeverity } from './types';
 import type { AgentQuery } from './api';
 
-// Phase 5b — turn the focused agent's flat event stream into a readable
+// Phase 5b - turn the focused agent's flat event stream into a readable
 // CONVERSATION: your commands, the agent's acknowledgements, the actions it took
-// and their results, findings it produced, and questions it's asking — top to
+// and their results, findings it produced, and questions it's asking - top to
 // bottom. Pure transform over the per-agent console events the dashboard already
 // loads (+ the agent's open questions); the answer to "where are the results /
 // how does it ask me / why does this feel cumbersome".
@@ -140,7 +140,7 @@ export function buildAgentThread(
   const taskIds = new Set([opts.agentId].filter((v): v is string => !!v));
   // Events first (the source array is already timestamp-sorted), then the agent's
   // open questions. The build index is the stable tiebreaker for same-timestamp
-  // entries — sorting by event id would be meaningless (ids are uuids/hashes) and
+  // entries - sorting by event id would be meaningless (ids are uuids/hashes) and
   // could scramble a command→action that share a millisecond.
   const entries: ThreadEntry[] = events.map(entryFromEvent);
   for (const q of questions) {

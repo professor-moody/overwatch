@@ -2,7 +2,7 @@
 // Node color encodings for the graph.
 //
 // The graph can color nodes by three things: their TYPE (default, one hue per
-// node type — NODE_COLORS), their Louvain COMMUNITY (cluster membership — the
+// node type - NODE_COLORS), their Louvain COMMUNITY (cluster membership - the
 // biggest "de-jumble" signal), or their TIER (network/app/cloud/identity surface).
 // GraphPage rewrites each node's stored `color` attr when the mode changes, so
 // everything that reads `data.color` (minimap, reducer dimming) stays consistent.

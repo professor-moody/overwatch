@@ -1,12 +1,12 @@
 import type { AgentInfo } from './types';
 import { agentDisplayLabel, canonicalAgentTaskId } from './agent-reference';
 
-// Phase 5 (Mission Control) — one contextual command box replaces the separate
+// Phase 5 (Mission Control) - one contextual command box replaces the separate
 // global command bar and per-agent "Tell" box. A scope pill selects where the
 // command goes; this module is the pure routing decision (the component owns the
 // input + the two-phase preview/confirm UI it already has).
 //
-// Phase 1 scopes: Engagement (the NL command bar — handles fleet verbs like
+// Phase 1 scopes: Engagement (the NL command bar - handles fleet verbs like
 // "pause all" + planner fallback through /api/commands) and Agent (free text →
 // an `instruct` directive to the focused agent, via /api/agents/:id/directive).
 // A Campaign scope arrives with swimlanes in Phase 4 (no per-campaign free-text
@@ -19,7 +19,7 @@ export type CommandScope =
   | { kind: 'agent'; taskId: string; label: string };
 
 export type CommandRoute =
-  | { via: 'command' }                       // POST /api/commands — NL preview → confirm (the planner)
+  | { via: 'command' }                       // POST /api/commands - NL preview → confirm (the planner)
   | { via: 'instruct'; taskId: string }      // issueDirective(taskId, 'instruct', { note })
   | { via: 'instruct_primary' }              // instruct the live orchestrator (id resolved at render)
   | { via: 'instruct_all' };                 // fleetInstruct(note) → every running agent

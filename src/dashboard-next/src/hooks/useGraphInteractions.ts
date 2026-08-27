@@ -1,5 +1,5 @@
 // ============================================================
-// useGraphInteractions — drag, hover, click, shift-click path
+// useGraphInteractions - drag, hover, click, shift-click path
 // ============================================================
 
 import { useCallback, useEffect, useRef } from 'react';

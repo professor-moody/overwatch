@@ -351,7 +351,7 @@ export function SessionsDrawer({
 
       {(stale || attachError || pendingWarning) && (
         <div className={cn('flex flex-shrink-0 items-center gap-2 border-b px-3 py-1 text-[10px]', attachError ? 'border-destructive/20 bg-destructive/5 text-destructive' : 'border-warning/20 bg-warning/5 text-warning')}>
-          <AlertTriangle className="h-3 w-3" /><span className="min-w-0 flex-1 truncate">{attachError || pendingWarning || (connected ? 'Session list is stale.' : 'Disconnected — last-good session context remains visible.')}</span>
+          <AlertTriangle className="h-3 w-3" /><span className="min-w-0 flex-1 truncate">{attachError || pendingWarning || (connected ? 'Session list is stale.' : 'Disconnected - last-good session context remains visible.')}</span>
         </div>
       )}
 
@@ -434,7 +434,7 @@ function SessionContext({ session, graph, editing, draftTitle, draftNotes, busy,
   onCopy: (label: string, value: string) => void;
   onNavigate: ReturnType<typeof useNavigate>;
 }) {
-  const targetLabel = graph.nodes.find(node => node.id === session.target_node)?.label || session.target_node || session.host || '—';
+  const targetLabel = graph.nodes.find(node => node.id === session.target_node)?.label || session.target_node || session.host || '-';
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
       <div className="flex items-start gap-3 border-b border-border-subtle pb-2">
@@ -445,12 +445,12 @@ function SessionContext({ session, graph, editing, draftTitle, draftNotes, busy,
       </div>
       <div className="grid gap-x-6 gap-y-1.5 border-b border-border-subtle py-2 text-[9px] sm:grid-cols-2 xl:grid-cols-3">
         <ContextFact label="Target" value={targetLabel} mono />
-        <ContextFact label="Principal" value={session.user || session.principal_node || '—'} mono />
-        <ContextFact label="Credential ref" value={session.credential_node || '—'} mono />
+        <ContextFact label="Principal" value={session.user || session.principal_node || '-'} mono />
+        <ContextFact label="Credential ref" value={session.credential_node || '-'} mono />
         <ContextFact label="Owner" value={session.claimed_by || session.owner || session.agent_id || 'dashboard'} mono />
         <ContextFact label="Validation default" value={session.default_validation?.technique || 'per-command'} mono />
         <ContextFact label="Generation" value={String(session.connection_generation ?? 0)} mono />
-        <ContextFact label="Connection ID" value={session.connection_id || session.last_connection_id || '—'} mono />
+        <ContextFact label="Connection ID" value={session.connection_id || session.last_connection_id || '-'} mono />
         <ContextFact label="Transport" value={`${session.kind}${session.transport ? ` · ${session.transport}` : ''}`} />
         <ContextFact label="Last activity" value={formatRelativeTime(session.last_activity_at || session.started_at || session.created_at)} />
       </div>

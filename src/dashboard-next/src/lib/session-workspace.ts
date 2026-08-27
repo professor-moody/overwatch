@@ -1,7 +1,7 @@
 import type { ActivityEntry, FrontierItem, PendingAction, SessionBufferResponse, SessionInfo } from './types';
 import { getFrontierKey, getFrontierNodeIds } from './frontier-workspace';
 
-// `error` is split out from `closed` — an errored session is a failure the
+// `error` is split out from `closed` - an errored session is a failure the
 // operator may want to act on, not a clean teardown, so it gets its own group
 // (ordered above closed so it surfaces).
 export type SessionGroup =

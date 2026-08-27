@@ -11,7 +11,7 @@ export function EvidenceNarrative({
   empty = 'No supporting evidence chain found yet.',
 }: {
   items: EvidenceNarrativeItem[];
-  /** What the evidence proves — the vuln/finding — so the raw output is self-explanatory. */
+  /** What the evidence proves - the vuln/finding - so the raw output is self-explanatory. */
   subject?: string;
   empty?: string;
 }) {
@@ -82,7 +82,7 @@ export function EvidenceNarrative({
  *  collapses to a fixed max height with a toggle, instead of the old 3-line clamp
  *  that made long output unreadable. The toggle appears based on the ACTUAL
  *  rendered overflow (measured against the collapsed cap) rather than a line/char
- *  heuristic — word-wrapped output can exceed the cap even when the raw text is
+ *  heuristic - word-wrapped output can exceed the cap even when the raw text is
  *  short, and clipping evidence with no "show full output" affordance would hide it. */
 function EvidenceProof({ proof }: { proof: string }) {
   const [open, setOpen] = useState(false);
@@ -122,7 +122,7 @@ function sourceKindLabel(kind: EvidenceNarrativeItem['source_kind']): string {
 }
 
 /** Matched-signal excerpts (3c): the exact bytes that justify the finding, re-read and
- *  verified against the evidence blob — so a reader can see (and audit) the proof, not a
+ *  verified against the evidence blob - so a reader can see (and audit) the proof, not a
  *  paraphrase. Shows the byte range, what matched it, and the verification verdict. */
 function MatchedSignals({ excerpts }: { excerpts: ProofExcerpt[] }) {
   return (

@@ -25,14 +25,14 @@ function samplePath(): DisplayAttackPath {
   }, byId)!;
 }
 
-describe('AttackPathRouteRow — followable foothold->objective narrative', () => {
+describe('AttackPathRouteRow - followable foothold->objective narrative', () => {
   it('renders each hop as an explained step, not a terse edge-type chip strip', () => {
     render(<AttackPathRouteRow path={samplePath()} onInspect={() => {}} />);
 
     // The starting point is anchored as the foothold.
     expect(screen.getByText('Foothold')).toBeTruthy();
 
-    // Every hop reads as a verb phrase — never the raw SCREAMING_CASE edge type.
+    // Every hop reads as a verb phrase - never the raw SCREAMING_CASE edge type.
     expect(screen.getByText('can reach')).toBeTruthy();
     expect(screen.getByText('is vulnerable to')).toBeTruthy();
     expect(screen.queryByText('CAN_REACH')).toBeNull();

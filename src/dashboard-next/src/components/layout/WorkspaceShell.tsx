@@ -2,13 +2,14 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react
 import {
   Activity,
   Crosshair,
-  KeyRound,
   Maximize2,
   Minimize2,
   Network,
+  PanelBottom,
   Search,
   Settings,
   ShieldAlert,
+  SquareTerminal,
   Terminal,
   X,
 } from 'lucide-react';
@@ -47,6 +48,18 @@ const SessionsDrawer = lazy(() => import('../drawer/SessionsDrawer').then(module
 const RunsDrawer = lazy(() => import('../drawer/RunsDrawer').then(module => ({ default: module.RunsDrawer })));
 
 type DrawerMode = 'compact' | 'focus';
+
+const DRAWER_DESTINATIONS: Array<{
+  id: DrawerKind;
+  label: string;
+  description: string;
+  paletteHint: string;
+  icon: React.ComponentType<{ className?: string }>;
+}> = [
+  { id: 'activity', label: 'Activity', description: 'Timeline', paletteHint: 'Operator timeline', icon: Activity },
+  { id: 'sessions', label: 'Sessions', description: 'Shells', paletteHint: 'Interactive shells', icon: Terminal },
+  { id: 'run', label: 'Runs', description: 'Command + output', paletteHint: 'Command history and output', icon: SquareTerminal },
+];
 
 const WORKSPACES: Array<{
   id: WorkspaceId;
@@ -161,6 +174,16 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
       hint: item.description,
       path: `/${item.id}`,
     }));
+    for (const destination of DRAWER_DESTINATIONS) {
+      const params = setDrawerParams(searchParams, { kind: destination.id });
+      items.push({
+        id: `console:${destination.id}`,
+        kind: 'console',
+        label: destination.label,
+        hint: destination.paletteHint,
+        path: `/${workspace}?${params.toString()}`,
+      });
+    }
     for (const agent of agents) {
       const id = agent.task_id ?? agent.id;
       items.push({
@@ -225,7 +248,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
       });
     }
     return items;
-  }, [agents, campaigns, findings, graph.nodes, objectives]);
+  }, [agents, campaigns, findings, graph.nodes, objectives, searchParams, workspace]);
 
   const choosePaletteItem = useCallback((item: CommandItem) => {
     if (item.path) navigate(item.path);
@@ -372,7 +395,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
         {!connected && (
           <div className="flex h-8 flex-shrink-0 items-center gap-2 border-b border-destructive/20 bg-destructive/5 px-5 text-[11px] text-destructive">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-destructive" />
-            Disconnected — showing the last synchronized engagement state while Overwatch reconnects.
+            Disconnected - showing the last synchronized engagement state while Overwatch reconnects.
           </div>
         )}
 
@@ -449,37 +472,44 @@ function WorkspaceDrawer({
   onSelect: (item: string | null) => void;
   onOpenItem: (drawer: DrawerKind, item: string) => void;
 }) {
-  const tabs: Array<{ id: DrawerKind; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-    { id: 'activity', label: 'Activity', icon: Activity },
-    { id: 'sessions', label: 'Sessions', icon: Terminal },
-    { id: 'run', label: 'Runs', icon: KeyRound },
-  ];
   const activeKind = drawer?.kind ?? null;
 
   return (
     <section className={cn(
-      'z-30 flex flex-shrink-0 flex-col border-t border-border-subtle bg-surface transition-[height] duration-150 motion-reduce:transition-none',
-      !drawer ? 'h-9' : mode === 'focus' ? 'h-[clamp(480px,72vh,760px)]' : 'h-[clamp(280px,38vh,480px)]',
-    )} aria-label="Operator drawer" data-drawer-mode={mode}>
-      <div className="flex h-9 flex-shrink-0 items-center gap-1 px-2">
-        {tabs.map(tab => {
+      'z-40 flex flex-shrink-0 flex-col border-t border-border bg-surface shadow-[0_-10px_28px_rgba(0,0,0,0.18)] transition-[height] duration-150 motion-reduce:transition-none',
+      !drawer ? 'h-11' : mode === 'focus' ? 'h-[clamp(480px,72vh,760px)]' : 'h-[clamp(280px,38vh,480px)]',
+    )} aria-label="Operator drawer" data-drawer-mode={mode} data-testid="execution-console-rail">
+      <div className="flex h-11 flex-shrink-0 items-center gap-1 bg-elevated/25 px-2">
+        <div className="mr-1 flex h-7 flex-shrink-0 items-center gap-2 border-r border-border pr-3 text-foreground" aria-label="Execution console">
+          <span className="flex h-6 w-6 items-center justify-center rounded bg-accent/10 text-accent">
+            <PanelBottom className="h-3.5 w-3.5" />
+          </span>
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em]">Console</span>
+        </div>
+        {DRAWER_DESTINATIONS.map(tab => {
           const Icon = tab.icon;
           return (
             <button
               key={tab.id}
               type="button"
               onClick={() => onChange(activeKind === tab.id ? null : tab.id)}
+              aria-label={tab.label}
+              aria-pressed={activeKind === tab.id}
+              title={`Open ${tab.label}: ${tab.paletteHint}`}
               className={cn(
-                'flex h-7 items-center gap-1.5 rounded px-2.5 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70',
-                activeKind === tab.id ? 'bg-elevated text-foreground' : 'text-muted-foreground hover:bg-hover/50 hover:text-foreground',
+                'relative flex h-8 items-center gap-2 rounded px-2.5 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70',
+                activeKind === tab.id
+                  ? 'bg-accent/10 text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-px after:bg-accent'
+                  : 'text-muted-foreground hover:bg-hover/60 hover:text-foreground',
               )}
             >
               <Icon className="h-3.5 w-3.5" />
-              {tab.label}
+              <span className="font-medium">{tab.label}</span>
+              <span className={cn('hidden text-[9px]', activeKind === tab.id ? 'text-accent/80' : 'text-muted', 'lg:inline')}>{tab.description}</span>
             </button>
           );
         })}
-        <span className="ml-auto pr-2 text-[9px] text-muted">{mode === 'focus' ? 'Esc compacts' : 'Esc closes'}</span>
+        <span className="ml-auto hidden pr-2 text-[9px] text-muted md:inline">{drawer ? (mode === 'focus' ? 'Esc compacts' : 'Esc closes') : 'Command history and live output'}</span>
         {drawer && (
           <button type="button" onClick={() => onModeChange(mode === 'focus' ? 'compact' : 'focus')} className="flex h-7 items-center gap-1 rounded px-2 text-[9px] text-muted-foreground hover:bg-hover hover:text-foreground" aria-label={mode === 'focus' ? 'Compact drawer' : 'Focus drawer'} title={mode === 'focus' ? 'Compact drawer' : 'Focus drawer'}>
             {mode === 'focus' ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}

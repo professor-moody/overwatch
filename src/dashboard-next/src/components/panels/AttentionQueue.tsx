@@ -8,7 +8,7 @@ import { recommendedDecision } from '../../lib/action-queue';
 import { cn } from '../../lib/utils';
 import { ActionButton, StatusPill } from '../shared/primitives';
 
-// Phase 5 (Mission Control) — the single "Needs you" surface, merging pending
+// Phase 5 (Mission Control) - the single "Needs you" surface, merging pending
 // approvals, agent questions, and failed agents into one prioritized queue with
 // exactly one item expanded. Replaces the separate approvals lane + questions
 // inbox. View-model + ordering are in lib/attention-queue.ts (tested); approve/
@@ -67,7 +67,7 @@ export function AttentionQueue({
   const overflow = view.total - visible.length;
   // Items the toggle reveals INLINE when opened (capped at DISPLAY_CAP). Anything
   // beyond that stays behind the "+N more → Triage all" link, so the toggle must
-  // not promise "all" — it shows up to this many more rows in place.
+  // not promise "all" - it shows up to this many more rows in place.
   const inlineMore = Math.min(view.total, DISPLAY_CAP) - 1;
 
   // Compact bulk-clear over ALL pending approvals (not just the visible slice), so
@@ -124,7 +124,7 @@ export function AttentionQueue({
             item={item}
             expanded={item.id === activeId}
             // Expansion-only: clicking a row focuses it. There's intentionally no
-            // collapse-to-zero — the queue always keeps one item expanded, and a
+            // collapse-to-zero - the queue always keeps one item expanded, and a
             // sentinel collapse wouldn't survive the store/poll re-render anyway.
             onToggle={() => { setExpandedId(item.id); onSelectItem?.(item); }}
             onAnswered={onAnswered}
@@ -223,7 +223,7 @@ function AttentionRow({
                 size="xs"
                 variant="danger"
                 disabled={removing}
-                title="Force stop & remove — kills the process and clears the agent even if Cancel won't"
+                title="Force stop & remove - kills the process and clears the agent even if Cancel won't"
                 onClick={forceRemove}
               >
                 {removing ? 'Removing…' : 'Force remove'}

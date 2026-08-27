@@ -1,6 +1,6 @@
 import { parseTargetBlob, hasParsedTargets } from './target-input';
 
-// Phase 5c (dashboard side) — classify what the operator typed into the Deploy
+// Phase 5c (dashboard side) - classify what the operator typed into the Deploy
 // box (a raw IP/CIDR/domain → ad-hoc quick-deploy, vs. existing graph node ids →
 // dispatch) and mirror the server recommender for instant UI pre-selection. The
 // server (agent-archetypes.ts) is authoritative on the actual deploy; this is
@@ -9,7 +9,7 @@ import { parseTargetBlob, hasParsedTargets } from './target-input';
 export type DeployInput =
   | { kind: 'raw'; target: string; cidrs: string[]; domains: string[]; invalid: string[] }
   | { kind: 'nodes'; nodeIds: string[] }
-  // Both valid targets AND unrecognized tokens — ambiguous (raw targets and node
+  // Both valid targets AND unrecognized tokens - ambiguous (raw targets and node
   // ids can't be deployed together), so the UI blocks rather than silently
   // dropping the extras.
   | { kind: 'mixed'; cidrs: string[]; domains: string[]; invalid: string[] }
@@ -37,7 +37,7 @@ export function classifyDeployInput(text: string): DeployInput {
 }
 
 // Deploy-at-findings (Analysis workspace): from a tool run's targets, decide how
-// a one-click follow-up deploy should route — at the discovered graph nodes
+// a one-click follow-up deploy should route - at the discovered graph nodes
 // (dispatch) or at the raw IPs/CIDRs the run hit (quick-deploy).
 export type RunDeployPlan =
   | { mode: 'nodes'; nodeIds: string[] }

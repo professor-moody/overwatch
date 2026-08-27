@@ -373,6 +373,42 @@ test.describe('dashboard operator journeys', () => {
     expect(graphToolbarOverflow).toEqual([]);
   });
 
+  test('keeps the execution console visible and opens command history directly', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await land(page, '/investigate?lens=topology&entity=node&item=browser-objective-host&node=browser-objective-host');
+
+    const consoleRail = page.getByTestId('execution-console-rail');
+    await expect(consoleRail).toBeVisible();
+    await expect(consoleRail.getByLabel('Execution console', { exact: true })).toBeVisible();
+    await expect(consoleRail.getByRole('button', { name: 'Activity', exact: true })).toBeVisible();
+    await expect(consoleRail.getByRole('button', { name: 'Sessions', exact: true })).toBeVisible();
+    const runs = consoleRail.getByRole('button', { name: 'Runs', exact: true });
+    await expect(runs).toBeVisible();
+
+    const railBounds = await consoleRail.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return { bottom: rect.bottom, height: rect.height, viewport: window.innerHeight };
+    });
+    expect(railBounds.height).toBeGreaterThanOrEqual(44);
+    expect(Math.abs(railBounds.viewport - railBounds.bottom)).toBeLessThanOrEqual(1);
+    const inspectorBottom = await page.locator('.workspace-inspector').evaluate(element => element.getBoundingClientRect().bottom);
+    expect(Math.abs(inspectorBottom - (railBounds.viewport - railBounds.height))).toBeLessThanOrEqual(1);
+
+    await runs.click();
+    await expect(page.getByTestId('runs-drawer')).toBeVisible();
+    await expect.poll(() => new URL(page.url()).searchParams.get('drawer')).toBe('run');
+    await expect.poll(() => new URL(page.url()).searchParams.get('lens')).toBe('topology');
+    await expect.poll(() => new URL(page.url()).searchParams.get('item')).toBe('browser-objective-host');
+
+    await page.keyboard.press('Control+k');
+    const paletteSearch = page.getByRole('textbox', { name: 'Search workspaces and engagement entities' });
+    await paletteSearch.fill('operator timeline');
+    await page.getByRole('option', { name: /Activity/ }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get('drawer')).toBe('activity');
+    await expect.poll(() => new URL(page.url()).searchParams.get('lens')).toBe('topology');
+    await expect.poll(() => new URL(page.url()).searchParams.get('item')).toBe('browser-objective-host');
+  });
+
   test('supports keyboard-only workspace flow and removes functional motion when requested', async ({ page, request }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await land(page, '/operate?view=attention&drawer=activity');

@@ -1,5 +1,5 @@
 // ============================================================
-// GraphPage — Full Graph Explorer (Phase 3)
+// GraphPage - Full Graph Explorer (Phase 3)
 // ============================================================
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
@@ -204,18 +204,18 @@ export function GraphPage({ embedded = false }: { embedded?: boolean }) {
   }, [graph]);
 
   // Apply a deterministic (non-force) layout: write positions, de-overlap, refresh.
-  // Transient — it never writes to the saved-position store, so a reload restores
+  // Transient - it never writes to the saved-position store, so a reload restores
   // whatever the user pinned.
   const applyComputedLayout = useCallback((type: 'hierarchical' | 'tiered') => {
     if (graph.order === 0) return;
-    // Lay out only currently-VISIBLE nodes — otherwise a flood of hidden recon nodes
+    // Lay out only currently-VISIBLE nodes - otherwise a flood of hidden recon nodes
     // (subdomains) sizes the canvas and the visible attack graph is a few sparse dots.
     // Use isNodeVisible (the render predicate), not raw activeFilters, so a recon node
     // shown because it's on a highlighted path is laid out too, not stranded at a stale
     // position that zoomToFit would then frame.
     const include = (id: string, attrs: Record<string, unknown>) => isNodeVisible(id, attrs);
     if (type === 'hierarchical') computeHierarchical(graph, { include }); else computeTiered(graph, { include });
-    // NOTE: no applyNoverlap here — dagre/tiered are overlap-free by construction, and
+    // NOTE: no applyNoverlap here - dagre/tiered are overlap-free by construction, and
     // running noverlap over the whole graph let hidden nodes (left at stale positions,
     // since they weren't laid out) shove the freshly-positioned visible nodes apart.
     normalizeAutoLayout();
@@ -234,7 +234,7 @@ export function GraphPage({ embedded = false }: { embedded?: boolean }) {
         layout.stop();
         setLayoutRunning(false);
         // Re-check BOTH: the user may have pinned OR switched to a computed layout
-        // during the 1500ms burst — don't stomp a just-applied hierarchical/tiered view.
+        // during the 1500ms burst - don't stomp a just-applied hierarchical/tiered view.
         if (userPinnedLayoutRef.current || layoutTypeRef.current !== 'force') return;
         normalizeAutoLayout();
         explodeHubs(graph);
@@ -245,7 +245,7 @@ export function GraphPage({ embedded = false }: { embedded?: boolean }) {
     } else if (!opts?.isDelta) {
       // Computed layouts recompute the WHOLE graph deterministically (dagre / grid).
       // Doing that on every streamed delta would block the main thread and jump every
-      // node, so only run it on a full load / explicit switch — not per delta. New
+      // node, so only run it on a full load / explicit switch - not per delta. New
       // nodes from a delta keep their seed position until the next full load or the
       // operator re-picks the layout.
       applyComputedLayout(layoutTypeRef.current);
@@ -703,7 +703,7 @@ export function GraphPage({ embedded = false }: { embedded?: boolean }) {
   }, [stateRef, clearPathHighlight, forceGraphUi]);
 
   // Re-apply the active (non-type) color encoding after a data load/merge so newly
-  // arrived nodes — which load with their default type color — pick up the mode.
+  // arrived nodes - which load with their default type color - pick up the mode.
   useEffect(() => {
     if (stateRef.current.colorMode !== 'type') recolorNodes();
   }, [graphVersion, recolorNodes, stateRef]);
@@ -946,7 +946,7 @@ export function GraphPage({ embedded = false }: { embedded?: boolean }) {
       {editMode && (
         <div className="bg-warning/10 border-b border-warning/30 px-4 py-1.5 text-xs text-warning flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
-          Edit Mode — Right-click nodes to annotate or mark. Changes are persisted.
+          Edit Mode - Right-click nodes to annotate or mark. Changes are persisted.
         </div>
       )}
 

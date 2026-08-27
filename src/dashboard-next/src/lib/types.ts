@@ -31,7 +31,7 @@ export const NODE_TYPES = [
   'share', 'certificate', 'ca', 'cert_template', 'pki_store', 'gpo', 'ou', 'subnet', 'objective',
   'webapp', 'vulnerability', 'api_endpoint',
   'cloud_identity', 'cloud_resource', 'cloud_policy', 'cloud_network',
-  // Identity tier (Phase 1 enterprise readiness — SSO / IdP modeling). Mirrors
+  // Identity tier (Phase 1 enterprise readiness - SSO / IdP modeling). Mirrors
   // the backend union in src/types.ts.
   'idp', 'idp_application', 'idp_principal',
   'mock_service',
@@ -252,7 +252,7 @@ export interface EngagementState {
     scope?: ScopeConfig;
     opsec?: OpsecConfig;
   };
-  /** Backend access summary — the toolbar's access level reads current_access_level. */
+  /** Backend access summary - the toolbar's access level reads current_access_level. */
   access_summary?: AccessSummary;
   graph_summary?: {
     total_nodes: number;
@@ -413,7 +413,7 @@ export interface EvidenceChainEntry {
  *  (services/source-trust.ts) and mirrored here so proof reads apart from hypothesis. */
 export type SourceTrust = 'observed' | 'asserted' | 'inferred';
 
-/** A matched-signal excerpt — the specific bytes that justify a finding, re-read and
+/** A matched-signal excerpt - the specific bytes that justify a finding, re-read and
  *  verified against the evidence blob (mirrors the report's ProofExcerpt). */
 export interface ProofExcerpt {
   snippet?: string;
@@ -511,7 +511,7 @@ export interface EngagementConfig {
   operator_policy?: OperatorPolicy;
 }
 
-/** Compiled operator policy — durable approval/dispatch rules the engine enforces.
+/** Compiled operator policy - durable approval/dispatch rules the engine enforces.
  *  Mirrors the server `OperatorPolicy` type. */
 export interface OperatorApprovalRule {
   match: { host_class?: 'in_scope' | 'unverified' | 'excluded'; network?: string; technique?: string };

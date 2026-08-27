@@ -54,7 +54,7 @@ export interface EvidenceNarrativeItem {
   latest?: string;
   description?: string;
   proof?: string;
-  /** The exact command that produced this evidence — the "how it was found". */
+  /** The exact command that produced this evidence - the "how it was found". */
   command?: string;
   /** The agent/sub-agent that ran it. */
   agent_id?: string;
@@ -62,7 +62,7 @@ export interface EvidenceNarrativeItem {
   source_trust?: 'observed' | 'asserted' | 'inferred';
   /** Exit code of the producing command, when it was a real execution. */
   exit_code?: number;
-  /** SHA-256 of the captured blob — tamper-evident proof handle. */
+  /** SHA-256 of the captured blob - tamper-evident proof handle. */
   content_hash?: string;
   evidence_id?: string;
   /** Matched-signal excerpts: the specific bytes that justify the finding, re-read and
@@ -86,8 +86,8 @@ export function narrativeItemsFromChains(chains: EvidenceChainResponse[]): Evide
     const command = chain.chains.find(entry => entry.command)?.command;
     const agent_id = chain.chains.find(entry => entry.agent_id)?.agent_id;
     // The proof fields (excerpts / source_trust / exit code / hash) travel together on a
-    // per-action chain, so lift them from the primary proof entry — the one with matched
-    // excerpts, else the command entry, else the first — rather than mixing across entries.
+    // per-action chain, so lift them from the primary proof entry - the one with matched
+    // excerpts, else the command entry, else the first - rather than mixing across entries.
     const proof = chain.chains.find(entry => entry.excerpts?.length)
       ?? chain.chains.find(entry => entry.command)
       ?? first;

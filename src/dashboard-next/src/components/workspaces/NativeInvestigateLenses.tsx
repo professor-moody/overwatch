@@ -82,7 +82,7 @@ export function IdentityLens({ active = true }: { active?: boolean }) {
             <span className="w-28 truncate text-[10px] capitalize text-muted-foreground">{row.kind}</span>
             <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">{row.provider}{row.kind !== 'provider' ? ` · ${row.relation}` : ''}</span>
             <StatusPill tone={/blocked|expired|invalid/i.test(row.status) ? 'warning' : 'success'}>{row.status}</StatusPill>
-            <span className="w-28 truncate font-mono text-[9px] text-muted-foreground">{row.expires || '—'}</span>
+            <span className="w-28 truncate font-mono text-[9px] text-muted-foreground">{row.expires || '-'}</span>
           </WorkspaceRow>
         ))}
       </div>
@@ -138,7 +138,7 @@ export function CredentialsLens({ active = true }: { active?: boolean }) {
             <span className="w-32 truncate text-[10px] text-muted-foreground">{getCredentialKindLabel(getCredentialMaterialKind(credential))}</span>
             <StatusPill tone={status === 'active' ? 'success' : status === 'expired' ? 'danger' : 'warning'}>{status}</StatusPill>
             <span className={cn('w-28 text-[10px]', targets.length ? 'text-warning' : 'text-muted-foreground')}>{targets.length ? `${targets.length} targets` : 'unverified'}</span>
-            <span className={cn('w-32 truncate font-mono text-[9px]', expiry?.urgency === 'expired' ? 'text-destructive' : expiry?.urgency === 'soon' ? 'text-warning' : 'text-muted-foreground')}>{expiry ? formatExpiryLabel(expiry) : '—'}</span>
+            <span className={cn('w-32 truncate font-mono text-[9px]', expiry?.urgency === 'expired' ? 'text-destructive' : expiry?.urgency === 'soon' ? 'text-warning' : 'text-muted-foreground')}>{expiry ? formatExpiryLabel(expiry) : '-'}</span>
             <span className="min-w-0 flex-1 truncate text-[9px] text-muted-foreground">{provenance}{run ? ` · ${run.definition.title} · ${run.status}` : ' · no playbook'}</span>
           </WorkspaceRow>;
         })}
@@ -263,7 +263,7 @@ export function CredentialInspector({ credential, tab, onTabChange, onClose }: {
   return <WorkspaceInspector label="Credential inspector" title={String(credential.label || credential.id)} identifier={credential.id} tabs={availableTabs.map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} activeTab={tab} onTabChange={onTabChange} onClose={onClose}>
     {tab === 'summary' && <div className="space-y-4">
       <div className="flex flex-wrap gap-1.5"><StatusPill tone="accent">{getCredentialKindLabel(getCredentialMaterialKind(credential))}</StatusPill><StatusPill tone={status === 'active' ? 'success' : status === 'expired' ? 'danger' : 'warning'}>{status}</StatusPill><StatusPill tone={targets.length ? 'warning' : 'muted'}>{targets.length ? `${targets.length} reachable targets` : 'unverified reachability'}</StatusPill></div>
-      <div className="space-y-2 border-t border-border-subtle pt-3 text-[10px]"><InspectorFact label="Principal" value={String(credential.cred_user || '—')} mono /><InspectorFact label="Audience" value={String(credential.cred_audience || '—')} mono /><InspectorFact label="Expiry" value={expiry ? formatExpiryLabel(expiry) : '—'} /><InspectorFact label="Provenance" value={String(credential.source_label || credential.source || credential.finding_id || 'graph observation')} /></div>
+      <div className="space-y-2 border-t border-border-subtle pt-3 text-[10px]"><InspectorFact label="Principal" value={String(credential.cred_user || '-')} mono /><InspectorFact label="Audience" value={String(credential.cred_audience || '-')} mono /><InspectorFact label="Expiry" value={expiry ? formatExpiryLabel(expiry) : '-'} /><InspectorFact label="Provenance" value={String(credential.source_label || credential.source || credential.finding_id || 'graph observation')} /></div>
       {value && <div className="border-t border-border-subtle pt-3"><div className="mb-1 text-[9px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Credential value</div><div className="flex items-start gap-2 rounded border border-border-subtle bg-background p-2"><code className="min-w-0 flex-1 break-all font-mono text-[10px] text-foreground">{revealed ? value : '••••••••••••••••'}</code><button type="button" onClick={() => setRevealed(show => !show)} className="rounded p-1 text-muted-foreground hover:bg-hover hover:text-foreground" title={revealed ? 'Hide credential' : 'Reveal credential'}>{revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}</button><button type="button" disabled={!revealed} onClick={() => void navigator.clipboard?.writeText(value)} className="rounded p-1 text-muted-foreground hover:bg-hover hover:text-foreground disabled:opacity-30" title="Copy revealed credential"><Copy className="h-3.5 w-3.5" /></button></div><div className="mt-1 text-[9px] text-muted-foreground">Reveal and copy are separate. Reveal resets when context or transport changes.</div></div>}
       <ActionButton onClick={() => navigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'credential', id: credential.id }, context: { node: credential.id } }))}><Network className="h-3 w-3" />Show in topology</ActionButton>
     </div>}

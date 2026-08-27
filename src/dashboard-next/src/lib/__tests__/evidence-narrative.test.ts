@@ -86,7 +86,7 @@ describe('evidence narrative helpers', () => {
   });
 
   it('lifts the command + agent from whichever lifecycle entry carries them ("how it was found")', () => {
-    // The command is on the run entry and the result snippet on the completion entry —
+    // The command is on the run entry and the result snippet on the completion entry -
     // both must survive, and the presence of a command makes it command_output.
     const [item] = narrativeItemsFromChains([{
       node_id: 'host-1',

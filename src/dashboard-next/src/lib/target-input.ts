@@ -1,10 +1,10 @@
 import type { ScopeConfig } from './types';
 
-// Phase 4c — parse a pasted target blob for the Add Targets modal.
+// Phase 4c - parse a pasted target blob for the Add Targets modal.
 //
 // The classification rules below are copied VERBATIM from the command
 // interpreter (src/services/command-interpreter.ts:43-45, 101-109) so the
-// dashboard accepts exactly what the "scan …" command bar accepts — same
+// dashboard accepts exactly what the "scan …" command bar accepts - same
 // regexes, same tokenizer, same first-match order, same IP→/32 folding, same
 // IPv6-rejected-by-exclusion behavior. If those server rules change, change
 // these too. (Dedupe + cap below are dashboard-only UX guards; they don't
@@ -23,7 +23,7 @@ export interface ParsedTargets {
   cidrs: string[];
   /** Domains, lowercased. */
   domains: string[];
-  /** Tokens that matched nothing — including IPv6, which is unsupported. */
+  /** Tokens that matched nothing - including IPv6, which is unsupported. */
   invalid: string[];
   /** True when the valid-entry cap was hit and later entries were dropped. */
   truncated: boolean;

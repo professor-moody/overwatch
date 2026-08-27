@@ -42,7 +42,7 @@ describe('get_finding_readiness assess()', () => {
     }));
     expect(r.readiness).toBe('needs_validation');
     expect(r.captured_evidence).toBe(false);
-    expect(r.gaps).toContain('no captured evidence — run/parse the action that proves this finding');
+    expect(r.gaps).toContain('no captured evidence; run or parse the action that proves this finding');
   });
 
   it('draft when thin: no captured evidence, no chains, no affected assets', () => {
@@ -55,7 +55,7 @@ describe('get_finding_readiness assess()', () => {
   it('flags an unclassified finding (no CWE/OWASP/ATT&CK mapping)', () => {
     const unclassified = assess(mkFinding({ affected_assets: ['x'] }));
     expect(unclassified.classified).toBe(false);
-    expect(unclassified.gaps.some(g => g.includes('unclassified'))).toBe(true);
+    expect(unclassified.gaps).toContain('unclassified; no CWE/OWASP/ATT&CK mapping');
 
     const classified = assess(mkFinding({ affected_assets: ['x'], classification: { cwe: 'CWE-79' } as never }));
     expect(classified.classified).toBe(true);

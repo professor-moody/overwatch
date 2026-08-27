@@ -1,5 +1,5 @@
 // ============================================================
-// GraphToolbar — zoom, layout, export, layers, mode controls
+// GraphToolbar - zoom, layout, export, layers, mode controls
 // ============================================================
 
 import { useState } from 'react';
@@ -109,8 +109,8 @@ export function GraphToolbar({
   const layoutAction = getLayoutToolbarAction({ layoutMode, layoutRunning });
 
   const LAYOUT_OPTIONS: Array<{ id: string; label: string; hint: string }> = [
-    { id: 'force', label: 'Force (clusters)', hint: 'Physics simulation — organic clusters' },
-    { id: 'hierarchical', label: 'Hierarchical (flow)', hint: 'Top-to-bottom by edge direction — what leads to what' },
+    { id: 'force', label: 'Force (clusters)', hint: 'Physics simulation - organic clusters' },
+    { id: 'hierarchical', label: 'Hierarchical (flow)', hint: 'Top-to-bottom by edge direction - what leads to what' },
     { id: 'tiered', label: 'Tiered (by role)', hint: 'Bands: identity / cloud / app / network' },
   ];
 
@@ -146,7 +146,7 @@ export function GraphToolbar({
           {layoutAction.intent === 'pause' ? <Pause size={14} /> : <Play size={14} />}
           <span className={embedded ? 'sr-only' : 'hidden lg:inline'}>{layoutAction.label}</span>
         </ToolBtn>
-        {/* Layout algorithm — the primary "make the graph readable" control. */}
+        {/* Layout algorithm - the primary "make the graph readable" control. */}
         <div className="relative">
           <ToolBtn
             onClick={() => { setShowLayout(!showLayout); setShowExport(false); setShowLayers(false); setShowView(false); setShowMore(false); }}

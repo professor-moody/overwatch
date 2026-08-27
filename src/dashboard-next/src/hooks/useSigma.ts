@@ -1,5 +1,5 @@
 // ============================================================
-// useSigma — Sigma renderer lifecycle + camera controls
+// useSigma - Sigma renderer lifecycle + camera controls
 // ============================================================
 
 import { useRef, useCallback, useEffect } from 'react';

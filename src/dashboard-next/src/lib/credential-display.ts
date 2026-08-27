@@ -92,7 +92,7 @@ export type CredentialExpiryUrgency = 'expired' | 'soon' | 'ok';
 export interface CredentialExpiry {
   /** Absolute expiry instant (ms epoch). */
   expiresAtMs: number;
-  /** Signed time-to-expiry in ms — negative once expired. */
+  /** Signed time-to-expiry in ms - negative once expired. */
   ms: number;
   urgency: CredentialExpiryUrgency;
 }
@@ -103,7 +103,7 @@ export const CREDENTIAL_EXPIRY_SOON_MS = 60 * 60_000; // 1h
 
 /**
  * Time-to-expiry classification for a credential with a token-expiry timestamp.
- * Returns null when the credential has no (or an unparseable) expiry — most
+ * Returns null when the credential has no (or an unparseable) expiry - most
  * non-token credentials. Pure; the UI formats `ms` for display.
  */
 export function credentialExpiry(

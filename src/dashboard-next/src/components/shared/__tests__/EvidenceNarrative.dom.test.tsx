@@ -15,7 +15,7 @@ function renderNarrative(items: EvidenceNarrativeItem[]) {
   render(<MemoryRouter><EvidenceNarrative items={items} /></MemoryRouter>);
 }
 
-describe('EvidenceNarrative — surfaces how it was found', () => {
+describe('EvidenceNarrative - surfaces how it was found', () => {
   it('renders the exact command and the acting agent', () => {
     renderNarrative([item({ command: 'nxc smb 10.10.10.10', agent_id: 'recon-agent', tool: 'nxc' })]);
     expect(screen.getByText('How it was found')).toBeTruthy();

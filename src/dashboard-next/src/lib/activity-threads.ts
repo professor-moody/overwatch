@@ -1,6 +1,6 @@
 import type { AgentConsoleEvent, AgentConsoleKind } from './types';
 
-// Phase 5 (Mission Control) — collapse the noisy per-event activity stream into
+// Phase 5 (Mission Control) - collapse the noisy per-event activity stream into
 // high-signal threads. Events that share an action_id (directive → acknowledged
 // → action_started → action_completed, or validate → approve → execute) fold
 // into one collapsible thread whose head is the latest event; everything else
@@ -15,7 +15,7 @@ export interface ActivityThread {
   actionId?: string;
   /** Chronological (oldest → newest). */
   events: AgentConsoleEvent[];
-  /** The newest event — what the collapsed row shows. */
+  /** The newest event - what the collapsed row shows. */
   latest: AgentConsoleEvent;
   startedAt: string;
   updatedAt: string;
@@ -77,7 +77,7 @@ export function threadConsoleEvents(events: AgentConsoleEvent[]): ActivityThread
   const threads: ActivityThread[] = [];
 
   for (const [actionId, grouped] of byAction) {
-    // A lone event that merely references an action_id isn't a "thread" — only
+    // A lone event that merely references an action_id isn't a "thread" - only
     // bundle when there's a genuine lifecycle (≥2 events).
     if (grouped.length === 1) {
       singles.push(grouped[0]);

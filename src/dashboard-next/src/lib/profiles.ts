@@ -1,6 +1,6 @@
 // Single source of truth for engagement `profile` values shown in the UI.
 // These MUST stay in sync with the `profile` enum in engagementConfigSchema
-// (src/types.ts) — a value not in that enum fails config validation on save.
+// (src/types.ts) - a value not in that enum fails config validation on save.
 export const ENGAGEMENT_PROFILES = ['network', 'goad_ad', 'single_host', 'web_app', 'cloud', 'hybrid'] as const;
 
 export type EngagementProfile = typeof ENGAGEMENT_PROFILES[number];

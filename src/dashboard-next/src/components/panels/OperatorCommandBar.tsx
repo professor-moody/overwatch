@@ -195,7 +195,7 @@ export function OperatorCommandBar() {
     try {
       const res = await api.previewCommand(text);
       if (res.query_answer) {
-        // Read-only query: answer is already computed server-side — render it
+        // Read-only query: answer is already computed server-side - render it
         // inline, no confirm gate (nothing mutated).
         setPhase({ kind: 'answer', answer: res.query_answer });
         setCommand('');
@@ -307,12 +307,12 @@ export function OperatorCommandBar() {
         if (disposed) return;
         if (plans.some(p => p.plan_id === planId)) return;
         // Functional update: only drop the card if we're STILL showing this exact
-        // proposed plan — so a confirm()/deny() that already moved phase off
+        // proposed plan - so a confirm()/deny() that already moved phase off
         // 'proposed' isn't clobbered by a late-firing reconcile.
         setPhase(prev => (prev.kind === 'proposed' && prev.plan.plan_id === planId)
-          ? { kind: 'result', ok: false, text: 'This proposed plan is no longer available — it was resolved elsewhere or expired.' }
+          ? { kind: 'result', ok: false, text: 'This proposed plan is no longer available - it was resolved elsewhere or expired.' }
           : prev);
-      }).catch(() => { /* transient/timeout — keep the card and retry */ }).finally(() => {
+      }).catch(() => { /* transient/timeout - keep the card and retry */ }).finally(() => {
         if (requestTimeout) clearTimeout(requestTimeout);
         requestTimeout = null;
         requestController = null;
@@ -347,7 +347,7 @@ export function OperatorCommandBar() {
         <span className="text-xs font-medium text-accent">⌘</span>
         <input
           className="flex-1 bg-transparent px-1 py-0.5 text-xs outline-none placeholder:text-muted-foreground"
-          placeholder='Command or ask — "pause the apache agent", "scan 10.50.0.0/16", "what changed in the last hour", "list hosts"'
+          placeholder='Command or ask - "pause the apache agent", "scan 10.50.0.0/16", "what changed in the last hour", "list hosts"'
           value={command}
           onChange={e => setCommand(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !busy) void submit(); }}

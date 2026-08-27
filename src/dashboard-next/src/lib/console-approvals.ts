@@ -9,7 +9,7 @@ import {
   type ActionRisk,
 } from './action-queue';
 
-// Phase 4b — the Operator Console "Needs you" strip. Approvals are now actioned
+// Phase 4b - the Operator Console "Needs you" strip. Approvals are now actioned
 // inline in the console (the canonical resolveApprovalRequest path, same as the
 // terminal), so this builds a compact, risk-sorted view-model from the live
 // pendingActions queue. The standalone Actions panel is the deep triage view;

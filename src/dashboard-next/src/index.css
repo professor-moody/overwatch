@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 @theme {
-  /* Core palette — ported from old dashboard :root */
+  /* Core palette - ported from old dashboard :root */
   --color-background: #080a0f;
   --color-foreground: #e2e0ea;
   --color-surface: #0e1118;
@@ -129,7 +129,7 @@ button {
   overflow: hidden;
 }
 
-/* Sigma.js container — needs explicit dimensions */
+/* Sigma.js container - needs explicit dimensions */
 .sigma-container {
   width: 100%;
   height: 100%;

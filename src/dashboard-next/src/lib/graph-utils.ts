@@ -1,5 +1,5 @@
 // ============================================================
-// Graph Utilities — ported from legacy graph.js helpers
+// Graph Utilities - ported from legacy graph.js helpers
 // ============================================================
 
 import type Graph from 'graphology';
@@ -14,7 +14,7 @@ export function dimColor(hex: string | undefined, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-/** BFS neighborhood — returns all nodes within `hops` edges of `node` */
+/** BFS neighborhood - returns all nodes within `hops` edges of `node` */
 export function getNeighborhood(graph: Graph, node: string, hops = 1): Set<string> {
   if (!graph || !node || !graph.hasNode(node)) return new Set();
 
@@ -44,7 +44,7 @@ const OSINT_RELATIONSHIP_EDGES = new Set<string>([
   'SUBDOMAIN_OF', 'RESOLVES_TO', 'IN_NETBLOCK', 'OWNS_ASSET', 'AFFILIATED_WITH',
 ]);
 
-/** BFS shortest path — returns the set of nodes and edges on the shortest path */
+/** BFS shortest path - returns the set of nodes and edges on the shortest path */
 export function findShortestPath(
   graph: Graph,
   source: string,

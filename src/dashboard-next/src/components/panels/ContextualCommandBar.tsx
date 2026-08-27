@@ -16,11 +16,11 @@ import { agentDisplayLabel, canonicalAgentTaskId } from '../../lib/agent-referen
 import { ActionButton } from '../shared/primitives';
 import { OperatorCommandBar } from './OperatorCommandBar';
 
-// Phase 5 (Mission Control) — one command input with a scope pill, replacing the
+// Phase 5 (Mission Control) - one command input with a scope pill, replacing the
 // separate global command bar and per-agent "Tell" box. The pill decides where
 // the text goes:
 //   • Plan (engagement) → the NL command bar (preview → confirm via /api/commands,
-//     which spawns the headless planner). This is the DELIBERATE planner path —
+//     which spawns the headless planner). This is the DELIBERATE planner path -
 //     it is not a silent default.
 //   • <agent> → a free-text `instruct` directive to the focused agent. Shown for
 //     any commandable (running OR pending) agent; a terminal agent shows a
@@ -51,15 +51,15 @@ export function ContextualCommandBar({
   const primaryTaskId = primary ? canonicalAgentTaskId(primary) : undefined;
 
   // Follow focus: when the focused AGENT changes, default the scope to it (or
-  // Plan). Keyed on id ONLY — a status heartbeat on the same agent must not clobber
+  // Plan). Keyed on id ONLY - a status heartbeat on the same agent must not clobber
   // a deliberate Plan / All-agents / Primary choice the operator made.
   useEffect(() => {
     setScope(defaultScopeFor(focusedAgent));
   }, [focusedTaskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Guard a stranded scope: if the scope's target stops being valid — the focused
+  // Guard a stranded scope: if the scope's target stops being valid - the focused
   // agent went terminal, the fleet emptied under an "All agents" broadcast, or the
-  // orchestrator stopped under "Primary" — fall back to Plan so the box never
+  // orchestrator stopped under "Primary" - fall back to Plan so the box never
   // routes into the void.
   useEffect(() => {
     if (scope.kind === 'agent' && !commandable) setScope(ENGAGEMENT_SCOPE);
@@ -94,7 +94,7 @@ export function ContextualCommandBar({
             label={`${focusedLabel} · ${focusedAgent.status}`}
             active={false}
             disabled
-            title="This agent has finished — you can't command it. Dismiss it, or select a running/pending agent."
+            title="This agent has finished - you can't command it. Dismiss it, or select a running/pending agent."
           />
         )}
         {hasRunning && (
@@ -111,7 +111,7 @@ export function ContextualCommandBar({
         />
       )}
       {route.via === 'instruct_primary' && primary && (
-        // Resolve the orchestrator id LIVE at render, not at click — so a crash +
+        // Resolve the orchestrator id LIVE at render, not at click - so a crash +
         // respawn (a new task id) re-points steering to the healthy orchestrator
         // instead of 409'ing against the dead one.
         <InstructBar taskId={primaryTaskId!} placeholder={scopePlaceholder(scope)} onSent={onAgentCommandSent} />
@@ -155,7 +155,7 @@ function InstructBar({ taskId, placeholder, pendingNote, onSent }: { taskId: str
       addToast({
         type: res.ok ? 'success' : 'warning',
         title: 'Instruction sent',
-        message: res.ok ? (pendingNote ? 'queued — applies when the agent runs' : 'agent honors it on its next heartbeat') : 'not applied',
+        message: res.ok ? (pendingNote ? 'queued - applies when the agent runs' : 'agent honors it on its next heartbeat') : 'not applied',
       });
       if (res.ok) { setText(''); onSent?.(); }
     } catch (err) {
@@ -181,7 +181,7 @@ function InstructBar({ taskId, placeholder, pendingNote, onSent }: { taskId: str
           {busy ? '…' : 'Send'}
         </ActionButton>
       </div>
-      {pendingNote && <p className="pl-1 text-[10px] text-muted-foreground">Agent hasn't started yet — the instruction is queued and delivered on its first heartbeat.</p>}
+      {pendingNote && <p className="pl-1 text-[10px] text-muted-foreground">Agent hasn't started yet - the instruction is queued and delivered on its first heartbeat.</p>}
     </div>
   );
 }

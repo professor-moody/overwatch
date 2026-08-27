@@ -138,7 +138,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
         setEvidence(data);
         setEvidenceStatus(data.count > 0 ? 'ready' : 'empty');
       })
-      .catch(() => { /* transient — don't blank a good drawer */ });
+      .catch(() => { /* transient - don't blank a good drawer */ });
   }, []);
 
   useEffect(() => {
@@ -175,8 +175,8 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
     if (!edgeGroups.has(edgeType)) edgeGroups.set(edgeType, { count: 0, peers: [] });
     const group = edgeGroups.get(edgeType)!;
     group.count++;
-    // Collect ALL peers (not just the first 5) so a high-degree node — e.g. a domain
-    // with 30+ SUBDOMAIN_OF edges — is fully legible here instead of only in raw tool
+    // Collect ALL peers (not just the first 5) so a high-degree node - e.g. a domain
+    // with 30+ SUBDOMAIN_OF edges - is fully legible here instead of only in raw tool
     // output. The EdgeGroup renderer collapses to 5 with an expand + filter.
     group.peers.push({ id: peerId, label: peerLabel, type: peerType });
   });
@@ -353,7 +353,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
         <InspectorSection title="Evidence" count={evidence?.count ?? 0} actionLabel="Open" onAction={() => openNodeProof(nodeId)}>
           {evidenceStatus === 'loading' && <EmptyLine>Loading evidence chain...</EmptyLine>}
           {evidenceStatus === 'empty' && <EmptyLine>No evidence chain loaded for this node.</EmptyLine>}
-          {/* A failed fetch is NOT an empty chain — render it as an error so a server
+          {/* A failed fetch is NOT an empty chain - render it as an error so a server
               fault can never be read as "this node has no evidence". */}
           {evidenceStatus === 'error' && (
             <p role="alert" className="text-xs text-destructive border border-destructive/40 rounded px-2 py-1">
@@ -424,7 +424,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
 
 /** One edge-type group in the inspector. Collapsed shows the first few peers; a
  *  high-degree group (e.g. a domain's 30+ subdomains) expands to show every peer,
- *  with a filter box once the list is long — so all neighbours are legible here. */
+ *  with a filter box once the list is long - so all neighbours are legible here. */
 function EdgeGroup({ edgeType, group, onPeer }: {
   edgeType: string;
   group: { count: number; peers: { id: string; label: string; type: string }[] };
@@ -468,7 +468,7 @@ function EdgeGroup({ edgeType, group, onPeer }: {
           <button onClick={() => setExpanded(true)} className="text-[10px] text-accent hover:text-foreground">+ show all {matched.length}</button>
         )}
         {expanded && hidden > 0 && (
-          <span className="text-muted text-[10px]">showing {visible.length} of {matched.length} — filter to narrow</span>
+          <span className="text-muted text-[10px]">showing {visible.length} of {matched.length} - filter to narrow</span>
         )}
         {expanded && group.peers.length > COLLAPSED && (
           <button onClick={() => { setExpanded(false); setFilter(''); }} className="text-[10px] text-accent hover:text-foreground">show less</button>
@@ -482,7 +482,7 @@ const PROMOTE_STATES: Array<{ state: 'observed' | 'validated' | 'exploited' | 'r
   { state: 'validated', label: 'Validated', hint: 'Actively tested and confirmed' },
   { state: 'observed', label: 'Observed', hint: 'Passively confirmed' },
   { state: 'exploited', label: 'Exploited', hint: 'Exploitation confirmed' },
-  { state: 'refuted', label: 'Refuted', hint: 'Tested and disproven — overrides derived positives' },
+  { state: 'refuted', label: 'Refuted', hint: 'Tested and disproven - overrides derived positives' },
   { state: 'stale', label: 'Stale', hint: 'Was true but has decayed' },
 ];
 
@@ -561,13 +561,13 @@ export function ClaimStandingSection({ target }: { target: { node_id: string } |
 
   const promotion = impact?.promotion ?? null;
   const supports = impact?.supports_objectives ?? [];
-  // Impact preview: a negative verdict on a supporting element affects the objectives it supports —
+  // Impact preview: a negative verdict on a supporting element affects the objectives it supports -
   // refuting revokes the milestone, staling lapses the live view.
   const willAffect = selected === 'refuted' || selected === 'stale' ? supports : [];
 
   return (
     <div className="space-y-2.5 text-xs">
-      {/* Current standing — derived vs. explicit promotion. */}
+      {/* Current standing - derived vs. explicit promotion. */}
       <div className="space-y-1">
         <div className="flex items-center gap-2 text-[11px]">
           <span className="w-16 flex-shrink-0 text-muted-foreground">derived</span>
@@ -584,7 +584,7 @@ export function ClaimStandingSection({ target }: { target: { node_id: string } |
             </div>
           </div>
         ) : (
-          <div className="pl-[4.5rem] text-[11px] text-muted-foreground">No explicit promotion — the derived state governs.</div>
+          <div className="pl-[4.5rem] text-[11px] text-muted-foreground">No explicit promotion - the derived state governs.</div>
         )}
       </div>
 
@@ -610,7 +610,7 @@ export function ClaimStandingSection({ target }: { target: { node_id: string } |
         type="text"
         value={reason}
         onChange={e => setReason(e.target.value)}
-        placeholder="Reason (required) — why this judgment"
+        placeholder="Reason (required) - why this judgment"
         aria-label="Claim judgment reason"
         className="w-full rounded border border-border bg-background/60 px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-accent/50 focus:outline-none"
       />
@@ -671,7 +671,7 @@ export function ClaimStandingSection({ target }: { target: { node_id: string } |
             <div className="mt-1 space-y-1 border-l border-border pl-2">
               {impact.history.slice().reverse().map((h, index) => (
                 <div key={index} className="text-[10px] text-muted-foreground break-words">
-                  <span className="text-foreground">{h.state}</span> · {h.by_kind}{h.by ? ` ${h.by}` : ''} · {formatRelativeTime(h.at)}{h.reason ? ` — “${h.reason}”` : ''}
+                  <span className="text-foreground">{h.state}</span> · {h.by_kind}{h.by ? ` ${h.by}` : ''} · {formatRelativeTime(h.at)}{h.reason ? ` - “${h.reason}”` : ''}
                 </div>
               ))}
             </div>

@@ -1,5 +1,5 @@
 // ============================================================
-// Toast store — global notification state
+// Toast store - global notification state
 // ============================================================
 
 import { create } from 'zustand';

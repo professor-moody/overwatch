@@ -3,7 +3,7 @@ import type Graph from 'graphology';
 import { TIER_COLORS, TIER_ORDER, type ColorMode } from '../../lib/graph-color';
 
 // Small legend that states what node color currently encodes. Only shown when the
-// graph is NOT colored by type — in type mode the NodeFilters swatches already serve
+// graph is NOT colored by type - in type mode the NodeFilters swatches already serve
 // as the legend. Prevents the type-colored NodeFilters chips from being misread as
 // the graph's color when the graph is community/tier-colored.
 export function ColorModeLegend({ colorMode, graph, graphVersion }: { colorMode: ColorMode; graph: Graph; graphVersion: number }) {

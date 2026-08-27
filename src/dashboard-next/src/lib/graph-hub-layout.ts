@@ -1,7 +1,7 @@
 // ============================================================
 // Hub-explode layout pass.
 //
-// Force-directed layout is bad at STAR structures — a domain with 30 subdomains,
+// Force-directed layout is bad at STAR structures - a domain with 30 subdomains,
 // or a host with many ports/services, all get pulled to the same edge-length from
 // the hub and pile into a tight, unreadable ring on top of it. This post-pass takes
 // each hub's LEAF children (nodes whose only connection is that hub) and fans them
@@ -29,7 +29,7 @@ const DEFAULTS: Required<ExplodeHubsOptions> = { minLeaves: 6, spacingRatio: 0.0
 /**
  * Fan each hub's leaf children into rings around it. A "leaf" is a node with
  * exactly one distinct neighbour (so moving it can't distort any other
- * relationship) — this is exactly the subdomain-on-domain / port-on-host case.
+ * relationship) - this is exactly the subdomain-on-domain / port-on-host case.
  * Ring geometry is sized relative to the graph's current coordinate span, so the
  * fan is proportional whatever scale the layout settled at. Returns the number of
  * hubs it exploded (for logging/tests).

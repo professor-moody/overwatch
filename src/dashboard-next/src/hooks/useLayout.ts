@@ -1,5 +1,5 @@
 // ============================================================
-// useLayout — ForceAtlas2 layout via graphology-layout-forceatlas2
+// useLayout - ForceAtlas2 layout via graphology-layout-forceatlas2
 // ============================================================
 
 import { useRef, useCallback, useEffect } from 'react';
@@ -44,7 +44,7 @@ export function useLayout(graph: Graph, _rendererRef: React.MutableRefObject<Sig
         // Lower gravity = less pull toward the center, so the graph is allowed to
         // spread out instead of clumping into a dense ball.
         gravity: 0.25,
-        // Repulsion strength — the main "spread things apart" lever. Bumped hard so
+        // Repulsion strength - the main "spread things apart" lever. Bumped hard so
         // connected nodes stop stacking and clusters aren't a compact blob.
         scalingRatio: 120,
         // Always on: the Barnes-Hut approximation is cheap and helps small graphs
@@ -53,11 +53,11 @@ export function useLayout(graph: Graph, _rendererRef: React.MutableRefObject<Sig
         barnesHutTheta: 0.5,
         strongGravityMode: false,
         slowDown: 5,
-        // Treat node `size` as a collision radius so nodes stop overlapping — the
+        // Treat node `size` as a collision radius so nodes stop overlapping - the
         // cheapest anti-hairball win, and reduces the need for a separate noverlap pass.
         adjustSizes: true,
         // Distribute outbound attraction so high-degree hubs (domains, busy hosts)
-        // don't collapse everything onto themselves — spreads dense neighborhoods.
+        // don't collapse everything onto themselves - spreads dense neighborhoods.
         outboundAttractionDistribution: true,
       },
     });

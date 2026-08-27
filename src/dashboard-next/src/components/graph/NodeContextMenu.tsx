@@ -1,5 +1,5 @@
 // ============================================================
-// NodeContextMenu — right-click context menu on graph nodes
+// NodeContextMenu - right-click context menu on graph nodes
 // ============================================================
 
 import { useState } from 'react';

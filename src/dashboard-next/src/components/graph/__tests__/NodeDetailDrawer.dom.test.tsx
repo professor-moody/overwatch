@@ -23,7 +23,7 @@ function graphWithNode() {
   return g;
 }
 
-describe('NodeDetailDrawer — silent auto-refresh of the open node', () => {
+describe('NodeDetailDrawer - silent auto-refresh of the open node', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     wsState.connected = true;
@@ -44,7 +44,7 @@ describe('NodeDetailDrawer — silent auto-refresh of the open node', () => {
     );
   }
 
-  it('re-fetches the open node on the poll interval while connected — no re-open needed', async () => {
+  it('re-fetches the open node on the poll interval while connected - no re-open needed', async () => {
     renderDrawer();
     await vi.advanceTimersByTimeAsync(0); // flush the initial mount fetch
     expect(api.getEvidenceChains).toHaveBeenCalledTimes(1);

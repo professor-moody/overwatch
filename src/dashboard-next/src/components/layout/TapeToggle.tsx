@@ -1,5 +1,5 @@
 // ============================================================
-// TapeToggle — JSON-RPC tape recorder control (toolbar widget)
+// TapeToggle - JSON-RPC tape recorder control (toolbar widget)
 // Mirrors the in-process tape controller. Polls /api/tape every
 // 5s and POSTs to /api/tape/toggle on click. Hides itself when
 // the controller is not attached (e.g. dev/test builds).
@@ -36,7 +36,7 @@ export function TapeToggle() {
       const s = await toggleTape({ action: status?.enabled ? 'disable' : 'enable' });
       setStatus(s);
     } catch {
-      // ignore — next poll will reconcile
+      // ignore - next poll will reconcile
     } finally {
       setBusy(false);
     }
@@ -54,8 +54,8 @@ export function TapeToggle() {
   const title = failed
     ? `Tape recording failed: ${status?.error}${status?.path ? ` (${status.path})` : ''}`
     : enabled
-    ? `Recording${sourceLabel} → ${status?.path || '(memory)'} — ${frames} written${dropSummary} — click to stop`
-    : `JSON-RPC tape: off${frames > 0 || dropped > 0 ? ` — last session ${frames} written${dropSummary}` : ''} — click to start recording`;
+    ? `Recording${sourceLabel} → ${status?.path || '(memory)'} - ${frames} written${dropSummary} - click to stop`
+    : `JSON-RPC tape: off${frames > 0 || dropped > 0 ? ` - last session ${frames} written${dropSummary}` : ''} - click to start recording`;
 
   return (
     <button
