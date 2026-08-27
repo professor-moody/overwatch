@@ -4,7 +4,7 @@ import { Columns3, Copy, LayoutList, Pause, Play, Plus, RefreshCw, Scissors, Sen
 import { useEngagementStore } from '../../stores/engagement-store';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { EmptyState, OpsecGauge } from '../shared';
-import { DataRow, FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { DataRow, FilterBar, StatusPill } from '../shared/primitives';
 import {
   campaignAction,
   cloneCampaign,
@@ -115,10 +115,8 @@ export function CampaignsPanel({ embedded = false }: { embedded?: boolean } = {}
 
   return (
     <div className={cn('flex min-h-0 flex-col gap-3', embedded ? 'h-full' : 'h-[calc(100vh-7rem)] min-h-[680px]')}>
-      {!embedded && <PageHeader
-        title="Campaigns"
-        meta={`(${campaigns.length} total · ${activeCount} active · ${draftCount} drafts)`}
-        actions={(
+      {!embedded && <div className="flex flex-wrap items-center gap-3 border-b border-border-subtle pb-3">
+        <div className="min-w-0 flex-1"><h2 className="text-base font-semibold text-foreground">Campaigns</h2><p className="text-[10px] text-muted-foreground">{campaigns.length} total · {activeCount} active · {draftCount} drafts</p></div>
           <FilterBar>
             <div className="inline-flex rounded border border-border bg-elevated p-0.5">
               <ViewToggle active={view === 'list'} onClick={() => setView('list')} icon={<LayoutList className="h-3.5 w-3.5" />} label="Campaigns" />
@@ -141,8 +139,7 @@ export function CampaignsPanel({ embedded = false }: { embedded?: boolean } = {}
               New Campaign
             </button>
           </FilterBar>
-        )}
-      />}
+      </div>}
       {embedded && <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle pb-3">
         <div className="inline-flex rounded border border-border bg-elevated p-0.5"><ViewToggle active={view === 'list'} onClick={() => setView('list')} icon={<LayoutList className="h-3.5 w-3.5" />} label="Campaigns" /><ViewToggle active={view === 'board'} onClick={() => setView('board')} icon={<Columns3 className="h-3.5 w-3.5" />} label="Board" /></div>
         {view === 'list' && <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Filter campaigns…" className="settings-input h-8 min-w-52" />}
@@ -151,12 +148,12 @@ export function CampaignsPanel({ embedded = false }: { embedded?: boolean } = {}
       </div>}
 
       {view === 'board' ? (
-        <PanelSection className={cn('flex min-h-0 flex-1 flex-col', embedded && 'border-0 bg-transparent p-0')}>
+        <CampaignSection className={cn('flex min-h-0 flex-1 flex-col', embedded && 'p-0')}>
           <CampaignBoard cards={missionCards} />
-        </PanelSection>
+        </CampaignSection>
       ) : (
       <div className={cn('grid min-h-0 flex-1 gap-4', embedded ? 'grid-cols-1' : 'grid-cols-[minmax(340px,420px)_1fr]')}>
-        <PanelSection className={cn('min-h-0 overflow-hidden p-0 flex flex-col', embedded && 'border-0 bg-transparent')}>
+        <CampaignSection className={cn('min-h-0 overflow-hidden p-0 flex flex-col')}>
           <div className="grid grid-cols-3 border-b border-border text-center text-xs">
             <CampaignStat label="Active" value={activeCount} tone="success" />
             <CampaignStat label="Drafts" value={draftCount} tone="accent" />
@@ -178,7 +175,7 @@ export function CampaignsPanel({ embedded = false }: { embedded?: boolean } = {}
               />
             ))}
           </div>
-        </PanelSection>
+        </CampaignSection>
 
         {mode === 'builder' ? (
           <CampaignBuilder frontier={frontier} onCancel={() => setMode('detail')} onCreated={(campaign) => {
@@ -190,9 +187,9 @@ export function CampaignsPanel({ embedded = false }: { embedded?: boolean } = {}
         ) : !embedded && selectedCampaign ? (
           <CampaignDetail campaign={selectedCampaign} frontier={frontier} onRefresh={refresh} />
         ) : !embedded ? (
-          <PanelSection>
+          <CampaignSection>
             <EmptyState message="Select a campaign or build one from Frontier items." />
-          </PanelSection>
+          </CampaignSection>
         ) : null}
       </div>
       )}
@@ -317,7 +314,7 @@ export function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Ca
 
   return (
     <div className="min-w-0 min-h-0 flex flex-col gap-3 overflow-y-auto">
-      <PanelSection>
+      <CampaignSection>
         <div className="flex flex-col gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-2">
@@ -386,12 +383,12 @@ export function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Ca
             Dispatch needs at least one Frontier item. Build or clone a campaign with selected items before launching agents.
           </div>
         )}
-      </PanelSection>
+      </CampaignSection>
 
       {dispatchOpen && <DispatchPanel campaign={campaign} onDone={() => { setDispatchOpen(false); onRefresh(); }} />}
 
       {campaign.status === 'draft' && !campaign.parent_id && campaign.items.length >= 2 && (campaign.child_count ?? 0) === 0 && (
-        <PanelSection title="Split Campaign" meta="Create independently dispatchable child campaigns">
+        <CampaignSection title="Split Campaign" meta="Create independently dispatchable child campaigns">
           <div className="flex items-center gap-2 text-xs">
             <label className="text-muted-foreground">Children</label>
             <input
@@ -407,11 +404,11 @@ export function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Ca
               <Scissors className="h-3.5 w-3.5" /> {busy === 'split' ? 'Splitting…' : 'Split'}
             </button>
           </div>
-        </PanelSection>
+        </CampaignSection>
       )}
 
       {children.length > 0 && (
-        <PanelSection title="Child Campaigns" meta={`(${children.length})`}>
+        <CampaignSection title="Child Campaigns" meta={`(${children.length})`}>
           <div className="space-y-1.5">
             {children.map(child => (
               <div key={child.id} className="rounded border border-border bg-background/40 px-3 py-2 text-xs">
@@ -426,7 +423,7 @@ export function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Ca
               </div>
             ))}
           </div>
-        </PanelSection>
+        </CampaignSection>
       )}
 
       {campaign.opsec && (
@@ -437,7 +434,7 @@ export function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Ca
         />
       )}
 
-      <PanelSection title="Dispatch Preview">
+      <CampaignSection title="Dispatch Preview">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs mb-3">
           <DetailFact label="Expected Agents" value={String(metrics.expectedAgentCount)} />
           <DetailFact label="Unique Nodes" value={String(metrics.nodeIds.length)} />
@@ -448,9 +445,9 @@ export function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Ca
           {metrics.nodeIds.slice(0, 10).map(nodeId => <GraphNodeLinks key={nodeId} nodeId={nodeId} />)}
           {metrics.nodeIds.length > 10 && <span className="text-[10px] text-muted-foreground">+{metrics.nodeIds.length - 10} more</span>}
         </div>
-      </PanelSection>
+      </CampaignSection>
 
-      <PanelSection title="Frontier Items" meta={`(${campaign.items?.length ?? 0})`}>
+      <CampaignSection title="Frontier Items" meta={`(${campaign.items?.length ?? 0})`}>
         {(campaign.items || []).length === 0 ? (
           <EmptyState message="No Frontier items are attached to this campaign." />
         ) : (
@@ -463,7 +460,7 @@ export function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Ca
             )}
           </div>
         )}
-      </PanelSection>
+      </CampaignSection>
     </div>
   );
 }
@@ -507,7 +504,7 @@ function CampaignBuilder({ frontier, onCancel, onCreated }: {
 
   return (
     <div className="min-w-0 min-h-0 flex flex-col gap-3 overflow-y-auto">
-      <PanelSection title="Campaign Builder">
+      <CampaignSection title="Campaign Builder">
         <div className="grid grid-cols-2 gap-3">
           <label className="text-xs text-muted-foreground">
             Name
@@ -524,9 +521,9 @@ function CampaignBuilder({ frontier, onCancel, onCreated }: {
             </select>
           </label>
         </div>
-      </PanelSection>
+      </CampaignSection>
 
-      <PanelSection title="Frontier Selection" meta={`(${selected.size} selected)`}>
+      <CampaignSection title="Frontier Selection" meta={`(${selected.size} selected)`}>
         <FilterBar className="mb-3">
           <input value={search} onChange={e => setSearch(e.target.value)} className="settings-input w-56" placeholder="Search item, node, type..." />
           <input value={node} onChange={e => setNode(e.target.value)} className="settings-input w-44" placeholder="Node filter..." />
@@ -582,9 +579,9 @@ function CampaignBuilder({ frontier, onCancel, onCreated }: {
             );
           })}
         </div>
-      </PanelSection>
+      </CampaignSection>
 
-      <PanelSection title="Launch Preview">
+      <CampaignSection title="Launch Preview">
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
           <DetailFact label="Selected" value={String(metrics.selectedCount)} />
           <DetailFact label="Expected Agents" value={String(metrics.expectedAgentCount)} />
@@ -598,7 +595,7 @@ function CampaignBuilder({ frontier, onCancel, onCreated }: {
             {creating ? 'Creating...' : 'Create Draft'}
           </button>
         </div>
-      </PanelSection>
+      </CampaignSection>
     </div>
   );
 }
@@ -621,7 +618,7 @@ function DispatchPanel({ campaign, onDone }: { campaign: Campaign; onDone: () =>
   };
 
   return (
-    <PanelSection title="Explicit Dispatch Gate">
+    <CampaignSection title="Explicit Dispatch Gate">
       {/* Throttle-seconds control removed: it was never wired server-side (the dispatch
           helper has no throttle option), so it silently did nothing. Concurrency is
           bounded by Max agents. */}
@@ -644,7 +641,7 @@ function DispatchPanel({ campaign, onDone }: { campaign: Campaign; onDone: () =>
           {busy ? 'Dispatching...' : 'Dispatch Agents'}
         </button>
       </div>
-    </PanelSection>
+    </CampaignSection>
   );
 }
 
@@ -673,11 +670,15 @@ function CampaignStat({ label, value, tone }: { label: string; value: number; to
 
 function DetailFact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded border border-border bg-elevated px-2 py-1.5 min-w-0">
+    <div className="min-w-0 border-l border-border-subtle pl-2">
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className="text-xs text-foreground truncate">{value}</div>
     </div>
   );
+}
+
+function CampaignSection({ title, meta, className, children }: { title?: string; meta?: string; className?: string; children: ReactNode }) {
+  return <section className={cn('border-b border-border-subtle py-3', className)}>{title && <div className="mb-2 flex items-baseline gap-2"><h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground">{title}</h3>{meta && <span className="text-[9px] text-muted-foreground">{meta}</span>}</div>}{children}</section>;
 }
 
 function StatusDot({ status }: { status: Campaign['status'] }) {

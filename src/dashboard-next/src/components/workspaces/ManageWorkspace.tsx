@@ -1,12 +1,8 @@
-import { lazy, Suspense } from 'react';
 import { useSearchParams } from 'react-router';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { MANAGE_SECTIONS, type ManageSection } from '../../lib/workspace-navigation';
 import { WorkspaceHeader, WorkspaceTabs } from '../shared/primitives';
-
-const EngagementsPanel = lazy(() => import('../panels/EngagementsPanel').then(module => ({ default: module.EngagementsPanel })));
-const SettingsPanel = lazy(() => import('../panels/SettingsPanel').then(module => ({ default: module.SettingsPanel })));
-const SmokePanel = lazy(() => import('../panels/SmokePanel').then(module => ({ default: module.SmokePanel })));
+import { NativeDiagnostics, NativeEngagementManagement, NativeSettingsManagement } from './NativeManageViews';
 
 function isSection(value: string | null): value is ManageSection {
   return !!value && (MANAGE_SECTIONS as readonly string[]).includes(value);
@@ -41,12 +37,10 @@ export function ManageWorkspace() {
       >
         <WorkspaceTabs value={section} options={tabs} onChange={setSection} ariaLabel="Manage sections" />
       </WorkspaceHeader>
-      <section className="min-h-0 flex-1 overflow-y-auto p-4 lg:p-5">
-        <Suspense fallback={<div className="flex min-h-56 items-center justify-center text-xs text-muted-foreground"><span className="workspace-pulse">Loading management tools…</span></div>}>
-          {section === 'engagement' && <EngagementsPanel />}
-          {section === 'settings' && <SettingsPanel embedded />}
-          {section === 'diagnostics' && <SmokePanel embedded />}
-        </Suspense>
+      <section className="min-h-0 flex-1 overflow-hidden">
+        {section === 'engagement' && <NativeEngagementManagement />}
+        {section === 'settings' && <NativeSettingsManagement />}
+        {section === 'diagnostics' && <NativeDiagnostics />}
       </section>
     </div>
   );

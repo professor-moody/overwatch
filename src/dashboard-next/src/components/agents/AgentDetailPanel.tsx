@@ -6,7 +6,7 @@ import {
 } from '../../lib/agent-reference';
 import type { DirectiveKind } from '../../lib/api/agents';
 import { cn, formatElapsed, agentElapsedMs } from '../../lib/utils';
-import { ActionButton, PanelSection, StatusPill } from '../shared/primitives';
+import { ActionButton, StatusPill } from '../shared/primitives';
 import { AgentWorkModal, type AgentWorkMode } from './AgentWorkModal';
 
 export type AgentContext = {
@@ -86,7 +86,7 @@ export function AgentDetailPanel({
   const mergedAway = Boolean(agent.work?.merged_into_task_id);
 
   return (
-    <PanelSection dense>
+    <div className="space-y-4">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h3 className="truncate text-sm font-semibold text-foreground">{label}</h3>
@@ -183,7 +183,7 @@ export function AgentDetailPanel({
           onCompleted={() => onWorkChanged?.()}
         />
       )}
-    </PanelSection>
+    </div>
   );
 }
 
