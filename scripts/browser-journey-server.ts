@@ -14,7 +14,7 @@ import { withConfigMetadata } from '../src/services/engagement-config-service.js
 import { GraphEngine } from '../src/services/graph-engine.js';
 import { PlaybookRunService } from '../src/services/playbook-run-service.js';
 import type { SessionManager } from '../src/services/session-manager.js';
-import type { EngagementConfig, NodeProperties } from '../src/types.js';
+import type { EdgeProperties, EngagementConfig, NodeProperties } from '../src/types.js';
 
 const dashboardPort = Number.parseInt(process.env.OVERWATCH_BROWSER_PORT ?? '18484', 10);
 const recoveryPort = Number.parseInt(process.env.OVERWATCH_BROWSER_RECOVERY_PORT ?? '18485', 10);
@@ -33,6 +33,8 @@ const now = '2026-07-17T00:00:00.000Z';
 const browserSessionId = '00000000-0000-4000-8000-000000000014';
 const browserSessionConnectionId = `${browserSessionId}:g1`;
 const browserActionId = 'browser-live-action';
+const browserSuccessActionId = 'act_browser-success-action';
+const browserFailureActionId = 'act_browser-failure-action';
 const browserSessionOutput = 'Browser journey session is ready.\r\n';
 
 function baseConfig(id: string, name: string): EngagementConfig {
@@ -80,7 +82,13 @@ function seedWritableEngine(): GraphEngine {
     confidence: 1,
     discovered_at: now,
   };
+  const identityNodes: NodeProperties[] = [
+    { id: 'browser-idp', type: 'idp', label: 'Browser Workforce IdP', idp_kind: 'oidc', federation_mode: 'federated', confidence: 1, discovered_at: now },
+    { id: 'browser-principal', type: 'idp_principal', label: 'Browser CI operator', username: 'browser-ci@browser.test', idp_id: 'browser-idp', confidence: 1, discovered_at: now },
+    { id: 'browser-idp-app', type: 'idp_application', label: 'Browser Operations', app_name: 'Browser Operations', idp_id: 'browser-idp', confidence: 1, discovered_at: now },
+  ];
   for (const host of hosts) engine.addNode(host);
+  for (const identityNode of identityNodes) engine.addNode(identityNode);
   engine.ingestFinding({
     id: 'browser-seed-finding',
     agent_id: 'browser-seed',
@@ -93,6 +101,76 @@ function seedWritableEngine(): GraphEngine {
     target_node_ids: [credential.id],
     nodes: [credential],
     edges: [],
+  });
+  const addEdge = (source: string, target: string, type: EdgeProperties['type'], extra: Partial<EdgeProperties> = {}) => engine.addEdge(source, target, {
+    type,
+    confidence: 1,
+    discovered_at: now,
+    ...extra,
+  } as EdgeProperties);
+  addEdge('browser-idp', 'browser-principal', 'RELATED');
+  addEdge('browser-principal', 'browser-idp-app', 'ASSIGNED_TO_APP');
+  addEdge('browser-credential', 'browser-principal', 'VALID_FOR_IDP_PRINCIPAL');
+  addEdge('browser-principal', hosts[1].id, 'HAS_SESSION', { session_live: true });
+  addEdge(hosts[1].id, hosts[0].id, 'ADMIN_TO');
+
+  const successOutput = 'Browser fixture command completed.\nasset=browser-objective-host status=reachable\n';
+  const successEvidenceId = engine.getEvidenceStore().store({
+    evidence_type: 'command_output',
+    raw_output: successOutput,
+    action_id: browserSuccessActionId,
+    agent_id: 'browser-seed',
+  });
+  engine.logActionEvent({
+    action_id: browserSuccessActionId,
+    event_type: 'action_started',
+    category: 'agent',
+    agent_id: 'browser-seed',
+    tool_name: 'nmap',
+    command_repr: 'nmap -sV 10.44.0.10',
+    description: 'Browser fixture successful command started',
+    target_node_ids: [hosts[0].id],
+    details: { command: 'nmap -sV 10.44.0.10', binary: 'nmap', invoking_tool: 'run_tool' },
+  });
+  engine.logActionEvent({
+    action_id: browserSuccessActionId,
+    event_type: 'action_completed',
+    category: 'agent',
+    agent_id: 'browser-seed',
+    tool_name: 'nmap',
+    command_repr: 'nmap -sV 10.44.0.10',
+    description: 'Browser fixture command completed with captured stdout',
+    result_classification: 'success',
+    target_node_ids: [hosts[0].id],
+    details: {
+      command: 'nmap -sV 10.44.0.10', binary: 'nmap', invoking_tool: 'run_tool',
+      exit_code: 0, duration_ms: 840, stdout_evidence_id: successEvidenceId,
+      stdout_total_bytes: Buffer.byteLength(successOutput),
+    },
+  });
+
+  const failureOutput = 'browser-fixture: target rejected the test connection\nexit status 22\n';
+  const failureEvidenceId = engine.getEvidenceStore().store({
+    evidence_type: 'command_output',
+    raw_output: failureOutput,
+    action_id: browserFailureActionId,
+    agent_id: 'browser-seed',
+  });
+  engine.logActionEvent({
+    action_id: browserFailureActionId,
+    event_type: 'action_failed',
+    category: 'agent',
+    agent_id: 'browser-seed',
+    tool_name: 'curl',
+    command_repr: 'curl --fail https://browser.test/health',
+    description: 'Browser fixture command failed with captured stderr',
+    result_classification: 'failure',
+    target_node_ids: [hosts[2].id],
+    details: {
+      command: 'curl --fail https://browser.test/health', binary: 'curl', invoking_tool: 'run_tool',
+      exit_code: 22, duration_ms: 330, stderr_evidence_id: failureEvidenceId,
+      stderr_total_bytes: Buffer.byteLength(failureOutput),
+    },
   });
 
   const computedFrontierIds = engine.getState().frontier

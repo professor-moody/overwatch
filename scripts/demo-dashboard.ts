@@ -33,6 +33,7 @@ const ACTION_RDP = 'a11ca7e0001';
 const ACTION_SMB = 'a11ca7e0002';
 const ACTION_CRED = 'a11ca7e0003';
 const ACTION_CI = 'a11ca7e0004';
+const ACTION_CAPTURE_FAILURE = 'a11ca7e0005';
 
 class DemoPtyHandle implements AdapterHandle {
   pid = 4242;
@@ -468,6 +469,39 @@ const demoProofId = engine.getEvidenceStore().store({
   action_id: 'a11ca7e1002',
   agent_id: 'web-agent',
 });
+const demoSmbOutput = [
+  'SMB  10.10.10.10  445  DC01  [*] Windows Server 2019 x64 (domain:corp.local)',
+  'SMB  10.10.10.10  445  DC01  Share       Permissions  Remark',
+  'SMB  10.10.10.10  445  DC01  SYSVOL      READ         Logon server share',
+  'SMB  10.10.10.10  445  DC01  Backup$     READ         Restricted backup staging',
+  '',
+].join('\n');
+const demoSmbOutputId = engine.getEvidenceStore().store({
+  evidence_type: 'command_output',
+  raw_output: demoSmbOutput,
+  action_id: ACTION_SMB,
+  agent_id: 'agent-smb-1',
+});
+const demoCredentialError = [
+  'HTTP/2 401',
+  'content-type: application/json',
+  '',
+  '{"error":"invalid_session","detail":"browser binding could not be validated"}',
+  '',
+].join('\n');
+const demoCredentialErrorId = engine.getEvidenceStore().store({
+  evidence_type: 'command_output',
+  raw_output: demoCredentialError,
+  action_id: ACTION_CRED,
+  agent_id: 'agent-token-1',
+});
+const demoPartialOutput = `${'row,target,status\n'.repeat(900)}capture stopped after the configured inline limit\n`;
+const demoPartialOutputId = engine.getEvidenceStore().store({
+  evidence_type: 'command_output',
+  raw_output: demoPartialOutput,
+  action_id: 'trust-demo-truncated',
+  agent_id: 'demo-trust',
+});
 logDemoEvent(39, {
   description: 'Benefits export IDOR reproduced with captured response bytes.',
   event_type: 'action_completed',
@@ -743,6 +777,7 @@ logDemoEvent(25, {
   target_node_ids: [ids.ws01, ids.rdpWs01, ids.credJdoe],
   command_repr: 'xfreerdp /v:10.10.10.50 /u:jdoe /pth:<redacted>',
   tool_name: 'xfreerdp',
+  details: { invoking_tool: 'run_tool' },
 });
 logDemoEvent(23, {
   description: 'SMB share enumeration started on DC01',
@@ -767,6 +802,13 @@ logDemoEvent(19, {
   target_node_ids: [ids.dc01, ids.fs01],
   command_repr: 'nxc smb 10.10.10.10 --shares',
   tool_name: 'netexec',
+  details: {
+    invoking_tool: 'run_tool',
+    exit_code: 0,
+    duration_ms: 2412,
+    stdout_evidence_id: demoSmbOutputId,
+    stdout_total_bytes: Buffer.byteLength(demoSmbOutput),
+  },
 });
 logDemoEvent(17, {
   description: 'Token replay against Benefits Portal returned 401; cookie likely expired or scoped to browser binding.',
@@ -780,6 +822,13 @@ logDemoEvent(17, {
   target_node_ids: [ids.credOkta, ids.benefitsApp],
   command_repr: 'curl -H "Cookie: sid=<redacted>" https://benefits.corp.local/api/me',
   tool_name: 'curl',
+  details: {
+    invoking_tool: 'run_tool',
+    exit_code: 22,
+    duration_ms: 918,
+    stderr_evidence_id: demoCredentialErrorId,
+    stderr_total_bytes: Buffer.byteLength(demoCredentialError),
+  },
 });
 logDemoEvent(16, {
   description: 'OIDC replay path selected because GitHub Actions token can mint AWS DeployRole credentials and reach AdminRole.',
@@ -882,8 +931,63 @@ logDemoEvent(7, {
   action_id: 'trust-demo-truncated',
   result_classification: 'partial',
   target_node_ids: [ids.db01],
-  details: { stdout_truncated: true, stdout_dropped_bytes: 16384, stdout_total_bytes: 32768 },
+  command_repr: 'cloudfox aws all-checks --account 111122223333 --output json',
+  tool_name: 'cloudfox',
+  details: {
+    invoking_tool: 'run_bash',
+    exit_code: 0,
+    duration_ms: 44321,
+    stdout_evidence_id: demoPartialOutputId,
+    stdout_truncated: true,
+    stdout_dropped_bytes: 16384,
+    stdout_total_bytes: 32768,
+  },
 });
+logDemoEvent(6, {
+  description: 'Agent SMB enumerator submitted transcript: confirmed readable SYSVOL and Backup shares; no collection attempted.',
+  event_type: 'agent_transcript_submitted',
+  category: 'system',
+  agent_id: 'agent-smb-1',
+  frontier_item_id: fiDc,
+  target_node_ids: [ids.dc01, ids.fs01],
+  details: {
+    summary: 'Confirmed readable SYSVOL and Backup shares; no collection attempted.',
+    transcript_bytes: 684,
+    evidence_id: demoSmbOutputId,
+  },
+});
+logDemoEvent(5, {
+  description: 'Output capture failed after the process returned data; the lifecycle remains auditable but the missing bytes are unrecoverable.',
+  event_type: 'action_failed',
+  category: 'system',
+  agent_id: 'demo-trust',
+  action_id: ACTION_CAPTURE_FAILURE,
+  result_classification: 'failure',
+  target_node_ids: [ids.web01],
+  command_repr: 'curl --fail-with-body https://benefits.corp.local/health/details',
+  tool_name: 'curl',
+  details: {
+    invoking_tool: 'run_tool',
+    exit_code: 23,
+    duration_ms: 611,
+    stdout_total_bytes: 2048,
+    evidence_capture_error: { stdout: 'demo fixture: evidence store unavailable after process completion' },
+  },
+});
+
+// Keep one deterministic action genuinely live. The durable endpoint reports
+// the action-start metadata while the existing action-output WebSocket drains
+// this bounded buffer. Nothing is copied into browser persistence.
+const demoLiveOutput = engine.getActionOutputBuffer();
+demoLiveOutput.open(ACTION_RDP);
+demoLiveOutput.append(ACTION_RDP, 'stdout', '[connected] negotiating NLA with 10.10.10.50\n');
+demoLiveOutput.append(ACTION_RDP, 'stdout', '[progress] credentials accepted; waiting for desktop channel\n');
+let demoLiveSequence = 0;
+const demoLiveTimer = setInterval(() => {
+  demoLiveSequence += 1;
+  demoLiveOutput.append(ACTION_RDP, 'stdout', `[heartbeat ${demoLiveSequence}] RDP channel remains active\n`);
+}, 5_000);
+demoLiveTimer.unref?.();
 
 await sessionManager.create({
   kind: 'local_pty',
@@ -962,6 +1066,7 @@ if (result.started) {
 
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
+  clearInterval(demoLiveTimer);
   await dashboard.stop();
   rmSync(tempDir, { recursive: true, force: true });
   process.exit(0);
