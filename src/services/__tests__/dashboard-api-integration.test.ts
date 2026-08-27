@@ -40,7 +40,9 @@ import {
   PlaybookRunListResponseSchema,
   PlaybookRunResponseSchema,
   PlaybookStepClaimResponseSchema,
+  FindingReadinessReportSchema,
 } from '../../contracts/dashboard-v1.js';
+import { buildFindingReadiness } from '../finding-readiness.js';
 import { responseSchemaFor, DashboardHttpRegistry } from '../../contracts/dashboard-api-v1.js';
 import { PlaybookRunService } from '../playbook-run-service.js';
 import { buildToolDescriptor } from '../tool-descriptor-registry.js';
@@ -1493,13 +1495,42 @@ describe('durable playbook HTTP lifecycle', () => {
 // =============================================
 
 describe('GET /api/engagements', () => {
-  it('returns engagements[]', async () => {
-    const { status, body } = await getJson<{ engagements: unknown[] }>('/api/engagements');
-    // 503 is acceptable when engagement-manager isn't configured (no configPath
-    // on this harness); the smoke run uses a configPath, but this test boots
-    // without one to keep setup minimal.
-    expect([200, 503]).toContain(status);
-    if (status === 200) expect(body).toHaveProperty('engagements');
+  it('distinguishes a runtime without a file-backed engagement library', async () => {
+    const { status, body } = await getJson<{
+      engagements: unknown[];
+      active_id: string | null;
+      library_available: boolean;
+    }>('/api/engagements');
+    expect(status).toBe(200);
+    expect(body).toEqual({ engagements: [], active_id: null, library_available: false });
+  });
+
+  it('reports an attached engagement library additively', async () => {
+    const server = dashboard as unknown as { engagementManager: unknown };
+    server.engagementManager = {
+      listEngagements: () => [{
+        id: 'api-integration',
+        name: 'API Integration',
+        scope_cidrs: ['10.0.0.0/24'],
+        scope_domains: ['acme.local'],
+        objectives_count: 1,
+        phases_count: 0,
+      }],
+      getActiveId: () => 'api-integration',
+    };
+    try {
+      const { status, body } = await getJson<{
+        engagements: Array<{ id: string }>;
+        active_id: string | null;
+        library_available: boolean;
+      }>('/api/engagements');
+      expect(status).toBe(200);
+      expect(body.library_available).toBe(true);
+      expect(body.active_id).toBe('api-integration');
+      expect(body.engagements.map(item => item.id)).toEqual(['api-integration']);
+    } finally {
+      server.engagementManager = null;
+    }
   });
 });
 
@@ -1523,6 +1554,14 @@ describe('GET /api/findings', () => {
     expect(body.severity_summary).toHaveProperty('critical');
     expect(body.severity_summary).toHaveProperty('high');
     expect(body.total).toBe(body.findings.length);
+  });
+});
+
+describe('GET /api/findings/readiness', () => {
+  it('returns the canonical finding-readiness service result', async () => {
+    const { status, body } = await getJson('/api/findings/readiness');
+    expect(status).toBe(200);
+    expect(FindingReadinessReportSchema.parse(body)).toEqual(buildFindingReadiness(engine));
   });
 });
 

@@ -30,6 +30,7 @@ source registry.
 | <a id="subagent-control-prompt"></a>`OVERWATCH_PROMPT_VARIANT=control` rollback selection | Retained | the context-first `lean` sub-agent prompt | 0.4.0 |
 | <a id="subagent-isolation-config"></a>`subagent_isolation` from the Node IPC worker scaffold | Retained | managed-daemon worker runtime settings | Evidence-gated |
 | <a id="dashboard-hash-deep-links"></a>`#panel=...` dashboard navigation | Retained | route and query-string deep links | 0.4.0 |
+| <a id="dashboard-panel-route-aliases"></a>legacy panel routes (`/agents`, `/frontier`, `/graph`, `/findings`, and peers) | Retained | the four workspace routes: `/operate`, `/investigate`, `/review`, and `/manage` | 0.5.0 |
 | <a id="dashboard-v1-state-consumer"></a>bundled-dashboard consumption of WebSocket v1 full-state updates | Retired in 0.2.0 | WebSocket v2 full base plus revisioned keyed patches | 0.2.0 |
 | <a id="pending-action-label-wrapper"></a>internal `PendingActionQueue.abortByAgent()` label-only wrapper | Retired in 0.2.0 | `abortByTask(task_id, legacy_label)` | 0.2.0 |
 <!-- END:compatibility-ledger -->

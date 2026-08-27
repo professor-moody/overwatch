@@ -46,8 +46,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
             type: 'success',
             title: 'Agent completed',
             message: `${(agent.agent_label || agent.agent_id || agent.id).slice(0, 8)} — ${agent.findings_count || 0} findings`,
-            linkPanel: 'agents',
-            linkItem: agent.task_id ?? agent.id,
+            linkPath: `/operate?view=active&kind=agent&item=${encodeURIComponent(agent.task_id ?? agent.id)}`,
           });
         }
       }
@@ -109,12 +108,17 @@ export function WsProvider({ children }: { children: ReactNode }) {
           }
           case 'action_pending':
             s.updatePendingAction(msg.type, msg.data);
+            {
+              const actionId = (msg.data as { action_id?: string })?.action_id;
             toast({
               type: 'warning',
               title: 'Action pending approval',
               message: (msg.data as { description?: string })?.description || undefined,
-              linkPanel: 'actions',
+              linkPath: actionId
+                ? `/operate?view=attention&kind=approval&item=${encodeURIComponent(actionId)}`
+                : '/operate?view=attention',
             });
+            }
             break;
           case 'action_resolved': {
             s.updatePendingAction(msg.type, msg.data);
@@ -125,7 +129,14 @@ export function WsProvider({ children }: { children: ReactNode }) {
               status === 'aborted' ? { type: 'info' as const, title: 'Action aborted (client disconnected)' } :
               status === 'denied' ? { type: 'info' as const, title: 'Action denied' } :
               { type: 'info' as const, title: 'Action resolved' };
-            toast({ type: outcome.type, title: outcome.title, linkPanel: 'actions' });
+            const actionId = (msg.data as { action_id?: string })?.action_id;
+            toast({
+              type: outcome.type,
+              title: outcome.title,
+              linkPath: actionId
+                ? `/operate?view=attention&kind=approval&item=${encodeURIComponent(actionId)}`
+                : '/operate?view=attention',
+            });
             break;
           }
           case 'session_update': {
@@ -141,8 +152,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
                 type: 'success',
                 title: 'Session connected',
                 message: data.session.title || data.session.id.slice(0, 8),
-                linkPanel: 'sessions',
-                linkItem: data.session.id,
+                linkPath: `/operate?drawer=sessions&drawerItem=${encodeURIComponent(data.session.id)}`,
               });
             }
             break;

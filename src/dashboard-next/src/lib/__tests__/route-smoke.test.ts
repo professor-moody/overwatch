@@ -4,29 +4,33 @@ import puppeteer from 'puppeteer-core';
 const smokeUrl = process.env.OVERWATCH_DASHBOARD_SMOKE_URL || '';
 const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> = [
-  { path: '/overview', expects: ['Overview', 'Now', 'Next', 'Changed', 'Current Access'] },
-  { path: '/actions', expects: ['Actions', 'terminal'] },
-  { path: '/agents', expects: ['Operator Console', 'Primary Operator'], expectsAny: ['may be stuck', 'stuck'] },
-  { path: '/activity', expects: ['Activity'], expectsAny: ['No parser data', 'Dropped records', 'Path analysis failed'] },
-  { path: '/campaigns', expects: ['Campaigns'] },
-  { path: '/sessions', expects: ['Sessions', 'Terminal', 'Error'], expectsAny: ['Attach', 'Detach', 'open_session'] },
-  { path: '/frontier', expects: ['Frontier'] },
-  { path: '/graph', expects: ['Graph'] },
-  { path: '/graph?node=cred-jdoe-ntlm&hops=2', expects: ['Focused on', 'Fit', 'Show All'] },
-  { path: '/graph?context=evidence&node=cred-jdoe-ntlm', expects: ['Evidence for', 'Fit', 'Show All'] },
-  { path: '/graph?context=frontier&node=cred-jdoe-ntlm', expects: ['Frontier', 'Fit', 'Show All'] },
-  { path: '/graph?filter=host', expects: ['host nodes', 'Fit', 'Show All'] },
-  { path: '/identity', expects: ['Identity Providers', 'Okta', 'GitHub Actions', 'Benefits Portal', 'MFA'] },
-  { path: '/credentials', expects: ['Credentials', 'Expansion candidates', 'Expiring soon', 'Expired tokens'] },
-  { path: '/paths', expects: ['Attack Paths', 'Inspect Path'], expectsAny: ['Fast wins', 'Cloud reach', 'Identity pivots', 'Higher risk'] },
-  { path: '/evidence', expects: ['Evidence'] },
-  { path: '/findings', expects: ['Findings'], expectsAny: ['Estimated CVSS', 'CVSS'] },
-  { path: '/findings?item=nonexistent-id', expects: ['Findings'] },
-  { path: '/sessions?item=nonexistent-id', expects: ['Sessions'] },
-  { path: '/smoke', expects: ['Diagnostics', '/api/trust-signals'] },
-  { path: '/settings', expects: ['Settings'] },
-  { path: '/engagements', expects: ['Engagements'] },
+const ROUTES: Array<{ path: string; canonical: string; expects: string[]; expectsAny?: string[] }> = [
+  { path: '/operate', canonical: '/operate', expects: ['Operate', 'Start work', 'Needs you', 'Active', 'Ready'] },
+  { path: '/investigate', canonical: '/investigate', expects: ['Investigate', 'Topology', 'Topology controls'] },
+  { path: '/review', canonical: '/review', expects: ['Review', 'Readiness', 'Proof library', 'Reports'] },
+  { path: '/manage', canonical: '/manage', expects: ['Manage', 'Engagement', 'Settings', 'Diagnostics'] },
+  { path: '/overview', canonical: '/operate', expects: ['Operate', 'Start work'] },
+  { path: '/actions', canonical: '/operate', expects: ['Operate', 'Needs you'] },
+  { path: '/agents', canonical: '/operate', expects: ['Operate', 'Active'] },
+  { path: '/activity', canonical: '/operate', expects: ['Operate', 'Activity'], expectsAny: ['No parser data', 'Dropped records', 'Path analysis failed'] },
+  { path: '/campaigns', canonical: '/operate', expects: ['Operate', 'Campaigns'] },
+  { path: '/sessions', canonical: '/operate', expects: ['Operate', 'Sessions'], expectsAny: ['Attach', 'Detach', 'open_session'] },
+  { path: '/frontier', canonical: '/operate', expects: ['Operate', 'Ready'] },
+  { path: '/graph', canonical: '/investigate', expects: ['Investigate', 'Topology controls'] },
+  { path: '/graph?node=cred-jdoe-ntlm&hops=2', canonical: '/investigate', expects: ['Focused on', 'Fit', 'Show All'] },
+  { path: '/graph?context=evidence&node=cred-jdoe-ntlm', canonical: '/investigate', expects: ['Evidence for', 'Fit', 'Show All'] },
+  { path: '/graph?context=frontier&node=cred-jdoe-ntlm', canonical: '/investigate', expects: ['Frontier', 'Fit', 'Show All'] },
+  { path: '/graph?filter=host', canonical: '/investigate', expects: ['host nodes', 'Fit', 'Show All'] },
+  { path: '/identity', canonical: '/investigate', expects: ['Investigate', 'Identity Providers', 'Okta', 'GitHub Actions', 'Benefits Portal', 'MFA'] },
+  { path: '/credentials', canonical: '/investigate', expects: ['Investigate', 'Credentials', 'Expansion candidates', 'Expiring soon', 'Expired tokens'] },
+  { path: '/paths', canonical: '/investigate', expects: ['Investigate', 'Attack Paths', 'Inspect Path'], expectsAny: ['Fast wins', 'Cloud reach', 'Identity pivots', 'Higher risk'] },
+  { path: '/evidence', canonical: '/review', expects: ['Review', 'Proof library', 'Evidence'] },
+  { path: '/findings', canonical: '/review', expects: ['Review', 'Readiness', 'Proof ready'] },
+  { path: '/findings?item=nonexistent-id', canonical: '/review', expects: ['Review', 'Readiness'] },
+  { path: '/sessions?item=nonexistent-id', canonical: '/operate', expects: ['Operate', 'Sessions'] },
+  { path: '/smoke', canonical: '/manage', expects: ['Manage', 'Diagnostics', '/api/trust-signals'] },
+  { path: '/settings', canonical: '/manage', expects: ['Manage', 'Settings'] },
+  { path: '/engagements', canonical: '/manage', expects: ['Manage', 'Engagements'] },
 ];
 
 describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
@@ -53,6 +57,7 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
       for (const route of ROUTES) {
         await page.goto(`${smokeUrl}${route.path}`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
         await page.waitForSelector('body', { timeout: 5_000 });
+        await page.waitForFunction((canonical) => location.pathname.endsWith(canonical), { timeout: 10_000 }, route.canonical);
         if (route.path.startsWith('/graph?')) {
           await page.waitForFunction(() => document.body.innerText.includes('Show All'), { timeout: 15_000 });
         }
@@ -65,17 +70,6 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
           expect(route.expectsAny.some(expected => text.includes(expected)), route.path).toBe(true);
         }
         expect(text, route.path).not.toContain('Graph renderer is not mounted.');
-        const pageTitle = route.path.split('?')[0].slice(1);
-        const expectedTitle = pageTitle === 'paths'
-          ? 'Attack Paths'
-          : pageTitle.charAt(0).toUpperCase() + pageTitle.slice(1);
-        if (!route.path.startsWith('/graph') && expectedTitle) {
-          const titleCount = await page.evaluate((title) => (
-            [...document.querySelectorAll('main h2')]
-              .filter(heading => heading.textContent?.trim().startsWith(title)).length
-          ), expectedTitle);
-          expect(titleCount, `${route.path} duplicate page title`).toBeLessThanOrEqual(1);
-        }
       }
 
       expect(errors.filter(error =>
@@ -101,7 +95,7 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
         window.localStorage.setItem('overwatch-sidebar-expanded', 'true');
       });
       await page.goto(`${smokeUrl}/overview`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
-      await page.waitForFunction(() => document.body.innerText.includes('Current Access'), { timeout: 10_000 });
+      await page.waitForFunction(() => document.body.innerText.includes('Start work'), { timeout: 10_000 });
       const nav = await page.evaluate(() => {
         const el = document.querySelector('nav');
         const rect = el?.getBoundingClientRect();
@@ -111,15 +105,17 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
         };
       });
       expect(nav.width).toBeGreaterThanOrEqual(200);
-      expect(nav.text).toContain('Overview');
-      expect(nav.text).toContain('Frontier');
-      expect(nav.text).toContain('Settings');
+      expect(nav.text).toContain('Operate');
+      expect(nav.text).toContain('Investigate');
+      expect(nav.text).toContain('Review');
+      expect(nav.text).toContain('Manage');
+      expect(nav.text).not.toContain('Overview');
     } finally {
       await browser.close();
     }
   }, 30_000);
 
-  it('carries contextual graph links through evidence click-through', async () => {
+  it('translates scoped evidence links into persistent topology context', async () => {
     const browser = await puppeteer.launch({
       executablePath: chromePath,
       headless: true,
@@ -130,16 +126,12 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
       await page.setViewport({ width: 1280, height: 800 });
       await page.goto(`${smokeUrl}/evidence?node=cred-jdoe-ntlm`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
       await page.waitForFunction(() => document.body.innerText.includes('cred-jdoe-ntlm'), { timeout: 10_000 });
-      await page.evaluate(() => {
-        const button = [...document.querySelectorAll('button')]
-          .find(candidate => candidate.title?.includes('Open cred-jdoe-ntlm in graph'));
-        if (!(button instanceof HTMLButtonElement)) throw new Error('credential graph button missing');
-        button.click();
-      });
-      await page.waitForFunction(() => location.pathname.endsWith('/graph') && document.body.innerText.includes('Evidence for'), { timeout: 15_000 });
+      await page.waitForFunction(() => location.pathname.endsWith('/investigate') && document.body.innerText.includes('Evidence for'), { timeout: 15_000 });
       const text = await page.evaluate(() => document.body.innerText);
       expect(text).toContain('Show All');
       expect(text).not.toContain('Graph renderer is not mounted.');
+      const params = await page.evaluate(() => Object.fromEntries(new URLSearchParams(location.search)));
+      expect(params).toMatchObject({ lens: 'topology', context: 'evidence', node: 'cred-jdoe-ntlm' });
     } finally {
       await browser.close();
     }
@@ -177,7 +169,7 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
         if (!(button instanceof HTMLButtonElement)) throw new Error('inspect path button missing');
         button.click();
       });
-      await page.waitForFunction(() => location.pathname.endsWith('/graph') && document.body.innerText.includes('Show All'), { timeout: 15_000 });
+      await page.waitForFunction(() => location.pathname.endsWith('/investigate') && document.body.innerText.includes('Show All'), { timeout: 15_000 });
       text = await page.evaluate(() => document.body.innerText);
       expect(text).toContain('Fit');
       expect(text).not.toContain('Graph renderer is not mounted.');

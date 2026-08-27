@@ -73,6 +73,57 @@ body {
   overflow: hidden;
 }
 
+html {
+  color-scheme: dark;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.workspace-shell {
+  background:
+    radial-gradient(circle at 65% -35%, rgba(91, 141, 239, 0.07), transparent 42rem),
+    var(--color-background);
+}
+
+.workspace-pulse {
+  animation: workspace-pulse 1.35s ease-in-out infinite;
+}
+
+@keyframes workspace-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+/* Drawer destinations own their internal rows. Only the mounted destination
+   itself inherits the bounded drawer height; forcing its children to 100%
+   makes native toolbars consume the entire drawer. */
+.workspace-drawer-content > div {
+  min-height: 0 !important;
+  height: 100% !important;
+}
+
+.workspace-drawer-content h2 {
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 #root {
   height: 100vh;
   overflow: hidden;
@@ -120,6 +171,23 @@ body {
 }
 .settings-input::placeholder {
   color: var(--color-muted);
+}
+
+.manage-input {
+  min-height: 2rem;
+  width: 100%;
+  background-color: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 10px;
+  color: var(--color-foreground);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.manage-input:focus {
+  border-color: var(--color-accent);
 }
 
 .settings-save-btn {

@@ -26,6 +26,7 @@ import { cn } from '../../lib/utils';
 import type { GraphLayerState } from '../../lib/graph-layers';
 
 interface GraphToolbarProps {
+  embedded?: boolean;
   nodeCount: number;
   edgeCount: number;
   layoutRunning: boolean;
@@ -89,6 +90,7 @@ export function getLayoutToolbarAction({ layoutMode, layoutRunning }: LayoutTool
 }
 
 export function GraphToolbar({
+  embedded = false,
   nodeCount, edgeCount, layoutRunning, layoutMode, labelDensity, colorMode, pathMode, layoutType,
   layers,
   onZoomIn, onZoomOut, onFit, onToggleLayout, onResumeLayout, onReset, onResetPositions,
@@ -113,14 +115,18 @@ export function GraphToolbar({
 
   return (
     <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50 overflow-visible">
-      {/* Back to the Operator Console (the operator's home) */}
-      <Link to="/agents" className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1 min-w-0">
-        <ChevronLeft size={14} />
-        <span className="hidden sm:inline">Console</span>
-      </Link>
+      {!embedded && (
+        <>
+          <Link to="/operate" className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1 min-w-0">
+            <ChevronLeft size={14} />
+            <span className="hidden sm:inline">Operate</span>
+          </Link>
+          <span className="text-accent font-semibold whitespace-nowrap">◆ OVERWATCH</span>
+          <span className="font-medium text-muted-foreground whitespace-nowrap hidden md:inline">Graph</span>
+        </>
+      )}
 
-      <span className="text-accent font-semibold whitespace-nowrap">◆ OVERWATCH</span>
-      <span className="font-medium text-muted-foreground whitespace-nowrap hidden md:inline">Graph</span>
+      {embedded && <span className="whitespace-nowrap text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Topology controls</span>}
 
       <div className="flex-1" />
 

@@ -14,6 +14,7 @@ import type { OpsecContext } from '../src/services/opsec-tracker.js';
 import { setTelemetry } from '../src/tools/error-boundary.js';
 import { ToolTelemetry } from '../src/services/tool-telemetry.js';
 import type { ToolDescriptor } from '../src/services/tool-descriptor-registry.js';
+import { resolveDemoNow } from './demo-clock.js';
 
 // Persist into a fresh temp dir (like demo:daemon) rather than a fixed repo-root file —
 // a crashed run used to leave a journal/quarantine/lock sidecar next to a fixed state
@@ -23,13 +24,16 @@ const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-demo-dashboard-'));
 const STATE_FILE = join(tempDir, 'state.json');
 const requestedDashboardPort = Number.parseInt(process.env.OVERWATCH_DEMO_DASHBOARD_PORT || process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
 const DASHBOARD_PORT = Number.isFinite(requestedDashboardPort) ? requestedDashboardPort : 8384;
-const NOW = new Date('2026-05-15T18:23:34.963Z');
+// Capture once so a demo run is internally stable while remaining believable
+// when opened interactively. Tests and screenshots pass OVERWATCH_DEMO_NOW.
+const NOW = resolveDemoNow(process.env.OVERWATCH_DEMO_NOW);
 const iso = (minutesAgo = 0) => new Date(NOW.getTime() - minutesAgo * 60_000).toISOString();
 
 const ACTION_RDP = 'a11ca7e0001';
 const ACTION_SMB = 'a11ca7e0002';
 const ACTION_CRED = 'a11ca7e0003';
 const ACTION_CI = 'a11ca7e0004';
+const ACTION_CAPTURE_FAILURE = 'a11ca7e0005';
 
 class DemoPtyHandle implements AdapterHandle {
   pid = 4242;
@@ -197,6 +201,10 @@ const config: EngagementConfig = {
 };
 
 const engine = new GraphEngine(config, STATE_FILE);
+const logDemoEvent = (
+  minutesAgo: number,
+  event: Parameters<GraphEngine['logActionEvent']>[0],
+) => engine.withClock(iso(minutesAgo), () => engine.logActionEvent(event));
 const sessionManager = new SessionManager(engine, 0);
 sessionManager.registerAdapter(new DemoPtyAdapter());
 // Wire the durable-descriptor owner exactly as the real app does (app.ts) — the session
@@ -383,6 +391,21 @@ engine.ingestFinding({
   raw_output: 'GET /api/export?employee_id=1044 -> 200\nGET /api/export?employee_id=1045 -> 200 (different employee record)',
 });
 
+// Deliberately outside every ingested action: Review uses this stable orphan
+// to demonstrate the canonical draft tier (no evidence chain or affected
+// asset). It is real graph state, not a client-side readiness override.
+engine.addNode({
+  id: 'vuln-review-draft',
+  type: 'vulnerability',
+  label: 'Unvalidated debug endpoint',
+  vuln_type: 'information_disclosure',
+  severity: 'low',
+  cwe: 'CWE-200',
+  confidence: 0.35,
+  discovered_at: iso(8),
+  discovered_by: 'demo-review-fixture',
+});
+
 function graphNodes(): NodeProperties[] {
   return engine.exportGraph().nodes.map((node: any) => ({ id: node.id, ...(node.properties || {}) }) as NodeProperties);
 }
@@ -435,6 +458,69 @@ const ids = {
   payrollBucket: canonicalNodeId('payroll archive bucket', n => n.type === 'cloud_resource' && n.provider_resource_id === 'corp-payroll-archive'),
   benefitsLambda: canonicalNodeId('benefits export lambda', n => n.type === 'cloud_resource' && n.provider_resource_id === 'benefits-export'),
 };
+
+// Link one real evidence-store record to the existing Benefits Portal action.
+// Readiness remains entirely server-derived; the fixture only supplies the
+// same proof bytes and lifecycle references a real instrumented run would.
+const demoProof = 'GET /api/export?employee_id=1045 -> 200\n{"employee":"A. Example","department":"Payroll"}\n';
+const demoProofId = engine.getEvidenceStore().store({
+  evidence_type: 'command_output',
+  raw_output: demoProof,
+  action_id: 'a11ca7e1002',
+  agent_id: 'web-agent',
+});
+const demoSmbOutput = [
+  'SMB  10.10.10.10  445  DC01  [*] Windows Server 2019 x64 (domain:corp.local)',
+  'SMB  10.10.10.10  445  DC01  Share       Permissions  Remark',
+  'SMB  10.10.10.10  445  DC01  SYSVOL      READ         Logon server share',
+  'SMB  10.10.10.10  445  DC01  Backup$     READ         Restricted backup staging',
+  '',
+].join('\n');
+const demoSmbOutputId = engine.getEvidenceStore().store({
+  evidence_type: 'command_output',
+  raw_output: demoSmbOutput,
+  action_id: ACTION_SMB,
+  agent_id: 'agent-smb-1',
+});
+const demoCredentialError = [
+  'HTTP/2 401',
+  'content-type: application/json',
+  '',
+  '{"error":"invalid_session","detail":"browser binding could not be validated"}',
+  '',
+].join('\n');
+const demoCredentialErrorId = engine.getEvidenceStore().store({
+  evidence_type: 'command_output',
+  raw_output: demoCredentialError,
+  action_id: ACTION_CRED,
+  agent_id: 'agent-token-1',
+});
+const demoPartialOutput = `${'row,target,status\n'.repeat(900)}capture stopped after the configured inline limit\n`;
+const demoPartialOutputId = engine.getEvidenceStore().store({
+  evidence_type: 'command_output',
+  raw_output: demoPartialOutput,
+  action_id: 'trust-demo-truncated',
+  agent_id: 'demo-trust',
+});
+logDemoEvent(39, {
+  description: 'Benefits export IDOR reproduced with captured response bytes.',
+  event_type: 'action_completed',
+  category: 'finding',
+  agent_id: 'web-agent',
+  action_id: 'a11ca7e1002',
+  frontier_item_id: 'frontier-webapp-benefits',
+  target_node_ids: [ids.webapp, ids.vulnIdor],
+  linked_finding_ids: [`finding-vuln-${ids.vulnIdor}`, `finding-webapp-${ids.webapp}`],
+  tool_name: 'curl',
+  command_repr: 'curl https://benefits.corp.local/api/export?employee_id=1045',
+  result_classification: 'success',
+  details: {
+    exit_code: 0,
+    duration_ms: 384,
+    stdout_evidence_id: demoProofId,
+    stdout_total_bytes: Buffer.byteLength(demoProof),
+  },
+});
 
 // Canonical cross-finding relationships. Ingest normalizes host/user ids, so
 // anything linking separate findings must use the resolved graph ids.
@@ -649,7 +735,7 @@ engine.recordOpsecNoise({ campaign_id: activeCampaign.id, noise_estimate: 0.45 }
 engine.recordOpsecNoise({ campaign_id: draftCampaign.id, noise_estimate: 0.12 });
 engine.recordOpsecNoise({ campaign_id: postExCampaignId, noise_estimate: 0.28 });
 
-engine.logActionEvent({
+logDemoEvent(28, {
   description: 'Selected RDP validation because jdoe has confirmed credential material and WS01 is one hop from domain services.',
   event_type: 'thought',
   category: 'reasoning',
@@ -665,7 +751,7 @@ engine.logActionEvent({
     tags: ['demo', 'recording'],
   },
 });
-engine.logActionEvent({
+logDemoEvent(27, {
   description: 'RDP action validated with OPSEC warnings; queued for terminal approval.',
   event_type: 'action_validated',
   category: 'approval',
@@ -681,7 +767,7 @@ engine.logActionEvent({
     command: 'overwatch approve a11ca7e0001',
   },
 });
-engine.logActionEvent({
+logDemoEvent(25, {
   description: 'Credential spray: testing jdoe against RDP',
   event_type: 'action_started',
   agent_id: 'agent-spray-1',
@@ -691,8 +777,9 @@ engine.logActionEvent({
   target_node_ids: [ids.ws01, ids.rdpWs01, ids.credJdoe],
   command_repr: 'xfreerdp /v:10.10.10.50 /u:jdoe /pth:<redacted>',
   tool_name: 'xfreerdp',
+  details: { invoking_tool: 'run_tool' },
 });
-engine.logActionEvent({
+logDemoEvent(23, {
   description: 'SMB share enumeration started on DC01',
   event_type: 'action_started',
   agent_id: 'agent-smb-1',
@@ -703,7 +790,7 @@ engine.logActionEvent({
   command_repr: 'nxc smb 10.10.10.10 -u svc_backup -p <redacted> --shares',
   tool_name: 'netexec',
 });
-engine.logActionEvent({
+logDemoEvent(19, {
   description: 'SMB share enumeration found SYSVOL and Backup share; backup share requires review before collection.',
   event_type: 'action_completed',
   agent_id: 'agent-smb-1',
@@ -715,8 +802,15 @@ engine.logActionEvent({
   target_node_ids: [ids.dc01, ids.fs01],
   command_repr: 'nxc smb 10.10.10.10 --shares',
   tool_name: 'netexec',
+  details: {
+    invoking_tool: 'run_tool',
+    exit_code: 0,
+    duration_ms: 2412,
+    stdout_evidence_id: demoSmbOutputId,
+    stdout_total_bytes: Buffer.byteLength(demoSmbOutput),
+  },
 });
-engine.logActionEvent({
+logDemoEvent(17, {
   description: 'Token replay against Benefits Portal returned 401; cookie likely expired or scoped to browser binding.',
   event_type: 'action_failed',
   agent_id: 'agent-token-1',
@@ -728,8 +822,15 @@ engine.logActionEvent({
   target_node_ids: [ids.credOkta, ids.benefitsApp],
   command_repr: 'curl -H "Cookie: sid=<redacted>" https://benefits.corp.local/api/me',
   tool_name: 'curl',
+  details: {
+    invoking_tool: 'run_tool',
+    exit_code: 22,
+    duration_ms: 918,
+    stderr_evidence_id: demoCredentialErrorId,
+    stderr_total_bytes: Buffer.byteLength(demoCredentialError),
+  },
 });
-engine.logActionEvent({
+logDemoEvent(16, {
   description: 'OIDC replay path selected because GitHub Actions token can mint AWS DeployRole credentials and reach AdminRole.',
   event_type: 'thought',
   category: 'reasoning',
@@ -744,7 +845,7 @@ engine.logActionEvent({
     tags: ['demo', 'identity', 'cloud'],
   },
 });
-engine.logActionEvent({
+logDemoEvent(15, {
   description: 'OIDC cloud role replay validated with CloudTrail visibility warning; queued for terminal approval.',
   event_type: 'action_validated',
   category: 'approval',
@@ -760,7 +861,7 @@ engine.logActionEvent({
     command: `overwatch approve ${ACTION_CI}`,
   },
 });
-engine.logActionEvent({
+logDemoEvent(14, {
   description: 'Operator opened mock terminal for WS01; terminal is local-only demo PTY.',
   event_type: 'session_opened',
   category: 'system',
@@ -770,7 +871,7 @@ engine.logActionEvent({
   target_node_ids: [ids.ws01],
   details: { session_id: 'demo-live-ws01' },
 });
-engine.logActionEvent({
+logDemoEvent(12, {
   description: 'Demo parser caveat: malformed Nmap sample produced no graph data.',
   event_type: 'parse_output',
   category: 'finding',
@@ -780,7 +881,7 @@ engine.logActionEvent({
   target_node_ids: [ids.web01],
   details: { parse_status: 'no_data', parsed_nodes: 0, parsed_edges: 0, ingested: false },
 });
-engine.logActionEvent({
+logDemoEvent(11, {
   description: 'Demo ingest caveat: AzureHound skipped records missing object IDs.',
   event_type: 'parse_output',
   category: 'finding',
@@ -796,7 +897,7 @@ engine.logActionEvent({
     }],
   },
 });
-engine.logActionEvent({
+logDemoEvent(10, {
   description: 'Demo path caveat: path projection failed while fitting a malformed edge.',
   event_type: 'system',
   category: 'system',
@@ -804,7 +905,7 @@ engine.logActionEvent({
   target_node_ids: [ids.credJdoe, ids.dc01],
   details: { analysis_status: 'analysis_failed', from_node: ids.credJdoe, to_node: ids.dc01 },
 });
-engine.logActionEvent({
+logDemoEvent(9, {
   description: 'Demo path caveat: requested endpoint missing from graph.',
   event_type: 'system',
   category: 'system',
@@ -812,7 +913,7 @@ engine.logActionEvent({
   target_node_ids: [ids.adminRole],
   details: { analysis_status: 'missing_endpoint', from_node: ids.deployRole, to_node: 'cloud-identity-missing' },
 });
-engine.logActionEvent({
+logDemoEvent(8, {
   description: 'Demo IAM caveat: role simulation indeterminate after depth cap.',
   event_type: 'action_completed',
   category: 'frontier',
@@ -822,7 +923,7 @@ engine.logActionEvent({
   target_node_ids: [ids.deployRole, ids.adminRole],
   details: { decision: 'indeterminate', depth_capped: true },
 });
-engine.logActionEvent({
+logDemoEvent(7, {
   description: 'Demo evidence caveat: command output exceeded inline buffer.',
   event_type: 'action_completed',
   category: 'frontier',
@@ -830,8 +931,63 @@ engine.logActionEvent({
   action_id: 'trust-demo-truncated',
   result_classification: 'partial',
   target_node_ids: [ids.db01],
-  details: { stdout_truncated: true, stdout_dropped_bytes: 16384, stdout_total_bytes: 32768 },
+  command_repr: 'cloudfox aws all-checks --account 111122223333 --output json',
+  tool_name: 'cloudfox',
+  details: {
+    invoking_tool: 'run_bash',
+    exit_code: 0,
+    duration_ms: 44321,
+    stdout_evidence_id: demoPartialOutputId,
+    stdout_truncated: true,
+    stdout_dropped_bytes: 16384,
+    stdout_total_bytes: 32768,
+  },
 });
+logDemoEvent(6, {
+  description: 'Agent SMB enumerator submitted transcript: confirmed readable SYSVOL and Backup shares; no collection attempted.',
+  event_type: 'agent_transcript_submitted',
+  category: 'system',
+  agent_id: 'agent-smb-1',
+  frontier_item_id: fiDc,
+  target_node_ids: [ids.dc01, ids.fs01],
+  details: {
+    summary: 'Confirmed readable SYSVOL and Backup shares; no collection attempted.',
+    transcript_bytes: 684,
+    evidence_id: demoSmbOutputId,
+  },
+});
+logDemoEvent(5, {
+  description: 'Output capture failed after the process returned data; the lifecycle remains auditable but the missing bytes are unrecoverable.',
+  event_type: 'action_failed',
+  category: 'system',
+  agent_id: 'demo-trust',
+  action_id: ACTION_CAPTURE_FAILURE,
+  result_classification: 'failure',
+  target_node_ids: [ids.web01],
+  command_repr: 'curl --fail-with-body https://benefits.corp.local/health/details',
+  tool_name: 'curl',
+  details: {
+    invoking_tool: 'run_tool',
+    exit_code: 23,
+    duration_ms: 611,
+    stdout_total_bytes: 2048,
+    evidence_capture_error: { stdout: 'demo fixture: evidence store unavailable after process completion' },
+  },
+});
+
+// Keep one deterministic action genuinely live. The durable endpoint reports
+// the action-start metadata while the existing action-output WebSocket drains
+// this bounded buffer. Nothing is copied into browser persistence.
+const demoLiveOutput = engine.getActionOutputBuffer();
+demoLiveOutput.open(ACTION_RDP);
+demoLiveOutput.append(ACTION_RDP, 'stdout', '[connected] negotiating NLA with 10.10.10.50\n');
+demoLiveOutput.append(ACTION_RDP, 'stdout', '[progress] credentials accepted; waiting for desktop channel\n');
+let demoLiveSequence = 0;
+const demoLiveTimer = setInterval(() => {
+  demoLiveSequence += 1;
+  demoLiveOutput.append(ACTION_RDP, 'stdout', `[heartbeat ${demoLiveSequence}] RDP channel remains active\n`);
+}, 5_000);
+demoLiveTimer.unref?.();
 
 await sessionManager.create({
   kind: 'local_pty',
@@ -910,6 +1066,7 @@ if (result.started) {
 
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
+  clearInterval(demoLiveTimer);
   await dashboard.stop();
   rmSync(tempDir, { recursive: true, force: true });
   process.exit(0);

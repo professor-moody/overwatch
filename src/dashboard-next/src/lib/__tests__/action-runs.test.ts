@@ -69,11 +69,20 @@ describe('buildActionRuns', () => {
     expect(runs[0].tool).toBe('nmap');
     expect(runs[0].command).toBe('nmap -A');
   });
+
+  it('retains campaign context and uses action id as a stable timestamp tie-breaker', () => {
+    const runs = buildActionRuns([
+      entry({ action_id: 'act_z', event_type: 'action_completed', timestamp: '2026-06-17T00:00:01Z', result_classification: 'success', details: { campaign_id: 'campaign-1' } }),
+      entry({ action_id: 'act_a', event_type: 'action_completed', timestamp: '2026-06-17T00:00:01Z', result_classification: 'success', details: {} }),
+    ]);
+    expect(runs.map(run => run.actionId)).toEqual(['act_a', 'act_z']);
+    expect(runs[1].campaignId).toBe('campaign-1');
+  });
 });
 
 describe('filterRuns', () => {
   const runs: ActionRun[] = [
-    { actionId: 'act_1', tool: 'nmap', command: 'nmap -sV 10.0.0.5', status: 'success', agentId: 'agent-recon-1', targets: ['10.0.0.5'], timestamp: 't2', startedAt: null, description: '' },
+    { actionId: 'act_1', tool: 'nmap', command: 'nmap -sV 10.0.0.5', status: 'success', agentId: 'agent-recon-1', campaignId: 'campaign-blue', targets: ['10.0.0.5'], timestamp: 't2', startedAt: null, description: '' },
     { actionId: 'act_2', tool: 'curl', command: 'curl https://x', status: 'failure', agentId: 'agent-web-1', targets: [], timestamp: 't1', startedAt: null, description: '' },
   ];
 
@@ -85,6 +94,7 @@ describe('filterRuns', () => {
     expect(filterRuns(runs, { search: '10.0.0.5' }).map(r => r.actionId)).toEqual(['act_1']);
     expect(filterRuns(runs, { search: 'curl' }).map(r => r.actionId)).toEqual(['act_2']);
     expect(filterRuns(runs, { search: 'agent-web' }).map(r => r.actionId)).toEqual(['act_2']);
+    expect(filterRuns(runs, { search: 'campaign-blue' }).map(r => r.actionId)).toEqual(['act_1']);
   });
 
   it('returns all runs with no filters', () => {

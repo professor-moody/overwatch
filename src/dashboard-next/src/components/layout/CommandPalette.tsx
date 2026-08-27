@@ -10,12 +10,15 @@ export function CommandPalette({
   open,
   panels,
   agents,
+  items: suppliedItems,
   onClose,
   onSelect,
 }: {
   open: boolean;
   panels: PanelCommandDef[];
   agents: AgentInfo[];
+  /** Optional prebuilt index used by the four-workspace shell. */
+  items?: CommandItem[];
   onClose: () => void;
   onSelect: (item: CommandItem) => void;
 }) {
@@ -24,7 +27,10 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const activeRef = useRef<HTMLLIElement>(null);
 
-  const items = useMemo(() => buildCommandItems({ panels, agents }), [panels, agents]);
+  const items = useMemo(
+    () => suppliedItems ?? buildCommandItems({ panels, agents }),
+    [suppliedItems, panels, agents],
+  );
   const filtered = useMemo(() => filterCommands(items, query), [items, query]);
 
   // Reset + focus each time it opens; a fresh query resets the highlight to the top.
@@ -65,8 +71,8 @@ export function CommandPalette({
           value={query}
           onChange={e => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Jump to a panel or agent…"
-          aria-label="Search panels and agents"
+          placeholder="Jump to a workspace, asset, finding, or agent…"
+          aria-label="Search workspaces and engagement entities"
           className="w-full border-b border-border bg-transparent px-4 py-3 text-sm text-foreground outline-none placeholder:text-muted"
         />
         <ul role="listbox" aria-label="Results" className="max-h-[50vh] overflow-y-auto py-1">

@@ -25,6 +25,10 @@ export function AttentionQueue({
   onSelectAgent,
   onForceRemove,
   onTriageAll,
+  proofGap,
+  onReviewProof,
+  onSelectItem,
+  full = false,
 }: {
   agentQueries: api.AgentQuery[];
   proposedPlans: api.ProposedPlan[];
@@ -33,18 +37,24 @@ export function AttentionQueue({
   onSelectAgent: (taskId: string) => void;
   onForceRemove: (taskId: string) => Promise<void> | void;
   onTriageAll: () => void;
+  proofGap?: { draft: number; needs_validation: number };
+  onReviewProof?: () => void;
+  onSelectItem?: (item: AttentionItem) => void;
+  /** Main Operate attention view renders the complete queue; the compact console
+   *  embedding retains the historical one-row summary behavior. */
+  full?: boolean;
 }) {
   const pendingActions = useEngagementStore(s => s.pendingActions);
   const agents = useEngagementStore(s => s.agents);
   const view = useMemo(
-    () => buildAttentionQueue({ pendingActions, agentQueries, proposedPlans, agents }),
-    [pendingActions, agentQueries, proposedPlans, agents],
+    () => buildAttentionQueue({ pendingActions, agentQueries, proposedPlans, agents, proofGap }),
+    [pendingActions, agentQueries, proposedPlans, agents, proofGap],
   );
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Compact by default: show only the summary line + the single top-priority item
   // (still actionable inline). The operator opens the rest on demand so a queue of
   // 4–6 expanded rows can't own the viewport and bury the fleet below.
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(full);
   const addToast = useToastStore(s => s.addToast);
   const [bulkBusy, setBulkBusy] = useState(false);
 
@@ -52,7 +62,7 @@ export function AttentionQueue({
 
   // Collapsed → just the top item; open → the visible slice (one expanded at a
   // time). Default the expanded item to the top if the prior selection is gone.
-  const visible = open ? view.items.slice(0, DISPLAY_CAP) : view.items.slice(0, 1);
+  const visible = full ? view.items : open ? view.items.slice(0, DISPLAY_CAP) : view.items.slice(0, 1);
   const activeId = visible.some(i => i.id === expandedId) ? expandedId : visible[0]?.id ?? null;
   const overflow = view.total - visible.length;
   // Items the toggle reveals INLINE when opened (capped at DISPLAY_CAP). Anything
@@ -79,8 +89,8 @@ export function AttentionQueue({
   };
 
   return (
-    <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3">
-      <div className="flex items-center gap-2">
+    <div className={cn(full ? 'border-y border-border-subtle bg-transparent' : 'space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3')}>
+      <div className={cn('flex items-center gap-2', full && 'min-h-10 border-b border-border-subtle px-3 py-2')}>
         <span className="text-xs font-medium text-warning">⚠ Needs you</span>
         <span className="rounded-full bg-warning/20 px-1.5 text-[10px] text-warning">{view.total}</span>
         {view.counts.approval > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.approval} approval{view.counts.approval !== 1 ? 's' : ''}</span>}
@@ -88,8 +98,9 @@ export function AttentionQueue({
         {view.counts.plan > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.plan} plan{view.counts.plan !== 1 ? 's' : ''}</span>}
         {view.counts.stuck > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.stuck} stuck</span>}
         {view.counts.failed > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.failed} failed</span>}
+        {view.counts.proof_gap > 0 && <span className="text-[10px] text-muted-foreground">proof gap</span>}
         <div className="ml-auto flex items-center gap-3">
-          {view.total > 1 && (
+          {!full && view.total > 1 && (
             <button onClick={() => setOpen(o => !o)} className="text-[10px] text-muted-foreground hover:text-foreground">
               {open ? '▾ hide' : `▸ show ${inlineMore} more`}
             </button>
@@ -115,14 +126,16 @@ export function AttentionQueue({
             // Expansion-only: clicking a row focuses it. There's intentionally no
             // collapse-to-zero — the queue always keeps one item expanded, and a
             // sentinel collapse wouldn't survive the store/poll re-render anyway.
-            onToggle={() => setExpandedId(item.id)}
+            onToggle={() => { setExpandedId(item.id); onSelectItem?.(item); }}
             onAnswered={onAnswered}
             onPlanResolved={onPlanResolved}
             onSelectAgent={onSelectAgent}
             onForceRemove={onForceRemove}
+            onReviewProof={onReviewProof}
+            full={full}
           />
         ))}
-        {open && overflow > 0 && (
+        {!full && open && overflow > 0 && (
           <button onClick={onTriageAll} className="text-[10px] text-muted-foreground hover:text-accent">
             +{overflow} more →
           </button>
@@ -130,6 +143,26 @@ export function AttentionQueue({
       </div>
     </div>
   );
+}
+
+/** Reused by the URL-backed attention inspector so its decision controls stay
+ * identical to the inline queue actions. */
+export function AttentionDecisionActions({
+  item,
+  onAnswered,
+  onPlanResolved,
+  onReviewProof,
+}: {
+  item: AttentionItem;
+  onAnswered: () => void;
+  onPlanResolved: () => void;
+  onReviewProof?: () => void;
+}) {
+  if (item.kind === 'approval' && item.actionId) return <ApprovalActions actionId={item.actionId} title={item.title} />;
+  if (item.kind === 'question' && item.queryIds?.length) return <AnswerActions queryIds={item.queryIds} options={item.options} onAnswered={onAnswered} />;
+  if (item.kind === 'plan' && item.planId) return <PlanActions planId={item.planId} onResolved={onPlanResolved} />;
+  if (item.kind === 'proof_gap' && onReviewProof) return <ActionButton size="xs" variant="purple" onClick={onReviewProof}>Review proof gaps →</ActionButton>;
+  return null;
 }
 
 function AttentionRow({
@@ -140,6 +173,8 @@ function AttentionRow({
   onPlanResolved,
   onSelectAgent,
   onForceRemove,
+  onReviewProof,
+  full,
 }: {
   item: AttentionItem;
   expanded: boolean;
@@ -148,6 +183,8 @@ function AttentionRow({
   onPlanResolved: () => void;
   onSelectAgent: (taskId: string) => void;
   onForceRemove: (taskId: string) => Promise<void> | void;
+  onReviewProof?: () => void;
+  full: boolean;
 }) {
   // Force-remove is an escape hatch for a wedged/failed agent: kill + clear in one
   // click without leaving the "needs you" surface. The parent owns canonicalization
@@ -159,17 +196,17 @@ function AttentionRow({
     try { await onForceRemove(item.taskId); }
     finally { setRemoving(false); }   // success unmounts the row; modern React no-ops the stale set
   };
-  const kindTone = item.kind === 'question' ? 'text-warning' : item.kind === 'failed' ? 'text-destructive' : item.kind === 'stuck' ? 'text-warning' : item.kind === 'plan' ? 'text-accent' : 'text-accent';
+  const kindTone = item.kind === 'question' ? 'text-warning' : item.kind === 'failed' ? 'text-destructive' : item.kind === 'stuck' ? 'text-warning' : item.kind === 'proof_gap' ? 'text-purple' : item.kind === 'plan' ? 'text-accent' : 'text-accent';
   return (
-    <div className={cn('rounded border bg-surface', expanded ? 'border-accent/40' : 'border-border')}>
-      <button onClick={onToggle} className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs">
-        <span className={cn('text-[10px] uppercase tracking-wide', kindTone)}>{item.kind}</span>
+    <div className={cn(full ? 'border-b border-border-subtle bg-transparent' : 'rounded border bg-surface', !full && (expanded ? 'border-accent/40' : 'border-border'), full && expanded && 'bg-accent/[0.035]')}>
+      <button onClick={onToggle} className={cn('flex w-full items-center gap-2 text-left text-xs', full ? 'min-h-10 px-3 py-2' : 'px-2 py-1.5')}>
+        <span className={cn('text-[10px] uppercase tracking-wide', kindTone)}>{item.kind === 'proof_gap' ? 'proof gap' : item.kind}</span>
         {item.risk && <StatusPill className={item.risk.cls}>{item.risk.label}</StatusPill>}
         <span className="min-w-0 flex-1 truncate text-foreground">{item.title}</span>
         {item.agentLabel && <span className="flex-shrink-0 font-mono text-[10px] text-muted-foreground">{item.agentLabel}</span>}
       </button>
       {expanded && (
-        <div className="border-t border-border px-2 py-2">
+        <div className={cn('border-t', full ? 'border-border-subtle px-3 py-3 pl-[5.25rem]' : 'border-border px-2 py-2')}>
           <div className="mb-2 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">{item.detail}</div>
           {item.kind === 'question' && item.queryIds && item.queryIds.length > 1 && (
             <div className="mb-2 text-[10px] text-warning">
@@ -192,6 +229,9 @@ function AttentionRow({
                 {removing ? 'Removing…' : 'Force remove'}
               </ActionButton>
             </div>
+          )}
+          {item.kind === 'proof_gap' && onReviewProof && (
+            <ActionButton size="xs" variant="purple" onClick={onReviewProof}>Review proof gaps →</ActionButton>
           )}
         </div>
       )}

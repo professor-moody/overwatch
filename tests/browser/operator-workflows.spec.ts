@@ -9,6 +9,8 @@ const controlBase = `http://127.0.0.1:${controlPort}`;
 const token = process.env.OVERWATCH_BROWSER_TOKEN ?? 'browser-ci-token / encoded';
 const browserSessionId = '00000000-0000-4000-8000-000000000014';
 const browserActionId = 'browser-live-action';
+const browserSuccessActionId = 'act_browser-success-action';
+const browserFailureActionId = 'act_browser-failure-action';
 const browserErrors = new WeakMap<Page, string[]>();
 
 function withToken(path: string): string {
@@ -75,20 +77,22 @@ test.describe('dashboard operator journeys', () => {
     await page.goto(withToken('/agents'), { waitUntil: 'domcontentloaded' });
     await expect(page.getByText('Live', { exact: true })).toBeVisible();
     expect(new URL(page.url()).searchParams.has('token')).toBe(false);
-    // The full sidebar is taller than Playwright's default viewport. Invoke
-    // the real React control without making this storage-resilience journey a
-    // sidebar-scroll test, then use the operator shortcut for navigation.
-    await page.getByTitle('Collapse navigation').evaluate((element: HTMLElement) => element.click());
-    await expect(page.getByTitle('Expand navigation')).toHaveCount(1);
-    await page.keyboard.press('g');
-    await expect(page).toHaveURL(/\/graph$/);
-    await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('9');
+    await page.keyboard.press('Control+k');
+    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+    await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill('Investigate');
+    await page.getByRole('option', { name: /Investigate/ }).click();
+    await expect(page).toHaveURL(/\/investigate$/);
+    await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('12');
     await page.getByTitle('More graph controls').click();
     await page.getByText('Reset positions', { exact: true }).click();
     await expect(page.getByText('Positions reset', { exact: true })).toBeVisible();
-    await page.keyboard.press('c');
-    await page.keyboard.press('g');
-    await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('9');
+    await page.keyboard.press('Control+k');
+    await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill('Operate');
+    await page.getByRole('option', { name: /Operate/ }).click();
+    await page.keyboard.press('Control+k');
+    await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill('Investigate');
+    await page.getByRole('option', { name: /Investigate/ }).click();
+    await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('12');
   });
 
   test('stays usable when browser storage methods throw', async ({ page }) => {
@@ -103,11 +107,11 @@ test.describe('dashboard operator journeys', () => {
 
     await page.goto(withToken('/agents'), { waitUntil: 'domcontentloaded' });
     await expect(page.getByText('Live', { exact: true })).toBeVisible();
-    await page.getByTitle('Collapse navigation').evaluate((element: HTMLElement) => element.click());
-    await expect(page.getByTitle('Expand navigation')).toHaveCount(1);
-    await page.keyboard.press('g');
-    await expect(page).toHaveURL(/\/graph$/);
-    await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('9');
+    await page.keyboard.press('Control+k');
+    await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill('Investigate');
+    await page.getByRole('option', { name: /Investigate/ }).click();
+    await expect(page).toHaveURL(/\/investigate$/);
+    await expect(page.getByText('Nodes', { exact: true }).locator('..')).toContainText('12');
   });
 
   test('captures and scrubs remote tokens while authenticating HTTP and WebSockets', async ({ page }) => {
@@ -127,7 +131,7 @@ test.describe('dashboard operator journeys', () => {
     await expect(page.getByText('Live', { exact: true })).toBeVisible();
 
     const visible = new URL(page.url());
-    expect(visible.pathname).toBe('/overview');
+    expect(visible.pathname).toBe('/operate');
     expect(visible.searchParams.get('keep')).toBe('1');
     expect(visible.searchParams.has('token')).toBe(false);
     expect(visible.hash).toBe('#retained');
@@ -136,18 +140,19 @@ test.describe('dashboard operator journeys', () => {
 
     // Exercise the actual component-owned session and action-output channels;
     // this protects browser transport wiring as well as the server handshake.
-    await page.goto(`${dashboardBase}/sessions?item=${encodeURIComponent(browserSessionId)}`, {
+    await page.goto(`${dashboardBase}/operate?drawer=sessions&drawerItem=${encodeURIComponent(browserSessionId)}`, {
       waitUntil: 'domcontentloaded',
     });
-    await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
+    await expect(page.getByText('Browser journey terminal', { exact: true }).first()).toBeVisible();
+    await page.getByRole('button', { name: 'Attach terminal' }).click();
     await expect.poll(() => websocketUrls.some(url => (
       new URL(url).pathname === `/ws/session/${browserSessionId}`
     ))).toBe(true);
 
-    await page.goto(`${dashboardBase}/analysis?item=${encodeURIComponent(browserActionId)}`, {
+    await page.goto(`${dashboardBase}/operate?drawer=run&drawerItem=${encodeURIComponent(browserActionId)}`, {
       waitUntil: 'domcontentloaded',
     });
-    await expect(page.getByRole('heading', { name: 'Analysis' })).toBeVisible();
+    await expect(page.getByText('Browser journey live output.', { exact: false })).toBeVisible();
     await expect.poll(() => websocketUrls.some(url => (
       new URL(url).pathname === `/ws/actions/${browserActionId}/output`
     ))).toBe(true);
@@ -194,47 +199,46 @@ test.describe('dashboard operator journeys', () => {
   });
 
   test('round-trips objectives and resolves graph deep links', async ({ page }) => {
-    await land(page, '/settings');
+    await land(page, '/manage?section=engagement');
     await expect(page.getByText('Reach the browser journey objective', { exact: true })).toBeVisible();
-    await page.getByRole('checkbox', {
-      name: 'Mark objective Reach the browser journey objective achieved',
-    }).click();
-    await expect(page.getByRole('checkbox', {
-      name: 'Mark objective Reach the browser journey objective incomplete',
-    })).toBeChecked();
+    await page.getByRole('button', { name: 'Mark achieved' }).click();
+    await expect(page.getByRole('button', { name: 'Reopen' })).toBeVisible();
 
     await page.goto(withToken('/graph?node=browser-objective-host&hops=2'), {
       waitUntil: 'domcontentloaded',
     });
     await expect(page.getByText('Focused on', { exact: false })).toBeVisible();
-    await expect(page.getByText('Browser Objective Host', { exact: false }).first()).toBeVisible();
+    const inspector = page.getByRole('complementary', { name: 'Host inspector' });
+    await expect(inspector).toBeVisible();
+    await expect(inspector.getByText('10.44.0.10', { exact: true }).first()).toBeVisible();
     const visible = new URL(page.url());
-    // Graph target parameters are one-shot commands: a successful focus consumes
-    // them, while the selected node remains visible in the inspector/banner.
-    expect(visible.pathname).toBe('/graph');
-    expect(visible.searchParams.get('node')).toBeNull();
-    expect(visible.searchParams.get('hops')).toBeNull();
+    // Canonical route state remains shareable after legacy graph translation.
+    expect(visible.pathname).toBe('/investigate');
+    expect(visible.searchParams.get('lens')).toBe('topology');
+    expect(visible.searchParams.get('node')).toBe('browser-objective-host');
+    expect(visible.searchParams.get('hops')).toBe('2');
     expect(visible.searchParams.has('token')).toBe(false);
   });
 
   test('prepares a durable playbook retry without executing it in the browser', async ({ page }) => {
-    await land(page, '/credentials?item=browser-credential');
-    await expect(page.getByRole('button', { name: 'Collapse credential Browser CI credential' })).toBeVisible();
-    await expect(page.getByText('Browser credential validation', { exact: false })).toBeVisible();
+    await land(page, '/investigate?lens=credentials&kind=credential&item=browser-credential&tab=actions');
+    const inspector = page.getByRole('complementary', { name: 'Credential inspector' });
+    await expect(inspector).toBeVisible();
+    await expect(inspector.getByText('Browser credential validation', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Prepare retry' }).click();
     await expect(page.getByText('Execution descriptor prepared', { exact: false })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Release claim' })).toBeVisible();
     await page.getByRole('button', { name: 'Release claim' }).click();
     await expect(page.getByRole('button', { name: 'Release claim' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Prepare retry' })).toBeVisible();
-    await expect(page.getByText(/Attempts:.*interrupted/)).toBeVisible();
+    await expect(inspector.getByText('interrupted', { exact: true }).first()).toBeVisible();
   });
 
   test('reconnects through a fresh full state after a socket loss', async ({ page, request }) => {
     const websocketUrls: string[] = [];
     page.on('websocket', socket => websocketUrls.push(socket.url()));
     await land(page, '/overview');
-    const nodesValue = page.getByText('Nodes', { exact: true }).locator('..').locator('span').first();
+    const nodesValue = page.getByTestId('asset-count');
     const initialNodes = Number.parseInt((await nodesValue.textContent()) ?? '0', 10);
 
     const changed = await request.post(`${controlBase}/drop-main-ws`);
@@ -251,25 +255,111 @@ test.describe('dashboard operator journeys', () => {
 
   test('shows config divergence and reconciles with durable state', async ({ page }) => {
     page.on('dialog', dialog => void dialog.accept());
-    await land(page, '/settings', recoveryBase);
-    await expect(page.getByRole('heading', { name: /Recovery and configuration ownership/ })).toBeVisible();
+    await land(page, '/manage?section=diagnostics', recoveryBase);
+    await expect(page.getByRole('heading', { name: 'Recovery and configuration convergence' })).toBeVisible();
     await expect(page.getByText('Configuration reconciliation required', { exact: true }).first()).toBeVisible();
-    await expect(page.getByText('Writable', { exact: true }).locator('..')).toContainText('no');
     await page.getByRole('button', { name: 'Use durable state' }).click();
-    await expect(page.getByText('Writable', { exact: true }).locator('..')).toContainText('yes');
     await expect(page.getByRole('button', { name: 'Use durable state' })).toHaveCount(0);
-    await expect(page.locator('input[value="Browser Recovery Engagement"]')).toBeVisible();
+    await expect(page.getByText('No recovery action required.', { exact: true }).first()).toBeVisible();
   });
 
-  test('renders the live engagement-quality scorecard and evidence-debt queue on the overview', async ({ page }) => {
+  test('renders the four-workspace shell and the consolidated review queue', async ({ page }) => {
     await land(page, '/overview');
-    // Computed live from the graph (GET /api/scorecard) and rendered as a card.
-    await expect(page.getByText('Engagement Quality', { exact: false })).toBeVisible();
-    await expect(page.getByText('Access edges verified', { exact: false })).toBeVisible();
-    await expect(page.getByText('Objectives satisfied', { exact: false })).toBeVisible();
-    // The evidence-debt queue (GET /api/evidence-debt) renders; the fresh fixture has no debt yet.
-    await expect(page.getByRole('heading', { name: 'Evidence Debt' })).toBeVisible();
-    await expect(page.getByText(/No open evidence debt/)).toBeVisible();
+    await expect(page).toHaveURL(/\/operate/);
+    await expect(page.getByRole('heading', { name: 'Operate' })).toBeVisible();
+    const primary = page.getByRole('navigation', { name: 'Primary workspaces' });
+    await expect(primary.getByRole('button')).toHaveCount(4);
+    for (const name of ['Operate', 'Investigate', 'Review', 'Manage']) {
+      await expect(primary.getByRole('button', { name: new RegExp(`^${name}`) })).toBeVisible();
+    }
+    await expect(page.getByRole('tab', { name: /Needs you/ })).toBeVisible();
+    await expect(page.getByRole('tab', { name: /Active/ })).toBeVisible();
+    await expect(page.getByRole('tab', { name: /Ready/ })).toBeVisible();
+
+    await land(page, '/review?view=proof');
+    await expect(page.getByRole('textbox', { name: 'Search proof' })).toBeVisible();
+    await expect(page.getByText('4 proof records', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Browser fixture successful command started/ })).toBeVisible();
+  });
+
+  test('keeps command output beside Activity and preserves action context in Runs', async ({ page }) => {
+    await land(page, `/operate?view=attention&drawer=activity&drawerItem=${browserSuccessActionId}`);
+    await expect(page.getByText('nmap -sV 10.44.0.10', { exact: true })).toBeVisible();
+    await expect(page.getByText('Browser fixture command completed.', { exact: false })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Runs', exact: true }).click();
+    expect(new URL(page.url()).searchParams.get('drawerItem')).toBe(browserSuccessActionId);
+    await expect(page.getByText('Browser fixture command completed.', { exact: false })).toBeVisible();
+
+    await page.goto(withToken(`/operate?view=history&drawer=run&drawerItem=${browserFailureActionId}`), { waitUntil: 'domcontentloaded' });
+    await page.getByRole('tab', { name: 'stderr', exact: true }).click();
+    await expect(page.getByText('target rejected the test connection', { exact: false })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Focus drawer' }).click();
+    await expect(page.locator('[data-drawer-mode="focus"]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-drawer-mode="compact"]')).toBeVisible();
+    expect(new URL(page.url()).searchParams.get('drawer')).toBe('run');
+  });
+
+  test('keeps labeled navigation, avoids horizontal overflow, and switches inspector mode at 1280px', async ({ page, request }) => {
+    const findingsResponse = await request.get(`${dashboardBase}/api/findings`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(findingsResponse.ok()).toBe(true);
+    const findingBody = await findingsResponse.json() as { findings: Array<{ id: string }> };
+    expect(findingBody.findings.length).toBeGreaterThan(0);
+    const target = findingBody.findings[0].id;
+
+    for (const viewport of [
+      { width: 1440, height: 900, inspectorPosition: 'static' },
+      { width: 1280, height: 800, inspectorPosition: 'static' },
+      { width: 1024, height: 768, inspectorPosition: 'fixed' },
+    ] as const) {
+      await page.setViewportSize(viewport);
+      await land(page, `/review?view=readiness&kind=finding&item=${encodeURIComponent(target)}&drawer=activity`);
+
+      const primary = page.getByRole('navigation', { name: 'Primary workspaces' });
+      for (const label of ['Operate', 'Investigate', 'Review', 'Manage']) {
+        await expect(primary.getByRole('button', { name: new RegExp(`^${label}`) })).toBeVisible();
+      }
+      await expect(page.locator('.workspace-inspector')).toBeVisible();
+      expect(await page.locator('.workspace-inspector').evaluate(element => getComputedStyle(element).position))
+        .toBe(viewport.inspectorPosition);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(viewport.width);
+      expect(await page.evaluate(() => document.body.scrollWidth)).toBe(viewport.width);
+    }
+
+    // At overlay widths Escape closes the transient inspector first, preserving
+    // the independently-targeted drawer, then closes the drawer on the next press.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.workspace-inspector')).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.get('drawer')).toBe('activity');
+    await page.keyboard.press('Escape');
+    expect(new URL(page.url()).searchParams.has('drawer')).toBe(false);
+  });
+
+  test('never indexes or persists credential material in workspace navigation', async ({ page }) => {
+    const credentialId = 'browser-credential';
+    const credentialValue = 'browser-ci-redacted';
+    await land(page, `/investigate?lens=credentials&kind=credential&item=${encodeURIComponent(credentialId)}`);
+    expect(decodeURIComponent(page.url())).not.toContain(credentialValue);
+    await page.keyboard.press('Control+k');
+    await page.getByRole('textbox', { name: 'Search workspaces and engagement entities' }).fill(credentialValue);
+    await expect(page.getByText('No matches', { exact: true })).toBeVisible();
+
+    const stored = await page.evaluate(() => {
+      const values: string[] = [];
+      for (const storage of [localStorage, sessionStorage]) {
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index);
+          if (key) values.push(`${key}=${storage.getItem(key)}`);
+        }
+      }
+      return values.join('\n');
+    });
+    expect(stored).not.toContain(credentialValue);
+    expect((browserErrors.get(page) ?? []).join('\n')).not.toContain(credentialValue);
   });
 
   test('corrects a claim from the node drawer and surfaces it as evidence debt', async ({ page }) => {
@@ -287,8 +377,8 @@ test.describe('dashboard operator journeys', () => {
     await page.getByRole('button', { name: 'Apply refuted' }).click();
     await expect(page.getByText(/Promoted to refuted/)).toBeVisible();
 
-    // The contradiction now appears in the evidence-debt queue on the overview.
-    await land(page, '/overview');
+    // The contradiction now appears in Review's proof workspace.
+    await land(page, '/review?view=proof');
     await expect(page.getByText(/promoted refuted, but its evidence is positive/)).toBeVisible();
   });
 });

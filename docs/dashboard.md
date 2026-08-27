@@ -21,8 +21,8 @@ existing engagement. If its config is missing beside retained state or other
 engagement artifacts, setup preserves them and enters or requests explicit
 recovery instead of creating a competing empty engagement.
 
-The daemon owns one current active engagement. Use **Console → Add Targets** to
-change its scope and **Settings** to change objectives or OPSEC; the same
+The daemon owns one current active engagement. Use **Operate → Start Work** to
+preview and add target scope, and **Manage → Settings** to change objectives or OPSEC; the same
 changes are available to terminal Claude through `update_scope`,
 `add_objective`, and `set_opsec`. **New Engagement** creates a separate inactive
 configuration. It does not switch this daemon, and the dashboard does not
@@ -90,6 +90,21 @@ beyond the local machine.
 Browser HTTP and WebSocket requests must also be same-origin with the served
 dashboard host. Different ports are accepted only when both authorities are
 loopback; foreign origins are rejected.
+
+## Operator workspaces {#operator-workspaces}
+
+The dashboard uses four labeled destinations at desktop widths of 1024px and above:
+
+| Workspace | Purpose |
+|---|---|
+| **Operate** | Prioritized attention, active work, canonical Frontier order, campaigns, history, steering, commands, and the guided Start Work launcher |
+| **Investigate** | Topology, asset inventory, identities, credentials, and objective/custom attack paths |
+| **Review** | Canonical proof readiness, evidence chains, producing runs, and report generation/archive |
+| **Manage** | Engagement lifecycle, scope/objectives, operator settings, recovery, and diagnostics |
+
+The active engagement plus connection, recovery, synchronization, and OPSEC posture stay visible in the shared header. A right-side inspector preserves surrounding context; it docks at 1280px and overlays at narrower supported widths. Activity, Sessions, and Runs share a bottom drawer. Its compact height is `clamp(280px, 38vh, 480px)`; **Focus** increases height to `clamp(480px, 72vh, 760px)` without changing the URL or width. `Cmd/Ctrl+K` opens navigation/search over already-loaded workspace entities and never interprets operational commands.
+
+The canonical routes are `/operate`, `/investigate`, `/review`, and `/manage`. Legacy panel routes continue to translate their query context during the documented compatibility window; see [Compatibility and releases](compatibility.md#dashboard-panel-route-aliases).
 
 ## Graph Interactions
 
@@ -164,7 +179,7 @@ Click any node to open the right-side inspector. It shows:
 
 ### Frontier Item Navigation
 
-Click a graph action from Frontier, Credentials, Sessions, Activity, or an inspector relationship to open `/graph?node=...&hops=...`. The graph enters neighborhood focus, opens the inspector, and fits the visible neighborhood while reserving space for graph chrome and the right drawer.
+Click a graph action from Operate, Credentials, Sessions, Activity, or an inspector relationship to open `/investigate?lens=topology&node=...&hops=...`. The graph enters neighborhood focus, opens the inspector, and fits the visible neighborhood while reserving space for graph chrome and the shared inspector.
 
 ### Trust Signals
 
@@ -180,21 +195,6 @@ These signals are operator-facing diagnostics. They do not mean the target is vu
 
 The dashboard derives the summary from `/api/trust-signals`. Activity and Findings show row-level context, Overview shows the newest verification queue, Graph inspectors show signals tied to the selected node, and Smoke checks the endpoint shape.
 
-## Sidebar Panels
-
-The sidebar contains six collapsible panels:
-
-| Panel | Content |
-|-------|---------|
-| **Lab Readiness** | Current readiness status and top issues |
-| **Graph Summary** | Node counts by type, confirmed vs inferred edges |
-| **Objectives** | Engagement objectives with achievement status |
-| **Frontier** | Top 15 frontier items (click to zoom to node) |
-| **Agents** | Active sub-agents with status |
-| **Recent Activity** | Last 20 activity entries with timestamps |
-
-Click any panel header to collapse/expand it. Panel state is persisted in `localStorage`.
-
 ## Controls
 
 ### Recovery status
@@ -205,7 +205,7 @@ distinguishes active-config divergence, underlying WAL/state failure, and
 unresolved process identity, so selecting file/state authority never appears
 to repair an unrelated journal or runtime problem.
 
-Open **Settings → Recovery** for the full outcome, contiguous/on-disk
+Open **Manage → Diagnostics** for the full outcome, contiguous/on-disk
 checkpoints, observed/supported state and journal format versions, migration
 backup path/checksum, file/runtime/state revisions and hashes, write-intent
 state, and operator-facing reason. For a config-only divergence, **Use file**
@@ -305,36 +305,39 @@ A compact minimap in the bottom-right overlay shows the full graph at a glance w
 
 | Area | Purpose |
 |------|---------|
-| `src/dashboard-next/src/components/layout/` | Operator shell, top toolbar, sidebar, tape toggle |
-| `src/dashboard-next/src/components/panels/` | Console (Agents), Approvals (Actions), Add Targets, Frontier, Sessions, Activity, Evidence, Findings, Overview, Smoke, Settings |
-| `src/dashboard-next/src/components/graph/` | Sigma graph workspace, overlays, inspector, export controls |
-| `src/dashboard-next/src/hooks/` | Navigation, graph data, layout, Sigma lifecycle, keyboard shortcuts |
-| `src/dashboard-next/src/lib/` | API client, graph utilities, camera fitting, route smoke helpers |
+| `src/dashboard-next/src/components/layout/` | Four-workspace shell, status header, inspector host, drawer host, palette, tape toggle |
+| `src/dashboard-next/src/components/workspaces/` | Native Operate, Investigate, Review, and Manage interiors plus shared launch flows |
+| `src/dashboard-next/src/components/drawer/` | Activity timeline, action-centric Runs, session terminal/context/buffer, shared execution output |
+| `src/dashboard-next/src/components/panels/` | Compatibility-only or feature-level panels retained while their callers are audited |
+| `src/dashboard-next/src/components/graph/` | Sigma topology canvas, compact controls, and inspector context |
+| `src/dashboard-next/src/hooks/` | Canonical navigation, graph data, layout, and Sigma lifecycle |
+| `src/dashboard-next/src/lib/` | API client, route models, activity/run/session adapters, graph utilities, and presentation selectors |
 
-## Operator Console (cockpit)
+## Operate and the execution console
 
-The dashboard uses a **console-first IA**: the **Console** is the landing page and the operator's home, and the left nav is grouped **Console** (Console · Frontier · Approvals · Campaigns) · **Investigate** (Graph · Findings · Attack Paths · Evidence · Identity · Credentials · Activity · Overview) · **Manage** (Sessions · Engagements · Settings · Smoke). The operator works in the Console and steps out only to investigate, with one click back (press `c`).
+**Operate** is the landing workspace. Its Needs you, Active, Ready, Campaigns,
+and History views share one contextual inspector and the natural-language
+command composer. Approvals, agent questions, proposed plans, proof gaps, and
+stuck work remain actionable inline. **Start work** is the single guided launch
+flow for raw scope, an existing graph node, one Frontier item, or confirmed
+fan-out; it preserves the existing server preview and execution contracts.
 
-The Console is a focused **master-detail** workspace:
+The bottom drawer is the native execution console:
 
-- a pinned **command bar** (natural-language commands; see the grammar reference below);
-- a **"Needs you" strip** — inline **Approve / Deny** for pending actions, an **Answer** box for agent questions, and **Confirm & run / Dismiss** for planner-proposed plans; it hides when nothing is waiting;
-- a **Fleet** roster on the left — select an agent to focus its detail, per-agent steering (Pause/Resume/Stop/Tell), and its own activity stream; with nothing selected, a fleet overview sits over the full primary/sub-agent stream. Terminal (completed/failed/interrupted) agents can be **dismissed** from the roster individually or via **Clear finished** in the fleet header;
-- a **Deploy** launcher and an **Add Targets** launcher in the header. See [Deploy](#deploy) and [Add Targets](#add-targets) below.
+- **Activity** is the complete operator timeline projected by `GET /api/console`: actions, commands, approvals, decisions, findings, sessions, transcripts, and system events. Events sharing an action form one lifecycle thread. Selecting an action keeps the timeline visible and shows its command, validation, reasoning, stdout/stderr, evidence, and findings alongside it.
+- **Runs** is the action-centric counterpart. Each action appears once with run filters and the same shared output component used by Activity, Review proof, and evidence inspectors.
+- **Sessions** groups durable sessions by lifecycle state. Its detail has Terminal, Context, and Buffer views. The raw session buffer is authoritative; the dashboard does not invent command/output boundaries that the backend did not persist.
 
-Approve/deny here routes through the same canonical path as the terminal;
-resolved rows clear off the live `action_resolved` push. The standalone
-**Approvals** view (Console group) is the deep triage queue for actions that the
-effective policy actually queues, with the same controls **plus batch triage**
-for a busy queue. `auto-approve` does not queue; `approve-critical` queues only
-policy-selected actions; and `approve-all` queues every action. An unanswered
-queued action auto-executes after `approval_timeout_ms` as an explicitly stamped
-unattended timeout. Task cancellation/reaping or daemon shutdown aborts it
-instead:
+Captured action output is immediately visible to an authorized operator, but
+large evidence is read in bounded pages. Output is never copied into route
+state, browser storage, the palette index, activity labels, analytics, or client
+logs. Copy command and copy loaded output are explicit operator actions.
 
-- **Multi-select** (the *Select* toggle) → **Approve/Deny selected**; **per-technique "Approve all (N)"** in each group header; denials always take one shared reason.
-- **Keyboard triage:** `a` approve the focused action · `j`/`k` move · `x` toggle its selection. (Deny stays click-driven — a reason is required.)
-- A **subtle recommended cue** (a left-edge tint / soft ring on the suggested button) from the engine's risk / defensive-signals / noise-budget — a *visual hint only*, never a pre-selection.
+Activity keeps last-good events and output visible while disconnected. Follow
+mode pauses when the operator searches, pauses the feed, or scrolls away;
+incoming events increment the new-activity affordance rather than moving the
+selection or viewport. On reconnect, Activity reconciles the console and the
+selected action reloads durable evidence.
 
 See **[Operator Cockpit](operator-cockpit.md)** for the full model (NL command two-phase, the planner role, the directive substrate, escalation, and the safety invariant).
 
@@ -355,23 +358,14 @@ findings, but not the human terminal Claude session's project MCP servers,
 project hooks/settings, or resume history. Keep using terminal Claude normally;
 the shared daemon coordinates ownership between both surfaces.
 
-### Deploy
+### Start work
 
-The **Deploy** button opens a one-step deploy: type a target, pick (or accept the recommended) agent type, Deploy.
-
-- A raw **IP / CIDR / domain** is an **ad-hoc real-time** target — `POST /api/agents/quick-deploy` adds it to scope (canonical `updateScope`) and dispatches the recommended agent at it, no engagement-setup ritual.
-- Existing **graph node IDs** dispatch against those nodes (`POST /api/agents/dispatch`).
-- The modal pre-selects the **recommended agent type** for the target and offers a **manual override** from the catalog (recon_scanner, web_tester, credential_operator, post_exploit, cve_researcher, osint_recon, pathfinder, report_scribe, default). See [Agent types & deploy](operator-cockpit.md#agent-types) for what each type does and its tool surface.
-- A **Model** dropdown lets you pick which Claude model the headless agent runs on (passed as `claude -p --model <id>`). The choices come from `available_models` in `engagement.json` (or a default set); "Default" leaves it to `default_agent_model` / the CLI default. See [Agent Models](configuration.md#agent-models).
-
-### Add Targets
-
-The **Add Targets** modal adds scope mid-engagement without leaving the Console:
+The **Start work** launcher adds scope or dispatches work without leaving Operate:
 
 1. **Paste** IPs, CIDRs, or domains (whitespace/comma separated). Parsing matches the `scan` command exactly — a bare IP becomes `/32`, domains are lowercased, IPv6 and other junk are flagged and ignored.
 2. **Preview impact** — `POST /api/config/scope/preview` (read-only) reports how many graph nodes would enter/leave scope and which pending scope suggestions resolve.
 3. **Confirm** — `PATCH /api/config/scope` applies it through `engine.updateScope` (the canonical write path: CIDR validation, cold→hot promotion, inference re-run, `scope_updated` audit event).
-4. **Enumerate** — new CIDRs surface `network_discovery` items on the Frontier (lazy; no host seeding), which you dispatch from there. The modal links straight to the Frontier.
+4. **Execute** — unchanged impact proceeds through the atomic quick-deploy path. Existing nodes use canonical single dispatch; fan-out shows its calculated agent count and requires confirmation.
 
 The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 
@@ -398,13 +392,13 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/api/commands` | POST | NL command — preview / confirm / deny (operator cockpit) |
 | `/api/commands/active` | GET | Active durable planner commands, including queued/running state |
 | `/api/commands/{command_id}` | GET | One durable command and its stored terminal outcome |
-| `/api/config/scope/preview` | POST | Read-only dry-run of a scope change — nodes entering/leaving scope, resolved suggestions (Add Targets) |
+| `/api/config/scope/preview` | POST | Read-only dry-run of a raw-target scope change in Start work |
 | `/api/config/scope` | PATCH | Apply a scope change (full-replacement body, diffed server-side → `updateScope`) |
 | `/api/actions/{action_id}/approve` · `/api/actions/{action_id}/deny` | POST | Resolve a pending action (inline approve/deny; canonical `resolveApprovalRequest` path) |
 | `/api/actions/approve-batch` · `/api/actions/deny-batch` | POST | Bulk resolve `{ action_ids[] }` (deny takes one shared `reason`) — each id routes through the same canonical path |
 | `/api/plans` | GET | Open planner-proposed plans awaiting confirmation |
 | `/api/agent-queries` · `/api/agent-queries/{query_id}/answer` | GET · POST | Agent→operator question inbox + answer |
-| `/api/actions/{action_id}/output` | GET | Raw stdout/stderr (head-by-default) + run metadata (Analysis workspace) |
+| `/api/actions/{action_id}/output` | GET | Raw stdout/stderr (bounded head by default) plus execution metadata for Activity, Runs, proof, and evidence context |
 | `/api/evidence/{evidence_id}/raw` | GET | Bounded, paged (`offset`/`max_bytes`) raw-evidence read |
 | `/api/evidence/{evidence_id}/image` | GET | Serve a `screenshot` evidence blob as raw image bytes — raster only (PNG/JPEG/GIF/WebP; SVG excluded), 25 MB cap, `nosniff` + inline disposition. 404 if absent, 415 if not a viewable image |
 | `/api/actions/{action_id}/reparse` | POST | Re-parse a run's output — preview (`ingest:false`) or promote (`ingest:true`) to the graph |

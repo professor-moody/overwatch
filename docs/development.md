@@ -297,14 +297,14 @@ Test files are co-located with their modules under `__tests__/` directories:
 
 Before merging dashboard UI changes, run a short operator pass:
 
-1. Open `/smoke`; API shape failures should be red, missing optional host binaries should be warnings.
-2. Open `/frontier`, `/evidence`, `/credentials`, `/identity`, and `/paths`; every graph action should land on a contextual focused graph banner, not the undifferentiated full graph.
-3. Check top-level pages for a single visible page title. Breadcrumbs should appear only for nested item context.
-4. Check `/graph`, `/agents`, and `/activity` at desktop and narrow widths for clipped controls, horizontal page scroll, and mismatched button/status styles.
-5. Check `/overview`, `/activity`, `/findings`, `/graph?node=...`, and `/smoke`; parser no-data, ingest drops, path-analysis failures, IAM indeterminate decisions, truncation, and estimated CVSS should surface as compact trust signals rather than being buried in raw JSON.
-6. Keep `Credentials` as the reveal/copy credential-material inventory and `Identity` as the IdP/app/principal/trust surface.
-7. Prefer shared primitives (`ActionButton`, `SegmentedControl`, `InspectorDrawer`, `EmptyPanelState`, `StatusPill`) before adding one-off button, drawer, empty-state, or chip styling.
-8. Run `npm run build:dashboard-next` and `mkdocs build --strict` when docs or dashboard surfaces change.
+1. Open `/operate`, `/investigate`, `/review`, and `/manage`; each workspace should use the shared shell, labeled navigation, status grammar, and one contextual inspector.
+2. Exercise an approval, campaign, graph node or path, proof-deficient finding, and recovery divergence. Selection must round-trip through the URL without losing the surrounding view or targeted drawer.
+3. Check 1440x900, 1280x800, and 1024x768. The inspector docks at 1280px and above, overlays below 1280px, and no supported width may introduce page-level horizontal scrolling or unlabeled primary navigation.
+4. Verify that Activity, Sessions, and Runs use the bottom drawer and that repeated Escape presses close the topmost transient surface in order.
+5. Keep credential material masked by default and out of URLs, browser storage, palette results, activity labels, error text, and client logs.
+6. Check legacy routes such as `/graph`, `/agents`, `/findings`, and `/smoke`; adapters must preserve meaningful query context and produce canonical four-workspace URLs.
+7. Prefer the shared workspace primitives before adding one-off button, inspector, drawer, empty-state, row, toolbar, or badge styling.
+8. Run `npm run build:dashboard-next`, `npm run test:browser`, and `mkdocs build --strict` when dashboard surfaces or their documentation change. The browser suite includes the representative workspace visual baselines.
 
 For live route smoke, run the demo API and Vite dashboard against the same API port. If `8384` or `5173` is already occupied, use an alternate API port and let Vite choose the next free frontend port:
 
@@ -315,6 +315,11 @@ OVERWATCH_DASHBOARD_SMOKE_URL=http://127.0.0.1:5174 npm test -- src/dashboard-ne
 ```
 
 Replace `5174` with the frontend URL printed by Vite.
+
+The demo normally captures wall-clock time once when it starts so elapsed
+durations remain believable. Deterministic tests and screenshot baselines may
+set `OVERWATCH_DEMO_NOW` to a fixed ISO-8601 timestamp. This is a fixture and
+testing control only; it is not a production runtime setting.
 
 ## Adding a New Parser
 

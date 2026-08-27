@@ -35,7 +35,7 @@ export function AnalysisPanel() {
   const [search, setSearch] = useState('');
   // Deep-link: ?item=<actionId> (e.g. from an Evidence chain's "runs that produced
   // this" link) focuses that run; otherwise the first run is selected below.
-  const [selectedId, setSelectedId] = useState<string | null>(searchParams.get('item'));
+  const [selectedId, setSelectedId] = useState<string | null>(searchParams.get('item') || searchParams.get('drawerItem'));
   const hasLoaded = useRef(false);
 
   const loadHistory = useCallback(async () => {

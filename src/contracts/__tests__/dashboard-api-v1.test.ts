@@ -48,9 +48,9 @@ function samplePathParams(template: string): Record<string, string> {
 }
 
 describe('dashboard compatibility-v1 registry', () => {
-  it('has 112 unique operation IDs and method/path pairs', () => {
+  it('has 113 unique operation IDs and method/path pairs', () => {
     const registryIds = Object.keys(DashboardHttpRegistry);
-    expect(registryIds).toHaveLength(112);
+    expect(registryIds).toHaveLength(113);
     expect(new Set(registryIds).size).toBe(registryIds.length);
     expect(registryIds.sort()).toEqual([...DASHBOARD_OPERATION_IDS].sort());
 
@@ -200,6 +200,7 @@ describe('dashboard compatibility-v1 registry', () => {
       'getApplicationCommand',
       'getActiveApplicationCommands',
       'getFindings',
+      'getFindingReadiness',
       'listReports',
       'renderReport',
       'getConfig',

@@ -101,6 +101,7 @@ import { computeEvidenceDebt } from './evidence-debt.js';
 import { buildBundle } from './bundle-builder.js';
 import { buildFindings, buildEvidenceChainsForNode, type EvidenceChain } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
+import { buildFindingReadiness } from './finding-readiness.js';
 import type { DurableApprovalRecord, PendingAction } from './pending-action-queue.js';
 import {
   buildToolRegistryManifest,
@@ -1031,6 +1032,7 @@ export class DashboardServer {
       getTapeStatus: () => this.handleTapeStatus(res),
       toggleTape: () => { void this.handleTapeToggle(req, res); },
       getFindings: () => this.serveFindings(res),
+      getFindingReadiness: () => this.serveFindingReadiness(res),
       listReports: () => this.serveReportsList(res),
       renderReport: () => { void this.handleRenderReport(req, res); },
       bundleEngagement: () => { void this.streamBundle(req, res); },
@@ -4616,13 +4618,13 @@ export class DashboardServer {
   private serveEngagements(res: ServerResponse): void {
     if (!this.engagementManager) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ engagements: [], active_id: null }));
+      res.end(JSON.stringify({ engagements: [], active_id: null, library_available: false }));
       return;
     }
     const engagements = this.engagementManager.listEngagements();
     const active_id = this.engagementManager.getActiveId();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ engagements, active_id }));
+    res.end(JSON.stringify({ engagements, active_id, library_available: true }));
   }
 
   private async handleCreateEngagement(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -5113,6 +5115,11 @@ export class DashboardServer {
         info: enriched.filter(f => f.severity === 'info').length,
       },
     }));
+  }
+
+  /** GET /api/findings/readiness — canonical, derived, and read-only. */
+  private serveFindingReadiness(res: ServerResponse): void {
+    this.sendContractedJson(res, 200, buildFindingReadiness(this.engine));
   }
 
   /** GET /api/bundle — build and verify before committing a successful response. */

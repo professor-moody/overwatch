@@ -24,8 +24,13 @@ export interface ActionOutputView {
   status: ActionOutputResponse['status'];
   isRunning: boolean;
   tool: string | null;
+  technique: string | null;
+  invokingTool: string | null;
   command: string | null;
+  eventType: string | null;
+  timestamp: string | null;
   exitCode: number | null;
+  signal: string | null;
   durationMs: number | null;
   timedOut: boolean;
   /** Graph node ids (linkable to graph/evidence). */
@@ -35,6 +40,7 @@ export interface ActionOutputView {
   /** Convenience: nodeIds + ips merged. */
   targets: string[];
   agentId: string | null;
+  frontierItemId: string | null;
   findingIds: string[];
   stdout: OutputStreamView;
   stderr: OutputStreamView;
@@ -82,14 +88,20 @@ export function normalizeActionOutput(raw: ActionOutputResponse): ActionOutputVi
     status: raw.status ?? 'neutral',
     isRunning: raw.status === 'running',
     tool: raw.tool_name ?? raw.invoking_tool ?? null,
+    technique: raw.technique ?? null,
+    invokingTool: raw.invoking_tool ?? null,
     command: raw.command_repr ?? null,
+    eventType: raw.event_type ?? null,
+    timestamp: raw.timestamp ?? null,
     exitCode: typeof raw.exit_code === 'number' ? raw.exit_code : null,
+    signal: raw.signal ?? null,
     durationMs: typeof raw.duration_ms === 'number' ? raw.duration_ms : null,
     timedOut: Boolean(raw.timed_out),
     targetNodeIds,
     targetIps,
     targets,
     agentId: raw.agent_id ?? null,
+    frontierItemId: raw.frontier_item_id ?? null,
     findingIds: raw.linked_finding_ids ?? [],
     stdout,
     stderr,

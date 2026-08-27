@@ -4,6 +4,7 @@ import { getNodeDisplayLabel } from '../../lib/node-display';
 import { formatRelativeTime } from '../../lib/utils';
 import { cn } from '../../lib/utils';
 import { ClaimStandingSection } from './NodeDetailDrawer';
+import { WorkspaceInspector } from '../shared/primitives';
 
 interface EdgeDetailPanelProps {
   graph: Graph;
@@ -47,9 +48,14 @@ export function EdgeDetailPanel({ graph, edgeId, onClose, onFocusNode }: EdgeDet
   const engineEdgeId = edgeId !== `${source}--${rawEdgeType}--${target}` ? edgeId : null;
 
   return (
-    <div className="pointer-events-auto absolute bottom-4 left-3 w-80 z-30 bg-surface border border-border rounded-lg shadow-xl text-xs">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-        <div className="flex items-center gap-2">
+    <WorkspaceInspector
+      label="Edge inspector"
+      title={`${sourceLabel} → ${targetLabel}`}
+      identifier={engineEdgeId || edgeId}
+      onClose={onClose}
+    >
+      <div className="space-y-3 text-xs">
+        <div className="flex items-center gap-2 border-b border-border-subtle pb-3">
           <span
             className="inline-block w-6 h-0.5 rounded-full flex-shrink-0"
             style={{ backgroundColor: edgeColor }}
@@ -66,14 +72,6 @@ export function EdgeDetailPanel({ graph, edgeId, onClose, onFocusNode }: EdgeDet
             </span>
           )}
         </div>
-        <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-0.5" title="Close">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-        </button>
-      </div>
-
-      <div className="px-3 py-2 space-y-2">
         <div className="flex items-center gap-2 min-w-0">
           <NodeChip
             nodeId={source}
@@ -123,7 +121,7 @@ export function EdgeDetailPanel({ graph, edgeId, onClose, onFocusNode }: EdgeDet
           </div>
         )}
       </div>
-    </div>
+    </WorkspaceInspector>
   );
 }
 

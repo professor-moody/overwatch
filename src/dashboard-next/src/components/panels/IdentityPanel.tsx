@@ -7,6 +7,7 @@ import { ActionButton, DataRow, EmptyPanelState, PageHeader, PanelSection, Statu
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { cn } from '../../lib/utils';
 import { credentialExpiry, formatExpiryLabel, type CredentialExpiry } from '../../lib/credential-display';
+import { setSelectionParams } from '../../lib/workspace-navigation';
 
 interface IdpGroup {
   idp: ExportedNode;
@@ -108,11 +109,11 @@ export function identityTokenSummaries(nodes: ExportedNode[], nowMs: number = Da
   });
 }
 
-export function IdentityPanel() {
+export function IdentityPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const graph = useEngagementStore((s) => s.graph);
   const graphVersion = useEngagementStore((s) => s.graphVersion);
   const initialized = useEngagementStore((s) => s.initialized);
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const selectedItem = searchParams.get('item');
   const { navigateToPanel } = useNavigation();
 
@@ -134,17 +135,19 @@ export function IdentityPanel() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      {!embedded && <PageHeader
         title="Identity"
         meta={`(${groups.length} IdPs · ${appCount} apps · ${principalCount} principals · ${tokens.length} token refs)`}
-      />
+      />}
+
+      {embedded && <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle pb-3 text-[11px] text-muted-foreground"><span>{groups.length} identity providers</span><span>{appCount} applications</span><span>{principalCount} principals</span><span>{tokens.length} token references</span></div>}
 
       <PanelSection title="Identity Providers" meta={groups.length}>
         {groups.length === 0 ? (
           <EmptyPanelState message="No IdP nodes in the graph yet." />
         ) : (
           <div className="space-y-2">
-            {groups.map(group => <IdpRow key={group.idp.id} group={group} selectedItem={selectedItem} />)}
+            {groups.map(group => <IdpRow key={group.idp.id} group={group} selectedItem={selectedItem} onSelect={id => embedded && setSearchParams(setSelectionParams(searchParams, { kind: 'node', id }))} />)}
           </div>
         )}
       </PanelSection>
@@ -168,7 +171,7 @@ export function IdentityPanel() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <StatusPill tone="accent">{token.kind}</StatusPill>
                       <StatusPill tone={token.tone}>{token.status}</StatusPill>
-                      <span className="text-sm font-medium truncate">{token.label}</span>
+                      <button type="button" className="truncate text-left text-sm font-medium hover:text-accent" onClick={() => embedded && setSearchParams(setSelectionParams(searchParams, { kind: 'credential', id: token.id }))}>{token.label}</button>
                     </div>
                     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                       {token.user && <span>User <span className="font-mono text-foreground">{token.user}</span></span>}
@@ -209,7 +212,7 @@ export function IdentityPanel() {
   );
 }
 
-function IdpRow({ group, selectedItem }: { group: IdpGroup; selectedItem: string | null }) {
+function IdpRow({ group, selectedItem, onSelect }: { group: IdpGroup; selectedItem: string | null; onSelect: (id: string) => void }) {
   const { idp, apps, principals, federatedDomains } = group;
   const idpKind = asString(idp.idp_kind) || 'idp';
   return (
@@ -218,7 +221,7 @@ function IdpRow({ group, selectedItem }: { group: IdpGroup; selectedItem: string
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <StatusPill tone="muted">{idpKind}</StatusPill>
-            <span className="text-sm font-medium truncate">{idp.label}</span>
+            <button type="button" className="truncate text-left text-sm font-medium hover:text-accent" onClick={() => onSelect(idp.id)}>{idp.label}</button>
             {asString(idp.tenant_id) && <span className="font-mono text-xs text-muted-foreground">{asString(idp.tenant_id)}</span>}
             {asString(idp.federation_mode) && <StatusPill tone="purple">{asString(idp.federation_mode)}</StatusPill>}
           </div>

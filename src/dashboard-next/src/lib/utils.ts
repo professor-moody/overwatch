@@ -24,7 +24,8 @@ export function describeEvidenceError(err: unknown): string {
 }
 
 export function formatElapsed(ms: number | undefined | null): string {
-  if (!ms || ms < 0) return '—';
+  if (ms === undefined || ms === null || !Number.isFinite(ms) || ms < 0) return 'Time unavailable';
+  if (ms === 0) return '0s';
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -44,15 +45,16 @@ export function agentElapsedMs(
   agent: { status?: string; assigned_at?: string; completed_at?: string; elapsed_ms?: number },
   now: number = Date.now(),
 ): number | undefined {
+  if (Number.isFinite(agent.elapsed_ms) && agent.elapsed_ms! >= 0) return agent.elapsed_ms;
   const assigned = agent.assigned_at ? new Date(agent.assigned_at).getTime() : NaN;
   if (agent.completed_at && Number.isFinite(assigned)) {
-    return Math.max(0, new Date(agent.completed_at).getTime() - assigned);
+    const completed = new Date(agent.completed_at).getTime();
+    return Number.isFinite(completed) && completed >= assigned ? completed - assigned : undefined;
   }
   if (agent.status === 'running' && Number.isFinite(assigned) && now >= assigned) {
     return now - assigned;
   }
-  // Back-compat: honor a server-sent elapsed_ms if one is still present.
-  return agent.elapsed_ms;
+  return undefined;
 }
 
 export function formatTimestamp(iso: string | undefined): string {
@@ -71,12 +73,14 @@ export function formatRelativeTime(iso: string | undefined): string {
     const d = new Date(iso);
     const now = Date.now();
     const diff = now - d.getTime();
+    if (!Number.isFinite(diff)) return 'Time unavailable';
+    if (diff < -60_000) return 'Time unavailable';
     if (diff < 60_000) return 'just now';
     if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
     if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
     return `${Math.floor(diff / 86_400_000)}d ago`;
   } catch {
-    return iso;
+    return 'Time unavailable';
   }
 }
 

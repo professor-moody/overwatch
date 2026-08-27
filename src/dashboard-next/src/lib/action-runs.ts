@@ -12,6 +12,7 @@ export interface ActionRun {
   command: string | null;
   status: RunStatus;
   agentId: string | null;
+  campaignId?: string | null;
   targets: string[];
   /** Representative timestamp (terminal event if present, else started). */
   timestamp: string;
@@ -84,6 +85,7 @@ export function buildActionRuns(entries: ActivityEntry[]): ActionRun[] {
         ? (asStatus(terminal.result_classification) ?? (terminal.event_type === 'action_failed' ? 'failure' : 'success'))
         : 'running',
       agentId: rep.agent_id ?? null,
+      campaignId: pick('campaign_id') ?? null,
       targets: collectTargets(rep, td, sd),
       timestamp: rep.timestamp,
       startedAt: started?.timestamp ?? null,
@@ -91,7 +93,7 @@ export function buildActionRuns(entries: ActivityEntry[]): ActionRun[] {
     });
   }
 
-  runs.sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0));
+  runs.sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : a.actionId.localeCompare(b.actionId)));
   return runs;
 }
 
@@ -104,7 +106,7 @@ export function filterRuns(
   return runs.filter(r => {
     if (status && r.status !== status) return false;
     if (!q) return true;
-    const hay = [r.tool, r.command, r.agentId, r.actionId, r.description, ...r.targets]
+    const hay = [r.tool, r.command, r.agentId, r.campaignId, r.actionId, r.description, ...r.targets]
       .filter(Boolean)
       .join(' ')
       .toLowerCase();

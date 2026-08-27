@@ -23,6 +23,12 @@ describe('normalizeActionOutput', () => {
   it('maps a completed action with stdout into a view model', () => {
     const view = normalizeActionOutput(baseResponse({
       tool_name: 'nmap',
+      technique: 'service_enumeration',
+      invoking_tool: 'run_tool',
+      event_type: 'action_completed',
+      timestamp: '2026-06-17T00:00:09Z',
+      signal: 'SIGTERM',
+      frontier_item_id: 'fi-host-1',
       command_repr: 'nmap -sV 10.0.0.5',
       exit_code: 0,
       duration_ms: 1234,
@@ -44,6 +50,12 @@ describe('normalizeActionOutput', () => {
     expect(view.status).toBe('success');
     expect(view.isRunning).toBe(false);
     expect(view.tool).toBe('nmap');
+    expect(view.technique).toBe('service_enumeration');
+    expect(view.invokingTool).toBe('run_tool');
+    expect(view.eventType).toBe('action_completed');
+    expect(view.timestamp).toBe('2026-06-17T00:00:09Z');
+    expect(view.signal).toBe('SIGTERM');
+    expect(view.frontierItemId).toBe('fi-host-1');
     expect(view.command).toBe('nmap -sV 10.0.0.5');
     expect(view.exitCode).toBe(0);
     expect(view.durationMs).toBe(1234);

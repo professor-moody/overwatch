@@ -106,6 +106,7 @@ describe('compatibility release contract', () => {
       'legacy-playbook-placeholders',
       'session-v1-rollback-lifecycle',
       'dashboard-hash-deep-links',
+      'dashboard-panel-route-aliases',
     ]) {
       expect(status.get(id), id).not.toBe('retired');
     }

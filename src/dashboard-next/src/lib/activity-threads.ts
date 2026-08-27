@@ -1,4 +1,4 @@
-import type { AgentConsoleEvent } from './types';
+import type { AgentConsoleEvent, AgentConsoleKind } from './types';
 
 // Phase 5 (Mission Control) — collapse the noisy per-event activity stream into
 // high-signal threads. Events that share an action_id (directive → acknowledged
@@ -12,16 +12,34 @@ export type ConsoleSeverity = AgentConsoleEvent['severity'];
 export interface ActivityThread {
   /** action_id when the thread is an action lifecycle, else the lone event id. */
   id: string;
+  actionId?: string;
   /** Chronological (oldest → newest). */
   events: AgentConsoleEvent[];
   /** The newest event — what the collapsed row shows. */
   latest: AgentConsoleEvent;
+  startedAt: string;
+  updatedAt: string;
+  status?: string;
   count: number;
   /** Loudest severity in the thread, so a failed step keeps the thread loud. */
   severity: ConsoleSeverity;
   /** True when the thread bundles more than one event (offer expand). */
   threaded: boolean;
 }
+
+export type ActivityFilter = 'all' | AgentConsoleKind | 'warnings';
+
+export const ACTIVITY_FILTERS: Array<{ id: ActivityFilter; label: string; kinds?: AgentConsoleKind[] }> = [
+  { id: 'all', label: 'All' },
+  { id: 'action', label: 'Actions' },
+  { id: 'command', label: 'Commands' },
+  { id: 'approval', label: 'Approvals' },
+  { id: 'thought', label: 'Decisions' },
+  { id: 'finding', label: 'Findings' },
+  { id: 'session', label: 'Sessions', kinds: ['session', 'transcript'] },
+  { id: 'system', label: 'System' },
+  { id: 'warnings', label: 'Warnings / failures' },
+];
 
 const SEVERITY_RANK: Record<string, number> = { error: 3, warning: 2, success: 1, info: 0 };
 
@@ -68,8 +86,12 @@ export function threadConsoleEvents(events: AgentConsoleEvent[]): ActivityThread
     const sorted = [...grouped].sort(byTimestamp);
     threads.push({
       id: actionId,
+      actionId,
       events: sorted,
       latest: sorted[sorted.length - 1],
+      startedAt: sorted[0].timestamp,
+      updatedAt: sorted[sorted.length - 1].timestamp,
+      status: sorted[sorted.length - 1].status,
       count: sorted.length,
       severity: loudest(sorted),
       threaded: true,
@@ -79,8 +101,12 @@ export function threadConsoleEvents(events: AgentConsoleEvent[]): ActivityThread
   for (const event of singles) {
     threads.push({
       id: event.id,
+      ...(event.links?.action_id ? { actionId: event.links.action_id } : {}),
       events: [event],
       latest: event,
+      startedAt: event.timestamp,
+      updatedAt: event.timestamp,
+      status: event.status,
       count: 1,
       severity: event.severity,
       threaded: false,
@@ -88,5 +114,47 @@ export function threadConsoleEvents(events: AgentConsoleEvent[]): ActivityThread
   }
 
   // Newest activity first, by the thread's latest event.
-  return threads.sort((a, b) => b.latest.timestamp.localeCompare(a.latest.timestamp));
+  return threads.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+}
+
+/** Merge HTTP reconciliation and WebSocket events without duplicating IDs. */
+export function mergeConsoleEvents(current: AgentConsoleEvent[], incoming: AgentConsoleEvent[], limit: number): AgentConsoleEvent[] {
+  const merged = new Map<string, AgentConsoleEvent>();
+  for (const event of current) merged.set(event.id, event);
+  for (const event of incoming) merged.set(event.id, event);
+  return [...merged.values()]
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp) || left.id.localeCompare(right.id))
+    .slice(0, limit);
+}
+
+/** Search only server-projected safe metadata; raw event bodies are excluded. */
+export function filterActivityThreads(threads: ActivityThread[], filter: ActivityFilter, search: string): ActivityThread[] {
+  const option = ACTIVITY_FILTERS.find(candidate => candidate.id === filter);
+  const query = search.trim().toLowerCase();
+  return threads.filter(thread => {
+    const events = thread.events;
+    if (filter === 'warnings') {
+      if (thread.severity !== 'warning' && thread.severity !== 'error') return false;
+    } else if (filter !== 'all') {
+      const kinds = option?.kinds ?? [filter as AgentConsoleKind];
+      if (!events.some(event => kinds.includes(event.kind))) return false;
+    }
+    if (!query) return true;
+    return events.some(event => safeActivitySearchText(event).includes(query));
+  });
+}
+
+function safeActivitySearchText(event: AgentConsoleEvent): string {
+  const links = event.links;
+  return [
+    event.title,
+    event.summary,
+    event.source_label,
+    event.agent_id,
+    links?.action_id,
+    links?.session_id,
+    links?.frontier_item_id,
+    ...(links?.finding_ids || []),
+    ...(links?.node_ids || []),
+  ].filter(Boolean).join(' ').toLowerCase();
 }

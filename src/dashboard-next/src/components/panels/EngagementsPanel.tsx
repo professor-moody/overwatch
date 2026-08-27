@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { cn } from '../../lib/utils';
 import { TagInput, EmptyState, StatusBadge } from '../shared';
-import { MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { MetricTile, PanelSection, StatusPill } from '../shared/primitives';
 import { getEngagements, getTemplates, createEngagement, getEngagement, updateEngagement } from '../../lib/api';
 import type {
   EngagementListItem,
@@ -14,6 +14,7 @@ import type {
   Objective,
 } from '../../lib/types';
 import { ENGAGEMENT_PROFILES, PROFILE_LABELS } from '../../lib/profiles';
+import { useEngagementStore } from '../../stores/engagement-store';
 
 // Stable id for a newly-added objective. Existing objectives keep their id so phase
 // criteria that reference them (and achieved/criteria fields) survive an edit.
@@ -38,12 +39,16 @@ const ACCESS_LEVELS = ['user', 'local_admin', 'domain_admin'] as const;
 export function EngagementsPanel() {
   const [engagements, setEngagements] = useState<EngagementListItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [libraryAvailable, setLibraryAvailable] = useState(false);
   const [templates, setTemplates] = useState<EngagementTemplate[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [loadHint, setLoadHint] = useState<EngagementListItem | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const runtimeEngagement = useEngagementStore(state => state.engagement);
+  const runtimeObjectives = useEngagementStore(state => state.objectives);
+  const runtimePhases = useEngagementStore(state => state.phases);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -55,6 +60,7 @@ export function EngagementsPanel() {
       ]);
       setEngagements(engData.engagements || []);
       setActiveId(engData.active_id || null);
+      setLibraryAvailable(engData.library_available);
       setTemplates(tmplData.templates || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -74,22 +80,36 @@ export function EngagementsPanel() {
     );
   }
 
-  const activeEngagement = engagements.find(e => e.is_active || e.id === activeId) || null;
-  const inactiveCount = engagements.length - (activeEngagement ? 1 : 0);
-  const totalObjectives = engagements.reduce((sum, item) => sum + item.objectives_count, 0);
-  const totalPhases = engagements.reduce((sum, item) => sum + item.phases_count, 0);
+  const activeLibraryEngagement = engagements.find(e => e.is_active || e.id === activeId || e.id === runtimeEngagement?.id) || null;
+  const activeEngagement = activeLibraryEngagement || (runtimeEngagement ? {
+    id: runtimeEngagement.id,
+    name: runtimeEngagement.name,
+    profile: runtimeEngagement.profile,
+    created_at: runtimeEngagement.created_at,
+    is_active: true,
+    scope_cidrs: runtimeEngagement.scope?.cidrs || [],
+    scope_domains: runtimeEngagement.scope?.domains || [],
+    exclusions_count: runtimeEngagement.scope?.exclusions?.length || 0,
+    objectives_count: runtimeObjectives.length,
+    phases_count: runtimePhases.length,
+  } satisfies EngagementListItem : null);
+  const inactiveCount = engagements.length - (activeLibraryEngagement ? 1 : 0);
+  const totalObjectives = libraryAvailable
+    ? engagements.reduce((sum, item) => sum + item.objectives_count, 0)
+    : runtimeObjectives.length;
+  const totalPhases = libraryAvailable
+    ? engagements.reduce((sum, item) => sum + item.phases_count, 0)
+    : runtimePhases.length;
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="Engagements"
-        meta={`(${engagements.length})`}
-        actions={(
-          <button onClick={() => setShowForm(!showForm)} className="settings-save-btn">
-            {showForm ? 'Cancel' : '+ New Engagement'}
-          </button>
-        )}
-      />
+      <div className="flex items-center justify-between gap-3 border-b border-border-subtle pb-3">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground">Engagement</h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">The running engagement is authoritative; the optional library contains restart-loadable configurations.</p>
+        </div>
+        {libraryAvailable && <button onClick={() => setShowForm(!showForm)} className="settings-save-btn">{showForm ? 'Cancel' : '+ New Engagement'}</button>}
+      </div>
 
       {error && (
         <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -123,13 +143,13 @@ export function EngagementsPanel() {
           <PanelSection>
             <div className="text-xs text-muted-foreground">Loading engagements...</div>
           </PanelSection>
-        ) : engagements.length === 0 ? (
-          <EmptyState title="No engagements yet" description="Create an engagement to define scope, objectives, OPSEC, phases, and campaign defaults." />
+        ) : !activeEngagement && engagements.length === 0 ? (
+          <EmptyState title="No engagement is active" description={libraryAvailable ? 'Create an engagement to define scope, objectives, OPSEC, phases, and campaign defaults.' : 'Start Overwatch with a managed configuration to make engagement lifecycle controls available.'} />
         ) : (
           <>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <MetricTile label="Active" value={activeEngagement ? activeEngagement.name : 'None'} sub={activeEngagement?.profile || 'server not attached'} accent={!!activeEngagement} />
-              <MetricTile label="Available" value={inactiveCount} sub="restart-loadable configs" />
+              <MetricTile label="Active" value={activeEngagement ? activeEngagement.name : 'None'} sub={activeEngagement?.profile || 'runtime engagement'} accent={!!activeEngagement} />
+              <MetricTile label="Available" value={Math.max(0, inactiveCount)} sub={libraryAvailable ? 'restart-loadable configs' : 'library unavailable'} />
               <MetricTile label="Objectives" value={totalObjectives} sub="configured goals" />
               <MetricTile label="Phases" value={totalPhases} sub="workflow gates" />
             </div>
@@ -141,11 +161,15 @@ export function EngagementsPanel() {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium text-foreground">{activeEngagement.name}</span>
                       <StatusBadge status="active" />
+                      {!libraryAvailable && <StatusPill tone="muted">Runtime only</StatusPill>}
                       {activeEngagement.profile && <StatusPill>{PROFILE_LABELS[activeEngagement.profile] || activeEngagement.profile}</StatusPill>}
                     </div>
                     <div className="text-muted-foreground">
                       {scopeLabel(activeEngagement)}
                     </div>
+                    {!libraryAvailable && runtimeEngagement?.scope?.exclusions?.length ? (
+                      <div className="text-[11px] text-muted-foreground">{runtimeEngagement.scope.exclusions.length} explicit exclusion{runtimeEngagement.scope.exclusions.length === 1 ? '' : 's'}</div>
+                    ) : null}
                     {activeEngagement.config_path && (
                       <code className="block rounded bg-background px-2 py-1 font-mono text-muted-foreground overflow-x-auto">
                         config: {activeEngagement.config_path}
@@ -166,7 +190,22 @@ export function EngagementsPanel() {
               </PanelSection>
             )}
 
-            <PanelSection title="Engagement Library" meta={`${engagements.length} config${engagements.length === 1 ? '' : 's'}`} className="p-0 overflow-hidden">
+            {!libraryAvailable && runtimeObjectives.length > 0 && (
+              <div className="border-t border-border-subtle pt-3">
+                <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Runtime objectives</div>
+                <div className="divide-y divide-border-subtle">
+                  {runtimeObjectives.map(objective => (
+                    <div key={objective.id} className="flex min-h-9 items-center gap-2 py-2 text-xs">
+                      <span className={cn('h-1.5 w-1.5 rounded-full', objective.achieved ? 'bg-success' : 'bg-warning')} />
+                      <span className="min-w-0 flex-1 truncate text-foreground">{objective.description}</span>
+                      <StatusPill tone={objective.achieved ? 'success' : 'warning'}>{objective.achieved ? 'achieved' : 'open'}</StatusPill>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {libraryAvailable ? <PanelSection title="Engagement Library" meta={`${engagements.length} config${engagements.length === 1 ? '' : 's'}`} className="p-0 overflow-hidden">
               <div className="divide-y divide-border">
                 {engagements.map(e => {
               const isActive = e.is_active || e.id === activeId;
@@ -203,7 +242,7 @@ export function EngagementsPanel() {
               );
                 })}
               </div>
-            </PanelSection>
+            </PanelSection> : <div className="border-t border-border-subtle pt-3 text-[11px] leading-5 text-muted-foreground">This runtime was started without a file-backed engagement library. Runtime state remains available, while create, load, and library-edit controls are intentionally hidden.</div>}
           </>
         )
       )}

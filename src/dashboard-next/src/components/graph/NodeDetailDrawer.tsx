@@ -3,17 +3,17 @@
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router';
 import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
-import { useNavigation } from '../../hooks/useNavigation';
-import { dispatchAgent, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, promoteClaim, withdrawClaim, getClaimImpact, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto, type ClaimImpact } from '../../lib/api';
+import { evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, promoteClaim, withdrawClaim, getClaimImpact, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto, type ClaimImpact } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useWs } from '../../providers/ws-provider';
 import { POLL } from '../../lib/polling';
 import { deriveNodeRelationships } from '../../lib/relationships';
-import { ActionButton, StatusPill } from '../shared/primitives';
+import { ActionButton, StatusPill, WorkspaceInspector } from '../shared/primitives';
 import type { EvidenceChainResponse } from '../../lib/types';
 import { computeActionRisk } from '../../lib/action-queue';
 import { formatFrontierScore, getFrontierPrimaryNodeId } from '../../lib/frontier-workspace';
@@ -24,6 +24,7 @@ import { TrustSignalList } from '../shared/TrustSignals';
 import { findingSummary, findingTitle } from '../../lib/finding-display';
 import { AuthenticatedImage } from '../shared/AuthenticatedImage';
 import { NodeSignificanceCard } from './NodeSignificanceCard';
+import { useDashboardUiStore } from '../../stores/dashboard-ui-store';
 
 interface NodeDetailDrawerProps {
   graph: Graph;
@@ -32,12 +33,14 @@ interface NodeDetailDrawerProps {
   onFocus?: (nodeId: string, hops: number) => void;
   editMode?: boolean;
   onUndoPush?: (op: { reason: string; reverse: GraphCorrectionOperation[] }) => void;
+  embedded?: boolean;
 }
 
 type EvidenceStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
 
 export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetailDrawerProps) {
-  const { navigateToEvidence, navigateToGraph, navigateToPanel } = useNavigation();
+  const navigate = useNavigate();
+  const setLauncherOpen = useDashboardUiStore(state => state.setStartWorkOpen);
   const storeGraph = useEngagementStore(s => s.graph);
   const sessions = useEngagementStore(s => s.sessions);
   const pendingActions = useEngagementStore(s => s.pendingActions);
@@ -47,9 +50,44 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
   const [evidence, setEvidence] = useState<EvidenceChainResponse | null>(null);
   const [evidenceStatus, setEvidenceStatus] = useState<EvidenceStatus>('idle');
   const [evidenceError, setEvidenceError] = useState<string>('');
-  const [deploying, setDeploying] = useState(false);
-  const addToast = useToastStore(s => s.addToast);
   const { connected } = useWs();
+  const openTopologyNode = (id: string, hops = 2) => {
+    const params = new URLSearchParams({ lens: 'topology', entity: 'node', item: id, node: id, hops: String(hops) });
+    navigate(`/investigate?${params.toString()}`);
+  };
+  const openNodeProof = (id: string) => {
+    const params = new URLSearchParams({ lens: 'topology', entity: 'node', item: id, node: id, tab: 'proof', context: 'evidence' });
+    navigate(`/investigate?${params.toString()}`);
+  };
+  const openSessions = (sessionId?: string) => {
+    const params = new URLSearchParams({ drawer: 'sessions' });
+    if (sessionId) params.set('drawerItem', sessionId);
+    navigate(`/operate?${params.toString()}`);
+  };
+  const openAttention = (actionId?: string) => {
+    const params = new URLSearchParams({ view: 'attention' });
+    if (actionId) {
+      params.set('kind', 'approval');
+      params.set('item', actionId);
+    }
+    navigate(`/operate?${params.toString()}`);
+  };
+  const openFrontier = (id?: string) => {
+    const params = new URLSearchParams({ view: 'ready' });
+    if (id) {
+      params.set('kind', 'frontier');
+      params.set('item', id);
+    }
+    navigate(`/operate?${params.toString()}`);
+  };
+  const openFindings = (findingId?: string) => {
+    const params = new URLSearchParams({ view: 'readiness' });
+    if (findingId) {
+      params.set('kind', 'finding');
+      params.set('item', findingId);
+    }
+    navigate(`/review?${params.toString()}`);
+  };
   // Live nodeId for stale-response guarding: a slow fetch that resolves after the
   // operator has moved to another node must not overwrite the new node's data.
   const liveNodeId = useRef(nodeId);
@@ -143,30 +181,6 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
   });
   const nodeTrustSignals = trustSignalsForNode(trustSignals, nodeId, relationships.findings.map(finding => finding.id));
 
-  // Deploy an agent to explore THIS node — works on any node, not just frontier
-  // items. Archetype is auto-selected from the node type server-side; the deployed
-  // agent grounds in prior actions on this node (get_agent_context) before acting.
-  const deployHere = async () => {
-    if (deploying) return;
-    setDeploying(true);
-    try {
-      const res = await dispatchAgent({ target_node_ids: [nodeId] });
-      if (res.dispatched) {
-        addToast({ type: 'success', title: 'Agent deployed', message: `exploring ${label}` });
-      } else if (res.existing_agent_id) {
-        addToast({ type: 'warning', title: 'Already being worked', message: `by ${res.existing_agent_id}` });
-      } else if (res.reason === 'dispatch_cap_exceeded') {
-        addToast({ type: 'warning', title: 'Dispatch cap reached', message: 'too many agents running — retry when one frees up' });
-      } else {
-        addToast({ type: 'error', title: 'Not deployed', message: res.reason || 'dispatch refused' });
-      }
-    } catch (err) {
-      addToast({ type: 'error', title: 'Deploy failed', message: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setDeploying(false);
-    }
-  };
-
   const edgeGroups = new Map<string, { count: number; peers: { id: string; label: string; type: string }[] }>();
   graph.forEachEdge(nodeId, (_edgeId, edgeAttrs, source, target) => {
     const edgeType = (edgeAttrs.edgeType as string) || 'RELATED';
@@ -195,34 +209,49 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
   ];
 
   return (
-    <div className="fixed right-0 top-12 bottom-0 w-[min(24rem,calc(100vw-3rem))] bg-surface border-l border-border z-40 flex flex-col shadow-2xl">
-      <div className="px-4 py-3 border-b border-border flex-shrink-0">
-        <div className="flex items-center justify-between mb-1">
+    <WorkspaceInspector
+      label={`${getFriendlyNodeTypeLabel(nodeType).replace(/s$/, '')} inspector`}
+      title={label}
+      identifier={nodeId}
+      onClose={onClose}
+      footer={(
+        <div className="flex flex-col gap-2">
+          <ActionButton
+            onClick={() => {
+              setLauncherOpen(true);
+              navigate(`/operate?view=active&kind=node&item=${encodeURIComponent(nodeId)}`);
+            }}
+            variant="primary"
+            className="w-full"
+          >
+            Start work here
+          </ActionButton>
+          <div className="flex gap-2">
+            <ActionButton onClick={() => onFocus?.(nodeId, 2)} variant="ghost" className="flex-1 text-accent">Focus</ActionButton>
+            <ActionButton onClick={() => openNodeProof(nodeId)} variant="secondary" className="flex-1">Evidence</ActionButton>
+            <ActionButton onClick={() => openFrontier(nodeId)} variant="secondary" className="flex-1">Frontier</ActionButton>
+          </div>
+        </div>
+      )}
+    >
+      <div className="space-y-4 overscroll-contain">
+        <div className="flex items-center gap-2">
           <span
-            className="text-[10px] font-mono px-1.5 py-0.5 rounded uppercase tracking-wide"
+            className="rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide"
             style={{ backgroundColor: `${NODE_COLORS[nodeType] || '#888'}20`, color: NODE_COLORS[nodeType] || '#888' }}
           >
             {getFriendlyNodeTypeLabel(nodeType).replace(/s$/, '')}
           </span>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1" title="Close">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
+          <span className="truncate text-[10px] text-muted-foreground">{relationships.findings.length > 0 ? `${relationships.findings.length} linked finding${relationships.findings.length === 1 ? '' : 's'}` : 'No linked findings'}</span>
         </div>
-        <h3 className="text-sm font-semibold truncate" title={label}>{label}</h3>
-        <div className="text-[10px] text-muted-foreground font-mono break-all mt-0.5">{nodeId}</div>
-        <div className="mt-2 grid grid-cols-4 gap-1.5">
+        <div className="grid grid-cols-4 gap-1.5 border-b border-border-subtle pb-3">
           {selectedFacts.map(fact => (
-            <div key={fact.label} className="rounded border border-border bg-elevated/60 px-2 py-1">
+            <div key={fact.label} className="px-1 py-0.5">
               <div className="text-[9px] uppercase text-muted-foreground">{fact.label}</div>
-              <div className="text-xs font-mono text-foreground">{fact.value}</div>
+              <div className="font-mono text-xs text-foreground">{fact.value}</div>
             </div>
           ))}
         </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 overscroll-contain">
         <InspectorSection title="Summary">
           <div className="space-y-1.5 text-xs">
             {entries.slice(0, 5).map((entry, index) => (
@@ -253,10 +282,10 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
 
         <InspectorSection title="Relationships">
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <RelationshipLink label="Sessions" count={relationships.sessions.length} hot={liveSessions > 0} onClick={() => navigateToPanel('sessions')} />
-            <RelationshipLink label="Actions" count={relationships.pendingActions.length} hot={relationships.pendingActions.length > 0} onClick={() => navigateToPanel('actions')} />
-            <RelationshipLink label="Frontier" count={relationships.frontier.length} hot={relationships.frontier.length > 0} onClick={() => navigateToPanel('frontier', nodeId)} />
-            <RelationshipLink label="Findings" count={relationships.findings.length} hot={relationships.findings.length > 0} onClick={() => navigateToPanel('findings')} />
+            <RelationshipLink label="Sessions" count={relationships.sessions.length} hot={liveSessions > 0} onClick={() => openSessions()} />
+            <RelationshipLink label="Actions" count={relationships.pendingActions.length} hot={relationships.pendingActions.length > 0} onClick={() => openAttention()} />
+            <RelationshipLink label="Frontier" count={relationships.frontier.length} hot={relationships.frontier.length > 0} onClick={() => openFrontier(nodeId)} />
+            <RelationshipLink label="Findings" count={relationships.findings.length} hot={relationships.findings.length > 0} onClick={() => openFindings()} />
           </div>
         </InspectorSection>
 
@@ -272,13 +301,13 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           <ClaimStandingSection target={{ node_id: nodeId }} />
         </InspectorSection>
 
-        <InspectorSection title="Sessions" count={relationships.sessions.length} actionLabel="Open" onAction={() => navigateToPanel('sessions')}>
+        <InspectorSection title="Sessions" count={relationships.sessions.length} actionLabel="Open" onAction={() => openSessions()}>
           {relationships.sessions.length === 0 ? (
             <EmptyLine>No sessions tied to this node.</EmptyLine>
           ) : (
             <div className="space-y-1.5">
               {relationships.sessions.slice(0, 4).map((session, index) => (
-                <button key={`${session.id}-${index}`} onClick={() => navigateToPanel('sessions', session.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
+                <button key={`${session.id}-${index}`} onClick={() => openSessions(session.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
                   <div className="flex items-center gap-2">
                     <StatusPill className={session.state === 'connected' ? 'bg-success/10 text-success' : 'bg-elevated text-muted-foreground'}>{session.state}</StatusPill>
                     <span className="truncate text-foreground">{session.title || session.id.slice(0, 8)}</span>
@@ -295,7 +324,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           )}
         </InspectorSection>
 
-        <InspectorSection title="Pending Actions" count={relationships.pendingActions.length} actionLabel="Open" onAction={() => navigateToPanel('actions')}>
+        <InspectorSection title="Pending Actions" count={relationships.pendingActions.length} actionLabel="Open" onAction={() => openAttention()}>
           {relationships.pendingActions.length === 0 ? (
             <EmptyLine>No queued approvals target this node.</EmptyLine>
           ) : (
@@ -303,21 +332,21 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
               {relationships.pendingActions.slice(0, 4).map((action, index) => {
                 const risk = computeActionRisk(action);
                 return (
-                  <div key={`${action.action_id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+                  <button key={`${action.action_id}-${index}`} onClick={() => openAttention(action.action_id)} className="w-full rounded border border-border bg-background/40 px-2 py-1.5 text-left text-xs hover:border-accent/40 hover:bg-hover/30">
                     <div className="flex items-center gap-2">
                       <StatusPill className={risk.cls}>{risk.label}</StatusPill>
                       <span className="truncate text-foreground">{action.technique}</span>
                       <span className="ml-auto text-[10px] text-muted-foreground">{formatRelativeTime(action.submitted_at)}</span>
                     </div>
                     <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">{action.description}</div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
           )}
         </InspectorSection>
 
-        <InspectorSection title="Frontier" count={relationships.frontier.length} actionLabel="Open" onAction={() => navigateToPanel('frontier', nodeId)}>
+        <InspectorSection title="Frontier" count={relationships.frontier.length} actionLabel="Open" onAction={() => openFrontier(nodeId)}>
           {relationships.frontier.length === 0 ? (
             <EmptyLine>No frontier items reference this node.</EmptyLine>
           ) : (
@@ -325,21 +354,21 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
               {relationships.frontier.slice(0, 4).map((item, index) => {
                 const primaryNode = getFrontierPrimaryNodeId(item);
                 return (
-                  <div key={`${item.id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+                  <button key={`${item.id}-${index}`} onClick={() => openFrontier(item.id)} className="w-full rounded border border-border bg-background/40 px-2 py-1.5 text-left text-xs hover:border-accent/40 hover:bg-hover/30">
                     <div className="flex items-center gap-2">
                       <StatusPill className="bg-accent/10 text-accent">{item.type.replace(/_/g, ' ')}</StatusPill>
                       <span className="font-mono text-foreground ml-auto">{formatFrontierScore(item)}</span>
                     </div>
                     <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">{item.description}</div>
                     {primaryNode && <GraphNodeLinks nodeId={primaryNode} className="mt-1" />}
-                  </div>
+                  </button>
                 );
               })}
             </div>
           )}
         </InspectorSection>
 
-        <InspectorSection title="Evidence" count={evidence?.count ?? 0} actionLabel="Open" onAction={() => navigateToEvidence(nodeId)}>
+        <InspectorSection title="Evidence" count={evidence?.count ?? 0} actionLabel="Open" onAction={() => openNodeProof(nodeId)}>
           {evidenceStatus === 'loading' && <EmptyLine>Loading evidence chain...</EmptyLine>}
           {evidenceStatus === 'empty' && <EmptyLine>No evidence chain loaded for this node.</EmptyLine>}
           {/* A failed fetch is NOT an empty chain — render it as an error so a server
@@ -364,13 +393,13 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           )}
         </InspectorSection>
 
-        <InspectorSection title="Findings" count={relationships.findings.length} actionLabel="Open" onAction={() => navigateToPanel('findings')}>
+        <InspectorSection title="Findings" count={relationships.findings.length} actionLabel="Open" onAction={() => openFindings()}>
           {relationships.findings.length === 0 ? (
             <EmptyLine>No findings currently affect this node.</EmptyLine>
           ) : (
             <div className="space-y-1.5">
               {relationships.findings.slice(0, 4).map((finding, index) => (
-                <button key={`${finding.id}-${index}`} onClick={() => navigateToPanel('findings', finding.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
+                <button key={`${finding.id}-${index}`} onClick={() => openFindings(finding.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
                   <div className="flex items-center gap-2">
                     <StatusPill className={findingSeverityClass(finding.severity)}>{finding.severity}</StatusPill>
                     <span className="truncate text-foreground">{findingTitle(finding)}</span>
@@ -388,7 +417,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           ) : (
             <div className="space-y-2">
               {edgeEntries.map(([edgeType, group]) => (
-                <EdgeGroup key={edgeType} edgeType={edgeType} group={group} onPeer={(id) => navigateToGraph(id, 2)} />
+                <EdgeGroup key={edgeType} edgeType={edgeType} group={group} onPeer={(id) => openTopologyNode(id, 2)} />
               ))}
             </div>
           )}
@@ -407,41 +436,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           </InspectorSection>
         )}
       </div>
-
-      <div className="flex-shrink-0 px-4 py-2 border-t border-border bg-surface/95 flex flex-col gap-2">
-        <ActionButton
-          onClick={deployHere}
-          variant="primary"
-          disabled={deploying}
-          className="w-full"
-        >
-          {deploying ? 'Deploying…' : 'Deploy agent here'}
-        </ActionButton>
-        <div className="flex gap-2">
-          <ActionButton
-            onClick={() => onFocus?.(nodeId, 2)}
-            variant="ghost"
-            className="flex-1 text-accent"
-          >
-            Focus
-          </ActionButton>
-          <ActionButton
-            onClick={() => navigateToEvidence(nodeId)}
-            variant="secondary"
-            className="flex-1"
-          >
-            Evidence
-          </ActionButton>
-          <ActionButton
-            onClick={() => navigateToPanel('frontier', nodeId)}
-            variant="secondary"
-            className="flex-1"
-          >
-            Frontier
-          </ActionButton>
-        </div>
-      </div>
-    </div>
+    </WorkspaceInspector>
   );
 }
 

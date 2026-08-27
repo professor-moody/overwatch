@@ -226,6 +226,28 @@ export const COMPATIBILITY_ENTRIES: readonly CompatibilityEntry[] = [
     ],
   },
   {
+    id: 'dashboard-panel-route-aliases',
+    surface: 'dashboard',
+    status: 'retained',
+    compatibility: 'legacy panel routes (`/agents`, `/frontier`, `/graph`, `/findings`, and peers)',
+    canonical: 'the four workspace routes: `/operate`, `/investigate`, `/review`, and `/manage`',
+    reason: 'Existing bookmarks and cross-surface links must preserve graph, evidence, path, session, run, and selected-item context through the workspace cutover.',
+    removal_not_before: '0.5.0',
+    retirement_evidence: [
+      'every legacy route and contextual query shape has a deterministic redirect test',
+      'all in-repo navigation producers use canonical workspace paths',
+      'release notes announce route-alias removal for a later minor',
+    ],
+    evidence_checks: [
+      {
+        id: 'dashboard-workspace-route-translation',
+        claim: 'every legacy route and contextual query shape has a deterministic redirect test',
+        path: 'src/dashboard-next/src/lib/__tests__/workspace-navigation.test.ts',
+        contains: 'workspace navigation',
+      },
+    ],
+  },
+  {
     id: 'dashboard-v1-state-consumer',
     surface: 'dashboard',
     status: 'retired',

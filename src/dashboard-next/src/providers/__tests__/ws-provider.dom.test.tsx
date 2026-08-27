@@ -369,7 +369,10 @@ describe('WsProvider effect ownership', () => {
     ]);
     expect(useEngagementStore.getState().historyCount).toBe(2);
     expect(useToastStore.getState().toasts).toEqual([
-      expect.objectContaining({ title: 'Agent completed', linkItem: 'task-b' }),
+      expect.objectContaining({
+        title: 'Agent completed',
+        linkPath: '/operate?view=active&kind=agent&item=task-b',
+      }),
     ]);
   });
 

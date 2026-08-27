@@ -4,9 +4,7 @@
 
 import { useToastStore, type Toast } from '../../stores/toast-store';
 import { cn } from '../../lib/utils';
-import { useNavigation } from '../../hooks/useNavigation';
-import type { PanelId } from '../layout/OperatorLayout';
-import { useLocation } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
 import { useDashboardUiStore } from '../../stores/dashboard-ui-store';
 
 const TYPE_STYLES: Record<string, string> = {
@@ -26,20 +24,18 @@ const TYPE_DOT: Record<string, string> = {
 export function ToastContainer() {
   const toasts = useToastStore((s) => s.toasts);
   const removeToast = useToastStore((s) => s.removeToast);
-  const { navigateToPanel } = useNavigation();
+  const navigate = useNavigate();
   const location = useLocation();
   const graphInspectorOpen = useDashboardUiStore(s => s.graphInspectorOpen);
 
   if (toasts.length === 0) return null;
 
   const handleClick = (toast: Toast) => {
-    if (toast.linkPanel) {
-      navigateToPanel(toast.linkPanel as PanelId, toast.linkItem);
-    }
+    if (toast.linkPath) navigate(toast.linkPath);
     removeToast(toast.id);
   };
 
-  const isGraph = location.pathname === '/graph';
+  const isGraph = location.pathname === '/investigate' && new URLSearchParams(location.search).get('lens') === 'topology';
 
   return (
     <div

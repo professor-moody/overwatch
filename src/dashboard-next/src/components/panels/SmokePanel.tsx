@@ -21,7 +21,7 @@ import {
   type SmokeValidationResult,
 } from '../../lib/smoke-checks';
 import type { DashboardReadinessSummary } from '../../lib/types';
-import type { PanelId } from '../layout/OperatorLayout';
+import type { LegacyPanelId } from '../../lib/workspace-navigation';
 import { ActionButton, PageHeader } from '../shared/primitives';
 import { dashboardFetch } from '../../lib/dashboard-transport';
 import { buildDashboardPath } from '@overwatch/dashboard-api-contracts';
@@ -39,7 +39,7 @@ interface CheckResult {
   statusCode?: number;
   action?: string;
   /** Panel to navigate to when clicking the row */
-  panel?: PanelId;
+  panel?: LegacyPanelId;
 }
 
 interface CheckDef {
@@ -48,7 +48,7 @@ interface CheckDef {
   description: string;
   group: string;
   severity: 'required' | 'optional' | 'profile';
-  panel?: PanelId;
+  panel?: LegacyPanelId;
   run: () => Promise<SmokeValidationResult & { statusCode?: number }>;
 }
 
@@ -359,7 +359,7 @@ const GROUPS = [...new Set(CHECKS.map(c => c.group))];
 
 // ---- component ----
 
-export function SmokePanel() {
+export function SmokePanel({ embedded = false }: { embedded?: boolean } = {}) {
   const { connected } = useWs();
   const { navigateToPanel } = useNavigation();
   const [results, setResults] = useState<Record<string, CheckResult>>(() =>
@@ -450,7 +450,7 @@ export function SmokePanel() {
 
   return (
     <div className="space-y-5">
-      <PageHeader
+      {!embedded && <PageHeader
         title="Diagnostics"
         meta={
           <span className="inline-flex items-center gap-3">
@@ -480,7 +480,7 @@ export function SmokePanel() {
           </ActionButton>
           </>
         }
-      />
+      />}
 
       <ReadinessStrip readiness={readiness} wsStatus={wsStatus} apiStatus={overallStatus} />
 

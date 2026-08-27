@@ -52,6 +52,7 @@ import {
   ConfigDivergenceResolveRequestSchema,
   ConfigDivergenceResolveResponseSchema,
   FindingDtoSchema,
+  FindingReadinessReportSchema,
   FindingsResponseSchema,
   FrontierWeightsPatchSchema,
   FrontierWeightsResetResultSchema,
@@ -88,6 +89,7 @@ import {
   type EvidenceDebtResponseDto,
   type ClaimImpactResponseDto,
   type FindingsResponseDto,
+  type FindingReadinessReportDto,
   type ObjectiveCreateRequest,
   type ObjectiveUpdateRequest,
   type RawGraphDto,
@@ -614,7 +616,7 @@ export async function getTemplates(): Promise<{ templates: EngagementTemplate[];
 
 // --- Engagements ---
 
-export async function getEngagements(): Promise<{ engagements: EngagementListItem[]; active_id?: string }> {
+export async function getEngagements(): Promise<{ engagements: EngagementListItem[]; active_id?: string; library_available: boolean }> {
   const response = await request('listEngagements');
   return { ...response, active_id: response.active_id ?? undefined };
 }
@@ -1033,6 +1035,12 @@ export function normalizeFindingsResponse(wire: FindingsResponseDto): FindingsRe
 export async function getFindings(): Promise<FindingsResponse> {
   const wire = FindingsResponseSchema.parse(await request('getFindings'));
   return normalizeFindingsResponse(wire);
+}
+
+export type FindingReadinessReport = FindingReadinessReportDto;
+
+export async function getFindingReadiness(): Promise<FindingReadinessReport> {
+  return FindingReadinessReportSchema.parse(await request('getFindingReadiness'));
 }
 
 export async function getFindingContext(id: string): Promise<FindingContextResponse> {

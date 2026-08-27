@@ -27,7 +27,7 @@ function sampleGraph(): Graph {
 describe('graph target navigation', () => {
   it('preserves legacy node graph URLs', () => {
     const path = buildGraphTargetPath({ kind: 'node', nodeId: 'cred-jdoe-ntlm', hops: 2 });
-    expect(path).toBe('/graph?node=cred-jdoe-ntlm&hops=2');
+    expect(path).toBe('/investigate?lens=topology&node=cred-jdoe-ntlm&hops=2');
     expect(parseGraphTargetParams(paramsFromPath(path))).toEqual({
       kind: 'node',
       nodeId: 'cred-jdoe-ntlm',
