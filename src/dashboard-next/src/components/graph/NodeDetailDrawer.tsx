@@ -7,7 +7,6 @@ import { useNavigate } from 'react-router';
 import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
-import { useNavigation } from '../../hooks/useNavigation';
 import { evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, promoteClaim, withdrawClaim, getClaimImpact, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto, type ClaimImpact } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
@@ -40,7 +39,6 @@ interface NodeDetailDrawerProps {
 type EvidenceStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
 
 export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetailDrawerProps) {
-  const { navigateToEvidence, navigateToGraph, navigateToPanel } = useNavigation();
   const navigate = useNavigate();
   const setLauncherOpen = useDashboardUiStore(state => state.setStartWorkOpen);
   const storeGraph = useEngagementStore(s => s.graph);
@@ -53,6 +51,43 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
   const [evidenceStatus, setEvidenceStatus] = useState<EvidenceStatus>('idle');
   const [evidenceError, setEvidenceError] = useState<string>('');
   const { connected } = useWs();
+  const openTopologyNode = (id: string, hops = 2) => {
+    const params = new URLSearchParams({ lens: 'topology', entity: 'node', item: id, node: id, hops: String(hops) });
+    navigate(`/investigate?${params.toString()}`);
+  };
+  const openNodeProof = (id: string) => {
+    const params = new URLSearchParams({ lens: 'topology', entity: 'node', item: id, node: id, tab: 'proof', context: 'evidence' });
+    navigate(`/investigate?${params.toString()}`);
+  };
+  const openSessions = (sessionId?: string) => {
+    const params = new URLSearchParams({ drawer: 'sessions' });
+    if (sessionId) params.set('drawerItem', sessionId);
+    navigate(`/operate?${params.toString()}`);
+  };
+  const openAttention = (actionId?: string) => {
+    const params = new URLSearchParams({ view: 'attention' });
+    if (actionId) {
+      params.set('kind', 'approval');
+      params.set('item', actionId);
+    }
+    navigate(`/operate?${params.toString()}`);
+  };
+  const openFrontier = (id?: string) => {
+    const params = new URLSearchParams({ view: 'ready' });
+    if (id) {
+      params.set('kind', 'frontier');
+      params.set('item', id);
+    }
+    navigate(`/operate?${params.toString()}`);
+  };
+  const openFindings = (findingId?: string) => {
+    const params = new URLSearchParams({ view: 'readiness' });
+    if (findingId) {
+      params.set('kind', 'finding');
+      params.set('item', findingId);
+    }
+    navigate(`/review?${params.toString()}`);
+  };
   // Live nodeId for stale-response guarding: a slow fetch that resolves after the
   // operator has moved to another node must not overwrite the new node's data.
   const liveNodeId = useRef(nodeId);
@@ -193,8 +228,8 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           </ActionButton>
           <div className="flex gap-2">
             <ActionButton onClick={() => onFocus?.(nodeId, 2)} variant="ghost" className="flex-1 text-accent">Focus</ActionButton>
-            <ActionButton onClick={() => navigateToEvidence(nodeId)} variant="secondary" className="flex-1">Evidence</ActionButton>
-            <ActionButton onClick={() => navigateToPanel('frontier', nodeId)} variant="secondary" className="flex-1">Frontier</ActionButton>
+            <ActionButton onClick={() => openNodeProof(nodeId)} variant="secondary" className="flex-1">Evidence</ActionButton>
+            <ActionButton onClick={() => openFrontier(nodeId)} variant="secondary" className="flex-1">Frontier</ActionButton>
           </div>
         </div>
       )}
@@ -247,10 +282,10 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
 
         <InspectorSection title="Relationships">
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <RelationshipLink label="Sessions" count={relationships.sessions.length} hot={liveSessions > 0} onClick={() => navigateToPanel('sessions')} />
-            <RelationshipLink label="Actions" count={relationships.pendingActions.length} hot={relationships.pendingActions.length > 0} onClick={() => navigateToPanel('actions')} />
-            <RelationshipLink label="Frontier" count={relationships.frontier.length} hot={relationships.frontier.length > 0} onClick={() => navigateToPanel('frontier', nodeId)} />
-            <RelationshipLink label="Findings" count={relationships.findings.length} hot={relationships.findings.length > 0} onClick={() => navigateToPanel('findings')} />
+            <RelationshipLink label="Sessions" count={relationships.sessions.length} hot={liveSessions > 0} onClick={() => openSessions()} />
+            <RelationshipLink label="Actions" count={relationships.pendingActions.length} hot={relationships.pendingActions.length > 0} onClick={() => openAttention()} />
+            <RelationshipLink label="Frontier" count={relationships.frontier.length} hot={relationships.frontier.length > 0} onClick={() => openFrontier(nodeId)} />
+            <RelationshipLink label="Findings" count={relationships.findings.length} hot={relationships.findings.length > 0} onClick={() => openFindings()} />
           </div>
         </InspectorSection>
 
@@ -266,13 +301,13 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           <ClaimStandingSection target={{ node_id: nodeId }} />
         </InspectorSection>
 
-        <InspectorSection title="Sessions" count={relationships.sessions.length} actionLabel="Open" onAction={() => navigateToPanel('sessions')}>
+        <InspectorSection title="Sessions" count={relationships.sessions.length} actionLabel="Open" onAction={() => openSessions()}>
           {relationships.sessions.length === 0 ? (
             <EmptyLine>No sessions tied to this node.</EmptyLine>
           ) : (
             <div className="space-y-1.5">
               {relationships.sessions.slice(0, 4).map((session, index) => (
-                <button key={`${session.id}-${index}`} onClick={() => navigateToPanel('sessions', session.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
+                <button key={`${session.id}-${index}`} onClick={() => openSessions(session.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
                   <div className="flex items-center gap-2">
                     <StatusPill className={session.state === 'connected' ? 'bg-success/10 text-success' : 'bg-elevated text-muted-foreground'}>{session.state}</StatusPill>
                     <span className="truncate text-foreground">{session.title || session.id.slice(0, 8)}</span>
@@ -289,7 +324,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           )}
         </InspectorSection>
 
-        <InspectorSection title="Pending Actions" count={relationships.pendingActions.length} actionLabel="Open" onAction={() => navigateToPanel('actions')}>
+        <InspectorSection title="Pending Actions" count={relationships.pendingActions.length} actionLabel="Open" onAction={() => openAttention()}>
           {relationships.pendingActions.length === 0 ? (
             <EmptyLine>No queued approvals target this node.</EmptyLine>
           ) : (
@@ -297,21 +332,21 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
               {relationships.pendingActions.slice(0, 4).map((action, index) => {
                 const risk = computeActionRisk(action);
                 return (
-                  <div key={`${action.action_id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+                  <button key={`${action.action_id}-${index}`} onClick={() => openAttention(action.action_id)} className="w-full rounded border border-border bg-background/40 px-2 py-1.5 text-left text-xs hover:border-accent/40 hover:bg-hover/30">
                     <div className="flex items-center gap-2">
                       <StatusPill className={risk.cls}>{risk.label}</StatusPill>
                       <span className="truncate text-foreground">{action.technique}</span>
                       <span className="ml-auto text-[10px] text-muted-foreground">{formatRelativeTime(action.submitted_at)}</span>
                     </div>
                     <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">{action.description}</div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
           )}
         </InspectorSection>
 
-        <InspectorSection title="Frontier" count={relationships.frontier.length} actionLabel="Open" onAction={() => navigateToPanel('frontier', nodeId)}>
+        <InspectorSection title="Frontier" count={relationships.frontier.length} actionLabel="Open" onAction={() => openFrontier(nodeId)}>
           {relationships.frontier.length === 0 ? (
             <EmptyLine>No frontier items reference this node.</EmptyLine>
           ) : (
@@ -319,21 +354,21 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
               {relationships.frontier.slice(0, 4).map((item, index) => {
                 const primaryNode = getFrontierPrimaryNodeId(item);
                 return (
-                  <div key={`${item.id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+                  <button key={`${item.id}-${index}`} onClick={() => openFrontier(item.id)} className="w-full rounded border border-border bg-background/40 px-2 py-1.5 text-left text-xs hover:border-accent/40 hover:bg-hover/30">
                     <div className="flex items-center gap-2">
                       <StatusPill className="bg-accent/10 text-accent">{item.type.replace(/_/g, ' ')}</StatusPill>
                       <span className="font-mono text-foreground ml-auto">{formatFrontierScore(item)}</span>
                     </div>
                     <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">{item.description}</div>
                     {primaryNode && <GraphNodeLinks nodeId={primaryNode} className="mt-1" />}
-                  </div>
+                  </button>
                 );
               })}
             </div>
           )}
         </InspectorSection>
 
-        <InspectorSection title="Evidence" count={evidence?.count ?? 0} actionLabel="Open" onAction={() => navigateToEvidence(nodeId)}>
+        <InspectorSection title="Evidence" count={evidence?.count ?? 0} actionLabel="Open" onAction={() => openNodeProof(nodeId)}>
           {evidenceStatus === 'loading' && <EmptyLine>Loading evidence chain...</EmptyLine>}
           {evidenceStatus === 'empty' && <EmptyLine>No evidence chain loaded for this node.</EmptyLine>}
           {/* A failed fetch is NOT an empty chain — render it as an error so a server
@@ -358,13 +393,13 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           )}
         </InspectorSection>
 
-        <InspectorSection title="Findings" count={relationships.findings.length} actionLabel="Open" onAction={() => navigateToPanel('findings')}>
+        <InspectorSection title="Findings" count={relationships.findings.length} actionLabel="Open" onAction={() => openFindings()}>
           {relationships.findings.length === 0 ? (
             <EmptyLine>No findings currently affect this node.</EmptyLine>
           ) : (
             <div className="space-y-1.5">
               {relationships.findings.slice(0, 4).map((finding, index) => (
-                <button key={`${finding.id}-${index}`} onClick={() => navigateToPanel('findings', finding.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
+                <button key={`${finding.id}-${index}`} onClick={() => openFindings(finding.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
                   <div className="flex items-center gap-2">
                     <StatusPill className={findingSeverityClass(finding.severity)}>{finding.severity}</StatusPill>
                     <span className="truncate text-foreground">{findingTitle(finding)}</span>
@@ -382,7 +417,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           ) : (
             <div className="space-y-2">
               {edgeEntries.map(([edgeType, group]) => (
-                <EdgeGroup key={edgeType} edgeType={edgeType} group={group} onPeer={(id) => navigateToGraph(id, 2)} />
+                <EdgeGroup key={edgeType} edgeType={edgeType} group={group} onPeer={(id) => openTopologyNode(id, 2)} />
               ))}
             </div>
           )}

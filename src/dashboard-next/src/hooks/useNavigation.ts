@@ -4,37 +4,18 @@
 
 import { useCallback } from 'react';
 import { useNavigate } from 'react-router';
-import type { PanelId } from '../components/layout/OperatorLayout';
 import { buildGraphTargetPath, type GraphNavigationTarget } from '../lib/graph-target';
-import { legacyPathToWorkspacePath } from '../lib/workspace-navigation';
+import { LEGACY_PANEL_IDS, legacyPathToWorkspacePath, type LegacyPanelId } from '../lib/workspace-navigation';
 
-export const PANEL_IDS = [
-  'overview',
-  'campaigns',
-  'agents',
-  'sessions',
-  'actions',
-  'frontier',
-  'activity',
-  'analysis',
-  'evidence',
-  'identity',
-  'credentials',
-  'recon',
-  'paths',
-  'findings',
-  'engagements',
-  'smoke',
-  'settings',
-] as const satisfies PanelId[];
+export const PANEL_IDS = LEGACY_PANEL_IDS;
 
 export interface NavigationTarget {
-  panel: PanelId;
+  panel: LegacyPanelId;
   item?: string;
   subview?: string;
 }
 
-export function isPanelId(value: string | undefined): value is PanelId {
+export function isPanelId(value: string | undefined): value is LegacyPanelId {
   return !!value && (PANEL_IDS as readonly string[]).includes(value);
 }
 
@@ -75,23 +56,23 @@ export function useNavigation() {
   }, [navigate]);
 
   const navigateToGraphTarget = useCallback((target: GraphNavigationTarget) => {
-    navigateLegacyTarget(buildGraphTargetPath(target));
-  }, [navigateLegacyTarget]);
+    navigate(buildGraphTargetPath(target));
+  }, [navigate]);
 
   const navigateToGraph = useCallback((nodeId?: string, hops?: number) => {
     if (!nodeId) {
       navigate('/investigate?lens=topology');
       return;
     }
-    navigateLegacyTarget(buildGraphTargetPath({ kind: 'node', nodeId, hops }));
-  }, [navigate, navigateLegacyTarget]);
+    navigate(buildGraphTargetPath({ kind: 'node', nodeId, hops }));
+  }, [navigate]);
 
   const navigateToGraphFilter = useCallback((filter: string) => {
     const params = new URLSearchParams({ filter });
     navigate(`/investigate?lens=topology&${params.toString()}`);
   }, [navigate]);
 
-  const navigateToPanel = useCallback((panel: PanelId, item?: string, subview?: string) => {
+  const navigateToPanel = useCallback((panel: LegacyPanelId, item?: string, subview?: string) => {
     navigateLegacyTarget(buildPanelPath({ panel, item, subview }));
   }, [navigateLegacyTarget]);
 

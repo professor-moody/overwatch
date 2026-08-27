@@ -129,7 +129,7 @@ export function buildGraphTargetSearch(target: GraphNavigationTarget): string {
 
 export function buildGraphTargetPath(target: GraphNavigationTarget): string {
   const search = buildGraphTargetSearch(target);
-  return `/graph${search ? `?${search}` : ''}`;
+  return `/investigate?lens=topology${search ? `&${search}` : ''}`;
 }
 
 export function parseGraphTargetParams(params: URLSearchParams): ParsedGraphTarget | null {

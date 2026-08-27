@@ -6,6 +6,7 @@ import type { EvidenceChainResponse, FindingContextResponse } from '../../lib/ty
 import { findingTitle } from '../../lib/finding-display';
 import { cn, formatTimestamp } from '../../lib/utils';
 import { setDrawerParams, setSelectionParams } from '../../lib/workspace-navigation';
+import { ExecutionOutputView } from '../drawer/ExecutionOutputView';
 import {
   ActionButton,
   StatusPill,
@@ -117,7 +118,7 @@ export function ProofLibrary({ findings }: { findings: api.FindingDto[] }) {
   }, [assetFilter, availabilityFilter, findingFilter, objectiveFilter, query, records, trustFilter]);
 
   const selectedId = searchParams.get('kind') === 'evidence' ? searchParams.get('item') : null;
-  const selected = selectedId ? records.find(record => record.id === selectedId) ?? null : null;
+  const selected = selectedId ? records.find(record => record.id === selectedId || record.entry.evidence_id === selectedId || record.entry.content_hash === selectedId) ?? null : null;
 
   useEffect(() => {
     if (loading || !selectedId || selected) return;
@@ -205,6 +206,7 @@ function EvidenceInspector({ record, onClose, onOpenRun }: { record: ProofRecord
           <ActionButton size="xs" onClick={() => window.location.assign(`/review?view=readiness&kind=finding&item=${encodeURIComponent(record.finding.id)}`)}>Open finding</ActionButton>
           <ActionButton size="xs" onClick={() => window.location.assign(`/investigate?lens=topology&entity=node&item=${encodeURIComponent(record.nodeId)}&node=${encodeURIComponent(record.nodeId)}&tab=proof`)}>Open asset</ActionButton>
         </div>
+        {record.entry.action_id && <div className="h-[28rem] overflow-hidden rounded border border-border-subtle"><ExecutionOutputView actionId={record.entry.action_id} onOpenInRuns={onOpenRun} /></div>}
       </div>
     </WorkspaceInspector>
   );

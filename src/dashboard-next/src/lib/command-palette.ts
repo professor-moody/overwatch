@@ -2,13 +2,13 @@
 // live operator: jump to any panel or focus any agent without the mouse. Pure and
 // testable in isolation (like lib/attention-queue.ts); the CommandPalette component
 // only renders + handles keys, delegating item-building and filtering to here.
-import type { PanelId } from '../components/layout/OperatorLayout';
+import type { LegacyPanelId } from './workspace-navigation';
 import type { AgentInfo } from './types';
 
-/** A navigable panel/route the palette can jump to (icon-free so this stays a pure
- *  view-model — the Sidebar owns the icons). Either a panel `id` or a `path` route. */
+/** A navigable route command. Legacy panel IDs remain compatibility-only; the
+ * four-workspace palette supplies canonical `path` destinations. */
 export interface PanelCommandDef {
-  id?: PanelId;
+  id?: LegacyPanelId;
   path?: string;
   label: string;
   group: string;
@@ -21,7 +21,7 @@ export interface CommandItem {
   label: string;
   /** Secondary context: the nav group for a panel, or the agent's status. */
   hint?: string;
-  panelId?: PanelId;
+  panelId?: LegacyPanelId;
   path?: string;
   taskId?: string;
   /** Canonical destination for non-agent entities in the four-workspace shell. */

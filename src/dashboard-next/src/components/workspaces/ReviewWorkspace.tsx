@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronRight, ExternalLink, FileText } from 'lucide-react';
+import { ChevronRight, ExternalLink, FileText, TerminalSquare } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useEngagementStore } from '../../stores/engagement-store';
 import * as api from '../../lib/api';
@@ -11,6 +11,7 @@ import { RenderReportModal } from '../panels/RenderReportModal';
 import { ReportsList } from '../panels/ReportsList';
 import { EvidenceDebtCard } from '../panels/EvidenceDebtCard';
 import { ProofLibrary } from './ProofLibrary';
+import { ExecutionOutputView } from '../drawer/ExecutionOutputView';
 import {
   ActionButton,
   StatusPill,
@@ -339,7 +340,7 @@ function FindingTab({ tab, finding, readiness, context, onNavigate, onOpenRun }:
   if (tab === 'proof') {
     const entries = context?.evidence_chains.flatMap(chain => chain.chains) || [];
     if (entries.length === 0) return <WorkspaceEmpty title="No captured proof" detail="Run or parse the action that demonstrates this finding, then return here to validate it." />;
-    return <div className="space-y-3">{entries.map(entry => <div key={entry.activity_id} className="border-b border-border-subtle pb-3"><div className="flex items-center gap-2"><TrustBadge trust={entry.source_trust || 'asserted'} /><span className="truncate text-[10px] text-muted-foreground">{entry.tool || entry.technique || entry.event_type || 'Evidence'}</span></div><p className="mt-2 text-[11px] leading-5 text-foreground">{entry.description}</p>{(entry.snippet || entry.excerpts?.[0]?.resolved_snippet || entry.excerpts?.[0]?.snippet) && <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-background p-2 font-mono text-[9px] leading-4 text-muted-foreground">{entry.snippet || entry.excerpts?.[0]?.resolved_snippet || entry.excerpts?.[0]?.snippet}</pre>}{entry.content_hash && <div className="mt-2 truncate font-mono text-[9px] text-muted">sha256 {entry.content_hash}</div>}{entry.action_id && <ActionButton className="mt-2" size="xs" onClick={() => onOpenRun(entry.action_id!)}>Open producing run <ExternalLink className="h-3 w-3" /></ActionButton>}</div>)}</div>;
+    return <FindingProof entries={entries} onOpenRun={onOpenRun} />;
   }
   if (tab === 'affected') {
     if (!context?.affected_nodes.length) return <WorkspaceEmpty title="No affected assets linked" />;
@@ -351,6 +352,30 @@ function FindingTab({ tab, finding, readiness, context, onNavigate, onOpenRun }:
   }
   if (tab === 'remediation') return <InfoBlock label="Recommended remediation" text={findingRemediation(finding)} />;
   return <div className="space-y-3"><InfoMetric label="Sessions" value={context?.sessions.length ?? 0} /><InfoMetric label="Pending actions" value={context?.pending_actions.length ?? 0} /><InfoMetric label="Frontier items" value={context?.frontier.length ?? 0} /><p className="text-[10px] leading-4 text-muted-foreground">Open the global Activity drawer for the full auditable event timeline.</p></div>;
+}
+
+function FindingProof({
+  entries,
+  onOpenRun,
+}: {
+  entries: FindingContextResponse['evidence_chains'][number]['chains'];
+  onOpenRun: (actionId: string) => void;
+}) {
+  const [selectedAction, setSelectedAction] = useState<string | null>(null);
+  return (
+    <div className="space-y-3">
+      {entries.map(entry => (
+        <div key={entry.activity_id} className="border-b border-border-subtle pb-3">
+          <div className="flex items-center gap-2"><TrustBadge trust={entry.source_trust || 'asserted'} /><span className="truncate text-[10px] text-muted-foreground">{entry.tool || entry.technique || entry.event_type || 'Evidence'}</span></div>
+          <p className="mt-2 text-[11px] leading-5 text-foreground">{entry.description}</p>
+          {(entry.snippet || entry.excerpts?.[0]?.resolved_snippet || entry.excerpts?.[0]?.snippet) && <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-background p-2 font-mono text-[9px] leading-4 text-muted-foreground">{entry.snippet || entry.excerpts?.[0]?.resolved_snippet || entry.excerpts?.[0]?.snippet}</pre>}
+          {entry.content_hash && <div className="mt-2 truncate font-mono text-[9px] text-muted">sha256 {entry.content_hash}</div>}
+          {entry.action_id && <div className="mt-2 flex flex-wrap gap-1.5"><ActionButton size="xs" variant={selectedAction === entry.action_id ? 'primary' : 'secondary'} onClick={() => setSelectedAction(current => current === entry.action_id ? null : entry.action_id!)}><TerminalSquare className="h-3 w-3" />{selectedAction === entry.action_id ? 'Hide output' : 'Inspect command/output'}</ActionButton><ActionButton size="xs" onClick={() => onOpenRun(entry.action_id!)}>Open in Runs <ExternalLink className="h-3 w-3" /></ActionButton></div>}
+          {selectedAction === entry.action_id && <div className="mt-3 h-[28rem] overflow-hidden rounded border border-border-subtle"><ExecutionOutputView actionId={entry.action_id} onOpenInRuns={onOpenRun} /></div>}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) { return <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">{children}</div>; }

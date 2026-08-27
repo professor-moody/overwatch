@@ -11,8 +11,8 @@ export interface Toast {
   type: ToastType;
   title: string;
   message?: string;
-  linkPanel?: string;
-  linkItem?: string;
+  /** Canonical four-workspace destination. Never place raw output or secrets here. */
+  linkPath?: string;
   timestamp: number;
 }
 

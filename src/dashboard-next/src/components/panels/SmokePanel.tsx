@@ -21,7 +21,7 @@ import {
   type SmokeValidationResult,
 } from '../../lib/smoke-checks';
 import type { DashboardReadinessSummary } from '../../lib/types';
-import type { PanelId } from '../layout/OperatorLayout';
+import type { LegacyPanelId } from '../../lib/workspace-navigation';
 import { ActionButton, PageHeader } from '../shared/primitives';
 import { dashboardFetch } from '../../lib/dashboard-transport';
 import { buildDashboardPath } from '@overwatch/dashboard-api-contracts';
@@ -39,7 +39,7 @@ interface CheckResult {
   statusCode?: number;
   action?: string;
   /** Panel to navigate to when clicking the row */
-  panel?: PanelId;
+  panel?: LegacyPanelId;
 }
 
 interface CheckDef {
@@ -48,7 +48,7 @@ interface CheckDef {
   description: string;
   group: string;
   severity: 'required' | 'optional' | 'profile';
-  panel?: PanelId;
+  panel?: LegacyPanelId;
   run: () => Promise<SmokeValidationResult & { statusCode?: number }>;
 }
 
