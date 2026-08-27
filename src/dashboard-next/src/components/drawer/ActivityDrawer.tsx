@@ -27,6 +27,7 @@ import {
 import type { ActionExplanation, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
 import { cn, formatRelativeTime, formatTimestamp } from '../../lib/utils';
 import { useEngagementStore } from '../../stores/engagement-store';
+import { buildWorkspacePath } from '../../lib/workspace-navigation';
 import { StatusPill } from '../shared/primitives';
 import { ExecutionOutputView } from './ExecutionOutputView';
 
@@ -393,10 +394,10 @@ function ContextLinks({ events, navigate, onOpenRun }: { events: AgentConsoleEve
     <div className="flex flex-wrap items-center gap-1 pt-0.5">
       <Link2 className="h-3 w-3 text-muted" />
       {actionId && <button type="button" onClick={() => onOpenRun(actionId)} className="rounded bg-accent/10 px-1.5 text-accent">Run {actionId.slice(0, 10)}</button>}
-      {sessionId && <button type="button" onClick={() => navigate(`/operate?drawer=sessions&drawerItem=${encodeURIComponent(sessionId)}`)} className="rounded bg-purple-dim px-1.5 text-purple">Session {sessionId.slice(0, 10)}</button>}
-      {evidenceId && <button type="button" onClick={() => navigate(`/review?view=proof&kind=evidence&item=${encodeURIComponent(evidenceId)}`)} className="rounded bg-elevated px-1.5 text-foreground">Evidence {evidenceId.slice(0, 10)}</button>}
-      {findings.map(id => <button key={id} type="button" onClick={() => navigate(`/review?view=readiness&kind=finding&item=${encodeURIComponent(id)}&tab=proof`)} className="rounded bg-warning/10 px-1.5 text-warning">Finding {id.slice(0, 10)}</button>)}
-      {nodes.map(id => <button key={id} type="button" onClick={() => navigate(`/investigate?lens=topology&entity=node&item=${encodeURIComponent(id)}&node=${encodeURIComponent(id)}`)} className="rounded bg-accent/10 px-1.5 text-accent">Asset {id.slice(0, 10)}</button>)}
+      {sessionId && <button type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'operate', drawer: { kind: 'sessions', item: sessionId } }))} className="rounded bg-purple-dim px-1.5 text-purple">Session {sessionId.slice(0, 10)}</button>}
+      {evidenceId && <button type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'review', view: 'proof', selection: { kind: 'evidence', id: evidenceId } }))} className="rounded bg-elevated px-1.5 text-foreground">Evidence {evidenceId.slice(0, 10)}</button>}
+      {findings.map(id => <button key={id} type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'review', view: 'readiness', selection: { kind: 'finding', id }, tab: 'proof' }))} className="rounded bg-warning/10 px-1.5 text-warning">Finding {id.slice(0, 10)}</button>)}
+      {nodes.map(id => <button key={id} type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'node', id }, context: { node: id } }))} className="rounded bg-accent/10 px-1.5 text-accent">Asset {id.slice(0, 10)}</button>)}
     </div>
   );
 }

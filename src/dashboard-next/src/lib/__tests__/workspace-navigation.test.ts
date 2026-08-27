@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildWorkspacePath,
   clearSelectionParams,
   drawerFromParams,
   legacyPathToWorkspacePath,
@@ -10,6 +11,23 @@ import {
 } from '../workspace-navigation';
 
 describe('workspace navigation', () => {
+  it('serializes canonical workspace selection, drawer, and graph context without legacy panel IDs', () => {
+    expect(buildWorkspacePath({
+      workspace: 'investigate',
+      lens: 'topology',
+      selection: { kind: 'edge', id: 'edge/one' },
+      tab: 'proof',
+      drawer: { kind: 'run', item: 'act/one' },
+      context: { source: 'host one', target: 'host/two', hops: 2 },
+    })).toBe('/investigate?lens=topology&kind=edge&item=edge%2Fone&tab=proof&drawer=run&drawerItem=act%2Fone&source=host+one&target=host%2Ftwo&hops=2');
+  });
+
+  it('serializes each workspace primary state through the typed route model', () => {
+    expect(buildWorkspacePath({ workspace: 'operate', view: 'campaigns' })).toBe('/operate?view=campaigns');
+    expect(buildWorkspacePath({ workspace: 'review', view: 'readiness', readiness: 'draft' })).toBe('/review?view=readiness&readiness=draft');
+    expect(buildWorkspacePath({ workspace: 'manage', section: 'diagnostics' })).toBe('/manage?section=diagnostics');
+  });
+
   it.each([
     ['/overview', '/operate'],
     ['/agents', '/operate?view=active&kind=agent'],
@@ -83,6 +101,18 @@ describe('workspace navigation', () => {
     const params = new URLSearchParams({ kind: 'credential_value', item: 'secret', drawer: 'terminal' });
     expect(selectionFromParams(params)).toBeNull();
     expect(drawerFromParams(params)).toBeNull();
+  });
+
+  it('recognizes graph edges as first-class shared inspector selections', () => {
+    expect(selectionFromParams(new URLSearchParams({ entity: 'edge', item: 'edge-1' })))
+      .toEqual({ kind: 'edge', id: 'edge-1' });
+  });
+
+  it('derives inspector selections from retained graph bookmark context', () => {
+    expect(selectionFromParams(new URLSearchParams({ node: 'node-1', hops: '2' })))
+      .toEqual({ kind: 'node', id: 'node-1' });
+    expect(selectionFromParams(new URLSearchParams({ context: 'edge', edge: 'edge-1', source: 'a', target: 'b' })))
+      .toEqual({ kind: 'edge', id: 'edge-1' });
   });
 
   it('preserves action selections between Activity and Runs, including fixture IDs', () => {

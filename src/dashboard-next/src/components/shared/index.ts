@@ -15,8 +15,6 @@ export {
   IconButton,
   InspectorDrawer,
   MetricTile,
-  PageHeader,
-  PanelSection,
   SegmentedControl,
   StatusPill,
 } from './primitives';

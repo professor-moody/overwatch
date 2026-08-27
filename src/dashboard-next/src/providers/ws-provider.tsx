@@ -7,6 +7,7 @@ import { createDashboardWebSocket } from '../lib/dashboard-transport';
 import { FallbackPollCoordinator, GenerationSocketController } from '../lib/generation-socket';
 import { buildDashboardWebSocketPath, MainWebSocketEventSchema } from '@overwatch/dashboard-contracts';
 import { compareDashboardBuilds } from '../lib/dashboard-build-compatibility';
+import { buildWorkspacePath } from '../lib/workspace-navigation';
 
 interface WsContextValue {
   connected: boolean;
@@ -46,7 +47,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
             type: 'success',
             title: 'Agent completed',
             message: `${(agent.agent_label || agent.agent_id || agent.id).slice(0, 8)} — ${agent.findings_count || 0} findings`,
-            linkPath: `/operate?view=active&kind=agent&item=${encodeURIComponent(agent.task_id ?? agent.id)}`,
+            linkPath: buildWorkspacePath({ workspace: 'operate', view: 'active', selection: { kind: 'agent', id: agent.task_id ?? agent.id } }),
           });
         }
       }
@@ -114,9 +115,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
               type: 'warning',
               title: 'Action pending approval',
               message: (msg.data as { description?: string })?.description || undefined,
-              linkPath: actionId
-                ? `/operate?view=attention&kind=approval&item=${encodeURIComponent(actionId)}`
-                : '/operate?view=attention',
+              linkPath: buildWorkspacePath({ workspace: 'operate', view: 'attention', selection: actionId ? { kind: 'approval', id: actionId } : undefined }),
             });
             }
             break;
@@ -133,9 +132,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
             toast({
               type: outcome.type,
               title: outcome.title,
-              linkPath: actionId
-                ? `/operate?view=attention&kind=approval&item=${encodeURIComponent(actionId)}`
-                : '/operate?view=attention',
+              linkPath: buildWorkspacePath({ workspace: 'operate', view: 'attention', selection: actionId ? { kind: 'approval', id: actionId } : undefined }),
             });
             break;
           }
@@ -152,7 +149,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
                 type: 'success',
                 title: 'Session connected',
                 message: data.session.title || data.session.id.slice(0, 8),
-                linkPath: `/operate?drawer=sessions&drawerItem=${encodeURIComponent(data.session.id)}`,
+                linkPath: buildWorkspacePath({ workspace: 'operate', drawer: { kind: 'sessions', item: data.session.id } }),
               });
             }
             break;

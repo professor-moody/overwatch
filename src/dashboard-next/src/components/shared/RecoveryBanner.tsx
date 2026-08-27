@@ -1,4 +1,5 @@
 import { Link } from 'react-router';
+import { buildWorkspacePath } from '../../lib/workspace-navigation';
 import { recoveryPresentation } from '../../lib/recovery-presentation';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { cn } from '../../lib/utils';
@@ -26,7 +27,7 @@ export function RecoveryBanner({ className }: { className?: string }) {
         <div className="mt-0.5 opacity-90">{presentation.message}</div>
       </div>
       <Link
-        to="/manage?section=diagnostics"
+        to={buildWorkspacePath({ workspace: 'manage', section: 'diagnostics' })}
         className="shrink-0 rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/20"
       >
         Review recovery

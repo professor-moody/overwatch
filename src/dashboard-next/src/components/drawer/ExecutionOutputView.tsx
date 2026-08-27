@@ -17,6 +17,7 @@ import {
 import { createDashboardWebSocket } from '../../lib/dashboard-transport';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
 import { useEngagementStore } from '../../stores/engagement-store';
+import { buildWorkspacePath } from '../../lib/workspace-navigation';
 import { ActionButton, StatusPill } from '../shared/primitives';
 
 const INITIAL_BYTES = 64 * 1024;
@@ -213,8 +214,8 @@ export function ExecutionOutputView({
         {!compact && <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
           {output.technique && <Fact label="Technique" value={output.technique} />}
           {output.invokingTool && <Fact label="Surface" value={output.invokingTool} />}
-          {output.agentId && <LinkFact label="Agent" value={output.agentId} onClick={() => navigate(`/operate?view=active&kind=agent&item=${encodeURIComponent(output.agentId!)}`)} />}
-          {output.frontierItemId && <LinkFact label="Frontier" value={output.frontierItemId} onClick={() => navigate(`/operate?view=ready&kind=frontier&item=${encodeURIComponent(output.frontierItemId!)}`)} />}
+          {output.agentId && <LinkFact label="Agent" value={output.agentId} onClick={() => navigate(buildWorkspacePath({ workspace: 'operate', view: 'active', selection: { kind: 'agent', id: output.agentId! } }))} />}
+          {output.frontierItemId && <LinkFact label="Frontier" value={output.frontierItemId} onClick={() => navigate(buildWorkspacePath({ workspace: 'operate', view: 'ready', selection: { kind: 'frontier', id: output.frontierItemId! } }))} />}
           {output.timestamp && <Fact label="Updated" value={formatTimestamp(output.timestamp)} />}
           {output.durationMs != null && <Fact label="Duration" value={formatElapsed(output.durationMs)} />}
           {output.exitCode != null && <Fact label="Exit" value={String(output.exitCode)} />}
@@ -225,7 +226,7 @@ export function ExecutionOutputView({
         {!compact && output.targets.length > 0 && (
           <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
             <span className="mr-1 text-[9px] uppercase tracking-[0.14em] text-muted-foreground">Targets</span>
-            {output.targetNodeIds.slice(0, 6).map(id => <button key={id} type="button" onClick={() => navigate(`/investigate?lens=topology&entity=node&item=${encodeURIComponent(id)}&node=${encodeURIComponent(id)}`)} className="max-w-36 truncate rounded bg-accent/10 px-1.5 py-0.5 font-mono text-[9px] text-accent">{id}</button>)}
+            {output.targetNodeIds.slice(0, 6).map(id => <button key={id} type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'node', id }, context: { node: id } }))} className="max-w-36 truncate rounded bg-accent/10 px-1.5 py-0.5 font-mono text-[9px] text-accent">{id}</button>)}
             {output.targetIps.slice(0, 6).map(value => <span key={value} className="rounded bg-elevated px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground">{value}</span>)}
           </div>
         )}
@@ -233,7 +234,7 @@ export function ExecutionOutputView({
         {!compact && output.findingIds.length > 0 && (
           <div className="mt-2 flex flex-wrap items-center gap-1">
             <span className="mr-1 text-[9px] uppercase tracking-[0.14em] text-muted-foreground">Findings</span>
-            {output.findingIds.map(id => <button key={id} type="button" onClick={() => navigate(`/review?view=readiness&kind=finding&item=${encodeURIComponent(id)}&tab=proof`)} className="max-w-36 truncate rounded bg-warning/10 px-1.5 py-0.5 font-mono text-[9px] text-warning">{id}</button>)}
+            {output.findingIds.map(id => <button key={id} type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'review', view: 'readiness', selection: { kind: 'finding', id }, tab: 'proof' }))} className="max-w-36 truncate rounded bg-warning/10 px-1.5 py-0.5 font-mono text-[9px] text-warning">{id}</button>)}
           </div>
         )}
       </div>
@@ -253,7 +254,7 @@ export function ExecutionOutputView({
           <span className="hidden whitespace-nowrap text-[9px] tabular-nums text-muted-foreground xl:inline">{formatBytes(loaded[stream].loadedBytes)} / {formatBytes(activeMeta.totalBytes)}</span>
         )}
         {!showingLive && activeMeta?.evidenceId && (
-          <button type="button" onClick={() => navigate(`/review?view=proof&kind=evidence&item=${encodeURIComponent(activeMeta.evidenceId!)}`)} className="hidden max-w-28 truncate rounded bg-elevated px-1.5 py-0.5 font-mono text-[9px] text-foreground hover:text-accent 2xl:inline" title={`Open evidence ${activeMeta.evidenceId}`}>{activeMeta.evidenceId.slice(0, 10)}</button>
+          <button type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'review', view: 'proof', selection: { kind: 'evidence', id: activeMeta.evidenceId! } }))} className="hidden max-w-28 truncate rounded bg-elevated px-1.5 py-0.5 font-mono text-[9px] text-foreground hover:text-accent 2xl:inline" title={`Open evidence ${activeMeta.evidenceId}`}>{activeMeta.evidenceId.slice(0, 10)}</button>
         )}
         <CopyButton label="Copy loaded output" value={body} disabled={!body} />
       </div>

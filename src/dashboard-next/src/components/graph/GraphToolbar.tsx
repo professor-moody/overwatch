@@ -4,6 +4,7 @@
 
 import { useState } from 'react';
 import { Link } from 'react-router';
+import { buildWorkspacePath } from '../../lib/workspace-navigation';
 import {
   ChevronLeft,
   Download,
@@ -117,7 +118,7 @@ export function GraphToolbar({
     <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50 overflow-visible">
       {!embedded && (
         <>
-          <Link to="/operate" className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1 min-w-0">
+          <Link to={buildWorkspacePath({ workspace: 'operate' })} className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1 min-w-0">
             <ChevronLeft size={14} />
             <span className="hidden sm:inline">Operate</span>
           </Link>

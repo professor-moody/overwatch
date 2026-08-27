@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronRight, ExternalLink, Search } from 'lucide-react';
 import { useSearchParams } from 'react-router';
 import * as api from '../../lib/api';
@@ -6,7 +6,9 @@ import type { EvidenceChainResponse, FindingContextResponse } from '../../lib/ty
 import { findingTitle } from '../../lib/finding-display';
 import { cn, formatTimestamp } from '../../lib/utils';
 import { setDrawerParams, setSelectionParams } from '../../lib/workspace-navigation';
+import { useWorkspaceNavigation } from '../../hooks/useWorkspaceNavigation';
 import { ExecutionOutputView } from '../drawer/ExecutionOutputView';
+import { useWorkspaceInspectorAdapters, type WorkspaceInspectorAdapter } from '../layout/WorkspaceInspectorRegistry';
 import {
   ActionButton,
   StatusPill,
@@ -32,6 +34,7 @@ interface ProofRecord {
 
 export function ProofLibrary({ findings }: { findings: api.FindingDto[] }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { navigateToEvidence, navigateToFinding } = useWorkspaceNavigation();
   const [contexts, setContexts] = useState<Map<string, FindingContextResponse>>(new Map());
   const [loading, setLoading] = useState(true);
   const [partialFailures, setPartialFailures] = useState(0);
@@ -120,14 +123,25 @@ export function ProofLibrary({ findings }: { findings: api.FindingDto[] }) {
   const selectedId = searchParams.get('kind') === 'evidence' ? searchParams.get('item') : null;
   const selected = selectedId ? records.find(record => record.id === selectedId || record.entry.evidence_id === selectedId || record.entry.content_hash === selectedId) ?? null : null;
 
-  useEffect(() => {
-    if (loading || !selectedId || selected) return;
-    setSearchParams(setSelectionParams(searchParams, null), { replace: true });
-  }, [loading, searchParams, selected, selectedId, setSearchParams]);
-
   const select = (record: ProofRecord) => setSearchParams(setSelectionParams(searchParams, { kind: 'evidence', id: record.id }));
-  const close = () => setSearchParams(setSelectionParams(searchParams, null), { replace: true });
-  const openRun = (actionId: string) => setSearchParams(setDrawerParams(searchParams, { kind: 'run', item: actionId }));
+  const openRun = useCallback((actionId: string) => {
+    setSearchParams(setDrawerParams(searchParams, { kind: 'run', item: actionId }));
+  }, [searchParams, setSearchParams]);
+  const evidenceInspectorAdapter = useMemo<WorkspaceInspectorAdapter>(() => ({
+    resolved: !loading,
+    available: Boolean(selected),
+    render: ({ close }) => selected ? (
+      <EvidenceInspector
+        record={selected}
+        onClose={close}
+        onOpenRun={openRun}
+        onOpenFinding={navigateToFinding}
+        onOpenAsset={navigateToEvidence}
+      />
+    ) : null,
+  }), [loading, navigateToEvidence, navigateToFinding, openRun, selected]);
+  const proofInspectorAdapters = useMemo(() => ({ evidence: evidenceInspectorAdapter }), [evidenceInspectorAdapter]);
+  useWorkspaceInspectorAdapters(proofInspectorAdapters);
 
   return (
     <div className="relative flex min-h-0 flex-1">
@@ -179,7 +193,6 @@ export function ProofLibrary({ findings }: { findings: api.FindingDto[] }) {
         ))}
       </section>
 
-      {selected && <EvidenceInspector record={selected} onClose={close} onOpenRun={openRun} />}
     </div>
   );
 }
@@ -188,7 +201,7 @@ function ProofSelect({ label, value, onChange, children }: { label: string; valu
   return <select aria-label={label} value={value} onChange={event => onChange(event.target.value)} className="settings-input h-8 max-w-44 text-xs">{children}</select>;
 }
 
-function EvidenceInspector({ record, onClose, onOpenRun }: { record: ProofRecord; onClose: () => void; onOpenRun: (actionId: string) => void }) {
+function EvidenceInspector({ record, onClose, onOpenRun, onOpenFinding, onOpenAsset }: { record: ProofRecord; onClose: () => void; onOpenRun: (actionId: string) => void; onOpenFinding: (findingId: string) => void; onOpenAsset: (nodeId: string) => void }) {
   const excerpt = record.entry.snippet || record.entry.excerpts?.[0]?.resolved_snippet || record.entry.excerpts?.[0]?.snippet;
   return (
     <WorkspaceInspector label="Evidence inspector" title={record.entry.tool || record.entry.technique || 'Evidence'} identifier={record.entry.evidence_id || record.entry.activity_id} onClose={onClose}>
@@ -203,8 +216,8 @@ function EvidenceInspector({ record, onClose, onOpenRun }: { record: ProofRecord
         {record.entry.exit_code != null && <InspectorFact label="Exit status" value={String(record.entry.exit_code)} mono />}
         <div className="flex flex-wrap gap-1.5 border-t border-border-subtle pt-3">
           {record.entry.action_id && <ActionButton size="xs" variant="primary" onClick={() => onOpenRun(record.entry.action_id!)}>Open producing run <ExternalLink className="h-3 w-3" /></ActionButton>}
-          <ActionButton size="xs" onClick={() => window.location.assign(`/review?view=readiness&kind=finding&item=${encodeURIComponent(record.finding.id)}`)}>Open finding</ActionButton>
-          <ActionButton size="xs" onClick={() => window.location.assign(`/investigate?lens=topology&entity=node&item=${encodeURIComponent(record.nodeId)}&node=${encodeURIComponent(record.nodeId)}&tab=proof`)}>Open asset</ActionButton>
+          <ActionButton size="xs" onClick={() => onOpenFinding(record.finding.id)}>Open finding</ActionButton>
+          <ActionButton size="xs" onClick={() => onOpenAsset(record.nodeId)}>Open asset</ActionButton>
         </div>
         {record.entry.action_id && <div className="h-[28rem] overflow-hidden rounded border border-border-subtle"><ExecutionOutputView actionId={record.entry.action_id} onOpenInRuns={onOpenRun} /></div>}
       </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { identityTokenSummaries, tokenCredentials } from '../IdentityPanel';
+import { buildIdentityTokenSummaries } from '../../../lib/identity-inventory';
 import type { ExportedNode } from '../../../lib/types';
 
 const nodes: ExportedNode[] = [
@@ -38,18 +38,17 @@ const nodes: ExportedNode[] = [
 
 describe('identity credential derivation', () => {
   it('selects token-shaped credentials for identity context', () => {
-    expect(tokenCredentials(nodes).map(node => node.id)).toEqual(['cred-aws-session', 'cred-okta-cookie']);
+    expect(buildIdentityTokenSummaries(nodes).map(summary => summary.node.id)).toEqual(['cred-aws-session', 'cred-okta-cookie']);
   });
 
   it('summarizes tokens without exposing secret material', () => {
-    const summaries = identityTokenSummaries(nodes);
+    const summaries = buildIdentityTokenSummaries(nodes);
     expect(summaries).toEqual(expect.arrayContaining([expect.objectContaining({
-      id: 'cred-okta-cookie',
+      node: expect.objectContaining({ id: 'cred-okta-cookie' }),
       kind: 'session_cookie',
       status: 'MFA satisfied',
-      tone: 'success',
       user: 'jdoe@corp.local',
-    }), expect.objectContaining({ id: 'cred-aws-session', kind: 'aws_session_credentials' })]));
+    }), expect.objectContaining({ node: expect.objectContaining({ id: 'cred-aws-session' }), kind: 'aws_session_credentials' })]));
     expect(JSON.stringify(summaries)).not.toContain('secret-cookie-value');
   });
 
@@ -64,11 +63,11 @@ describe('identity credential derivation', () => {
       cred_material_kind: 'oidc_access_token',
       cred_token_expires_at: '2026-05-15T00:30:00.000Z',
     } as ExportedNode];
-    const [soon] = identityTokenSummaries(withExpiry, now);
+    const [soon] = buildIdentityTokenSummaries(withExpiry, now);
     expect(soon.expiry?.urgency).toBe('soon');
 
     // The session cookie in `nodes` has no expiry timestamp → null.
-    const cookie = identityTokenSummaries(nodes, now).find(summary => summary.id === 'cred-okta-cookie')!;
+    const cookie = buildIdentityTokenSummaries(nodes, now).find(summary => summary.node.id === 'cred-okta-cookie')!;
     expect(cookie.expiry).toBeNull();
   });
 });

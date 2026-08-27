@@ -4,7 +4,7 @@ import {
   groupPlaybookRunsByCredential,
   preparedExecutionIsClaimed,
   type PreparedExecution,
-} from '../CredentialsPanel';
+} from '../../../lib/credential-playbooks';
 
 function run(runId: string, credentialId: string, updatedAt: string): PlaybookRun {
   return {

@@ -25,6 +25,7 @@ import { findingSummary, findingTitle } from '../../lib/finding-display';
 import { AuthenticatedImage } from '../shared/AuthenticatedImage';
 import { NodeSignificanceCard } from './NodeSignificanceCard';
 import { useDashboardUiStore } from '../../stores/dashboard-ui-store';
+import { buildWorkspacePath } from '../../lib/workspace-navigation';
 
 interface NodeDetailDrawerProps {
   graph: Graph;
@@ -52,41 +53,22 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
   const [evidenceError, setEvidenceError] = useState<string>('');
   const { connected } = useWs();
   const openTopologyNode = (id: string, hops = 2) => {
-    const params = new URLSearchParams({ lens: 'topology', entity: 'node', item: id, node: id, hops: String(hops) });
-    navigate(`/investigate?${params.toString()}`);
+    navigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'node', id }, context: { node: id, hops } }));
   };
   const openNodeProof = (id: string) => {
-    const params = new URLSearchParams({ lens: 'topology', entity: 'node', item: id, node: id, tab: 'proof', context: 'evidence' });
-    navigate(`/investigate?${params.toString()}`);
+    navigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'node', id }, tab: 'proof', context: { node: id, context: 'evidence' } }));
   };
   const openSessions = (sessionId?: string) => {
-    const params = new URLSearchParams({ drawer: 'sessions' });
-    if (sessionId) params.set('drawerItem', sessionId);
-    navigate(`/operate?${params.toString()}`);
+    navigate(buildWorkspacePath({ workspace: 'operate', drawer: { kind: 'sessions', item: sessionId } }));
   };
   const openAttention = (actionId?: string) => {
-    const params = new URLSearchParams({ view: 'attention' });
-    if (actionId) {
-      params.set('kind', 'approval');
-      params.set('item', actionId);
-    }
-    navigate(`/operate?${params.toString()}`);
+    navigate(buildWorkspacePath({ workspace: 'operate', view: 'attention', selection: actionId ? { kind: 'approval', id: actionId } : undefined }));
   };
   const openFrontier = (id?: string) => {
-    const params = new URLSearchParams({ view: 'ready' });
-    if (id) {
-      params.set('kind', 'frontier');
-      params.set('item', id);
-    }
-    navigate(`/operate?${params.toString()}`);
+    navigate(buildWorkspacePath({ workspace: 'operate', view: 'ready', selection: id ? { kind: 'frontier', id } : undefined }));
   };
   const openFindings = (findingId?: string) => {
-    const params = new URLSearchParams({ view: 'readiness' });
-    if (findingId) {
-      params.set('kind', 'finding');
-      params.set('item', findingId);
-    }
-    navigate(`/review?${params.toString()}`);
+    navigate(buildWorkspacePath({ workspace: 'review', view: 'readiness', selection: findingId ? { kind: 'finding', id: findingId } : undefined }));
   };
   // Live nodeId for stale-response guarding: a slow fetch that resolves after the
   // operator has moved to another node must not overwrite the new node's data.
@@ -219,7 +201,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus }: NodeDetail
           <ActionButton
             onClick={() => {
               setLauncherOpen(true);
-              navigate(`/operate?view=active&kind=node&item=${encodeURIComponent(nodeId)}`);
+              navigate(buildWorkspacePath({ workspace: 'operate', view: 'active', selection: { kind: 'node', id: nodeId } }));
             }}
             variant="primary"
             className="w-full"

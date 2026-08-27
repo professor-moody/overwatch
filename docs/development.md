@@ -303,8 +303,9 @@ Before merging dashboard UI changes, run a short operator pass:
 4. Verify that Activity, Sessions, and Runs use the bottom drawer and that repeated Escape presses close the topmost transient surface in order.
 5. Keep credential material masked by default and out of URLs, browser storage, palette results, activity labels, error text, and client logs.
 6. Check legacy routes such as `/graph`, `/agents`, `/findings`, and `/smoke`; adapters must preserve meaningful query context and produce canonical four-workspace URLs.
-7. Prefer the shared workspace primitives before adding one-off button, inspector, drawer, empty-state, row, toolbar, or badge styling.
-8. Run `npm run build:dashboard-next`, `npm run test:browser`, and `mkdocs build --strict` when dashboard surfaces or their documentation change. The browser suite includes the representative workspace visual baselines.
+7. Confirm active navigation producers import the canonical workspace route builder or graph-target builder; legacy panel identifiers belong only in route adapters and compatibility tests.
+8. Prefer the shared workspace primitives before adding one-off button, inspector, drawer, empty-state, row, toolbar, or badge styling.
+9. Run `npm run build:dashboard-next`, `npm run test:browser`, and `mkdocs build --strict` when dashboard surfaces or their documentation change. The browser suite includes the representative workspace visual baselines.
 
 For live route smoke, run the demo API and Vite dashboard against the same API port. If `8384` or `5173` is already occupied, use an alternate API port and let Vite choose the next free frontend port:
 

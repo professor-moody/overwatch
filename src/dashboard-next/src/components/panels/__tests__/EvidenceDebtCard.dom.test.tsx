@@ -8,8 +8,8 @@ vi.mock('../../../lib/api', () => ({ getEvidenceDebt: vi.fn(), dispatchAgent: vi
 const navigateToGraph = vi.fn();
 const navigateToFinding = vi.fn();
 const navigateToEvidenceObjective = vi.fn();
-vi.mock('../../../hooks/useNavigation', () => ({
-  useNavigation: () => ({ navigateToGraph, navigateToFinding, navigateToEvidenceObjective }),
+vi.mock('../../../hooks/useWorkspaceNavigation', () => ({
+  useWorkspaceNavigation: () => ({ navigateToGraph, navigateToFinding, navigateToEvidenceObjective }),
 }));
 
 const ITEMS = [

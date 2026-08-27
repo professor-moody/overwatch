@@ -23,6 +23,7 @@ export type SelectionKind =
   | 'approval'
   | 'finding'
   | 'node'
+  | 'edge'
   | 'credential'
   | 'path'
   | 'campaign'
@@ -43,6 +44,42 @@ export interface DrawerRef {
   kind: DrawerKind;
   item?: string;
 }
+
+export type WorkspaceQueryValue = string | number | boolean | null | undefined;
+
+export type InvestigateContextKey =
+  | 'context'
+  | 'node'
+  | 'nodes'
+  | 'edge'
+  | 'edges'
+  | 'filter'
+  | 'hops'
+  | 'from'
+  | 'to'
+  | 'objective'
+  | 'source'
+  | 'target'
+  | 'edge_type'
+  | 'frontier'
+  | 'finding'
+  | 'evidence'
+  | 'label';
+
+export type WorkspaceContext = Partial<Record<InvestigateContextKey, WorkspaceQueryValue>>;
+
+interface SharedWorkspaceTarget {
+  selection?: SelectionRef | null;
+  tab?: string;
+  drawer?: DrawerRef | null;
+  context?: WorkspaceContext;
+}
+
+export type WorkspaceRouteTarget =
+  | (SharedWorkspaceTarget & { workspace: 'operate'; view?: OperateView })
+  | (SharedWorkspaceTarget & { workspace: 'investigate'; lens?: InvestigateLens })
+  | (SharedWorkspaceTarget & { workspace: 'review'; view?: ReviewView; readiness?: 'draft' | 'needs_validation' | 'client_ready' })
+  | (SharedWorkspaceTarget & { workspace: 'manage'; section?: ManageSection });
 
 /** Action identifiers are the only drawer selections that can move between
  * Activity and Runs. Production IDs use the `act_` prefix; the deterministic
@@ -97,6 +134,33 @@ function move(params: URLSearchParams, from: string, to: string) {
 function pathWithParams(path: string, params: URLSearchParams): string {
   const query = params.toString();
   return `${path}${query ? `?${query}` : ''}`;
+}
+
+/** Serialize a canonical four-workspace destination from typed route state. */
+export function buildWorkspacePath(target: WorkspaceRouteTarget): string {
+  const params = new URLSearchParams();
+  if (target.workspace === 'operate' && target.view) params.set('view', target.view);
+  if (target.workspace === 'investigate' && target.lens) params.set('lens', target.lens);
+  if (target.workspace === 'review') {
+    if (target.view) params.set('view', target.view);
+    if (target.readiness) params.set('readiness', target.readiness);
+  }
+  if (target.workspace === 'manage' && target.section) params.set('section', target.section);
+
+  if (target.selection) {
+    params.set('kind', target.selection.kind);
+    params.set('item', target.selection.id);
+  }
+  if (target.tab) params.set('tab', target.tab);
+  if (target.drawer) {
+    params.set('drawer', target.drawer.kind);
+    if (target.drawer.item) params.set('drawerItem', target.drawer.item);
+  }
+  for (const [key, value] of Object.entries(target.context || {})) {
+    if (value === undefined || value === null || value === false || value === '') continue;
+    params.set(key, String(value));
+  }
+  return pathWithParams(`/${target.workspace}`, params);
 }
 
 /** Translate a 0.3.x panel path to the four-workspace route model. */
@@ -189,12 +253,23 @@ export function legacyPathToWorkspacePath(
 export function selectionFromParams(params: URLSearchParams): SelectionRef | null {
   const kind = params.get('kind') || params.get('entity');
   const id = params.get('item');
-  if (!kind || !id) return null;
   const allowed: SelectionKind[] = [
-    'agent', 'frontier', 'approval', 'finding', 'node', 'credential', 'path',
+    'agent', 'frontier', 'approval', 'finding', 'node', 'edge', 'credential', 'path',
     'campaign', 'evidence', 'question', 'plan', 'playbook', 'proof_gap',
   ];
-  return allowed.includes(kind as SelectionKind) ? { kind: kind as SelectionKind, id } : null;
+  if (kind && id && allowed.includes(kind as SelectionKind)) {
+    return { kind: kind as SelectionKind, id };
+  }
+
+  // Graph bookmarks predate SelectionRef and intentionally retain their
+  // `node` / `edge` context through the 0.4.x compatibility window. Treat the
+  // focused graph entity as the inspector selection without rewriting those
+  // stable, shareable parameters.
+  const edgeId = params.get('edge');
+  if (edgeId) return { kind: 'edge', id: edgeId };
+  const nodeId = params.get('node');
+  if (nodeId) return { kind: 'node', id: nodeId };
+  return null;
 }
 
 export function drawerFromParams(params: URLSearchParams): DrawerRef | null {

@@ -50,53 +50,6 @@ const STATUS_TONES: Record<StatusTone, string> = {
   muted: 'bg-background/70 text-muted-foreground',
 };
 
-export function PageHeader({
-  title,
-  meta,
-  actions,
-}: {
-  title: string;
-  meta?: React.ReactNode;
-  actions?: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3 flex-wrap">
-      <h2 className="text-lg font-semibold">
-        {title}
-        {meta && <span className="text-muted-foreground font-normal text-sm ml-2">{meta}</span>}
-      </h2>
-      {actions && <div className="flex items-center gap-2 flex-wrap">{actions}</div>}
-    </div>
-  );
-}
-
-export function PanelSection({
-  title,
-  meta,
-  children,
-  className,
-  dense,
-}: {
-  title?: string;
-  meta?: React.ReactNode;
-  children: React.ReactNode;
-  className?: string;
-  /** Tighter padding for dense surfaces like the cockpit (p-3 vs p-4). */
-  dense?: boolean;
-}) {
-  return (
-    <section className={cn('bg-surface border border-border rounded-lg', dense ? 'p-3' : 'p-4', className)}>
-      {title && (
-        <h3 className={cn('text-sm font-medium', dense ? 'mb-2' : 'mb-3')}>
-          {title}
-          {meta && <span className="text-muted-foreground font-normal ml-1">{meta}</span>}
-        </h3>
-      )}
-      {children}
-    </section>
-  );
-}
-
 export function MetricTile({
   label,
   value,
