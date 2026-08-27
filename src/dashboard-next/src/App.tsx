@@ -2,15 +2,15 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { WsProvider } from './providers/ws-provider';
 import { WorkspaceShell } from './components/layout/WorkspaceShell';
 import { ToastContainer } from './components/shared/ToastContainer';
-import { buildPanelPath, parseHash } from './hooks/useNavigation';
-import { isLegacyDashboardPath, isWorkspaceId, legacyPathToWorkspacePath } from './lib/workspace-navigation';
+import { buildLegacyPanelPath, parseLegacyHash } from './lib/legacy-navigation';
+import { buildWorkspacePath, isLegacyDashboardPath, isWorkspaceId, legacyPathToWorkspacePath } from './lib/workspace-navigation';
 
 function DashboardRoute() {
   const location = useLocation();
   const segment = location.pathname.replace(/^\//, '').split('/')[0] || undefined;
-  const legacyHash = parseHash(location.hash);
+  const legacyHash = parseLegacyHash(location.hash);
   if (legacyHash) {
-    const oldPath = buildPanelPath(legacyHash);
+    const oldPath = buildLegacyPanelPath(legacyHash);
     const parsed = new URL(oldPath, 'http://overwatch.local');
     return <Navigate to={legacyPathToWorkspacePath(parsed.pathname, parsed.searchParams)} replace />;
   }
@@ -19,7 +19,7 @@ function DashboardRoute() {
   if (isLegacyDashboardPath(segment)) {
     return <Navigate to={`${legacyPathToWorkspacePath(segment, new URLSearchParams(location.search))}${location.hash}`} replace />;
   }
-  return <Navigate to="/operate" replace />;
+  return <Navigate to={buildWorkspacePath({ workspace: 'operate' })} replace />;
 }
 
 export function App() {

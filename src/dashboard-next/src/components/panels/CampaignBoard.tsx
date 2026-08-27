@@ -3,7 +3,7 @@ import { cn } from '../../lib/utils';
 import { EmptyState } from '../shared';
 import type { MissionCard, MissionTone } from '../../lib/agent-mission';
 import { buildCampaignBoard, BOARD_LANES, type BoardLane } from '../../lib/campaign-board';
-import { useNavigation } from '../../hooks/useNavigation';
+import { useWorkspaceNavigation } from '../../hooks/useWorkspaceNavigation';
 
 // Read-only board: each campaign is a swimlane (row); its agents bucket into the
 // status lanes (columns). Pure projection of MissionCards — no engine writes.
@@ -65,7 +65,7 @@ export function CampaignBoard({ cards }: { cards: MissionCard[] }) {
 }
 
 function BoardCard({ card }: { card: MissionCard }) {
-  const { navigateToAgent } = useNavigation();
+  const { navigateToAgent } = useWorkspaceNavigation();
   return (
     <button
       onClick={() => navigateToAgent(card.id)}

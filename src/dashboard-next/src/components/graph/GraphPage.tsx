@@ -38,6 +38,7 @@ import { parseGraphTargetParams, resolveGraphTarget, type ResolvedGraphTarget } 
 import { buildGraphFocusApplication } from '../../lib/graph-focus';
 import { RecoveryBanner } from '../shared/RecoveryBanner';
 import { cn } from '../../lib/utils';
+import { useWorkspaceInspectorAdapters, type WorkspaceInspectorAdapter } from '../layout/WorkspaceInspectorRegistry';
 
 const GRAPH_DRAWER_WIDTH = 384;
 const GRAPH_OVERLAY_GUTTER = 12;
@@ -91,6 +92,7 @@ export function GraphPage({ embedded = false }: { embedded?: boolean }) {
   const [uiRevision, setUiRevision] = useState(0);
   const userPinnedLayoutRef = useRef(false);
   const engagementId = useEngagementStore(s => s.engagement?.id || 'default');
+  const initialized = useEngagementStore(s => s.initialized);
   const frontier = useEngagementStore(s => s.frontier);
   const forceGraphUi = useCallback(() => setUiRevision(v => v + 1), []);
   const graphFitPadding = useCallback((drawerOpen = !!selectedNodeId) => ({
@@ -843,6 +845,45 @@ export function GraphPage({ embedded = false }: { embedded?: boolean }) {
   }, [embedded, handleFitCurrentContext, zoomIn, zoomOut, handleToggleLayout, clearSelection, clearPathHighlight, handleReset]);
 
   const s = stateRef.current;
+  const graphResolved = graph.order > 0 || (initialized && storeGraph.nodes.length === 0);
+  const nodeInspectorAdapter = useMemo<WorkspaceInspectorAdapter>(() => ({
+    resolved: graphResolved,
+    available: Boolean(selectedNodeId && graph.hasNode(selectedNodeId)),
+    render: ({ close }) => (
+      <NodeDetailDrawer
+        graph={graph}
+        nodeId={selectedNodeId}
+        onClose={close}
+        onFocus={enterNeighborhoodFocus}
+        editMode={editMode}
+        onUndoPush={handleUndoPush}
+        embedded={embedded}
+      />
+    ),
+  }), [editMode, embedded, enterNeighborhoodFocus, graph, graphResolved, handleUndoPush, selectedNodeId]);
+  const edgeInspectorAdapter = useMemo<WorkspaceInspectorAdapter>(() => ({
+    resolved: graphResolved,
+    available: Boolean(selectedEdgeId && graph.hasEdge(selectedEdgeId)),
+    render: ({ close }) => (
+      <EdgeDetailPanel
+        graph={graph}
+        edgeId={selectedEdgeId}
+        onClose={() => {
+          setSelectedEdgeId(null);
+          stateRef.current.inspectedEdgeIds.clear();
+          refresh();
+          close();
+        }}
+        onFocusNode={enterNeighborhoodFocus}
+      />
+    ),
+  }), [enterNeighborhoodFocus, graph, graphResolved, refresh, selectedEdgeId, stateRef]);
+  const graphInspectorAdapters = useMemo(() => ({
+    node: nodeInspectorAdapter,
+    credential: nodeInspectorAdapter,
+    edge: edgeInspectorAdapter,
+  }), [edgeInspectorAdapter, nodeInspectorAdapter]);
+  useWorkspaceInspectorAdapters(graphInspectorAdapters);
   const layers = useMemo(() => buildGraphLayerStates({
     graph,
     edgeLabels: showEdgeLabels,
@@ -986,14 +1027,6 @@ export function GraphPage({ embedded = false }: { embedded?: boolean }) {
           </div>
         </div>
 
-        {/* Edge detail panel */}
-        <EdgeDetailPanel
-          graph={graph}
-          edgeId={selectedEdgeId}
-          onClose={() => { setSelectedEdgeId(null); stateRef.current.inspectedEdgeIds.clear(); refresh(); }}
-          onFocusNode={enterNeighborhoodFocus}
-        />
-
         {/* Keyboard shortcuts overlay */}
         {showShortcuts && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowShortcuts(false)}>
@@ -1022,16 +1055,6 @@ export function GraphPage({ embedded = false }: { embedded?: boolean }) {
         )}
       </div>
 
-      {/* Node detail inspector */}
-      <NodeDetailDrawer
-        graph={graph}
-        nodeId={selectedNodeId}
-        onClose={() => clearSelection()}
-        onFocus={enterNeighborhoodFocus}
-        editMode={editMode}
-        onUndoPush={handleUndoPush}
-        embedded={embedded}
-      />
       </div>
 
       {/* Context menu (edit mode) */}

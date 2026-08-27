@@ -3,10 +3,10 @@ import { buildCommandItems, filterCommands, type PanelCommandDef } from '../comm
 import type { AgentInfo } from '../types';
 
 const panels: PanelCommandDef[] = [
-  { id: 'agents', label: 'Console', group: 'Console' },
-  { path: '/graph', label: 'Graph', group: 'Investigate' },
-  { id: 'findings', label: 'Findings', group: 'Investigate' },
-  { id: 'paths', label: 'Attack Paths', group: 'Investigate' },
+  { path: '/operate?view=active', label: 'Console', group: 'Operate' },
+  { path: '/investigate?lens=topology', label: 'Graph', group: 'Investigate' },
+  { path: '/review?view=readiness', label: 'Findings', group: 'Review' },
+  { path: '/investigate?lens=paths', label: 'Attack Paths', group: 'Investigate' },
 ];
 const agents = [
   { id: 'task-1', agent_id: 'recon-agent', status: 'running' } as unknown as AgentInfo,
@@ -18,7 +18,7 @@ describe('command-palette view-model', () => {
     expect(items).toHaveLength(5);
     const graph = items.find(i => i.label === 'Graph')!;
     expect(graph.kind).toBe('panel');
-    expect(graph.path).toBe('/graph');
+    expect(graph.path).toBe('/investigate?lens=topology');
     expect(graph.hint).toBe('Investigate');
     const agent = items.find(i => i.kind === 'agent')!;
     expect(agent.taskId).toBe('task-1');
@@ -36,14 +36,15 @@ describe('command-palette view-model', () => {
     expect(filterCommands(items, 'GRA').map(i => i.label)).toEqual(['Graph']);
     // hint match: the group name reaches every Investigate panel.
     expect(filterCommands(items, 'investigate').map(i => i.label))
-      .toEqual(expect.arrayContaining(['Graph', 'Findings', 'Attack Paths']));
+      .toEqual(expect.arrayContaining(['Graph', 'Attack Paths']));
+    expect(filterCommands(items, 'review').map(i => i.label)).toEqual(['Findings']);
   });
 
   it('ranks a prefix match above a mid-string substring', () => {
     const items = buildCommandItems({
       panels: [
-        { id: 'paths', label: 'Attack Paths', group: 'Investigate' },
-        { id: 'overview', label: 'Path Finder', group: 'Console' },
+        { path: '/investigate?lens=paths', label: 'Attack Paths', group: 'Investigate' },
+        { path: '/operate', label: 'Path Finder', group: 'Operate' },
       ],
       agents: [],
     });

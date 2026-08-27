@@ -53,14 +53,20 @@ export function buildIdentityProviderGroups(nodes: ExportedNode[], edges: Export
 }
 
 export function buildIdentityTokenSummaries(nodes: ExportedNode[], now = Date.now()): IdentityTokenSummary[] {
-  return nodes.filter(node => node.type === 'credential' && TOKEN_KINDS.has(stringValue(node.cred_material_kind) || '')).map(node => ({
-    node,
-    kind: stringValue(node.cred_material_kind) || 'token',
-    user: stringValue(node.cred_user),
-    audience: stringValue(node.cred_audience),
-    scopes: Array.isArray(node.cred_scopes) ? node.cred_scopes.filter((scope): scope is string => typeof scope === 'string') : [],
-    expires: stringValue(node.cred_token_expires_at),
-    expiry: credentialExpiry(node, now),
-    status: node.cred_mfa_satisfied === true ? 'MFA satisfied' : node.cred_mfa_required === true ? 'MFA blocked' : 'usable',
-  }));
+  return nodes.filter(node => node.type === 'credential' && TOKEN_KINDS.has(stringValue(node.cred_material_kind) || '')).map(node => {
+    // Identity inventories and palette-adjacent models carry safe metadata only.
+    // The full credential remains in the engagement store for the explicit reveal
+    // flow, but its material must not leak through a derived/searchable summary.
+    const { cred_value: _credentialValue, ...safeNode } = node;
+    return {
+      node: safeNode as ExportedNode,
+      kind: stringValue(node.cred_material_kind) || 'token',
+      user: stringValue(node.cred_user),
+      audience: stringValue(node.cred_audience),
+      scopes: Array.isArray(node.cred_scopes) ? node.cred_scopes.filter((scope): scope is string => typeof scope === 'string') : [],
+      expires: stringValue(node.cred_token_expires_at),
+      expiry: credentialExpiry(node, now),
+      status: node.cred_mfa_satisfied === true ? 'MFA satisfied' : node.cred_mfa_required === true ? 'MFA blocked' : 'usable',
+    };
+  });
 }

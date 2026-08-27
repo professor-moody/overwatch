@@ -106,6 +106,13 @@ The active engagement plus connection, recovery, synchronization, and OPSEC post
 
 The canonical routes are `/operate`, `/investigate`, `/review`, and `/manage`. Legacy panel routes continue to translate their query context during the documented compatibility window; see [Compatibility and releases](compatibility.md#dashboard-panel-route-aliases).
 
+All runtime navigation producers—palette results, toasts, graph actions,
+inspectors, evidence links, sessions, and drawers—emit canonical workspace URLs.
+The shared shell owns one route-driven inspector registry; each workspace
+contributes entity presentation adapters, while the shell consistently handles
+tab validation, deleted selections, close behavior, and drawer coexistence.
+Legacy panel names are interpreted only by the compatibility entry boundary.
+
 ## Graph Interactions
 
 ### Node Dragging
@@ -308,7 +315,7 @@ A compact minimap in the bottom-right overlay shows the full graph at a glance w
 | `src/dashboard-next/src/components/layout/` | Four-workspace shell, status header, inspector host, drawer host, palette, tape toggle |
 | `src/dashboard-next/src/components/workspaces/` | Native Operate, Investigate, Review, and Manage interiors plus shared launch flows |
 | `src/dashboard-next/src/components/drawer/` | Activity timeline, action-centric Runs, session terminal/context/buffer, shared execution output |
-| `src/dashboard-next/src/components/panels/` | Compatibility-only or feature-level panels retained while their callers are audited |
+| `src/dashboard-next/src/components/panels/` | Feature-level composites still consumed by native workspaces (attention, campaigns, command composition, proof debt, and reports); no top-level legacy destinations |
 | `src/dashboard-next/src/components/graph/` | Sigma topology canvas, compact controls, and inspector context |
 | `src/dashboard-next/src/hooks/` | Canonical navigation, graph data, layout, and Sigma lifecycle |
 | `src/dashboard-next/src/lib/` | API client, route models, activity/run/session adapters, graph utilities, and presentation selectors |

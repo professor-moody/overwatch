@@ -5,9 +5,9 @@ import type { PanelCommandDef } from '../../../lib/command-palette';
 import type { AgentInfo } from '../../../lib/types';
 
 const panels: PanelCommandDef[] = [
-  { id: 'agents', label: 'Console', group: 'Console' },
-  { path: '/graph', label: 'Graph', group: 'Investigate' },
-  { id: 'findings', label: 'Findings', group: 'Investigate' },
+  { path: '/operate?view=active', label: 'Console', group: 'Operate' },
+  { path: '/investigate?lens=topology', label: 'Graph', group: 'Investigate' },
+  { path: '/review?view=readiness', label: 'Findings', group: 'Review' },
 ];
 const agents = [
   { id: 'task-1', agent_id: 'recon-agent', status: 'running' } as unknown as AgentInfo,
@@ -42,7 +42,7 @@ describe('CommandPalette', () => {
     const input = screen.getByRole('textbox');
     fireEvent.change(input, { target: { value: 'graph' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ label: 'Graph', path: '/graph' }));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ label: 'Graph', path: '/investigate?lens=topology' }));
     expect(onClose).toHaveBeenCalled();
   });
 

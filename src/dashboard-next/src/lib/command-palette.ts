@@ -2,14 +2,12 @@
 // live operator: jump to any panel or focus any agent without the mouse. Pure and
 // testable in isolation (like lib/attention-queue.ts); the CommandPalette component
 // only renders + handles keys, delegating item-building and filtering to here.
-import type { LegacyPanelId } from './workspace-navigation';
 import type { AgentInfo } from './types';
 
 /** A navigable route command. Legacy panel IDs remain compatibility-only; the
  * four-workspace palette supplies canonical `path` destinations. */
 export interface PanelCommandDef {
-  id?: LegacyPanelId;
-  path?: string;
+  path: string;
   label: string;
   group: string;
 }
@@ -21,7 +19,6 @@ export interface CommandItem {
   label: string;
   /** Secondary context: the nav group for a panel, or the agent's status. */
   hint?: string;
-  panelId?: LegacyPanelId;
   path?: string;
   taskId?: string;
   /** Canonical destination for non-agent entities in the four-workspace shell. */
@@ -33,11 +30,10 @@ export function buildCommandItems(input: { panels: PanelCommandDef[]; agents?: A
   const items: CommandItem[] = [];
   for (const p of input.panels) {
     items.push({
-      id: `panel:${p.id ?? p.path ?? p.label}`,
+      id: `panel:${p.path}`,
       kind: 'panel',
       label: p.label,
       hint: p.group,
-      panelId: p.id,
       path: p.path,
     });
   }

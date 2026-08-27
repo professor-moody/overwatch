@@ -19,12 +19,13 @@ import {
   selectActiveWork,
   type LiveWorkState,
 } from '../../lib/work-state';
-import { type OperateView, OPERATE_VIEWS, setDrawerParams, setSelectionParams } from '../../lib/workspace-navigation';
+import { buildWorkspacePath, type OperateView, OPERATE_VIEWS, setDrawerParams, setSelectionParams } from '../../lib/workspace-navigation';
 import { AttentionDecisionActions, AttentionQueue } from '../panels/AttentionQueue';
 import { ContextualCommandBar } from '../panels/ContextualCommandBar';
 import { CampaignDetail, CampaignsPanel } from '../panels/CampaignsPanel';
 import { AgentDetailPanel, type AgentContext } from '../agents/AgentDetailPanel';
 import { StartWorkLauncher } from './StartWorkLauncher';
+import { useWorkspaceInspectorAdapters, type WorkspaceInspectorAdapter } from '../layout/WorkspaceInspectorRegistry';
 import {
   ActionButton,
   StatusPill,
@@ -151,14 +152,6 @@ export function OperateWorkspace() {
     : null;
   const inspectorOpen = !!(selectedAgent || selectedFrontier || selectedPlaybook || selectedCampaign || selectedAttention);
 
-  useEffect(() => {
-    if (!initialized || !selectedId) return;
-    const recognized = selectedKind === 'agent' || selectedKind === 'frontier' || selectedKind === 'playbook' || selectedKind === 'campaign'
-      || selectedKind === 'approval' || selectedKind === 'question' || selectedKind === 'plan' || selectedKind === 'proof_gap';
-    const exists = !!(selectedAgent || selectedFrontier || selectedPlaybook || selectedCampaign || selectedAttention);
-    if (recognized && !exists) setSearchParams(setSelectionParams(searchParams, null), { replace: true });
-  }, [initialized, searchParams, selectedAgent, selectedAttention, selectedCampaign, selectedFrontier, selectedId, selectedKind, selectedPlaybook, setSearchParams]);
-
   const setView = (nextView: OperateView) => {
     const next = setSelectionParams(searchParams, null);
     next.set('view', nextView);
@@ -167,7 +160,6 @@ export function OperateWorkspace() {
   const select = (kind: 'agent' | 'frontier' | 'playbook' | 'campaign' | 'approval' | 'question' | 'plan' | 'proof_gap', id: string) => {
     setSearchParams(setSelectionParams(searchParams, { kind, id }));
   };
-  const closeInspector = () => setSearchParams(setSelectionParams(searchParams, null), { replace: true });
 
   const refreshAgents = useCallback(async () => {
     try {
@@ -219,6 +211,65 @@ export function OperateWorkspace() {
     { value: 'history', label: 'History', count: historyAgents.length },
   ];
 
+  const operateInspectorAdapter = useMemo<WorkspaceInspectorAdapter>(() => ({
+    resolved: initialized && supplementalReady,
+    available: inspectorOpen,
+    render: ({ close }) => (
+      <OperateInspector
+        agent={selectedAgent}
+        frontier={selectedFrontier}
+        playbook={selectedPlaybook}
+        campaign={selectedCampaign}
+        attention={selectedAttention}
+        frontierItems={frontier}
+        sessions={sessions}
+        onClose={close}
+        onCancel={cancelAgent}
+        onForceRemove={forceRemoveAgent}
+        onIssueDirective={issueDirective}
+        onNavigate={navigate}
+        onOpenDrawer={(kind, item) => setSearchParams(setDrawerParams(searchParams, { kind, item }))}
+        onStartFrontier={() => setLauncherOpen(true)}
+        onRefreshCampaigns={refreshCampaigns}
+        onAttentionAnswered={refreshSupplemental}
+        onAttentionPlanResolved={refreshSupplemental}
+        onReviewProof={() => navigate(buildWorkspacePath({ workspace: 'review', view: 'readiness', readiness: 'draft' }))}
+      />
+    ),
+  }), [
+    activeWork.total,
+    cancelAgent,
+    forceRemoveAgent,
+    frontier,
+    initialized,
+    inspectorOpen,
+    issueDirective,
+    navigate,
+    refreshCampaigns,
+    refreshSupplemental,
+    searchParams,
+    selectedAgent,
+    selectedAttention,
+    selectedCampaign,
+    selectedFrontier,
+    selectedPlaybook,
+    sessions,
+    setLauncherOpen,
+    setSearchParams,
+    supplementalReady,
+  ]);
+  const operateInspectorAdapters = useMemo(() => ({
+    agent: operateInspectorAdapter,
+    frontier: operateInspectorAdapter,
+    playbook: operateInspectorAdapter,
+    campaign: operateInspectorAdapter,
+    approval: operateInspectorAdapter,
+    question: operateInspectorAdapter,
+    plan: operateInspectorAdapter,
+    proof_gap: operateInspectorAdapter,
+  }), [operateInspectorAdapter]);
+  useWorkspaceInspectorAdapters(operateInspectorAdapters);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <WorkspaceHeader
@@ -253,7 +304,7 @@ export function OperateWorkspace() {
                   onSelectAgent={taskId => select('agent', taskId)}
                   onForceRemove={forceRemoveAgent}
                   onTriageAll={() => undefined}
-                  onReviewProof={() => navigate('/review?view=readiness&readiness=draft')}
+                  onReviewProof={() => navigate(buildWorkspacePath({ workspace: 'review', view: 'readiness', readiness: 'draft' }))}
                   onSelectItem={item => {
                     if ((item.kind === 'failed' || item.kind === 'stuck') && item.taskId) select('agent', item.taskId);
                     else if (item.kind === 'approval' && item.actionId) select('approval', item.actionId);
@@ -364,28 +415,6 @@ export function OperateWorkspace() {
           )}
         </section>
 
-        {inspectorOpen && (
-          <OperateInspector
-            agent={selectedAgent}
-            frontier={selectedFrontier}
-            playbook={selectedPlaybook}
-            campaign={selectedCampaign}
-            attention={selectedAttention}
-            frontierItems={frontier}
-            sessions={sessions}
-            onClose={closeInspector}
-            onCancel={cancelAgent}
-            onForceRemove={forceRemoveAgent}
-            onIssueDirective={issueDirective}
-            onNavigate={navigate}
-            onOpenDrawer={(kind, item) => setSearchParams(setDrawerParams(searchParams, { kind, item }))}
-            onStartFrontier={() => setLauncherOpen(true)}
-            onRefreshCampaigns={refreshCampaigns}
-            onAttentionAnswered={refreshSupplemental}
-            onAttentionPlanResolved={refreshSupplemental}
-            onReviewProof={() => navigate('/review?view=readiness&readiness=draft')}
-          />
-        )}
       </div>
 
       {launcherOpen && <StartWorkLauncher onClose={() => setLauncherOpen(false)} />}
@@ -552,8 +581,8 @@ function OperateInspector({
               ownedSessions={sessionsForAgent(sessions, agent)}
               onCancel={agent.status === 'running' || agent.status === 'pending' ? () => void onCancel(canonicalAgentTaskId(agent)) : undefined}
               onForceRemove={agent.status !== 'completed' ? () => void onForceRemove(canonicalAgentTaskId(agent)) : undefined}
-              onNavigateGraph={nodeId => onNavigate(`/investigate?lens=topology&entity=node&item=${encodeURIComponent(nodeId)}&node=${encodeURIComponent(nodeId)}`)}
-              onNavigateCampaign={campaignId => onNavigate(`/operate?view=campaigns&kind=campaign&item=${encodeURIComponent(campaignId)}`)}
+              onNavigateGraph={nodeId => onNavigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'node', id: nodeId }, context: { node: nodeId } }))}
+              onNavigateCampaign={campaignId => onNavigate(buildWorkspacePath({ workspace: 'operate', view: 'campaigns', selection: { kind: 'campaign', id: campaignId } }))}
               onNavigateSession={sessionId => onOpenDrawer('sessions', sessionId)}
               onIssueDirective={onIssueDirective}
             />
@@ -591,13 +620,13 @@ function FrontierInspector({ item, onStart, onNavigate }: { item: FrontierItem; 
       </div>
       <div className="mt-4 flex flex-wrap gap-1.5">
         <ActionButton variant="purple" onClick={onStart}>Start work</ActionButton>
-        {nodes[0] && <ActionButton onClick={() => onNavigate(`/investigate?lens=topology&context=frontier&node=${encodeURIComponent(nodes[0])}`)}>Show in topology</ActionButton>}
+        {nodes[0] && <ActionButton onClick={() => onNavigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', context: { context: 'frontier', node: nodes[0] } }))}>Show in topology</ActionButton>}
       </div>
       {nodes.length > 0 && (
         <div className="mt-5 border-t border-border-subtle pt-3">
           <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Linked assets</div>
           <div className="mt-2 space-y-1">
-            {nodes.map(node => <button key={node} className="block w-full truncate text-left font-mono text-[10px] text-accent hover:underline" onClick={() => onNavigate(`/investigate?lens=topology&entity=node&item=${encodeURIComponent(node)}&node=${encodeURIComponent(node)}`)}>{node}</button>)}
+            {nodes.map(node => <button key={node} className="block w-full truncate text-left font-mono text-[10px] text-accent hover:underline" onClick={() => onNavigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'node', id: node }, context: { node } }))}>{node}</button>)}
           </div>
         </div>
       )}

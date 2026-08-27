@@ -6,12 +6,13 @@ import * as api from '../../lib/api';
 import type { FindingContextResponse } from '../../lib/types';
 import { findingImpact, findingRemediation, findingSummary, findingTitle } from '../../lib/finding-display';
 import { cn } from '../../lib/utils';
-import { REVIEW_VIEWS, type ReviewView, setDrawerParams, setSelectionParams } from '../../lib/workspace-navigation';
+import { buildWorkspacePath, REVIEW_VIEWS, type ReviewView, setDrawerParams, setSelectionParams } from '../../lib/workspace-navigation';
 import { RenderReportModal } from '../panels/RenderReportModal';
 import { ReportsList } from '../panels/ReportsList';
 import { EvidenceDebtCard } from '../panels/EvidenceDebtCard';
 import { ProofLibrary } from './ProofLibrary';
 import { ExecutionOutputView } from '../drawer/ExecutionOutputView';
+import { useWorkspaceInspectorAdapters, type WorkspaceInspectorAdapter } from '../layout/WorkspaceInspectorRegistry';
 import {
   ActionButton,
   StatusPill,
@@ -42,9 +43,7 @@ function isReadiness(value: string | null): value is Readiness {
   return value === 'draft' || value === 'needs_validation' || value === 'client_ready';
 }
 
-function isInspectorTab(value: string | null): value is InspectorTab {
-  return value === 'summary' || value === 'proof' || value === 'affected' || value === 'path' || value === 'remediation' || value === 'activity';
-}
+const FINDING_INSPECTOR_TABS: InspectorTab[] = ['summary', 'proof', 'affected', 'path', 'remediation', 'activity'];
 
 export function ReviewWorkspace() {
   const navigate = useNavigate();
@@ -91,10 +90,25 @@ export function ReviewWorkspace() {
   };
   const selectFinding = (id: string) => setSearchParams(setSelectionParams(searchParams, { kind: 'finding', id }));
 
-  useEffect(() => {
-    if (loading || !selectedId || selectedFinding || (searchParams.get('kind') && searchParams.get('kind') !== 'finding')) return;
-    setSearchParams(setSelectionParams(searchParams, null), { replace: true });
-  }, [loading, searchParams, selectedFinding, selectedId, setSearchParams]);
+  const findingInspectorAdapter = useMemo<WorkspaceInspectorAdapter>(() => ({
+    resolved: !loading,
+    available: Boolean(selectedFinding),
+    tabs: FINDING_INSPECTOR_TABS.map(value => ({ value, label: value })),
+    defaultTab: 'summary',
+    render: ({ tab, setTab, close }) => selectedFinding ? (
+      <FindingInspector
+        finding={selectedFinding}
+        readiness={readinessById.get(selectedFinding.id) || null}
+        tab={(tab || 'summary') as InspectorTab}
+        onTabChange={nextTab => setTab(nextTab)}
+        onClose={close}
+        onNavigate={navigate}
+        onOpenRun={actionId => setSearchParams(setDrawerParams(searchParams, { kind: 'run', item: actionId }))}
+      />
+    ) : null,
+  }), [loading, navigate, readinessById, searchParams, selectedFinding, setSearchParams]);
+  const reviewInspectorAdapters = useMemo(() => ({ finding: findingInspectorAdapter }), [findingInspectorAdapter]);
+  useWorkspaceInspectorAdapters(reviewInspectorAdapters);
 
   const tabs: Array<{ value: ReviewView; label: string; count?: number }> = [
     { value: 'readiness', label: 'Readiness', count: readiness?.summary.total ?? findings.length },
@@ -153,15 +167,6 @@ export function ReviewWorkspace() {
           )}
         </section>
 
-        {view === 'readiness' && selectedFinding && (
-          <FindingInspector
-            finding={selectedFinding}
-            readiness={readinessById.get(selectedFinding.id) || null}
-            onClose={() => setSearchParams(setSelectionParams(searchParams, null), { replace: true })}
-            onNavigate={navigate}
-            onOpenRun={actionId => setSearchParams(setDrawerParams(searchParams, { kind: 'run', item: actionId }))}
-          />
-        )}
       </div>
 
       {showRender && <RenderReportModal onClose={() => setShowRender(false)} onRendered={() => void load()} />}
@@ -272,19 +277,20 @@ function SmallMetric({ label, value }: { label: string; value: number }) {
 function FindingInspector({
   finding,
   readiness,
+  tab,
+  onTabChange,
   onClose,
   onNavigate,
   onOpenRun,
 }: {
   finding: api.FindingDto;
   readiness: api.FindingReadinessReport['findings'][number] | null;
+  tab: InspectorTab;
+  onTabChange: (tab: InspectorTab) => void;
   onClose: () => void;
   onNavigate: ReturnType<typeof useNavigate>;
   onOpenRun: (actionId: string) => void;
 }) {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const requestedTab = searchParams.get('tab');
-  const tab: InspectorTab = isInspectorTab(requestedTab) ? requestedTab : 'summary';
   const [context, setContext] = useState<FindingContextResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -298,28 +304,14 @@ function FindingInspector({
     return () => { cancelled = true; };
   }, [finding.id]);
 
-  useEffect(() => {
-    if (!requestedTab || isInspectorTab(requestedTab)) return;
-    const next = new URLSearchParams(searchParams);
-    next.delete('tab');
-    setSearchParams(next, { replace: true });
-  }, [requestedTab, searchParams, setSearchParams]);
-
-  const setTab = (nextTab: InspectorTab) => {
-    const next = new URLSearchParams(searchParams);
-    next.set('tab', nextTab);
-    setSearchParams(next, { replace: true });
-  };
-  const tabs: InspectorTab[] = ['summary', 'proof', 'affected', 'path', 'remediation', 'activity'];
-
   return (
     <WorkspaceInspector
       label="Finding inspector"
       title={findingTitle(finding)}
       identifier={finding.id}
-      tabs={tabs.map(value => ({ value, label: value }))}
+      tabs={FINDING_INSPECTOR_TABS.map(value => ({ value, label: value }))}
       activeTab={tab}
-      onTabChange={value => setTab(value as InspectorTab)}
+      onTabChange={value => onTabChange(value as InspectorTab)}
       onClose={onClose}
     >
         <div className="border-b border-border-subtle pb-3">
@@ -344,11 +336,11 @@ function FindingTab({ tab, finding, readiness, context, onNavigate, onOpenRun }:
   }
   if (tab === 'affected') {
     if (!context?.affected_nodes.length) return <WorkspaceEmpty title="No affected assets linked" />;
-    return <div>{context.affected_nodes.map(node => <WorkspaceRow key={node.id} onClick={() => onNavigate(`/investigate?lens=topology&context=finding&node=${encodeURIComponent(node.id)}&entity=node&item=${encodeURIComponent(node.id)}`)}><div className="min-w-0 flex-1"><div className="truncate text-xs font-medium text-foreground">{node.label || node.asset || node.id}</div><div className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground">{node.id}</div></div><ChevronRight className="h-3.5 w-3.5 text-muted" /></WorkspaceRow>)}</div>;
+    return <div>{context.affected_nodes.map(node => <WorkspaceRow key={node.id} onClick={() => onNavigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'node', id: node.id }, context: { context: 'finding', node: node.id } }))}><div className="min-w-0 flex-1"><div className="truncate text-xs font-medium text-foreground">{node.label || node.asset || node.id}</div><div className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground">{node.id}</div></div><ChevronRight className="h-3.5 w-3.5 text-muted" /></WorkspaceRow>)}</div>;
   }
   if (tab === 'path') {
     if (!context?.path_impacts.length) return <WorkspaceEmpty title="No objective path impact" detail="This finding is not currently present on a calculated objective path." />;
-    return <div className="space-y-3">{context.path_impacts.map((path, index) => <button key={`${path.objective_id}-${index}`} onClick={() => onNavigate(`/investigate?lens=paths&objective=${encodeURIComponent(path.objective_id)}`)} className="block w-full border-b border-border-subtle pb-3 text-left"><div className="text-xs font-medium text-foreground">{path.objective}</div><div className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{path.nodes.join(' → ')}</div><div className="mt-1 text-[9px] text-muted">{Math.round(path.total_confidence * 100)}% confidence · noise {path.total_opsec_noise.toFixed(1)}</div></button>)}</div>;
+    return <div className="space-y-3">{context.path_impacts.map((path, index) => <button key={`${path.objective_id}-${index}`} onClick={() => onNavigate(buildWorkspacePath({ workspace: 'investigate', lens: 'paths', context: { objective: path.objective_id } }))} className="block w-full border-b border-border-subtle pb-3 text-left"><div className="text-xs font-medium text-foreground">{path.objective}</div><div className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{path.nodes.join(' → ')}</div><div className="mt-1 text-[9px] text-muted">{Math.round(path.total_confidence * 100)}% confidence · noise {path.total_opsec_noise.toFixed(1)}</div></button>)}</div>;
   }
   if (tab === 'remediation') return <InfoBlock label="Recommended remediation" text={findingRemediation(finding)} />;
   return <div className="space-y-3"><InfoMetric label="Sessions" value={context?.sessions.length ?? 0} /><InfoMetric label="Pending actions" value={context?.pending_actions.length ?? 0} /><InfoMetric label="Frontier items" value={context?.frontier.length ?? 0} /><p className="text-[10px] leading-4 text-muted-foreground">Open the global Activity drawer for the full auditable event timeline.</p></div>;

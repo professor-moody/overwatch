@@ -31,6 +31,7 @@ import {
 import type { SessionBufferResponse, SessionInfo } from '../../lib/types';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { useEngagementStore } from '../../stores/engagement-store';
+import { buildWorkspacePath } from '../../lib/workspace-navigation';
 import { ActionButton, StatusPill } from '../shared/primitives';
 
 type SessionView = 'terminal' | 'context' | 'buffer';
@@ -456,9 +457,9 @@ function SessionContext({ session, graph, editing, draftTitle, draftNotes, busy,
       {(session.reachability_warnings?.length || session.capabilities?.tty_quality === 'dumb') ? <div className="space-y-1 border-b border-border-subtle py-2">{session.reachability_warnings?.map(warning => <div key={warning} className="text-[9px] leading-4 text-warning">! {warning}</div>)}{session.capabilities?.tty_quality === 'dumb' && <div className="text-[9px] leading-4 text-muted-foreground">Raw socket: resize and signal capabilities are unavailable. The durable buffer remains authoritative.</div>}</div> : null}
       <div className="flex flex-wrap gap-1 py-2">
         {sessionCopyFields(session).map(field => <button key={field.label} type="button" onClick={() => onCopy(field.label, field.value)} className="inline-flex h-6 items-center gap-1 rounded border border-border-subtle bg-elevated px-2 font-mono text-[8px] text-muted-foreground hover:text-foreground"><Copy className="h-2.5 w-2.5" />{copied === field.label ? 'copied' : field.label}</button>)}
-        {session.target_node && <button type="button" onClick={() => onNavigate(`/investigate?lens=topology&entity=node&item=${encodeURIComponent(session.target_node!)}&node=${encodeURIComponent(session.target_node!)}`)} className="h-6 rounded bg-accent/10 px-2 text-[8px] text-accent">Show target in topology</button>}
-        {session.action_id && <button type="button" onClick={() => onNavigate(`/operate?drawer=run&drawerItem=${encodeURIComponent(session.action_id!)}`)} className="h-6 rounded bg-elevated px-2 font-mono text-[8px] text-foreground">Open producing run</button>}
-        {session.frontier_item_id && <button type="button" onClick={() => onNavigate(`/operate?view=ready&kind=frontier&item=${encodeURIComponent(session.frontier_item_id!)}`)} className="h-6 rounded bg-elevated px-2 font-mono text-[8px] text-foreground">Frontier item</button>}
+        {session.target_node && <button type="button" onClick={() => onNavigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'node', id: session.target_node! }, context: { node: session.target_node! } }))} className="h-6 rounded bg-accent/10 px-2 text-[8px] text-accent">Show target in topology</button>}
+        {session.action_id && <button type="button" onClick={() => onNavigate(buildWorkspacePath({ workspace: 'operate', drawer: { kind: 'run', item: session.action_id! } }))} className="h-6 rounded bg-elevated px-2 font-mono text-[8px] text-foreground">Open producing run</button>}
+        {session.frontier_item_id && <button type="button" onClick={() => onNavigate(buildWorkspacePath({ workspace: 'operate', view: 'ready', selection: { kind: 'frontier', id: session.frontier_item_id! } }))} className="h-6 rounded bg-elevated px-2 font-mono text-[8px] text-foreground">Frontier item</button>}
       </div>
     </div>
   );

@@ -3,7 +3,7 @@
 // ============================================================
 
 import { useState } from 'react';
-import { useNavigation } from '../../hooks/useNavigation';
+import { useWorkspaceNavigation } from '../../hooks/useWorkspaceNavigation';
 import { correctGraph, type GraphCorrectionOperation } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { cn } from '../../lib/utils';
@@ -22,7 +22,7 @@ interface NodeContextMenuProps {
 }
 
 export function NodeContextMenu({ menu, onClose, onFocus, onUndoPush }: NodeContextMenuProps) {
-  const { navigateToEvidence, navigateToPaths } = useNavigation();
+  const { navigateToEvidence, navigateToPaths } = useWorkspaceNavigation();
   const toast = useToastStore((s) => s.addToast);
   const [annotateOpen, setAnnotateOpen] = useState(false);
   const [annotateText, setAnnotateText] = useState('');

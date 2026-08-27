@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { groupByIdp, tokenCredentials } from '../../components/panels/IdentityPanel';
-import { computePaths } from '../../components/panels/AttackPathsPanel';
+import { buildIdentityProviderGroups, buildIdentityTokenSummaries } from '../identity-inventory';
+import { computeWorkspacePaths } from '../computed-paths';
 import type { ExportedEdge, ExportedGraph, ExportedNode } from '../types';
 
 const now = '2026-05-15T18:23:34.963Z';
@@ -27,13 +27,13 @@ describe('identity and attack path demo helpers', () => {
       edge('idp-principal-jdoe', 'idp-app-benefits', 'ASSIGNED_TO_APP'),
     ];
 
-    const [okta] = groupByIdp(nodes, edges);
+    const [okta] = buildIdentityProviderGroups(nodes, edges);
 
     expect(okta.idp.id).toBe('idp-okta');
-    expect(okta.apps.map(app => app.id)).toEqual(['idp-app-benefits']);
+    expect(okta.applications.map(app => app.id)).toEqual(['idp-app-benefits']);
     expect(okta.principals.map(principal => principal.id)).toEqual(['idp-principal-jdoe']);
     expect(okta.federatedDomains).toEqual(['corp.local']);
-    expect(tokenCredentials(nodes).map(cred => cred.id)).toEqual(['cred-okta-cookie']);
+    expect(buildIdentityTokenSummaries(nodes).map(summary => summary.node.id)).toEqual(['cred-okta-cookie']);
   });
 
   it('computes AD, hybrid identity, and CI/OIDC cloud paths from live session sources', () => {
@@ -70,7 +70,7 @@ describe('identity and attack path demo helpers', () => {
       coldInventory: [],
     };
     const byId = new Map(graph.nodes.map(n => [n.id, n]));
-    const computed = computePaths(graph.nodes, graph.edges, 'confidence', 6, byId);
+    const computed = computeWorkspacePaths(graph.nodes, graph.edges, 'confidence', 6, byId);
     const paths = computed.map(path => path.nodes.join('>'));
 
     expect(paths).toContain('ws01>jdoe>domain-admins>dc01');

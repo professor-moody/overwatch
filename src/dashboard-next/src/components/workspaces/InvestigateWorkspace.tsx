@@ -9,7 +9,8 @@ import { deriveNodeRelationships } from '../../lib/relationships';
 import type { EvidenceChainResponse } from '../../lib/types';
 import type { FindingDto } from '../../lib/api';
 import * as api from '../../lib/api';
-import { INVESTIGATE_LENSES, type InvestigateLens, setSelectionParams } from '../../lib/workspace-navigation';
+import { buildWorkspacePath, INVESTIGATE_LENSES, type InvestigateLens, setSelectionParams } from '../../lib/workspace-navigation';
+import { useWorkspaceInspectorAdapters, type WorkspaceInspectorAdapter } from '../layout/WorkspaceInspectorRegistry';
 import {
   ActionButton,
   StatusPill,
@@ -22,6 +23,8 @@ import {
 import { CredentialInspector, CredentialsLens, IdentityLens, NativePathInspector, PathsLens } from './NativeInvestigateLenses';
 
 const GraphPage = lazy(() => import('../graph/GraphPage').then(module => ({ default: module.GraphPage })));
+const ENTITY_INSPECTOR_TABS = ['summary', 'relationships', 'proof', 'activity', 'findings', 'actions'] as const;
+const CREDENTIAL_INSPECTOR_TABS = ['summary', 'relationships', 'activity', 'actions'] as const;
 
 function isLens(value: string | null): value is InvestigateLens {
   return !!value && (INVESTIGATE_LENSES as readonly string[]).includes(value);
@@ -39,21 +42,19 @@ export function InvestigateWorkspace() {
   const lens: InvestigateLens = isLens(requested) ? requested : 'topology';
   const selectedEntity = searchParams.get('kind') || searchParams.get('entity');
   const selectedId = searchParams.get('item');
+  const selectedPathNodes = searchParams.get('nodes') || '';
+  const selectedPathEdges = searchParams.get('edges') || '';
   const selectedNode = selectedId && (selectedEntity === 'node' || selectedEntity === 'credential')
     ? graph.nodes.find(node => node.id === selectedId) ?? null
     : null;
-  const selectedPath = selectedId && selectedEntity === 'path'
+  const selectedPath = useMemo(() => selectedId && selectedEntity === 'path'
     ? {
         id: selectedId,
-        nodeIds: (searchParams.get('nodes') || '').split(',').filter(Boolean),
-        edgeIds: (searchParams.get('edges') || '').split(',').filter(Boolean),
+        nodeIds: selectedPathNodes.split(',').filter(Boolean),
+        edgeIds: selectedPathEdges.split(',').filter(Boolean),
       }
-    : null;
-
-  useEffect(() => {
-    if (!initialized || !selectedId || (selectedEntity !== 'node' && selectedEntity !== 'credential') || selectedNode) return;
-    setSearchParams(setSelectionParams(searchParams, null), { replace: true });
-  }, [initialized, searchParams, selectedEntity, selectedId, selectedNode, setSearchParams]);
+    : null,
+  [selectedEntity, selectedId, selectedPathEdges, selectedPathNodes]);
 
   const setLens = (nextLens: InvestigateLens) => {
     const next = new URLSearchParams(searchParams);
@@ -68,6 +69,35 @@ export function InvestigateWorkspace() {
     { value: 'credentials', label: 'Credentials', count: graph.nodes.filter(node => node.type === 'credential').length },
     { value: 'paths', label: 'Paths' },
   ];
+
+  const entityAdapter = useMemo<WorkspaceInspectorAdapter>(() => ({
+    resolved: initialized,
+    available: Boolean(selectedNode && selectedNode.type !== 'credential'),
+    tabs: ENTITY_INSPECTOR_TABS.map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) })),
+    defaultTab: 'summary',
+    render: ({ tab, setTab, close }) => selectedNode && selectedNode.type !== 'credential'
+      ? <EntityInspector node={selectedNode} tab={tab || 'summary'} onTabChange={setTab} onClose={close} />
+      : null,
+  }), [initialized, selectedNode]);
+  const credentialAdapter = useMemo<WorkspaceInspectorAdapter>(() => ({
+    resolved: initialized,
+    available: Boolean(selectedNode?.type === 'credential'),
+    tabs: CREDENTIAL_INSPECTOR_TABS.map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) })),
+    defaultTab: 'summary',
+    render: ({ tab, setTab, close }) => selectedNode?.type === 'credential'
+      ? <CredentialInspector credential={selectedNode} tab={tab || 'summary'} onTabChange={setTab} onClose={close} />
+      : null,
+  }), [initialized, selectedNode]);
+  const pathAdapter = useMemo<WorkspaceInspectorAdapter>(() => ({
+    resolved: initialized,
+    available: Boolean(selectedPath),
+    render: ({ close }) => selectedPath ? <NativePathInspector path={selectedPath} onClose={close} /> : null,
+  }), [initialized, selectedPath]);
+  const investigateInspectorAdapters = useMemo(() => lens === 'topology'
+    ? { path: pathAdapter }
+    : { node: entityAdapter, credential: credentialAdapter, path: pathAdapter },
+  [credentialAdapter, entityAdapter, lens, pathAdapter]);
+  useWorkspaceInspectorAdapters(investigateInspectorAdapters);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
@@ -89,15 +119,6 @@ export function InvestigateWorkspace() {
             <PathsLens active={lens === 'paths'} />
           </Suspense>
         </section>
-        {lens !== 'topology' && selectedNode && selectedNode.type === 'credential' && (
-          <CredentialInspector credential={selectedNode} onClose={() => setSearchParams(setSelectionParams(searchParams, null), { replace: true })} />
-        )}
-        {lens !== 'topology' && selectedNode && selectedNode.type !== 'credential' && (
-          <EntityInspector node={selectedNode} onClose={() => setSearchParams(setSelectionParams(searchParams, null), { replace: true })} />
-        )}
-        {selectedPath && (
-          <NativePathInspector path={selectedPath} onClose={() => setSearchParams(setSelectionParams(searchParams, null), { replace: true })} />
-        )}
       </div>
     </div>
   );
@@ -168,9 +189,9 @@ function AssetsLens({ active = true }: { active?: boolean }) {
   );
 }
 
-function EntityInspector({ node, onClose }: { node: ReturnType<typeof useEngagementStore.getState>['graph']['nodes'][number]; onClose: () => void }) {
+function EntityInspector({ node, tab, onTabChange, onClose }: { node: ReturnType<typeof useEngagementStore.getState>['graph']['nodes'][number]; tab: string; onTabChange: (tab: string) => void; onClose: () => void }) {
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const setLauncherOpen = useDashboardUiStore(state => state.setStartWorkOpen);
   const graph = useEngagementStore(state => state.graph);
   const sessions = useEngagementStore(state => state.sessions);
@@ -179,9 +200,6 @@ function EntityInspector({ node, onClose }: { node: ReturnType<typeof useEngagem
   const [findings, setFindings] = useState<FindingDto[]>([]);
   const [evidence, setEvidence] = useState<EvidenceChainResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const tabs = ['summary', 'relationships', 'proof', 'activity', 'findings', 'actions'];
-  const requestedTab = searchParams.get('tab');
-  const tab = requestedTab && tabs.includes(requestedTab) ? requestedTab : 'summary';
   const properties = Object.entries(node).filter(([key, value]) => !['id', 'label', 'type', 'confidence', 'properties'].includes(key) && value !== undefined && value !== null && typeof value !== 'object').slice(0, 12);
   const relationships = useMemo(() => deriveNodeRelationships(node.id, { graph, sessions, pendingActions, frontier, findings }), [findings, frontier, graph, node.id, pendingActions, sessions]);
   const graphRelations = useMemo(() => graph.edges.filter(edge => edge.source === node.id || edge.target === node.id).map(edge => ({ edge, peer: graph.nodes.find(candidate => candidate.id === (edge.source === node.id ? edge.target : edge.source)) })), [graph.edges, graph.nodes, node.id]);
@@ -199,25 +217,14 @@ function EntityInspector({ node, onClose }: { node: ReturnType<typeof useEngagem
     return () => { cancelled = true; };
   }, [node.id]);
 
-  useEffect(() => {
-    if (!requestedTab || tabs.includes(requestedTab)) return;
-    const next = new URLSearchParams(searchParams);
-    next.delete('tab');
-    setSearchParams(next, { replace: true });
-  }, [requestedTab, searchParams, setSearchParams]);
-
   return (
     <WorkspaceInspector
       label="Asset inspector"
       title={String(node.label || node.id)}
       identifier={node.id}
-      tabs={tabs.map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) }))}
+      tabs={ENTITY_INSPECTOR_TABS.map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) }))}
       activeTab={tab}
-      onTabChange={nextTab => {
-        const next = new URLSearchParams(searchParams);
-        if (nextTab === 'summary') next.delete('tab'); else next.set('tab', nextTab);
-        setSearchParams(next);
-      }}
+      onTabChange={onTabChange}
       onClose={onClose}
     >
       {loadError && <div role="alert" className="mb-3 border-l-2 border-warning pl-2 text-[9px] text-warning">Last-good graph context remains visible. {loadError}</div>}
@@ -228,19 +235,19 @@ function EntityInspector({ node, onClose }: { node: ReturnType<typeof useEngagem
           </div>
           <div className="mt-4 flex flex-wrap gap-1.5"><StatusPill tone="accent">{node.type.replaceAll('_', ' ')}</StatusPill><StatusPill tone="muted">{Math.round((node.confidence || 0) * 100)}% confidence</StatusPill></div>
           <div className="mt-5 flex flex-wrap gap-1.5">
-            <ActionButton variant="primary" onClick={() => navigate(`/investigate?lens=topology&entity=node&item=${encodeURIComponent(node.id)}&node=${encodeURIComponent(node.id)}`)}><Network className="h-3 w-3" /> Show in topology</ActionButton>
+            <ActionButton variant="primary" onClick={() => navigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'node', id: node.id }, context: { node: node.id } }))}><Network className="h-3 w-3" /> Show in topology</ActionButton>
             <ActionButton onClick={() => {
               setLauncherOpen(true);
-              navigate(`/operate?view=active&kind=node&item=${encodeURIComponent(node.id)}`);
+              navigate(buildWorkspacePath({ workspace: 'operate', view: 'active', selection: { kind: 'node', id: node.id } }));
             }}>Start work</ActionButton>
           </div>
           {properties.length > 0 && <div className="mt-5 border-t border-border-subtle pt-3"><div className="mb-2 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Metadata</div><div className="space-y-2">{properties.map(([key, value]) => <div key={key} className="grid grid-cols-[7rem_1fr] gap-2 text-[10px]"><span className="text-muted-foreground">{key.replaceAll('_', ' ')}</span><span className="break-all text-foreground">{String(value)}</span></div>)}</div></div>}
       </>}
-      {tab === 'relationships' && <div className="space-y-1">{graphRelations.length ? graphRelations.map(({ edge, peer }) => <button key={edge.id} type="button" onClick={() => peer && navigate(`/investigate?lens=topology&entity=node&item=${encodeURIComponent(peer.id)}&node=${encodeURIComponent(peer.id)}`)} className="flex w-full items-start gap-2 border-b border-border-subtle py-2 text-left"><StatusPill tone={edge.inferred ? 'warning' : 'muted'}>{edge.type.replaceAll('_', ' ')}</StatusPill><span className="min-w-0 flex-1 truncate text-[10px] text-foreground">{peer?.label || peer?.id || 'Missing graph peer'}</span><span className="font-mono text-[8px] text-muted-foreground">{Math.round((edge.confidence || 0) * 100)}%</span></button>) : <WorkspaceEmpty title="No recorded relationships" detail="Graph edges for this entity will appear here." />}</div>}
-      {tab === 'proof' && <div className="space-y-2">{evidence?.chains.length ? evidence.chains.map((entry, index) => <div key={`${entry.activity_id}:${index}`} className="border-l border-border-subtle pl-2"><div className="text-[10px] text-foreground">{entry.description || entry.event_type}</div><div className="mt-0.5 font-mono text-[8px] text-muted-foreground">{entry.evidence_id || entry.activity_id} · {entry.source_trust || 'unknown trust'}</div><div className="mt-1 line-clamp-3 font-mono text-[9px] text-muted-foreground">{entry.snippet || 'No excerpt loaded.'}</div>{entry.action_id && <button type="button" onClick={() => navigate(`/investigate?lens=${searchParams.get('lens') || 'assets'}&entity=node&item=${encodeURIComponent(node.id)}&tab=proof&drawer=run&drawerItem=${encodeURIComponent(entry.action_id!)}`)} className="mt-1 text-[9px] text-accent hover:underline">Open producing run</button>}</div>) : <WorkspaceEmpty title="No proof chain" detail="Captured evidence connected to this entity will appear here." />}</div>}
+      {tab === 'relationships' && <div className="space-y-1">{graphRelations.length ? graphRelations.map(({ edge, peer }) => <button key={edge.id} type="button" onClick={() => peer && navigate(buildWorkspacePath({ workspace: 'investigate', lens: 'topology', selection: { kind: 'node', id: peer.id }, context: { node: peer.id } }))} className="flex w-full items-start gap-2 border-b border-border-subtle py-2 text-left"><StatusPill tone={edge.inferred ? 'warning' : 'muted'}>{edge.type.replaceAll('_', ' ')}</StatusPill><span className="min-w-0 flex-1 truncate text-[10px] text-foreground">{peer?.label || peer?.id || 'Missing graph peer'}</span><span className="font-mono text-[8px] text-muted-foreground">{Math.round((edge.confidence || 0) * 100)}%</span></button>) : <WorkspaceEmpty title="No recorded relationships" detail="Graph edges for this entity will appear here." />}</div>}
+      {tab === 'proof' && <div className="space-y-2">{evidence?.chains.length ? evidence.chains.map((entry, index) => <div key={`${entry.activity_id}:${index}`} className="border-l border-border-subtle pl-2"><div className="text-[10px] text-foreground">{entry.description || entry.event_type}</div><div className="mt-0.5 font-mono text-[8px] text-muted-foreground">{entry.evidence_id || entry.activity_id} · {entry.source_trust || 'unknown trust'}</div><div className="mt-1 line-clamp-3 font-mono text-[9px] text-muted-foreground">{entry.snippet || 'No excerpt loaded.'}</div>{entry.action_id && <button type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'investigate', lens: isLens(searchParams.get('lens')) ? searchParams.get('lens') as InvestigateLens : 'assets', selection: { kind: 'node', id: node.id }, tab: 'proof', drawer: { kind: 'run', item: entry.action_id } }))} className="mt-1 text-[9px] text-accent hover:underline">Open producing run</button>}</div>) : <WorkspaceEmpty title="No proof chain" detail="Captured evidence connected to this entity will appear here." />}</div>}
       {tab === 'activity' && <div className="space-y-1">{evidence?.chains.length ? evidence.chains.map((entry, index) => <div key={`${entry.activity_id}:activity:${index}`} className="border-b border-border-subtle py-2"><div className="text-[10px] text-foreground">{(entry.event_type || 'activity').replaceAll('_', ' ')}</div><div className="mt-0.5 text-[9px] text-muted-foreground">{entry.description || entry.snippet}</div><div className="mt-1 font-mono text-[8px] text-muted-foreground">{entry.timestamp}</div></div>) : <WorkspaceEmpty title="No linked activity" detail="Action and evidence activity for this entity will appear here." />}</div>}
-      {tab === 'findings' && <div className="space-y-1">{relationships.findings.length ? relationships.findings.map(finding => <button key={finding.id} type="button" onClick={() => navigate(`/review?view=readiness&kind=finding&item=${encodeURIComponent(finding.id)}`)} className="block w-full border-b border-border-subtle py-2 text-left"><div className="flex items-center gap-2"><StatusPill tone={finding.severity === 'critical' || finding.severity === 'high' ? 'danger' : 'warning'}>{finding.severity}</StatusPill><span className="min-w-0 flex-1 truncate text-[10px] text-foreground">{finding.title || finding.id}</span></div><div className="mt-1 font-mono text-[8px] text-muted-foreground">{finding.id}</div></button>) : <WorkspaceEmpty title="No linked findings" detail="Findings that affect this entity will appear here." />}</div>}
-      {tab === 'actions' && <div className="space-y-3"><div className="flex flex-wrap gap-2"><ActionButton variant="primary" onClick={() => { setLauncherOpen(true); navigate(`/operate?view=active&kind=node&item=${encodeURIComponent(node.id)}`); }}>Start work</ActionButton><ActionButton onClick={() => navigate(`/operate?view=ready&kind=frontier&item=${encodeURIComponent(node.id)}`)}>Open Frontier</ActionButton></div>{relationships.pendingActions.length ? relationships.pendingActions.map(action => <button key={action.action_id} type="button" onClick={() => navigate(`/operate?view=attention&kind=approval&item=${encodeURIComponent(action.action_id)}`)} className="block w-full border-b border-border-subtle py-2 text-left"><div className="text-[10px] text-foreground">{action.technique}</div><div className="mt-0.5 line-clamp-2 text-[9px] text-muted-foreground">{action.description}</div></button>) : <WorkspaceEmpty title="No pending actions" detail="There are no approval-gated actions tied to this entity." />}</div>}
+      {tab === 'findings' && <div className="space-y-1">{relationships.findings.length ? relationships.findings.map(finding => <button key={finding.id} type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'review', view: 'readiness', selection: { kind: 'finding', id: finding.id } }))} className="block w-full border-b border-border-subtle py-2 text-left"><div className="flex items-center gap-2"><StatusPill tone={finding.severity === 'critical' || finding.severity === 'high' ? 'danger' : 'warning'}>{finding.severity}</StatusPill><span className="min-w-0 flex-1 truncate text-[10px] text-foreground">{finding.title || finding.id}</span></div><div className="mt-1 font-mono text-[8px] text-muted-foreground">{finding.id}</div></button>) : <WorkspaceEmpty title="No linked findings" detail="Findings that affect this entity will appear here." />}</div>}
+      {tab === 'actions' && <div className="space-y-3"><div className="flex flex-wrap gap-2"><ActionButton variant="primary" onClick={() => { setLauncherOpen(true); navigate(buildWorkspacePath({ workspace: 'operate', view: 'active', selection: { kind: 'node', id: node.id } })); }}>Start work</ActionButton><ActionButton onClick={() => navigate(buildWorkspacePath({ workspace: 'operate', view: 'ready', selection: { kind: 'frontier', id: node.id } }))}>Open Frontier</ActionButton></div>{relationships.pendingActions.length ? relationships.pendingActions.map(action => <button key={action.action_id} type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'operate', view: 'attention', selection: { kind: 'approval', id: action.action_id } }))} className="block w-full border-b border-border-subtle py-2 text-left"><div className="text-[10px] text-foreground">{action.technique}</div><div className="mt-0.5 line-clamp-2 text-[9px] text-muted-foreground">{action.description}</div></button>) : <WorkspaceEmpty title="No pending actions" detail="There are no approval-gated actions tied to this entity." />}</div>}
     </WorkspaceInspector>
   );
 }

@@ -1,4 +1,4 @@
-import { useNavigation } from '../../hooks/useNavigation';
+import { useWorkspaceNavigation } from '../../hooks/useWorkspaceNavigation';
 import { cn } from '../../lib/utils';
 import { FileText, Network } from 'lucide-react';
 import type { GraphNavigationTarget } from '../../lib/graph-target';
@@ -14,7 +14,7 @@ export function GraphNodeLinks({
   className?: string;
   graphTarget?: GraphNavigationTarget;
 }) {
-  const { navigateToGraphTarget, navigateToEvidence } = useNavigation();
+  const { navigateToGraphTarget, navigateToEvidence } = useWorkspaceNavigation();
   const target = graphTarget || { kind: 'node' as const, nodeId, hops: 2 };
 
   return (

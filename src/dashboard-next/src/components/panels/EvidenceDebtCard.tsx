@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getEvidenceDebt, dispatchAgent, type EvidenceDebtItem } from '../../lib/api';
-import { PanelSection } from '../shared/primitives';
-import { useNavigation } from '../../hooks/useNavigation';
+import { useWorkspaceNavigation } from '../../hooks/useWorkspaceNavigation';
 import { useToastStore } from '../../stores/toast-store';
 import { cn } from '../../lib/utils';
 
@@ -28,7 +27,7 @@ export function EvidenceDebtCard({ compact = false }: { compact?: boolean } = {}
   const [items, setItems] = useState<EvidenceDebtItem[] | null>(null);
   const [error, setError] = useState(false);
   const [dispatching, setDispatching] = useState<string | null>(null);
-  const { navigateToGraph, navigateToFinding, navigateToEvidenceObjective } = useNavigation();
+  const { navigateToGraph, navigateToFinding, navigateToEvidenceObjective } = useWorkspaceNavigation();
   const addToast = useToastStore(s => s.addToast);
 
   const refresh = useCallback(async () => {
@@ -75,17 +74,19 @@ export function EvidenceDebtCard({ compact = false }: { compact?: boolean } = {}
   if (!items) {
     if (compact) return null;
     return (
-      <PanelSection title="Evidence Debt">
+      <section aria-label="Evidence debt">
+        <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Evidence debt</div>
         <div className="text-xs text-muted-foreground">{error ? 'Evidence debt unavailable.' : 'Loading…'}</div>
-      </PanelSection>
+      </section>
     );
   }
   if (items.length === 0) {
     if (compact) return null;
     return (
-      <PanelSection title="Evidence Debt">
+      <section aria-label="Evidence debt">
+        <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Evidence debt</div>
         <div className="text-xs text-success">✓ No open evidence debt — every claim is supported and current.</div>
-      </PanelSection>
+      </section>
     );
   }
 
@@ -146,8 +147,12 @@ export function EvidenceDebtCard({ compact = false }: { compact?: boolean } = {}
   }
 
   return (
-    <PanelSection title="Evidence Debt" meta={`(${items.length})`}>
+    <section aria-label="Evidence debt">
+      <div className="mb-2 flex items-center gap-2 border-b border-border-subtle pb-2">
+        <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Evidence debt</span>
+        <span className="font-mono text-[9px] text-warning">{items.length}</span>
+      </div>
       {rows}
-    </PanelSection>
+    </section>
   );
 }

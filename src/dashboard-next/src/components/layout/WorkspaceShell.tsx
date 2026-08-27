@@ -22,6 +22,7 @@ import type { FindingDto } from '../../lib/api';
 import * as api from '../../lib/api';
 import {
   clearSelectionParams,
+  buildWorkspacePath,
   drawerFromParams,
   selectionFromParams,
   setDrawerParams,
@@ -31,6 +32,7 @@ import {
 } from '../../lib/workspace-navigation';
 import { CommandPalette } from './CommandPalette';
 import { WorkspaceInspectorHostProvider } from './WorkspaceInspectorHost';
+import { WorkspaceInspectorRegistryProvider } from './WorkspaceInspectorRegistry';
 import { TapeToggle } from './TapeToggle';
 import { RecoveryBanner } from '../shared/RecoveryBanner';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
@@ -59,7 +61,7 @@ const WORKSPACES: Array<{
 ];
 
 const PALETTE_NAV: PanelCommandDef[] = WORKSPACES.map(workspace => ({
-  path: `/${workspace.id}`,
+  path: buildWorkspacePath({ workspace: workspace.id }),
   label: workspace.label,
   group: 'Workspace',
 }));
@@ -169,7 +171,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
         taskId: id,
         selectionKind: 'agent',
         selectionId: id,
-        path: `/operate?view=${agent.status === 'completed' ? 'history' : 'active'}&kind=agent&item=${encodeURIComponent(id)}`,
+        path: buildWorkspacePath({ workspace: 'operate', view: agent.status === 'completed' ? 'history' : 'active', selection: { kind: 'agent', id } }),
       });
     }
     for (const node of graph.nodes) {
@@ -181,7 +183,12 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
         hint: credential ? 'Credential' : node.type,
         selectionKind: credential ? 'credential' : 'node',
         selectionId: node.id,
-        path: `/investigate?lens=${credential ? 'credentials' : 'topology'}&entity=${credential ? 'credential' : 'node'}&item=${encodeURIComponent(node.id)}${credential ? '' : `&node=${encodeURIComponent(node.id)}`}`,
+        path: buildWorkspacePath({
+          workspace: 'investigate',
+          lens: credential ? 'credentials' : 'topology',
+          selection: { kind: credential ? 'credential' : 'node', id: node.id },
+          context: credential ? undefined : { node: node.id },
+        }),
       });
     }
     for (const campaign of campaigns) {
@@ -192,7 +199,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
         hint: campaign.status || 'campaign',
         selectionKind: 'campaign',
         selectionId: campaign.id,
-        path: `/operate?view=campaigns&kind=campaign&item=${encodeURIComponent(campaign.id)}`,
+        path: buildWorkspacePath({ workspace: 'operate', view: 'campaigns', selection: { kind: 'campaign', id: campaign.id } }),
       });
     }
     for (const finding of findings) {
@@ -203,7 +210,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
         hint: `${finding.severity} · finding`,
         selectionKind: 'finding',
         selectionId: finding.id,
-        path: `/review?view=readiness&kind=finding&item=${encodeURIComponent(finding.id)}`,
+        path: buildWorkspacePath({ workspace: 'review', view: 'readiness', selection: { kind: 'finding', id: finding.id } }),
       });
     }
     for (const objective of objectives) {
@@ -214,7 +221,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
         hint: `${objective.achieved ? 'achieved' : 'open'} objective path`,
         selectionKind: 'path',
         selectionId: objective.id,
-        path: `/investigate?lens=paths&objective=${encodeURIComponent(objective.id)}`,
+        path: buildWorkspacePath({ workspace: 'investigate', lens: 'paths', context: { objective: objective.id } }),
       });
     }
     return items;
@@ -222,7 +229,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
 
   const choosePaletteItem = useCallback((item: CommandItem) => {
     if (item.path) navigate(item.path);
-    else if (item.taskId) navigate(`/operate?view=active&kind=agent&item=${encodeURIComponent(item.taskId)}`);
+    else if (item.taskId) navigate(buildWorkspacePath({ workspace: 'operate', view: 'active', selection: { kind: 'agent', id: item.taskId } }));
   }, [navigate]);
 
   const Workspace = workspace === 'operate'
@@ -248,7 +255,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
         <button
           type="button"
           className="flex h-14 items-center gap-2.5 border-b border-border-subtle px-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
-          onClick={() => navigate('/operate')}
+          onClick={() => navigate(buildWorkspacePath({ workspace: 'operate' }))}
           title="Open Operate"
         >
           <span className="flex h-7 w-7 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-[11px] font-black text-accent">OW</span>
@@ -274,7 +281,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => navigate(`/${item.id}`)}
+                  onClick={() => navigate(buildWorkspacePath({ workspace: item.id }))}
                   aria-current={active ? 'page' : undefined}
                   className={cn(
                     'group relative flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70',
@@ -318,7 +325,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
         <header className="flex h-14 flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background/95 px-4 lg:px-5">
           <button
             type="button"
-            onClick={() => navigate('/manage?section=engagement')}
+            onClick={() => navigate(buildWorkspacePath({ workspace: 'manage', section: 'engagement' }))}
             className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
             title="Open engagement settings"
           >
@@ -359,7 +366,7 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
           >
             <ShieldAlert className="h-3.5 w-3.5 flex-shrink-0" />
             <span className="min-w-0 flex-1 truncate">{opsec.warning || (opsec.defensive_signals.length > 0 ? `${opsec.defensive_signals.length} defensive signal${opsec.defensive_signals.length === 1 ? '' : 's'} detected` : `OPSEC noise headroom is down to ${opsecPct}%`)}</span>
-            <button type="button" onClick={() => navigate('/manage?section=settings')} className="flex-shrink-0 font-medium underline-offset-2 hover:underline">Review OPSEC</button>
+            <button type="button" onClick={() => navigate(buildWorkspacePath({ workspace: 'manage', section: 'settings' }))} className="flex-shrink-0 font-medium underline-offset-2 hover:underline">Review OPSEC</button>
           </div>
         )}
         {!connected && (
@@ -370,37 +377,39 @@ export function WorkspaceShell({ workspace }: { workspace: WorkspaceId }) {
         )}
 
         <WorkspaceInspectorHostProvider host={inspectorHost}>
-          <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="relative flex min-h-0 flex-1 overflow-hidden">
-              <div className="flex min-w-0 flex-1">
-                <ErrorBoundary fallbackLabel={workspace}>
-                  <Suspense fallback={<WorkspaceLoading />}>
-                    <Workspace />
-                  </Suspense>
-                </ErrorBoundary>
+          <WorkspaceInspectorRegistryProvider key={workspace}>
+            <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="relative flex min-h-0 flex-1 overflow-hidden">
+                <div className="flex min-w-0 flex-1">
+                  <ErrorBoundary fallbackLabel={workspace}>
+                    <Suspense fallback={<WorkspaceLoading />}>
+                      <Workspace />
+                    </Suspense>
+                  </ErrorBoundary>
+                </div>
+                <div ref={setInspectorHost} className="contents" data-testid="workspace-inspector-host" />
               </div>
-              <div ref={setInspectorHost} className="contents" data-testid="workspace-inspector-host" />
-            </div>
-            <WorkspaceDrawer
-              drawer={drawer}
-              mode={drawerMode}
-              onModeChange={setDrawerMode}
-              onChange={(kind) => {
-                if (!kind) {
-                  setSearchParams(setDrawerParams(searchParams, null), { replace: true });
-                  return;
-                }
-                setSearchParams(setDrawerParams(searchParams, transitionDrawer(drawer, kind)), { replace: true });
-              }}
-              onSelect={(item) => {
-                if (!drawer) return;
-                setSearchParams(setDrawerParams(searchParams, { kind: drawer.kind, item: item || undefined }), { replace: true });
-              }}
-              onOpenItem={(kind, item) => {
-                setSearchParams(setDrawerParams(searchParams, { kind, item }), { replace: true });
-              }}
-            />
-          </main>
+              <WorkspaceDrawer
+                drawer={drawer}
+                mode={drawerMode}
+                onModeChange={setDrawerMode}
+                onChange={(kind) => {
+                  if (!kind) {
+                    setSearchParams(setDrawerParams(searchParams, null), { replace: true });
+                    return;
+                  }
+                  setSearchParams(setDrawerParams(searchParams, transitionDrawer(drawer, kind)), { replace: true });
+                }}
+                onSelect={(item) => {
+                  if (!drawer) return;
+                  setSearchParams(setDrawerParams(searchParams, { kind: drawer.kind, item: item || undefined }), { replace: true });
+                }}
+                onOpenItem={(kind, item) => {
+                  setSearchParams(setDrawerParams(searchParams, { kind, item }), { replace: true });
+                }}
+              />
+            </main>
+          </WorkspaceInspectorRegistryProvider>
         </WorkspaceInspectorHostProvider>
       </div>
 
