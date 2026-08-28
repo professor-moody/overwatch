@@ -1,5 +1,5 @@
 // ============================================================
-// FocusBanner — neighborhood focus exit banner
+// FocusBanner - neighborhood focus exit banner
 // ============================================================
 
 import { cn } from '../../lib/utils';

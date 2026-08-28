@@ -7,14 +7,14 @@ export interface OutputStreamView {
   evidenceId: string | null;
   text: string;
   totalBytes: number;
-  /** Capture buffer overflowed while the tool ran — the on-disk blob is fuller. */
+  /** Capture buffer overflowed while the tool ran - the on-disk blob is fuller. */
   capturedTruncated: boolean;
-  /** This payload is only a head slice — more bytes are available via paging. */
+  /** This payload is only a head slice - more bytes are available via paging. */
   headTruncated: boolean;
   droppedBytes: number;
   /** Evidence id was recorded but the blob is missing/unreadable. */
   missing: boolean;
-  /** The tool produced output but capture failed — bytes are lost. */
+  /** The tool produced output but capture failed - bytes are lost. */
   captureFailed: boolean;
   isEmpty: boolean;
 }
@@ -35,7 +35,7 @@ export interface ActionOutputView {
   timedOut: boolean;
   /** Graph node ids (linkable to graph/evidence). */
   targetNodeIds: string[];
-  /** Raw IPs / CIDRs (not graph nodes — render as plain pills). */
+  /** Raw IPs / CIDRs (not graph nodes - render as plain pills). */
   targetIps: string[];
   /** Convenience: nodeIds + ips merged. */
   targets: string[];

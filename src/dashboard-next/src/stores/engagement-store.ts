@@ -175,7 +175,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
     graphDeltaIndex.reset(flatGraph);
     set({
       // The backend sends `config` + `access_summary`, NOT top-level `engagement`/
-      // `access_level`. Derive the toolbar/layout view-model from the real fields —
+      // `access_level`. Derive the toolbar/layout view-model from the real fields -
       // reading the phantom fields left the toolbar blank, access at 'none', and the
       // graph-layout store keyed on 'default' (positions bleeding across engagements).
       engagement: s.config ? {

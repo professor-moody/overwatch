@@ -8,7 +8,7 @@ function starGraph(n: number) {
   const g = new Graph({ type: 'directed', multi: true });
   g.addNode('hub', { x: 0, y: 0 });
   for (let i = 0; i < n; i++) {
-    // Seed every leaf stacked ON the hub — the exact failure mode.
+    // Seed every leaf stacked ON the hub - the exact failure mode.
     g.addNode(`leaf${i}`, { x: 0, y: 0 });
     g.addEdgeWithKey(`e${i}`, 'hub', `leaf${i}`, {});
   }
@@ -98,7 +98,7 @@ describe('explodeHubs', () => {
     noverlap.assign(g, { maxIterations: 60, settings: { margin: 6, ratio: 1.4, gridSize: 20, speed: 3 } });
 
     const pts = g.mapNodes((_id, a) => `${(a.x as number).toFixed(4)},${(a.y as number).toFixed(4)}`);
-    expect(new Set(pts).size).toBe(pts.length); // all distinct — no exact overlap
+    expect(new Set(pts).size).toBe(pts.length); // all distinct - no exact overlap
   });
 
   it('is deterministic', () => {

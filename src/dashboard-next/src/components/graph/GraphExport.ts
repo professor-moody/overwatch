@@ -1,5 +1,5 @@
 // ============================================================
-// GraphExport — PNG and SVG export
+// GraphExport - PNG and SVG export
 // ============================================================
 
 import type Sigma from 'sigma';

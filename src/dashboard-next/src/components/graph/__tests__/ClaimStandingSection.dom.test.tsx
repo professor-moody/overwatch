@@ -20,7 +20,7 @@ const IMPACT_WITH_PROMO = {
   supports_objectives: [],
 };
 
-describe('ClaimStandingSection — claim judgment workflow', () => {
+describe('ClaimStandingSection - claim judgment workflow', () => {
   beforeEach(() => {
     vi.mocked(api.getClaimImpact).mockResolvedValue(IMPACT_NO_PROMO as never);
     vi.mocked(api.promoteClaim).mockResolvedValue({ target_kind: 'node', target_id: 'n1', claim_state: 'refuted' } as never);

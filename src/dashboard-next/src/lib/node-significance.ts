@@ -5,7 +5,7 @@ import { getFriendlyNodeTypeLabel } from './node-display';
 import { formatRelativeTime } from './utils';
 
 /** Why an operator should care about a node: is it an objective, a high-value target,
- *  or a routine asset — and which trust tier it sits in. Node significance and node
+ *  or a routine asset - and which trust tier it sits in. Node significance and node
  *  provenance are computed from fields the backend already stamps on exported nodes
  *  (`objective_*`, `hvt*`, `source_trust`, `confidence`, `discovered_*`), so the drawer
  *  can lead with "why this matters" instead of a flat property dump. */
@@ -24,7 +24,7 @@ export interface NodeSignificance {
 }
 
 export interface NodeProvenance {
-  /** observed | asserted | inferred — how the node came to be known. */
+  /** observed | asserted | inferred - how the node came to be known. */
   sourceTrust?: SourceTrust;
   /** 0-100, rounded; null when the backend sent no confidence. */
   confidencePct: number | null;
@@ -32,7 +32,7 @@ export interface NodeProvenance {
   discoveredAgo?: string;
   /** Agent id that first observed it. */
   discoveredBy?: string;
-  /** True when an action id is recorded — the node can be traced to its run/evidence
+  /** True when an action id is recorded - the node can be traced to its run/evidence
    *  (explain_action). */
   traceable: boolean;
 }
@@ -49,7 +49,7 @@ export function nodeSignificance(props: Record<string, unknown>, nodeType: strin
   const tier = tierForNode({ type: nodeType } as ExportedNode);
   const achieved = props.objective_achieved === true;
   // Most objectives are ordinary nodes (a host, a cloud identity) flagged as the goal,
-  // so detect the flag/description — not just the rare type === 'objective'.
+  // so detect the flag/description - not just the rare type === 'objective'.
   const isObjective = nodeType === 'objective' || achieved || !!str(props.objective_description);
   const isHvt = props.hvt === true;
 

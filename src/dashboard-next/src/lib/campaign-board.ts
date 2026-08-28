@@ -1,9 +1,9 @@
 import type { MissionCard } from './agent-mission';
 import { groupMissionCards } from './agent-mission';
 
-// Phase 4 (Mission Control) — a read-only board view of the multi-agent fleet:
+// Phase 4 (Mission Control) - a read-only board view of the multi-agent fleet:
 // each campaign is a swimlane (row), its agents bucketed into status lanes
-// (columns). Pure projection of the MissionCards the dashboard already builds —
+// (columns). Pure projection of the MissionCards the dashboard already builds -
 // no new engine state. Answers "where is the work, per campaign?" at a glance.
 
 export type BoardLane =

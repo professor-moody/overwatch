@@ -138,7 +138,7 @@ describe('attack path workspace helpers', () => {
   });
 
   it('gives every attack-critical edge type an explicit phrase (no raw "via" fallback)', () => {
-    // The edge types that actually carry an attack path — if a new one is added to the
+    // The edge types that actually carry an attack path - if a new one is added to the
     // backend, it should get a phrase here rather than reading as terse "via x".
     const CRITICAL = [
       'REACHABLE', 'ADMIN_TO', 'HAS_SESSION', 'CAN_RDPINTO', 'CAN_PSREMOTE', 'MEMBER_OF',

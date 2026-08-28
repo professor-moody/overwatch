@@ -249,7 +249,7 @@ function ReportResult({ result, onClose, onRenderAnother }: {
         <ResultFact label="Format" value={report.format.toUpperCase()} />
         <ResultFact label="Redaction" value={report.redaction_mode === 'client_safe' ? 'client-safe' : 'operator'} />
         <ResultFact label="Evidence style" value={reportEvidenceLabel(report.evidence_style)} />
-        <ResultFact label="Findings" value={String(findingsCount ?? '—')} />
+        <ResultFact label="Findings" value={String(findingsCount ?? '-')} />
         <ResultFact label="Evidence count" value={String(evidenceCount)} />
         <ResultFact label="Generated" value={formatTimestamp(report.generated_at)} span />
         <ResultFact label="Size" value={formatReportBytes(report.size_bytes)} />

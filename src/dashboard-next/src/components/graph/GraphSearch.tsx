@@ -1,5 +1,5 @@
 // ============================================================
-// GraphSearch — search overlay with fuzzy node matching
+// GraphSearch - search overlay with fuzzy node matching
 // ============================================================
 
 import { useState, useRef, useEffect, useCallback } from 'react';

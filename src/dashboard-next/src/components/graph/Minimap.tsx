@@ -1,5 +1,5 @@
 // ============================================================
-// Minimap — canvas minimap with viewport rectangle
+// Minimap - canvas minimap with viewport rectangle
 // ============================================================
 
 import { useRef, useEffect, useCallback } from 'react';
@@ -60,7 +60,7 @@ export function Minimap({ graph, rendererRef, className }: MinimapProps) {
       const y = attrs.y as number;
       if (typeof x !== 'number' || typeof y !== 'number') return;
       // Use the node's STORED color attr so the minimap follows the active color
-      // mode (type/community/tier) — GraphPage rewrites `color` on mode change.
+      // mode (type/community/tier) - GraphPage rewrites `color` on mode change.
       // Fall back to the type color only if a node somehow has no color attr.
       const color = (attrs.color as string) || NODE_COLORS[(attrs.nodeType as string)] || '#888';
       ctx.fillStyle = color;

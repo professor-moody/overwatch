@@ -234,7 +234,7 @@ export function ActivityDrawer({
       {(stale || error) && (
         <div className="flex flex-shrink-0 items-center gap-2 border-b border-warning/20 bg-warning/5 px-3 py-1 text-[10px] text-warning">
           <AlertTriangle className="h-3 w-3" />
-          <span className="min-w-0 flex-1 truncate">{connected ? (error || 'Timeline reconciliation is stale.') : 'Disconnected — showing the last good operator timeline.'}</span>
+          <span className="min-w-0 flex-1 truncate">{connected ? (error || 'Timeline reconciliation is stale.') : 'Disconnected - showing the last good operator timeline.'}</span>
         </div>
       )}
 

@@ -6,12 +6,12 @@ import { buildCampaignBoard, BOARD_LANES, type BoardLane } from '../../lib/campa
 import { useWorkspaceNavigation } from '../../hooks/useWorkspaceNavigation';
 
 // Read-only board: each campaign is a swimlane (row); its agents bucket into the
-// status lanes (columns). Pure projection of MissionCards — no engine writes.
+// status lanes (columns). Pure projection of MissionCards - no engine writes.
 
 const TONE_DOT: Record<MissionTone, string> = {
   running: 'bg-accent',
   blocked: 'bg-warning',
-  stuck: 'bg-purple', // distinct from blocked's amber — "alive but idle", not "waiting on you"
+  stuck: 'bg-purple', // distinct from blocked's amber - "alive but idle", not "waiting on you"
   failed: 'bg-destructive',
   done: 'bg-success',
   idle: 'bg-muted-foreground',

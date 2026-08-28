@@ -14,10 +14,10 @@ const KIND_META: Record<EvidenceDebtItem['kind'], { label: string; color: string
 const MAX_SHOWN = 12;
 
 /**
- * The Evidence Debt Queue — a ranked, drill-downable list of the engagement's open quality problems
+ * The Evidence Debt Queue - a ranked, drill-downable list of the engagement's open quality problems
  * (contradictions, lapsed objectives, unsupported critical findings, expiring validations). Clicking
  * an item jumps to its target so the operator can inspect the evidence or correct the judgment, and a
- * per-item Validate dispatches an agent — turning the scorecard from a readout into an operating loop.
+ * per-item Validate dispatches an agent - turning the scorecard from a readout into an operating loop.
  *
  * `compact` renders the Console intervention-rail variant: a warning-toned strip, fewer rows, and it
  * HIDES itself when there is no debt (so it never clutters the "Needs you" surface). The full Overview
@@ -85,7 +85,7 @@ export function EvidenceDebtCard({ compact = false }: { compact?: boolean } = {}
     return (
       <section aria-label="Evidence debt">
         <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Evidence debt</div>
-        <div className="text-xs text-success">✓ No open evidence debt — every claim is supported and current.</div>
+        <div className="text-xs text-success">✓ No open evidence debt - every claim is supported and current.</div>
       </section>
     );
   }

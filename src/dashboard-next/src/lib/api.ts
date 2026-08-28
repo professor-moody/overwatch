@@ -273,7 +273,7 @@ export async function getHistory(params?: {
   after?: string;
   before?: string;
   order?: 'asc' | 'desc';
-  /** Restrict to these event types before the limit is applied — so `limit` counts
+  /** Restrict to these event types before the limit is applied - so `limit` counts
    *  the matching events, not the whole (heartbeat/thought-diluted) stream. */
   eventTypes?: string[];
 }): Promise<{ entries: ActivityEntry[]; total: number }> {
@@ -501,12 +501,12 @@ export async function denyAction(id: string, reason?: string): Promise<unknown> 
   return request('denyAction', { path: { action_id: id }, body: { reason } });
 }
 
-/** Bulk approve — routes each id through the same canonical resolve as the single path. */
+/** Bulk approve - routes each id through the same canonical resolve as the single path. */
 export async function approveBatch(actionIds: string[], notes?: string): Promise<{ ok: boolean; resolved: number; total: number }> {
   return request('approveActionsBatch', { body: { action_ids: actionIds, notes } });
 }
 
-/** Bulk deny — one shared reason for all (required). */
+/** Bulk deny - one shared reason for all (required). */
 export async function denyBatch(actionIds: string[], reason: string): Promise<{ ok: boolean; resolved: number; total: number }> {
   return request('denyActionsBatch', { body: { action_ids: actionIds, reason } });
 }
@@ -632,7 +632,7 @@ export async function createEngagementFromTemplate(
   overrides?: Record<string, unknown>,
 ): Promise<{ config: unknown; persisted: boolean; engagement?: EngagementListItem }> {
   // The endpoint persists the built config and returns { config, persisted, engagement }
-  // — not a bare EngagementListItem.
+  // - not a bare EngagementListItem.
   return request('createEngagementFromTemplate', { body: { template_id: templateId, overrides } });
 }
 
@@ -670,7 +670,7 @@ export interface ActionOutputStream {
   dropped_bytes: number;
   /** Evidence id was recorded but the blob file is missing/unreadable. */
   missing?: boolean;
-  /** The tool produced output but the capture write failed — bytes are lost. */
+  /** The tool produced output but the capture write failed - bytes are lost. */
   capture_failed?: boolean;
 }
 
@@ -912,7 +912,7 @@ export async function getScorecard(): Promise<Scorecard> {
 export type EvidenceDebtItem = EvidenceDebtItemDto;
 export type EvidenceDebtResponse = EvidenceDebtResponseDto;
 
-/** The ranked evidence-debt queue — quality problems to act on, each with a drill-down target. */
+/** The ranked evidence-debt queue - quality problems to act on, each with a drill-down target. */
 export async function getEvidenceDebt(): Promise<EvidenceDebtResponse> {
   return request('getEvidenceDebt') as unknown as Promise<EvidenceDebtResponse>;
 }
@@ -1074,7 +1074,7 @@ export async function renderReport(body: RenderReportBody): Promise<ReportRender
   return request('renderReport', { body });
 }
 
-/** Returns the absolute URL — caller can use `window.location.href = url` or `<a download>`. */
+/** Returns the absolute URL - caller can use `window.location.href = url` or `<a download>`. */
 export function reportDownloadUrl(id: string): string {
   return buildDashboardPath('downloadReport', { report_id: id });
 }

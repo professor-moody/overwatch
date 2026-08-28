@@ -1,10 +1,10 @@
 // ============================================================
-// Overwatch — finding proof-readiness
+// Overwatch finding proof-readiness
 //
 // Heuristic proof-readiness over the derived findings: a readiness tier
 // (client_ready / needs_validation / draft) plus the concrete gaps to close,
 // computed from the SAME finding builder + classifier the report uses. Pure and
-// read-only — shared by the get_finding_readiness MCP tool
+// read-only and shared by the get_finding_readiness MCP tool
 // (src/tools/finding-readiness.ts) and the read-only NL finding-readiness query
 // (src/services/query-interpreter.ts), so the two never drift.
 // ============================================================
@@ -35,7 +35,7 @@ export interface FindingReadinessReport {
   findings: FindingReadiness[];
 }
 
-/** Heuristic proof-readiness over a derived finding. Read-only — surfaces the
+/** Heuristic proof-readiness over a derived finding. Read-only; surfaces the
  *  signals + gaps for the operator/evidence_auditor to judge, not a verdict. */
 export function assess(f: ReportFinding): FindingReadiness {
   const proof_cards = f.proof_cards?.length ?? 0;
@@ -53,8 +53,8 @@ export function assess(f: ReportFinding): FindingReadiness {
   else readiness = 'draft';
 
   const gaps: string[] = [];
-  if (readiness !== 'client_ready') gaps.push('no captured evidence — run/parse the action that proves this finding');
-  if (!classified) gaps.push('unclassified — no CWE/OWASP/ATT&CK mapping');
+  if (readiness !== 'client_ready') gaps.push('no captured evidence; run or parse the action that proves this finding');
+  if (!classified) gaps.push('unclassified; no CWE/OWASP/ATT&CK mapping');
   if (affected_assets === 0) gaps.push('no affected assets linked');
 
   return {

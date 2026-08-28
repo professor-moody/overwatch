@@ -1,5 +1,5 @@
 // ============================================================
-// useGraph — graphology Graph instance + data sync
+// useGraph - graphology Graph instance + data sync
 // ============================================================
 
 import { useRef, useCallback } from 'react';
@@ -18,7 +18,7 @@ function getEdgeKey(edge: ExportedEdge): string {
 }
 
 // Normalization helpers shared with the engagement store live in
-// lib/graph-flatten — keep useGraph using the same code path so the
+// lib/graph-flatten - keep useGraph using the same code path so the
 // shape contract is single-source.
 import { flattenNode, flattenEdge } from '../lib/graph-flatten';
 
@@ -76,7 +76,7 @@ function hashId(value: string): number {
  * separated clusters instead of one hairball. Community centroids are placed on a
  * ring (radius grows with community count); each node is scattered in a disc around
  * its centroid, sized by community population, with a stable per-id hash so the seed
- * is deterministic. Returns null when there aren't at least 2 communities — the
+ * is deterministic. Returns null when there aren't at least 2 communities - the
  * caller then falls back to the domain→host→satellite seeding (preserves old
  * behavior when Louvain data is absent).
  */
@@ -104,7 +104,7 @@ export function seedByCommunity(nodes: ExportedNode[]): Record<string, { x: numb
     members.forEach(n => {
       const h = hashId(n.id);
       const a = ((h % 360) / 360) * Math.PI * 2;
-      // `>>> 3` (unsigned) — hashId returns an unsigned 32-bit value, so a signed
+      // `>>> 3` (unsigned) - hashId returns an unsigned 32-bit value, so a signed
       // `>> 3` would go negative for any hash >= 2^31 and sqrt(negative) → NaN,
       // poisoning ~half the seeds.
       const r = clusterR * Math.sqrt(((h >>> 3) % 100) / 100); // sqrt → roughly uniform disc fill
@@ -126,7 +126,7 @@ function groupInitialPositions(
   nodes: ExportedNode[],
   edges: ExportedEdge[],
 ): Record<string, { x: number; y: number }> {
-  // Prefer community-based seeding when Louvain communities are present — it's the
+  // Prefer community-based seeding when Louvain communities are present - it's the
   // biggest lever against the "jumbled hairball". Falls back to the domain-anchored
   // seeding below when there are <2 communities (e.g. early/sparse engagements).
   const communitySeed = seedByCommunity(nodes);

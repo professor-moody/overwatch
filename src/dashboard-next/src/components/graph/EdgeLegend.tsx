@@ -1,5 +1,5 @@
 // ============================================================
-// EdgeLegend — graph overlay listing edge categories with colors.
+// EdgeLegend - graph overlay listing edge categories with colors.
 // Collapsible. Mirrors the legacy graph.html legend.
 // ============================================================
 

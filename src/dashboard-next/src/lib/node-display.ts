@@ -1,5 +1,5 @@
 // ============================================================
-// Node Display — ported from legacy node-display.js
+// Node Display - ported from legacy node-display.js
 // ============================================================
 
 export const FRIENDLY_TYPE_LABELS: Record<string, string> = {

@@ -1,8 +1,8 @@
 // ============================================================
-// Attack-graph search core — the shared Dijkstra primitives over the exported
+// Attack-graph search core - the shared Dijkstra primitives over the exported
 // engagement graph. Extracted from AttackPathsPanel so the panel's route queue
 // and the node drawer's single-source reachability read the same edge model,
-// bidirectional set, weighting, and objective/target definition — they can't
+// bidirectional set, weighting, and objective/target definition - they can't
 // drift. Mirrors server-side path-analyzer.ts:
 //   - confidence (default): minimize 1 - confidence
 //   - stealth:              minimize opsec_noise
@@ -114,7 +114,7 @@ export function reconstructPath(
   return { nodes, edge_types, edge_ids };
 }
 
-/** Objective / high-value endpoints — the path-finding target set, mirroring
+/** Objective / high-value endpoints - the path-finding target set, mirroring
  *  path-analyzer and the attack-path panel: explicit objectives (the flag is set at
  *  all), hvt-flagged nodes, and cloud/idp pivot endpoints that are typical goals. */
 export function isObjectiveTarget(n: ExportedNode): boolean {

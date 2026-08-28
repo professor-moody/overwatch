@@ -1,5 +1,5 @@
 // ============================================================
-// useGraphReducers — node/edge reducer functions for Sigma
+// useGraphReducers - node/edge reducer functions for Sigma
 // Ported from legacy graph.js nodeReducer / edgeReducer
 // ============================================================
 
@@ -27,7 +27,7 @@ export interface GraphInteractionState {
   labelDensity: 'minimal' | 'balanced' | 'verbose';
   // What the node color encodes. The stored node `color` attr is rewritten on
   // change (recolorNodes in GraphPage), so the reducer itself doesn't branch on this
-  // — it's here so the toolbar/legend can read the active encoding.
+  // - it's here so the toolbar/legend can read the active encoding.
   colorMode: 'type' | 'community' | 'tier';
 
   // Selection
@@ -41,7 +41,7 @@ export interface GraphInteractionState {
   hoveredEdge: string | null;
 
   // Path
-  // When on, a plain click picks source then target (same as shift-click) — makes
+  // When on, a plain click picks source then target (same as shift-click) - makes
   // the path-tracing feature discoverable without the hidden gesture.
   pathMode: boolean;
   pathSource: string | null;
@@ -159,7 +159,7 @@ export function useGraphReducers(graph: Graph, reachableOnlyCacheRef: React.Muta
     // Always show contextually-relevant nodes (selected, in path, focus neighborhood).
     if (isNodeContextuallyRelevant(node)) return true;
 
-    // Explicit user filters — the ONLY automatic hide mechanisms.
+    // Explicit user filters - the ONLY automatic hide mechanisms.
     if (s.hideOrphans && graph.degree(node) === 0) return false;
     if (s.hideReachableOnly && isReachableOnlyNode(node)) return false;
     if (!s.activeFilters.has(nodeAttrs.nodeType as string)) return false;
@@ -173,7 +173,7 @@ export function useGraphReducers(graph: Graph, reachableOnlyCacheRef: React.Muta
     }
 
     // Otherwise show everything that passed the explicit filters.
-    // No node-type or zoom-based auto-hiding — the frontier needs full visibility.
+    // No node-type or zoom-based auto-hiding - the frontier needs full visibility.
     return true;
   }, [graph, isReachableOnlyNode, isNodeContextuallyRelevant]);
 

@@ -112,10 +112,10 @@ export function ReportsList({ reports, onRefresh }: Props) {
               {reportProfileLabel(r)}
             </span>
             <span className="text-muted-foreground flex-1">
-              {formatTimestamp(r.generated_at)} — {formatReportBytes(r.size_bytes)}
+              {formatTimestamp(r.generated_at)} - {formatReportBytes(r.size_bytes)}
               {(r.findings_count !== undefined || r.evidence_count !== undefined) && (
                 <span className="ml-2">
-                  {r.findings_count ?? '—'} findings · {r.evidence_count ?? '—'} evidence · {reportEvidenceLabel(r.evidence_style)}
+                  {r.findings_count ?? '-'} findings · {r.evidence_count ?? '-'} evidence · {reportEvidenceLabel(r.evidence_style)}
                 </span>
               )}
             </span>

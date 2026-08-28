@@ -88,7 +88,7 @@ export function RunsDrawer({
         <button type="button" onClick={() => void refresh()} className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-hover hover:text-foreground" title="Refresh runs"><RefreshCw className={cn('h-3 w-3', loading && 'animate-spin')} /></button>
       </div>
 
-      {stale && <div className="flex flex-shrink-0 items-center gap-2 border-b border-warning/20 bg-warning/5 px-3 py-1 text-[10px] text-warning"><AlertTriangle className="h-3 w-3" />{connected ? 'Run history could not be refreshed; showing the last good list.' : 'Disconnected — showing the last good run list and output.'}</div>}
+      {stale && <div className="flex flex-shrink-0 items-center gap-2 border-b border-warning/20 bg-warning/5 px-3 py-1 text-[10px] text-warning"><AlertTriangle className="h-3 w-3" />{connected ? 'Run history could not be refreshed; showing the last good list.' : 'Disconnected - showing the last good run list and output.'}</div>}
 
       <div className="flex min-h-0 flex-1">
         <div className="flex w-[clamp(300px,31vw,360px)] flex-shrink-0 flex-col overflow-y-auto border-r border-border-subtle">

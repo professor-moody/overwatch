@@ -26,7 +26,7 @@ function renderQueue(onForceRemove = vi.fn()) {
   return onForceRemove;
 }
 
-describe('AttentionQueue — inline force-remove for a wedged/failed agent', () => {
+describe('AttentionQueue - inline force-remove for a wedged/failed agent', () => {
   afterEach(() => {
     useEngagementStore.setState({ agents: [], pendingActions: [] });
   });

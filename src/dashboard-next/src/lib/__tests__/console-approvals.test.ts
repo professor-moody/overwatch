@@ -36,7 +36,7 @@ describe('buildConsoleApprovals', () => {
     expect(view.highCount).toBe(0);
   });
 
-  it('sorts items by risk (highest first) — console and triage view agree', () => {
+  it('sorts items by risk (highest first) - console and triage view agree', () => {
     const view = buildConsoleApprovals([lowRisk('low'), highRisk('high')], { now: NOW });
     expect(view.items.map((i) => i.action_id)).toEqual(['high', 'low']);
     expect(view.items[0].risk.label).toBe('HIGH');

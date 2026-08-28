@@ -46,7 +46,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
           toast({
             type: 'success',
             title: 'Agent completed',
-            message: `${(agent.agent_label || agent.agent_id || agent.id).slice(0, 8)} — ${agent.findings_count || 0} findings`,
+            message: `${(agent.agent_label || agent.agent_id || agent.id).slice(0, 8)} - ${agent.findings_count || 0} findings`,
             linkPath: buildWorkspacePath({ workspace: 'operate', view: 'active', selection: { kind: 'agent', id: agent.task_id ?? agent.id } }),
           });
         }

@@ -375,7 +375,7 @@ export function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Ca
           <DetailFact label="Agents" value={`${campaign.agents_active ?? 0}/${campaign.agents_total ?? metrics.expectedAgentCount}`} />
           <DetailFact label="Max Score" value={`×${metrics.maxScoreMultiplier.toFixed(2)}`} />
           <DetailFact label="Avg Noise" value={metrics.avgNoise.toFixed(2)} />
-          <DetailFact label="Started" value={campaign.started_at ? formatRelativeTime(campaign.started_at) : '—'} />
+          <DetailFact label="Started" value={campaign.started_at ? formatRelativeTime(campaign.started_at) : '-'} />
         </div>
 
         {!ready && (campaign.status === 'draft' || campaign.status === 'active') && (
@@ -430,7 +430,7 @@ export function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Ca
         <OpsecGauge
           budget={campaign.opsec}
           title="Campaign Noise"
-          caption="This campaign's noise as a share of the global budget — recommended approach is engagement-wide."
+          caption="This campaign's noise as a share of the global budget - recommended approach is engagement-wide."
         />
       )}
 

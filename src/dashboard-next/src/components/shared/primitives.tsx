@@ -9,13 +9,13 @@ type ButtonSize = 'xs' | 'sm';
 export type StatusTone = 'default' | 'accent' | 'success' | 'warning' | 'danger' | 'purple' | 'muted';
 
 /** Honesty label: whether the thing was directly captured (observed), merely claimed
- *  (asserted), or produced by an inference rule (inferred) — so a reader tells proof
+ *  (asserted), or produced by an inference rule (inferred) - so a reader tells proof
  *  from hypothesis at a glance. Shared by the evidence narrative and the node drawer. */
 export function TrustBadge({ trust, className }: { trust: SourceTrust; className?: string }) {
   const cls = trust === 'observed' ? 'border-success/40 text-success'
     : trust === 'asserted' ? 'border-warning/40 text-warning'
     : 'border-border text-muted-foreground';
-  const title = trust === 'observed' ? 'Directly captured from tool output — proof.'
+  const title = trust === 'observed' ? 'Directly captured from tool output - proof.'
     : trust === 'asserted' ? 'Claimed by the tool/agent, not independently captured.'
     : 'Produced by an inference rule, not a direct observation.';
   return (
@@ -269,7 +269,7 @@ export function WorkspaceInspector({
   return (
     <WorkspaceInspectorPortal>
       <button type="button" className="fixed inset-0 z-30 bg-black/45 xl:hidden" onClick={onClose} aria-label="Close inspector backdrop" />
-      <aside className="workspace-inspector fixed bottom-9 right-0 top-14 z-40 flex w-[min(400px,calc(100vw-2rem))] flex-col border-l border-border-subtle bg-surface shadow-2xl transition-transform duration-150 motion-reduce:transition-none xl:static xl:z-0 xl:w-[376px] xl:flex-shrink-0 xl:shadow-none" aria-label={typeof label === 'string' ? label : 'Inspector'}>
+      <aside className="workspace-inspector fixed bottom-11 right-0 top-14 z-40 flex w-[min(400px,calc(100vw-2rem))] flex-col border-l border-border-subtle bg-surface shadow-2xl transition-transform duration-150 motion-reduce:transition-none xl:static xl:z-0 xl:w-[376px] xl:flex-shrink-0 xl:shadow-none" aria-label={typeof label === 'string' ? label : 'Inspector'}>
         <div className="flex min-h-10 flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-surface/95 px-3 backdrop-blur">
           <div className="min-w-0 flex-1">
             <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">{label}</div>

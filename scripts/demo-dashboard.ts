@@ -16,7 +16,7 @@ import { ToolTelemetry } from '../src/services/tool-telemetry.js';
 import type { ToolDescriptor } from '../src/services/tool-descriptor-registry.js';
 import { resolveDemoNow } from './demo-clock.js';
 
-// Persist into a fresh temp dir (like demo:daemon) rather than a fixed repo-root file —
+// Persist into a fresh temp dir (like demo:daemon) rather than a fixed repo-root file -
 // a crashed run used to leave a journal/quarantine/lock sidecar next to a fixed state
 // file, and the next boot refused all mutations ("nonempty WAL without a valid base").
 // A per-run temp dir can never be stale, and nothing lands in the working tree.
@@ -76,7 +76,9 @@ class DemoPtyHandle implements AdapterHandle {
   }
 
   resize(): void {
-    this.emit('\r\n[demo terminal resized]\r\n' + this.prompt);
+    // A real PTY resize updates terminal dimensions without writing into the
+    // transcript. Emitting here made ResizeObserver-driven layout changes feed
+    // back into the demo buffer and drown the useful prompt in resize notices.
   }
 
   kill(): void {
@@ -145,7 +147,7 @@ const config: EngagementConfig = {
   opsec: {
     name: 'pentest',
     enabled: true,
-    max_noise: 1.0, // config schema caps max_noise at 1.0 — 1.2 threw on GraphEngine construction
+    max_noise: 1.0, // config schema caps max_noise at 1.0 - 1.2 threw on GraphEngine construction
     approval_mode: 'approve-all',
     approval_timeout_ms: 3_600_000,
     blacklisted_techniques: ['credential_dump'],
@@ -207,7 +209,7 @@ const logDemoEvent = (
 ) => engine.withClock(iso(minutesAgo), () => engine.logActionEvent(event));
 const sessionManager = new SessionManager(engine, 0);
 sessionManager.registerAdapter(new DemoPtyAdapter());
-// Wire the durable-descriptor owner exactly as the real app does (app.ts) — the session
+// Wire the durable-descriptor owner exactly as the real app does (app.ts) - the session
 // runtime refuses to create sessions until one is registered.
 sessionManager.onDurableEvent(event => engine.recordSessionDescriptor(event.session));
 
@@ -557,7 +559,7 @@ const opsec = (noise: number, signals: string[] = []): OpsecContext => ({
   global_noise_spent: 0.32,
   noise_budget_remaining: Math.max(0, config.opsec.max_noise - noise),
   recommended_approach: noise >= 0.75 ? 'loud' : noise >= 0.35 ? 'normal' : 'quiet',
-  // DefensiveSignal is {type, detected_at, description} — NOT a bare string. Emitting
+  // DefensiveSignal is {type, detected_at, description} - NOT a bare string. Emitting
   // strings here made the whole /api/state + WS full_state snapshot fail its response
   // contract (and, before the hub was hardened, crash the daemon on WS connect).
   defensive_signals: signals.map((description, i) => ({
@@ -685,7 +687,7 @@ engine.registerAgent({
 });
 
 // Extra agents to populate the remaining board lanes. They omit frontier_item_id
-// (no lease) so several can share a campaign without lease conflicts — the board
+// (no lease) so several can share a campaign without lease conflicts - the board
 // groups by campaign_id, not frontier item.
 engine.registerAgent({
   id: 'task-enum-2', agent_id: 'agent-enum-2', assigned_at: iso(11), status: 'running',
@@ -704,7 +706,7 @@ engine.registerAgent({
 // Three agents that hit the SAME decision point → they cluster into ONE
 // "answer once → fan out" card in the Needs-You queue, and sit in the active
 // campaign's Blocked lane on the board.
-const CLUSTER_Q = 'Noise budget is tight on this segment — spray a small credential list, or stay quiet and pivot?';
+const CLUSTER_Q = 'Noise budget is tight on this segment - spray a small credential list, or stay quiet and pivot?';
 const CLUSTER_OPTS = ['spray (noisy)', 'stay quiet'];
 ['agent-recon-a', 'agent-recon-b', 'agent-recon-c'].forEach((label, i) => {
   const taskId = `task-recon-${i}`;

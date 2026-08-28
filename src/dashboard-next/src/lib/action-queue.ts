@@ -23,11 +23,11 @@ export function computeActionRisk(action: PendingAction): ActionRisk {
 }
 
 /**
- * A VISUAL-ONLY triage cue — it never auto-acts or pre-selects. Suggests which button
+ * A VISUAL-ONLY triage cue - it never auto-acts or pre-selects. Suggests which button
  * to softly highlight:
  *  - 'deny' for anything risky: HIGH risk, defensive signals fired, or a validation warning.
  *  - 'approve' for the clearly-safe: LOW risk, no signals, and the noise budget not tight.
- *  - undefined for the ambiguous middle — no cue; the operator reads it cold.
+ *  - undefined for the ambiguous middle - no cue; the operator reads it cold.
  */
 export function recommendedDecision(action: PendingAction): 'approve' | 'deny' | undefined {
   const opsec = action.opsec_context || {};

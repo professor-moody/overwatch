@@ -3,7 +3,7 @@ import type { AgentQuery } from './api';
 import { sessionsForAgent } from './session-workspace';
 import { agentDisplayLabel, canonicalAgentTaskId } from './agent-reference';
 
-// Phase 5 (Mission Control) — project the scattered per-agent signals the
+// Phase 5 (Mission Control) - project the scattered per-agent signals the
 // dashboard already receives (status, current_action, campaign, frontier item,
 // owned sessions, pending approvals, open questions) into a single operator-
 // shaped "mission card". Pure surfacing: no new engine state. The card answers
@@ -13,7 +13,7 @@ export type MissionTone = 'running' | 'blocked' | 'stuck' | 'failed' | 'done' | 
 
 // A running agent that keeps heartbeating (so the watchdog won't reap it) but
 // makes no progress is "stuck". Threshold sits above the mission card's
-// RECENT_MS (5m) — so an agent is already visually "quiet" first — and well clear
+// RECENT_MS (5m) - so an agent is already visually "quiet" first - and well clear
 // of the 120s heartbeat TTL / 30s watchdog tick, so there's no overlap with
 // reaping. Tunable; conservative by default to avoid false positives.
 export const STUCK_IDLE_MS = 8 * 60_000;
@@ -84,7 +84,7 @@ export function awaitingAnswerFor(agent: AgentInfo, queries: AgentQuery[]): bool
 /**
  * Is a pending action attributed to this agent? Matches on agent_id when the
  * approval carries it (the run_bash/run_tool path), and falls back to a shared
- * frontier_item_id — `validate_action`-gated approvals don't set agent_id today
+ * frontier_item_id - `validate_action`-gated approvals don't set agent_id today
  * but do carry the frontier item the agent is working, so this still flips the
  * card to "waiting on approval". (A real agent_id on validate_action is tracked
  * as backend work in Phase 2.)
@@ -165,9 +165,9 @@ export function buildMissionContextIndex(ctx: MissionContext): MissionContextInd
 
 /**
  * A running agent is "stuck" when it's still heartbeating (status stays 'running'
- * — a stale heartbeat would have been reaped to 'interrupted') but has made no
+ * - a stale heartbeat would have been reaped to 'interrupted') but has made no
  * progress for STUCK_IDLE_MS and is NOT blocked on the operator (no pending
- * approval / open question — that's "blocked", a different, already-surfaced
+ * approval / open question - that's "blocked", a different, already-surfaced
  * state). The assigned_at age gate suppresses just-dispatched agents and any task
  * with an unparseable/missing timestamp (legacy non-heartbeating runs). Pure;
  * shared by the mission card tone and the attention queue so they never diverge.
@@ -188,7 +188,7 @@ export function isStuck(
   ) return false;
   const assignedAge = agent.assigned_at ? now - new Date(agent.assigned_at).getTime() : NaN;
   if (!Number.isFinite(assignedAge) || assignedAge <= STUCK_IDLE_MS) return false;
-  // Require a REAL last-action timestamp — don't fall back to assigned_at. The
+  // Require a REAL last-action timestamp - don't fall back to assigned_at. The
   // server leaves current_action_at undefined when it can't attribute activity
   // (e.g. two running tasks sharing one agent_id label), and an active agent must
   // not be flagged stuck just because its action couldn't be keyed to the task.
@@ -244,7 +244,7 @@ export function buildMissionCard(
   if (awaitingAnswer) blocker = 'waiting on your answer';
   else if (pendingApproval) blocker = 'waiting on approval';
   else if (terminalBad) blocker = agent.result_summary || agent.status;
-  else if (stuck) blocker = `idle ${stuckIdleMinutes(agent, now)}m — may be stuck`;
+  else if (stuck) blocker = `idle ${stuckIdleMinutes(agent, now)}m - may be stuck`;
 
   let tone: MissionTone;
   if (terminalBad) tone = 'failed';

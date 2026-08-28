@@ -1,12 +1,12 @@
 // ============================================================
-// NodePicker — a small searchable single-node select over the engagement graph.
+// NodePicker - a small searchable single-node select over the engagement graph.
 //
 // Used by the Attack Paths "Custom path" picker so the operator chooses concrete
 // nodes from a list rather than typing a free-form name (which the NL command bar
 // could only resolve fuzzily). Driven by ExportedNode[] from the store; matches on
 // label / id / type, caps results, and reports the chosen node id.
 //
-// NOT GraphSearch — that component is coupled to the live graphology Graph in the
+// NOT GraphSearch - that component is coupled to the live graphology Graph in the
 // graph view; this works off the plain exported nodes available everywhere.
 // ============================================================
 
@@ -44,8 +44,8 @@ export function NodePicker({
     return out;
   }, [nodes, query]);
 
-  // Render the chip whenever a value is held — even if that id isn't in the
-  // current graph (a stale deep-link target) — so the held endpoint stays visible
+  // Render the chip whenever a value is held - even if that id isn't in the
+  // current graph (a stale deep-link target) - so the held endpoint stays visible
   // rather than silently falling back to a blank search box.
   if (value) {
     return (

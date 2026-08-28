@@ -3,7 +3,7 @@ import { cn } from '../../lib/utils';
 import { buildCommandItems, filterCommands, type CommandItem, type PanelCommandDef } from '../../lib/command-palette';
 import type { AgentInfo } from '../../lib/types';
 
-// ⌘K command palette — a keyboard-first quick-switcher for the live operator: jump to
+// ⌘K command palette - a keyboard-first quick-switcher for the live operator: jump to
 // any panel or focus any agent without the mouse. Item-building + filtering live in the
 // tested view-model (lib/command-palette.ts); this only renders + handles keys.
 export function CommandPalette({
@@ -71,7 +71,7 @@ export function CommandPalette({
           value={query}
           onChange={e => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Jump to a workspace, asset, finding, or agent…"
+          placeholder="Jump to a workspace, console, asset, finding, or agent…"
           aria-label="Search workspaces and engagement entities"
           className="w-full border-b border-border bg-transparent px-4 py-3 text-sm text-foreground outline-none placeholder:text-muted"
         />

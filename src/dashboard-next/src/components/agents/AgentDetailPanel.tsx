@@ -104,7 +104,7 @@ export function AgentDetailPanel({
             onClick={onForceRemove}
             size="xs"
             variant="danger"
-            title="Force stop & remove — kills the process and clears the agent even if Cancel won't"
+            title="Force stop & remove - kills the process and clears the agent even if Cancel won't"
           >
             Force remove
           </ActionButton>

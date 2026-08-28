@@ -1,5 +1,5 @@
 // ============================================================
-// GraphToolbar — zoom, layout, export, layers, mode controls
+// GraphToolbar - zoom, layout, export, layers, mode controls
 // ============================================================
 
 import { useState } from 'react';
@@ -109,13 +109,13 @@ export function GraphToolbar({
   const layoutAction = getLayoutToolbarAction({ layoutMode, layoutRunning });
 
   const LAYOUT_OPTIONS: Array<{ id: string; label: string; hint: string }> = [
-    { id: 'force', label: 'Force (clusters)', hint: 'Physics simulation — organic clusters' },
-    { id: 'hierarchical', label: 'Hierarchical (flow)', hint: 'Top-to-bottom by edge direction — what leads to what' },
+    { id: 'force', label: 'Force (clusters)', hint: 'Physics simulation - organic clusters' },
+    { id: 'hierarchical', label: 'Hierarchical (flow)', hint: 'Top-to-bottom by edge direction - what leads to what' },
     { id: 'tiered', label: 'Tiered (by role)', hint: 'Bands: identity / cloud / app / network' },
   ];
 
   return (
-    <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50 overflow-visible">
+    <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50 overflow-visible" data-testid="graph-toolbar">
       {!embedded && (
         <>
           <Link to={buildWorkspacePath({ workspace: 'operate' })} className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1 min-w-0">
@@ -144,16 +144,16 @@ export function GraphToolbar({
           active={layoutAction.active}
         >
           {layoutAction.intent === 'pause' ? <Pause size={14} /> : <Play size={14} />}
-          <span className="hidden lg:inline">{layoutAction.label}</span>
+          <span className={embedded ? 'sr-only' : 'hidden lg:inline'}>{layoutAction.label}</span>
         </ToolBtn>
-        {/* Layout algorithm — the primary "make the graph readable" control. */}
+        {/* Layout algorithm - the primary "make the graph readable" control. */}
         <div className="relative">
           <ToolBtn
             onClick={() => { setShowLayout(!showLayout); setShowExport(false); setShowLayers(false); setShowView(false); setShowMore(false); }}
             active={layoutType !== 'force'}
             title="Layout algorithm"
           >
-            <Network size={14} /><span className="hidden lg:inline">Layout</span>
+            <Network size={14} /><span className={embedded ? 'sr-only' : 'hidden lg:inline'}>Layout</span>
           </ToolBtn>
           {showLayout && (
             <Dropdown onClose={() => setShowLayout(false)} wide>
@@ -175,7 +175,7 @@ export function GraphToolbar({
           active={pathMode}
           title="Path mode: click a source node, then a target, to trace the shortest attack path (or shift-click any two nodes)"
         >
-          <Route size={14} /><span className="hidden lg:inline">Path</span>
+          <Route size={14} /><span className={embedded ? 'sr-only' : 'hidden lg:inline'}>Path</span>
         </ToolBtn>
         <ToolBtn onClick={onReset} title="Clear graph focus and filters">Clear view</ToolBtn>
         <Sep />
@@ -183,7 +183,7 @@ export function GraphToolbar({
         <div className="relative">
           <ToolBtn onClick={() => { setShowView(!showView); setShowExport(false); setShowLayers(false); setShowMore(false); }} title="View controls">
             <SlidersHorizontal size={14} />
-            <span className="hidden lg:inline">View</span>
+            <span className={embedded ? 'sr-only' : 'hidden lg:inline'}>View</span>
           </ToolBtn>
           {showView && (
             <Dropdown onClose={() => setShowView(false)} wide>
@@ -205,7 +205,7 @@ export function GraphToolbar({
         <div className="relative">
           <ToolBtn onClick={() => { setShowExport(!showExport); setShowLayers(false); setShowView(false); setShowMore(false); }} title="Export">
             <Download size={14} />
-            <span className="hidden lg:inline">Export</span>
+            <span className={embedded ? 'sr-only' : 'hidden lg:inline'}>Export</span>
           </ToolBtn>
           {showExport && (
             <Dropdown onClose={() => setShowExport(false)}>
@@ -219,7 +219,7 @@ export function GraphToolbar({
         <div className="relative">
           <ToolBtn onClick={() => { setShowLayers(!showLayers); setShowExport(false); setShowView(false); setShowMore(false); }} title="Layers">
             <Layers size={14} />
-            <span className="hidden lg:inline">Layers</span>
+            <span className={embedded ? 'sr-only' : 'hidden lg:inline'}>Layers</span>
           </ToolBtn>
           {showLayers && (
             <Dropdown onClose={() => setShowLayers(false)} wide>
@@ -233,7 +233,7 @@ export function GraphToolbar({
         {onToggleEditMode && (
           <>
             <Sep />
-            <ToolBtn onClick={onToggleEditMode} title="Toggle edit mode" active={editMode}><Pencil size={14} /><span className="hidden lg:inline">Edit</span></ToolBtn>
+            <ToolBtn onClick={onToggleEditMode} title="Toggle edit mode" active={editMode}><Pencil size={14} /><span className={embedded ? 'sr-only' : 'hidden lg:inline'}>Edit</span></ToolBtn>
             {editMode && onUndo && (undoCount ?? 0) > 0 && (
               <ToolBtn onClick={onUndo} title="Undo last edit"><Undo2 size={14} /><span className="hidden xl:inline">Undo {undoCount}</span></ToolBtn>
             )}
@@ -243,7 +243,7 @@ export function GraphToolbar({
       <Sep />
 
       {/* Stats */}
-      <div className="hidden sm:flex items-center gap-3 text-muted-foreground">
+      <div className={cn('hidden items-center gap-3 text-muted-foreground', !embedded && 'sm:flex')}>
         <Stat label="Nodes" value={nodeCount} />
         <Stat label="Edges" value={edgeCount} />
       </div>

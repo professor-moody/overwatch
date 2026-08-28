@@ -1,8 +1,8 @@
 // ============================================================
-// Graph Constants — ported from legacy graph.js
+// Graph Constants - ported from legacy graph.js
 // ============================================================
 
-// OSINT / external-recon node types hidden from the graph BY DEFAULT — a domain can
+// OSINT / external-recon node types hidden from the graph BY DEFAULT - a domain can
 // carry hundreds of these (subdomains especially), which drown the actual attack
 // graph. They're browsable in the Recon tab, and the NodeFilters chips let the
 // operator toggle them back into the graph.

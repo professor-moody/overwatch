@@ -1,5 +1,5 @@
 // ============================================================
-// NodeFilters — type filter chips overlay
+// NodeFilters - type filter chips overlay
 // ============================================================
 
 import type Graph from 'graphology';

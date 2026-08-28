@@ -3,7 +3,7 @@
 //
 // Mirrors `src/services/finding-classifier.ts:inferFindingTier` (which
 // runs server-side) but operates on dashboard-shape nodes (flat
-// properties, not nested under .properties). Pure function — no I/O.
+// properties, not nested under .properties). Pure function - no I/O.
 // ============================================================
 
 import type { ExportedNode } from './types';

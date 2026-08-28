@@ -120,8 +120,8 @@ function edgeLabel(type: string | undefined): string {
   return EDGE_LABELS[type] || type.toLowerCase().replace(/_/g, ' ');
 }
 
-/** Verb phrases that turn an edge type into a readable hop sentence — the previous node
- *  "{phrase}" the next node — so a path reads foothold → objective as a followable story
+/** Verb phrases that turn an edge type into a readable hop sentence - the previous node
+ *  "{phrase}" the next node - so a path reads foothold → objective as a followable story
  *  (e.g. a host "has an active session as" jdoe "is a member of" Domain Admins "can
  *  DCSync" the domain). Covers the canonical EDGE_TYPES that appear on attack paths;
  *  ESC* ADCS abuses are handled by pattern in edgePhrase(); anything unmapped falls back
@@ -217,7 +217,7 @@ const EDGE_PHRASES: Record<string, string> = {
 
 export function edgePhrase(type: string | undefined): string {
   if (!type) return 'connects to';
-  // ADCS escalations ESC1..ESC15 — one family, read them uniformly instead of the terse
+  // ADCS escalations ESC1..ESC15 - one family, read them uniformly instead of the terse
   // "via esc1" fallback.
   if (/^ESC\d+$/.test(type)) return `can abuse via ${type}`;
   return EDGE_PHRASES[type] ?? `via ${edgeLabel(type)}`;
@@ -233,8 +233,8 @@ export interface PathHop {
   crossesTier: boolean;
 }
 
-/** Turn a display path into an ordered, readable hop list — foothold → objective, one
- *  explained step per edge — using the per-hop edge types the client path already carries. */
+/** Turn a display path into an ordered, readable hop list - foothold → objective, one
+ *  explained step per edge - using the per-hop edge types the client path already carries. */
 export function pathHops(path: { nodes: DisplayPathNode[]; edges: DisplayPathEdge[] }): PathHop[] {
   const hops: PathHop[] = [];
   for (let i = 0; i < path.edges.length && i + 1 < path.nodes.length; i++) {
@@ -350,7 +350,7 @@ export function normalizeComputedAttackPath(
 }
 
 /** Whether a deep-link should auto-run the path query, vs just prefill the
- *  picker. Only a COMPLETE query runs (an objective, or both endpoints) — a
+ *  picker. Only a COMPLETE query runs (an objective, or both endpoints) - a
  *  single-endpoint deep-link (graph context-menu "paths from/to here") prefills
  *  and waits, since GET /api/find-paths 400s on a half query. */
 export function shouldAutoRunPaths(from?: string, to?: string, objective?: string): boolean {

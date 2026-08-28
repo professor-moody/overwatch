@@ -7,7 +7,7 @@ export function findingTitle(finding: FindingDto): string {
 /**
  * Evidence-panel entry-point findings, SPREAD across the severities present (up to
  * `perSeverity` from each, highest first, capped at `cap`). /api/findings is sorted by
- * risk, so a plain top-N only ever surfaces critical/high — this lets medium/low findings
+ * risk, so a plain top-N only ever surfaces critical/high - this lets medium/low findings
  * be reachable as entry points too. Only findings with a navigable affected asset qualify
  * (the entry point opens that node's evidence; assetless ones aren't clickable).
  */
@@ -33,7 +33,7 @@ export function findingRemediation(finding: FindingDto): string {
   return steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
 }
 
-/** A short label for WHAT the finding is — used to anchor the evidence block to the vuln
+/** A short label for WHAT the finding is - used to anchor the evidence block to the vuln
  *  it proves. Prefer the actual CVE id when the finding references one (the classifier's
  *  coarse CWE bucket, e.g. "Code Injection" for any rce, is misleading for a specific CVE);
  *  otherwise the CWE name, else the category label. */

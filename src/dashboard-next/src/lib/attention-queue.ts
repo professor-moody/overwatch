@@ -3,7 +3,7 @@ import type { AgentQuery, ProposedPlan } from './api';
 import { toConsoleApprovalItem, type ConsoleApprovalItem } from './console-approvals';
 import { isStuck, stuckIdleMinutes } from './agent-mission';
 
-// Phase 5 (Mission Control) — one prioritized "what needs me" queue, merging the
+// Phase 5 (Mission Control) - one prioritized "what needs me" queue, merging the
 // surfaces that today live as separate boxes: pending approvals (act inline),
 // agent questions (answer inline), and failed/interrupted agents. The console
 // shows one item expanded at a time. Stuck-agent detection joins this in Phase 2
@@ -49,11 +49,11 @@ const P_QUESTION = 100;
 const P_HIGH_APPROVAL = 95;
 const P_APPROVAL = 80;
 // A planner-proposed plan awaits an explicit operator confirm and expires on a
-// 10-min TTL — actionable and time-sensitive, but below a live agent blocked on
+// 10-min TTL - actionable and time-sensitive, but below a live agent blocked on
 // an approval/question. Above stuck/failed so it can't be buried and aged out
 // unseen (the whole reason this surfaced).
 const P_PLAN = 70;
-// A stuck agent is burning a concurrency slot doing nothing — more actionable
+// A stuck agent is burning a concurrency slot doing nothing - more actionable
 // than a stale failure sitting in history, but below a live agent explicitly
 // waiting on the operator (approval/question).
 const P_STUCK = 60;
@@ -81,20 +81,20 @@ function approvalItem(action: PendingAction, now: number): AttentionItem {
 }
 
 /** Cluster key: identical question text (whitespace/case-normalized) + the same
- *  option set. Only genuinely-identical questions merge — a different option set
+ *  option set. Only genuinely-identical questions merge - a different option set
  *  is a different decision and stays separate. */
 function questionClusterKey(q: AgentQuery): string {
   const text = q.question.trim().toLowerCase().replace(/\s+/g, ' ');
   const opts = (q.options ?? []).map(o => o.trim().toLowerCase()).sort();
-  // JSON-encode rather than join on a delimiter so no option text — one
-  // containing the delimiter, or a comma/space straddling a boundary — can
+  // JSON-encode rather than join on a delimiter so no option text - one
+  // containing the delimiter, or a comma/space straddling a boundary - can
   // collide two different questions into one cluster (which would fan an
   // answer out to the wrong agents).
   return JSON.stringify([text, opts]);
 }
 
 // One AttentionItem per cluster of identical open questions. The representative
-// (oldest — getOpen is FIFO) drives the id/detail/options; answering fans out to
+// (oldest - getOpen is FIFO) drives the id/detail/options; answering fans out to
 // every member via queryIds.
 function questionClusterItem(group: AgentQuery[]): AttentionItem {
   const rep = group[0];
@@ -154,7 +154,7 @@ function stuckItem(agent: AgentInfo, now: number): AttentionItem {
     kind: 'stuck',
     priority: P_STUCK,
     title: 'Agent stuck',
-    detail: `Heartbeating but idle ${idle}m${lastFinding} — no progress. Consider steering or stopping it.`,
+    detail: `Heartbeating but idle ${idle}m${lastFinding} - no progress. Consider steering or stopping it.`,
     agentLabel: agent.agent_id || agent.id,
     taskId: agent.id,
   };
@@ -192,7 +192,7 @@ function proofGapItem(gap: NonNullable<AttentionInput['proofGap']>): AttentionIt
 const DEFAULT_FAILED_WINDOW_MS = 30 * 60_000;
 
 // A terminal agent is "needs me" only while recently failed: within the window
-// by completed_at, or with no completion timestamp at all (can't tell — keep it).
+// by completed_at, or with no completion timestamp at all (can't tell - keep it).
 function recentlyFailed(agent: AgentInfo, now: number, windowMs: number): boolean {
   if (agent.status !== 'failed' && agent.status !== 'interrupted') return false;
   if (!agent.completed_at) return true;

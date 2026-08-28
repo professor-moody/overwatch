@@ -1,4 +1,4 @@
-// View-model for the ⌘K command palette — a keyboard-first quick-switcher for the
+// View-model for the ⌘K command palette - a keyboard-first quick-switcher for the
 // live operator: jump to any panel or focus any agent without the mouse. Pure and
 // testable in isolation (like lib/attention-queue.ts); the CommandPalette component
 // only renders + handles keys, delegating item-building and filtering to here.
@@ -15,7 +15,7 @@ export interface PanelCommandDef {
 export interface CommandItem {
   /** Stable key for React + selection. */
   id: string;
-  kind: 'panel' | 'workspace' | 'agent' | 'asset' | 'campaign' | 'credential' | 'finding' | 'path';
+  kind: 'panel' | 'workspace' | 'console' | 'agent' | 'asset' | 'campaign' | 'credential' | 'finding' | 'path';
   label: string;
   /** Secondary context: the nav group for a panel, or the agent's status. */
   hint?: string;

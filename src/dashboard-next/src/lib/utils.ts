@@ -15,12 +15,12 @@ export function describeEvidenceError(err: unknown): string {
   const e = err as { status?: number; code?: string; message?: string } | undefined;
   if (e && typeof e.status === 'number') {
     if (e.code === 'DASHBOARD_RESPONSE_CONTRACT_FAILED') {
-      return `Evidence could not be loaded — the server response failed its API contract (HTTP ${e.status}). `
+      return `Evidence could not be loaded - the server response failed its API contract (HTTP ${e.status}). `
         + 'This is a server error, not an absence of evidence.';
     }
-    return `Evidence could not be loaded — request failed (HTTP ${e.status}${e.code ? ` · ${e.code}` : ''}).`;
+    return `Evidence could not be loaded - request failed (HTTP ${e.status}${e.code ? ` · ${e.code}` : ''}).`;
   }
-  return `Evidence could not be loaded — ${e?.message || 'the request failed'}.`;
+  return `Evidence could not be loaded - ${e?.message || 'the request failed'}.`;
 }
 
 export function formatElapsed(ms: number | undefined | null): string {
@@ -58,7 +58,7 @@ export function agentElapsedMs(
 }
 
 export function formatTimestamp(iso: string | undefined): string {
-  if (!iso) return '—';
+  if (!iso) return '-';
   try {
     const d = new Date(iso);
     return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -68,7 +68,7 @@ export function formatTimestamp(iso: string | undefined): string {
 }
 
 export function formatRelativeTime(iso: string | undefined): string {
-  if (!iso) return '—';
+  if (!iso) return '-';
   try {
     const d = new Date(iso);
     const now = Date.now();

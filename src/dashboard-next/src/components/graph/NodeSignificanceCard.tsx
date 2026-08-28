@@ -21,7 +21,7 @@ const TIER_DOT_CLASS: Record<string, string> = {
 };
 
 /**
- * "Why this matters" — leads the node drawer with the node's role (objective /
+ * "Why this matters" - leads the node drawer with the node's role (objective /
  * high-value target / routine asset), its trust tier, and how the node came to be
  * known (source trust, confidence, when + who). Every value is read from fields the
  * backend already stamps on the exported node, so the card is honest by construction:
@@ -74,7 +74,7 @@ export function NodeSignificanceCard({ props, nodeType, nodeId, graph }: {
 
       {sig.roleDetail && <div className="text-foreground">{sig.roleDetail}</div>}
 
-      {/* Path to objective — how close this node sits to a goal, so its blast radius is
+      {/* Path to objective - how close this node sits to a goal, so its blast radius is
           legible at a glance. Computed single-source from this node. */}
       {showReach && reachability?.nearest && (
         <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
@@ -89,7 +89,7 @@ export function NodeSignificanceCard({ props, nodeType, nodeId, graph }: {
         </div>
       )}
 
-      {/* Provenance — how we know this node exists and how far to trust it. */}
+      {/* Provenance - how we know this node exists and how far to trust it. */}
       {(prov.sourceTrust || provParts.length > 0) && (
         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
           {prov.sourceTrust && <TrustBadge trust={prov.sourceTrust} />}

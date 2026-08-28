@@ -21,7 +21,7 @@ describe('seedByCommunity', () => {
     expect(seedByCommunity([node('a'), node('b')])).toBeNull();
   });
 
-  it('positions every node with FINITE coords — incl. ids whose hash exceeds 2^31', () => {
+  it('positions every node with FINITE coords - incl. ids whose hash exceeds 2^31', () => {
     // These real-world ids hash to >= 2^31; a signed `>> 3` on the unsigned hash
     // would make the disc radius sqrt(negative) → NaN. Guards that regression.
     const nodes = [

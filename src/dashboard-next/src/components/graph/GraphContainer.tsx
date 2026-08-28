@@ -1,5 +1,5 @@
 // ============================================================
-// GraphContainer — sigma.js mount point + resize observer
+// GraphContainer - sigma.js mount point + resize observer
 // ============================================================
 
 import { useRef, useEffect, useCallback } from 'react';

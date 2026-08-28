@@ -1,5 +1,5 @@
 // ============================================================
-// ToastContainer — stacked auto-dismissing notifications
+// ToastContainer - stacked auto-dismissing notifications
 // ============================================================
 
 import { useToastStore, type Toast } from '../../stores/toast-store';

@@ -37,11 +37,11 @@ export function TagInput({
 
   // Bulk paste: split on whitespace, newline, comma, semicolon. Dedupe
   // against existing tags (case-insensitive for hosts/domains, exact for
-  // CIDRs / IDs — we use exact since the caller controls casing).
+  // CIDRs / IDs - we use exact since the caller controls casing).
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLInputElement>) => {
     const text = e.clipboardData.getData('text');
     // If the paste is a single token (no separators), let the default
-    // handler put it in the input field — operator can still hit Enter.
+    // handler put it in the input field - operator can still hit Enter.
     if (!/[\s,;]/.test(text)) return;
     e.preventDefault();
     const tokens = text

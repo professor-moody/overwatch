@@ -1,5 +1,5 @@
 // ============================================================
-// Deterministic, structured graph layouts — the fix for "force-directed is always
+// Deterministic, structured graph layouts - the fix for "force-directed is always
 // a hairball for this heterogeneous graph." These write x/y directly onto the
 // graphology nodes (skipping pinned/`fixed` ones); GraphPage treats them as transient
 // views (they don't touch the saved-position store). The camera + normalizeAutoLayout
@@ -13,7 +13,7 @@ import type { ExportedNode } from './types';
 
 export type LayoutType = 'force' | 'hierarchical' | 'tiered';
 
-// Edge types that don't express attack STRUCTURE — the reachability mesh and generic
+// Edge types that don't express attack STRUCTURE - the reachability mesh and generic
 // links. Excluded from the hierarchical ranking so the flow reflects real movement
 // (matches the path-tracer, which also ignores reachability/OSINT noise).
 const NON_STRUCTURAL_EDGE_TYPES = new Set(['REACHABLE', 'RELATED']);
@@ -25,8 +25,8 @@ const NON_STRUCTURAL_EDGE_TYPES = new Set(['REACHABLE', 'RELATED']);
  * to keep the hierarchy clean.
  */
 export interface ComputeLayoutOptions {
-  /** Only lay out nodes for which this returns true (e.g. currently-VISIBLE nodes —
-   *  pass the reducer's isNodeVisible). Hidden nodes keep their old positions —
+  /** Only lay out nodes for which this returns true (e.g. currently-VISIBLE nodes -
+   *  pass the reducer's isNodeVisible). Hidden nodes keep their old positions -
    *  they're off-screen anyway, and excluding them stops a flood of hidden recon
    *  nodes from sizing the whole canvas. */
   include?: (id: string, attrs: Record<string, unknown>) => boolean;
@@ -71,7 +71,7 @@ const TIER_BAND: Record<Tier, number> = { identity: 0, cloud: 1, app: 2, network
 /**
  * Tiered layout: horizontal bands by role (identity / cloud / app / network), each
  * band wrapped into a grid so a populous tier (e.g. hundreds of hosts) doesn't become
- * one endless row. Fully deterministic — you always know where a class of node lives.
+ * one endless row. Fully deterministic - you always know where a class of node lives.
  */
 export function computeTiered(graph: Graph, opts: ComputeLayoutOptions = {}): void {
   const include = opts.include ?? (() => true);

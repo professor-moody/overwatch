@@ -1,5 +1,5 @@
 // ============================================================
-// PathInfoBar — shift-click path info banner
+// PathInfoBar - shift-click path info banner
 // ============================================================
 
 import type Graph from 'graphology';

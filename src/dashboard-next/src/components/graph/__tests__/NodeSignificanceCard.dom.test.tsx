@@ -17,7 +17,7 @@ function reachGraph(): ExportedGraph {
   return { nodes, edges, coldInventory: [] };
 }
 
-describe('NodeSignificanceCard — why this node matters', () => {
+describe('NodeSignificanceCard - why this node matters', () => {
   it('leads with the objective role, its description, and whether it is reached', () => {
     render(<NodeSignificanceCard nodeType="objective" props={{
       type: 'objective', objective_description: 'Compromise DC01', objective_achieved: false,

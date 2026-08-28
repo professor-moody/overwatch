@@ -193,7 +193,7 @@ describe('sortMissionCards / groupMissionCards', () => {
   });
 });
 
-describe('buildMissionCard — stuck detection', () => {
+describe('buildMissionCard - stuck detection', () => {
   const idle = (o: Partial<AgentInfo> = {}) => agent({
     status: 'running',
     assigned_at: new Date(NOW - 20 * 60_000).toISOString(),

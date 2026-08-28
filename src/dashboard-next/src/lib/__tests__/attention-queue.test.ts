@@ -40,7 +40,7 @@ describe('buildAttentionQueue', () => {
       plan_id: 'p1', command: 'what next?', ops: [{ op: 'directive' } as never], summary: 'Prioritize app01 recon',
       source_agent_id: 'planner-1', created_at: NOW - 60_000, expires_at: NOW + 9 * 60_000, status: 'open', ...o,
     });
-    // a heartbeating-but-idle running agent (stuck) — same construction as the stuck suite
+    // a heartbeating-but-idle running agent (stuck) - same construction as the stuck suite
     const stuck = agent({
       id: 'ts', agent_id: 'recon-9', status: 'running',
       assigned_at: new Date(NOW - 20 * 60_000).toISOString(),
@@ -174,7 +174,7 @@ describe('buildAttentionQueue', () => {
   });
 });
 
-describe('buildAttentionQueue — stuck agents', () => {
+describe('buildAttentionQueue - stuck agents', () => {
   const idle = (o: Partial<AgentInfo> = {}) => agent({
     status: 'running',
     assigned_at: new Date(NOW - 20 * 60_000).toISOString(),
@@ -195,7 +195,7 @@ describe('buildAttentionQueue — stuck agents', () => {
     expect(v.counts.stuck).toBe(0);
   });
 
-  it('does NOT flag an idle agent that is blocked (pending approval) — no double-count', () => {
+  it('does NOT flag an idle agent that is blocked (pending approval) - no double-count', () => {
     const v = buildAttentionQueue({
       now: NOW,
       agents: [idle({ task_id: 'tb', id: 'tb', agent_label: 'web-2', agent_id: 'web-2' })],
